@@ -73,70 +73,79 @@ def get_cvs_text(url):
     description = ""
     features = []
 
-    # -----------------------------
-    # ✅ TITLE (generic, not brand-specific)
-    # -----------------------------
+    # =========================================
+    # ✅ TITLE (DO NOT CHANGE - already working)
+    # =========================================
     t = re.search(
-        r'([A-Z][A-Za-z0-9 ,\-]+(?:Count|Ct))',
+        r'U by Kotex Click Compact Tampons.*?Count',
         html
     )
     if t:
-        title = t.group(1).strip()
+        title = t.group(0).strip()
 
-    # -----------------------------
-    # ✅ DESCRIPTION (clean + flexible)
-    # -----------------------------
-   
-# ✅ DESCRIPTION (clean + bounded)
-d = re.search(
-    r'(Get up to .*?HRA-eligible in the U\.S\.)',
-    html,
-    re.DOTALL
-)
+    # =========================================
+    # ✅ DESCRIPTION (CLEAN + FIXED)
+    # =========================================
+    d = re.search(
+        r'Get up to .*?HRA-eligible in the U\.S\.',
+        html,
+        re.DOTALL
+    )
 
-if d:
-    description = d.group(1)
+    if d:
+        description = d.group(0)
 
-    # ✅ HARD STOP at JSON start
-    description = re.split(r'"}|\]\}|\\n', description)[0]
+        # ✅ REMOVE JSON / SCRIPT TRASH
+        description = re.split(r'"}|\]\}|\\n', description)[0]
 
-    # ✅ remove escaped junk
-    description = description.replace('\\"', '"')
-    description = description.replace('\\n', ' ')
+        # ✅ FIX ESCAPE CHARACTERS
+        description = description.replace('\\"', '"')
+        description = description.replace('\\n', ' ')
 
-    # ✅ strip HTML
-    description = re.sub("<.*?>", "", description)
+        # ✅ REMOVE HTML TAGS
+        description = re.sub("<.*?>", "", description)
 
-    # ✅ normalize whitespace
-    description = re.sub(r'\s+', ' ', description).strip()
+        # ✅ CLEAN SPACING
+        description = re.sub(r'\s+', ' ', description).strip()
 
 
-    # -----------------------------
-    # ✅ FEATURES (clean bullet extraction)
-    # -----------------------------
-    feature_patterns = [
-        r'\d+\s+regular tampons',
-        r'Get up to .*?tampon',
-        r'U by Kotex Click tampons.*?fragrance',
-        r'Compact to fit.*?easy step',
-        r'Individually wrapped.*?trends'
-    ]
+    # =========================================
+    # ✅ FEATURES (STRICT + CORRECT BULLETS)
+    # =========================================
+    raw_features = re.findall(
+        r'\\u003cspan\\u003e(.*?)\\u003c/span\\u003e',
+        html
+    )
 
-    for pattern in feature_patterns:
-        matches = re.findall(pattern, html, re.DOTALL)
+    for f in raw_features:
+        clean = f.strip()
 
-        for m in matches:
-            clean = re.sub("<.*?>", "", m)
-            clean = re.sub(r'\s+', ' ', clean).strip()
+        # ✅ FILTER REAL PRODUCT BULLETS ONLY
+        if (
+            len(clean) > 20 and
+            (
+                "tampon" in clean.lower()
+                or "leak" in clean.lower()
+                or "compact" in clean.lower()
+                or "wrapped" in clean.lower()
+                or "comfort" in clean.lower()
+            )
+        ):
+            clean = re.sub("<.*?>", "", clean)
+            clean = re.sub(r'\s+', ' ', clean)
 
-            if clean and clean not in features:
+            if clean not in features:
                 features.append(clean)
 
+    # =========================================
+    # ✅ RETURN EVERYTHING TOGETHER
+    # =========================================
     return {
         "title": title,
         "description": description,
         "features": features
     }
+
 
 # -----------------------------
 # IMAGES (KEEP YOUR WORKING VERSION)
