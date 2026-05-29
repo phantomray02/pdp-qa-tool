@@ -65,80 +65,54 @@ def get_salsify_text(url):
 # -----------------------------
 
 def get_cvs_text(url):
-    html = get_html(url)
-
-    soup = BeautifulSoup(html, "html.parser")
-
-    full_text = soup.get_text("\n", strip=True)
-
-    lines = [l.strip() for l in full_text.split("\n") if l.strip()]
+    soup = get_soup(url)
 
     title = ""
     description = ""
     features = []
 
     # -----------------------------
-    # ✅ FIND "Details" SECTION
+    # ✅ 1. FIND CONTAINER
     # -----------------------------
-    start_idx = None
+    container = soup.find("div", class_=re.compile("whitespace-pre-line"))
 
-    for i, line in enumerate(lines):
-        if line.strip().lower() == "details":
-            start_idx = i
-            break
-
-    if start_idx is None:
+    if not container:
         return {"title": "", "description": "", "features": []}
 
     # -----------------------------
-    # ✅ TITLE (next line)
+    # ✅ 2. TITLE (FIRST P WITH text-lg)
     # -----------------------------
-    title = lines[start_idx + 1]
+    title_tag = container.find("p", class_=re.compile("text-lg"))
 
-    # -----------------------------
-    # ✅ DESCRIPTION (next big block)
-    # -----------------------------
-    desc_lines = []
-
-    i = start_idx + 2
-    while i < len(lines):
-
-        line = lines[i]
-
-        # stop when bullets begin
-        if line.startswith("•") or re.match(r"\d+\s", line):
-            break
-
-        # stop when unrelated content starts
-        if "prescription" in line.lower():
-            break
-
-        desc_lines.append(line)
-        i += 1
-
-    description = " ".join(desc_lines)
+    if title_tag:
+        title = title_tag.get_text(strip=True)
 
     # -----------------------------
-    # ✅ FEATURES (next lines)
+    # ✅ 3. DESCRIPTION (SPAN text-base ONLY)
     # -----------------------------
-    for j in range(i, len(lines)):
-        line = lines[j]
+    desc_tag = container.find("span", class_=re.compile("text-base"))
 
-        if (
-            "prescription" in line.lower()
-            or "coupon" in line.lower()
-        ):
-            break
+    if desc_tag:
+        description = desc_tag.get_text(" ", strip=True)
 
-        if len(line) > 10:
-            features.append(line.replace("•", "").strip())
+    # -----------------------------
+    # ✅ 4. FEATURES (STRICT BULLET LIST ✅)
+    # -----------------------------
+    for li in container.find_all("li", id=re.compile("vendorDetailsBullet")):
+
+        span = li.find("span")
+
+        if span:
+            txt = span.get_text(strip=True)
+
+            if txt:
+                features.append(txt)
 
     return {
         "title": title,
         "description": description,
-        "features": features[:6]
+        "features": features
     }
-
 
 # -----------------------------
 # IMAGES (KEEP YOUR WORKING VERSION)
