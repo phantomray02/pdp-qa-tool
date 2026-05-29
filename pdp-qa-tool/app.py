@@ -74,7 +74,7 @@ def get_cvs_text(url):
     features = []
 
     # =========================================
-    # ✅ TITLE
+    # ✅ TITLE (KEEP YOUR WORKING VERSION)
     # =========================================
     t = re.search(
         r'U by Kotex Click Compact Tampons.*?Count',
@@ -84,53 +84,54 @@ def get_cvs_text(url):
         title = t.group(0).strip()
 
     # =========================================
-    # ✅ RAW BLOCK EXTRACTION
+    # ✅ DESCRIPTION (BACK TO WORKING VERSION ✅)
     # =========================================
-    block_match = re.search(
-        r'Get up to .*?\]',
+    d = re.search(
+        r'Get up to .*?HRA-eligible in the U\.S\.',
         html,
         re.DOTALL
     )
 
-    if block_match:
-        raw_block = block_match.group(0)
+    if d:
+        raw = d.group(0)
 
-        # ✅ Extract quoted strings
-        strings = re.findall(r'"(.*?)"', raw_block)
+        # ✅ SIMPLE CLEAN (NOT COMPLEX)
+        raw = raw.replace('\\"', '')
+        raw = raw.replace('\\n', ' ')
 
-        clean_strings = []
+        # ✅ FIX STRING FORMAT
+        raw = raw.replace('","', '. ')
+        raw = raw.replace('"', '')
 
-        for s in strings:
-            s = s.replace('\\n', ' ').strip()
+        # ✅ REMOVE ANY HTML
+        raw = re.sub("<.*?>", "", raw)
 
-            # ✅ remove junk keys
-            if any(x in s for x in [
-                "vendorDetails",
-                "script",
-                "{",
-                "}",
-                ":",
-                "__next"
-            ]):
-                continue
+        # ✅ CLEAN SPACING
+        raw = re.sub(r'\s+', ' ', raw).strip()
 
-            if len(s) > 20:
-                clean_strings.append(s)
+        description = raw
 
-        # ✅ DESCRIPTION
-        description = ". ".join(clean_strings)
+    # =========================================
+    # ✅ FEATURES (SIMPLE + RELIABLE ✅)
+    # =========================================
+    if description:
+        parts = description.split('. ')
 
-        # ✅ FEATURES (shorter sentences only)
-        for s in clean_strings:
-            if len(s) < 120:
-                features.append(s)
+        for p in parts:
+            if (
+                len(p) > 20
+                and (
+                    "tampon" in p.lower()
+                    or "compact" in p.lower()
+                    or "wrapped" in p.lower()
+                    or "leak" in p.lower()
+                )
+            ):
+                features.append(p.strip())
 
-    # ✅ remove duplicates
+    # ✅ LIMIT + CLEAN
     features = list(dict.fromkeys(features))[:5]
 
-    # =========================================
-    # ✅ RETURN
-    # =========================================
     return {
         "title": title,
         "description": description,
