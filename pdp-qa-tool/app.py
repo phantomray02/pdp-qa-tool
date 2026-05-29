@@ -3,25 +3,27 @@ import streamlit as st
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
+import json
+import re
 
-st.title("PDP QA Tool (Final Stable CVS Logic ✅)")
+st.title("PDP QA Tool (FULL CVS IMAGE EXTRACTION ✅)")
 
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
 # -----------------------------
-# GET HTML
+# GET PAGE HTML
 # -----------------------------
-def get_soup(url):
+def get_html(url):
     headers = {"User-Agent": "Mozilla/5.0"}
-    res = requests.get(url, headers=headers)
-    return BeautifulSoup(res.text, "html.parser")
+    return requests.get(url, headers=headers).text
+
 
 # -----------------------------
-# SALSIFY IMAGES
+# ✅ SALSIFY (unchanged)
 # -----------------------------
 def get_salsify_images(url):
     try:
-        soup = get_soup(url)
+        soup = BeautifulSoup(get_html(url), "html.parser")
 
         images = []
         for img in soup.find_all("img"):
@@ -37,46 +39,65 @@ def get_salsify_images(url):
 
 
 # -----------------------------
-# ✅ STABLE CVS LOGIC (VISIBLE + SCROLL DETECTION)
+# ✅ ✅ REAL CVS IMAGE EXTRACTION (JSON BASED)
 # -----------------------------
 def get_cvs_images(url):
+
     try:
-        soup = get_soup(url)
+        html = get_html(url)
+        soup = BeautifulSoup(html, "html.parser")
 
-        thumbnails = []
+        scripts = soup.find_all("script")
 
-        container = soup.find("div", {"role": "tablist"})
+        for script in scripts:
 
-        if not container:
-            return [], False
+            if script.string and "media" in script.string:
 
-        # ✅ Get visible thumbnails (this part WORKS)
-        for img in container.find_all("img"):
-            src = img.get("src") or ""
+                text = script.string
 
-            if "high_res" in src:
+                # ✅ Extract JSON object inside script
+                match = re.search(r'\{.*\}', text, re.DOTALL)
 
-                if src.startswith("/"):
-                    src = "https://www.cvs.com" + src
+                if not match:
+                    continue
 
-                thumbnails.append(src)
+                try:
+                    data = json.loads(match.group())
 
-        thumbnails = list(dict.fromkeys(thumbnails))
+                    # ✅ Navigate to media section
+                    # structure can vary slightly so we search safely
+                    images = []
 
-        # ✅ Detect scroll presence (THIS IS THE FIX)
-        scroll_exists = False
+                    def find_images(obj):
+                        if isinstance(obj, dict):
+                            for k, v in obj.items():
+                                if k.lower() in ["zoomimageurl", "imageurl", "image", "url"]:
+                                    if isinstance(v, str) and "scene7" in v:
+                                        images.append(v)
+                                else:
+                                    find_images(v)
+                        elif isinstance(obj, list):
+                            for item in obj:
+                                find_images(item)
 
-        for btn in container.find_all("button"):
-            label = btn.get("aria-label", "").lower()
+                    find_images(data)
 
-            if "next list of images" in label:
-                scroll_exists = True
-                break
+                    # ✅ clean + dedupe
+                    cleaned = []
+                    for img in images:
+                        base = img.split("?")[0]
+                        if base not in cleaned:
+                            cleaned.append(base)
 
-        return thumbnails, scroll_exists
+                    return cleaned
+
+                except:
+                    continue
+
+        return []
 
     except:
-        return [], False
+        return []
 
 
 # -----------------------------
@@ -106,38 +127,25 @@ if uploaded_file:
         st.subheader(f"SKU: {row['sku']}")
 
         s_images = get_salsify_images(row["salsify_url"])
-        r_images, has_scroll = get_cvs_images(row["retail_url"])
-
-        # ✅ ADJUST CVS COUNT IF SCROLL EXISTS
-        r_count = len(r_images)
-
-        if has_scroll:
-            # ✅ assume missing images beyond visible
-            r_count += 2  # typical hidden thumbnails
+        r_images = get_cvs_images(row["retail_url"])
 
         st.write(f"Salsify Images: {len(s_images)}")
-        st.write(f"CVS Visible Images: {len(r_images)}")
+        st.write(f"CVS Images: {len(r_images)}")
 
-        if has_scroll:
-            st.write("⚠ Scroll detected → additional images exist")
-
-        st.write(f"Estimated CVS Total: {r_count}")
-
-        # DISPLAY
         col1, col2 = st.columns(2)
 
         with col1:
             display_images("Salsify", s_images)
 
         with col2:
-            display_images("CVS (Visible)", r_images)
+            display_images("CVS (Full Extract ✅)", r_images)
 
-        # RESULT
-        if r_count == len(s_images):
+        # ✅ RESULT
+        if len(r_images) == len(s_images):
             st.success("✅ Images Match")
-        elif r_count < len(s_images):
-            st.error(f"❌ Missing {len(s_images) - r_count} images")
+        elif len(r_images) < len(s_images):
+            st.error(f"❌ Missing {len(s_images) - len(r_images)} images")
         else:
-            st.warning(f"⚠ Extra {r_count - len(s_images)} images")
+            st.warning(f"⚠ Extra {len(r_images) - len(s_images)} images")
 
         st.divider()
