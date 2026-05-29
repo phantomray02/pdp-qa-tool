@@ -1,35 +1,46 @@
 
 import streamlit as st
 import pandas as pd
-from PIL import Image
 from playwright.sync_api import sync_playwright
+from PIL import Image
+import io
 
-st.title("PDP QA Tool (Capture CVS Thumbnail Rail)")
+st.title("PDP QA Tool (CVS Thumbnail Capture - Working)")
 
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
 # -----------------------------
-# SCREENSHOT FUNCTION
+# ✅ SCREENSHOT + CROP LEFT SIDE
 # -----------------------------
 def capture_cvs_thumbnails(url):
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
+            page = browser.new_page(viewport={"width":1400, "height":2000})
 
             page.goto(url, timeout=60000)
             page.wait_for_timeout(5000)
 
-            # ✅ target LEFT thumbnail rail (this is key)
-            element = page.query_selector('div[class*="thumb"], div[class*="carousel"]')
-
-            if element:
-                screenshot = element.screenshot()
-                browser.close()
-                return Image.open(io.BytesIO(screenshot))
+            # ✅ take FULL page screenshot
+            screenshot = page.screenshot(full_page=True)
 
             browser.close()
-            return None
+
+            # ✅ open image
+            img = Image.open(io.BytesIO(screenshot))
+
+            # ✅ crop LEFT section (thumbnail rail area)
+            width, height = img.size
+
+            # adjust if needed slightly
+            cropped = img.crop((
+                0,              # left
+                200,            # top (skip header)
+                int(width * 0.25), # right (left 25% of page)
+                height - 200    # bottom (skip footer)
+            ))
+
+            return cropped
 
     except:
         return None
@@ -46,12 +57,11 @@ if uploaded_file:
 
         st.subheader(f"SKU: {row['sku']}")
 
-        # ✅ capture CVS thumbnail strip
         img = capture_cvs_thumbnails(row["retail_url"])
 
         if img:
-            st.image(img, caption="CVS Thumbnail Rail", use_container_width=True)
+            st.image(img, caption="CVS Thumbnail Section", use_container_width=True)
         else:
-            st.write("❌ Could not capture thumbnails")
+            st.error("❌ Screenshot failed")
 
         st.divider()
