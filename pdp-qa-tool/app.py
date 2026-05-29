@@ -40,49 +40,39 @@ def get_salsify_images(url):
 # -----------------------------
 
 
+
 def get_cvs_images(url):
     try:
         html = get_html(url)
 
-        # ✅ grab ALL high_res images INCLUDING variants (_2, _3, etc)
         matches = re.findall(
-            r'/bizcontent/merchandising/productimages/high_res/[^\s"]+\.jpg',
+            r'/bizcontent/merchandising/productimages/high_res/[^\s"]+\.jpg\?[^\s"]*',
             html
         )
 
-        images = []
+        image_dict = {}
 
         for m in matches:
-
             full = "https://www.cvs.com" + m
 
-            # ✅ strip resize params
             base = full.split("?")[0]
+            name = base.split("/")[-1]
 
-            images.append(base)
+            # ✅ extract size (wid/Resize)
+            size_match = re.search(r'Resize=\((\d+),', m)
+            size = int(size_match.group(1)) if size_match else 0
 
-        # ✅ remove duplicates
-        images = list(dict.fromkeys(images))
+            # ✅ keep highest resolution for each image name
+            if name not in image_dict or size > image_dict[name]["size"]:
+                image_dict[name] = {
+                    "url": base,
+                    "size": size
+                }
 
-        # ✅ OPTIONAL: filter only product group (same root)
-        final = []
+        # ✅ return only highest res images
+        final = [v["url"] for v in image_dict.values()]
 
-        seen_roots = set()
-
-        for img in images:
-            name = img.split("/")[-1]
-
-            # root = strip _# (so 3600..._6 becomes 3600...)
-            root = name.split("_")[0]
-
-            if root not in seen_roots:
-                final.append(img)
-                seen_roots.add(root)
-            else:
-                # ✅ include variants too
-                final.append(img)
-
-        return final
+        return list(dict.fromkeys(final))
 
     except:
         return []
