@@ -74,7 +74,7 @@ def get_cvs_text(url):
     features = []
 
     # =========================================
-    # ✅ TITLE (keep your working one)
+    # ✅ TITLE
     # =========================================
     t = re.search(
         r'U by Kotex Click Compact Tampons.*?Count',
@@ -83,47 +83,59 @@ def get_cvs_text(url):
     if t:
         title = t.group(0).strip()
 
+    # =========================================
+    # ✅ RAW BLOCK EXTRACTION
+    # =========================================
+    block_match = re.search(
+        r'Get up to .*?\]',
+        html,
+        re.DOTALL
+    )
 
-# =========================================
-# ✅ CLEAN TEXT BLOCK (EXACT EXTRACTION)
-# =========================================
-block_match = re.search(
-    r'Get up to .*?\]',
-    html,
-    re.DOTALL
-)
+    if block_match:
+        raw_block = block_match.group(0)
 
-description = ""
-features = []
+        # ✅ Extract quoted strings
+        strings = re.findall(r'"(.*?)"', raw_block)
 
-if block_match:
-    raw_block = block_match.group(0)
+        clean_strings = []
 
-    # ✅ STEP 1: extract ALL quoted strings (this is the key)
-    strings = re.findall(r'"(.*?)"', raw_block)
+        for s in strings:
+            s = s.replace('\\n', ' ').strip()
 
-    clean_strings = []
+            # ✅ remove junk keys
+            if any(x in s for x in [
+                "vendorDetails",
+                "script",
+                "{",
+                "}",
+                ":",
+                "__next"
+            ]):
+                continue
 
-    for s in strings:
-        s = s.replace('\\n', ' ').strip()
+            if len(s) > 20:
+                clean_strings.append(s)
 
-        # ✅ filter junk keys OUT
-        if any(x in s for x in ["vendorDetails", "script", "{", "}", ":"]):
-            continue
+        # ✅ DESCRIPTION
+        description = ". ".join(clean_strings)
 
-        # ✅ keep only real sentences
-        if len(s) > 20:
-            clean_strings.append(s)
+        # ✅ FEATURES (shorter sentences only)
+        for s in clean_strings:
+            if len(s) < 120:
+                features.append(s)
 
-    # ✅ DESCRIPTION = full paragraph
-    description = ". ".join(clean_strings)
-
-    # ✅ FEATURES = first 4–5 short meaningful lines
-    for s in clean_strings:
-        if len(s) < 120:
-            features.append(s)
-
+    # ✅ remove duplicates
     features = list(dict.fromkeys(features))[:5]
+
+    # =========================================
+    # ✅ RETURN
+    # =========================================
+    return {
+        "title": title,
+        "description": description,
+        "features": features
+    }
 
 # -----------------------------
 # IMAGES (KEEP YOUR WORKING VERSION)
