@@ -64,7 +64,6 @@ def get_salsify_text(url):
 # ✅ CVS TEXT (FINAL WORKING VERSION ✅)
 # -----------------------------
 
-
 def get_cvs_text(url):
     soup = get_soup(url)
 
@@ -72,66 +71,61 @@ def get_cvs_text(url):
     description = ""
     features = []
 
-    # ✅ STEP 1: Get all meaningful text blocks
-    candidates = []
+    # -----------------------------
+    # ✅ 1. FIND DETAILS SECTION
+    # -----------------------------
+    details_section = None
 
-    for tag in soup.find_all(["p", "span", "div", "li"]):
-        text = tag.get_text(" ", strip=True)
+    for div in soup.find_all(["div", "section"]):
+        text = div.get_text(" ", strip=True)
 
-        if len(text) > 20:
-            candidates.append(text)
+        if "Details" in text and "tampon" in text.lower():
+            details_section = div
+            break
+
+    if not details_section:
+        return {"title": "", "description": "", "features": []}
 
     # -----------------------------
-    # ✅ TITLE
-    # pick best "product-like" line
+    # ✅ 2. TITLE (FIRST STRONG LINE)
     # -----------------------------
-    for text in candidates:
+    for tag in details_section.find_all(["p", "strong", "h2", "h3"]):
+        txt = tag.get_text(strip=True)
+
         if (
-            40 < len(text) < 140
-            and any(word in text.lower() for word in ["count", "pack", "oz", "ml"])
+            len(txt) > 30
+            and "kotex" in txt.lower()
         ):
-            title = text
+            title = txt
             break
 
     # -----------------------------
-    # ✅ DESCRIPTION
-    # pick longest product paragraph
+    # ✅ 3. DESCRIPTION (LONG PARAGRAPH)
     # -----------------------------
-    descriptions = [t for t in candidates if len(t) > 150]
+    for p in details_section.find_all("p"):
+        txt = p.get_text(" ", strip=True)
 
-    if descriptions:
-        # ✅ choose longest meaningful one
-        description = max(descriptions, key=len)
+        if len(txt) > 150:
+            description = txt
+            break
 
     # -----------------------------
-    # ✅ FEATURES
-    # pick bullet-like short lines
+    # ✅ 4. FEATURES (ONLY THIS UL)
     # -----------------------------
-    for text in candidates:
-        if (
-            15 < len(text) < 120
-            and text != title
-            and text not in description
-        ):
-            features.append(text)
+    ul = details_section.find("ul")
 
-    # ✅ CLEAN FEATURES (remove junk)
-    clean_features = []
+    if ul:
+        for li in ul.find_all("li"):
+            txt = li.get_text(" ", strip=True)
 
-    for f in features:
-        if not any(junk in f.lower() for junk in [
-            "prescription", "coupon", "store", "schedule",
-            "terms", "privacy", "sign in", "shop", "orders"
-        ]):
-            clean_features.append(f)
+            if len(txt) > 5:
+                features.append(txt)
 
     return {
         "title": title,
         "description": description,
-        "features": clean_features[:6]
+        "features": features
     }
-
-
 
 # -----------------------------
 # IMAGES (KEEP YOUR WORKING VERSION)
