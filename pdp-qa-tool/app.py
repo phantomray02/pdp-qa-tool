@@ -64,61 +64,59 @@ def get_salsify_text(url):
 # ✅ CVS TEXT (FINAL WORKING VERSION ✅)
 # -----------------------------
 
-def get_cvs_text(url):
-    soup = get_soup(url)
+from playwright.sync_api import sync_playwright
+from bs4 import BeautifulSoup
+import time
 
+def get_cvs_text(url):
     title = ""
     description = ""
     features = []
 
-    # -----------------------------
-    # ✅ 1. FEATURES (ANCHOR HERE ✅)
-    # -----------------------------
-    feature_tags = soup.find_all("li", id=re.compile("^vendorDetailsBullet"))
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
 
-    for li in feature_tags:
-        txt = li.get_text(" ", strip=True)
-        if txt:
-            features.append(txt)
+            page.goto(url, timeout=60000)
+            time.sleep(4)  # allow JS to render
 
-    # ✅ If no features → stop early
-    if not features:
-        return {"title": "", "description": "", "features": []}
+            html = page.content()
+            browser.close()
 
-    # -----------------------------
-    # ✅ 2. DESCRIPTION = nearest text BEFORE features
-    # -----------------------------
-    first_feature = feature_tags[0]
+        soup = BeautifulSoup(html, "html.parser")
 
-    for el in first_feature.find_all_previous():
-        txt = el.get_text(" ", strip=True)
+        # ✅ NOW the container actually exists
+        container = soup.find("div", class_=lambda x: x and "whitespace-pre-line" in x)
 
-        if (
-            len(txt) > 150
-            and "tampon" in txt.lower()
-        ):
-            description = txt
-            break
+        if not container:
+            return {"title": "", "description": "", "features": []}
 
-    # -----------------------------
-    # ✅ 3. TITLE = nearest product line BEFORE description
-    # -----------------------------
-    for el in first_feature.find_all_previous():
-        txt = el.get_text(" ", strip=True)
+        # ✅ TITLE
+        t = container.find("p", class_=lambda x: x and "text-lg" in x)
+        if t:
+            title = t.get_text(strip=True)
 
-        if (
-            30 < len(txt) < 150
-            and "kotex" in txt.lower()
-            and "count" in txt.lower()
-        ):
-            title = txt
-            break
+        # ✅ DESCRIPTION
+        d = container.find("span", class_=lambda x: x and "text-base" in x)
+        if d:
+            description = d.get_text(" ", strip=True)
+
+        # ✅ FEATURES
+        for li in container.find_all("li", id=lambda x: x and "vendorDetailsBullet" in x):
+            txt = li.get_text(strip=True)
+            if txt:
+                features.append(txt)
+
+    except:
+        pass
 
     return {
         "title": title,
         "description": description,
         "features": features
     }
+
 
 # -----------------------------
 # IMAGES (KEEP YOUR WORKING VERSION)
