@@ -116,7 +116,6 @@ def get_salsify_text(url):
 # ✅ CVS TEXT (STRICT RULES)
 # -----------------------------
 
-
 def get_cvs_text(url):
     try:
         soup = get_soup(url)
@@ -126,51 +125,59 @@ def get_cvs_text(url):
         features = []
 
         # -----------------------------
-        # ✅ TITLE
+        # ✅ TITLE (STRICT MATCH ✅)
         # -----------------------------
-        title_tags = soup.select("p.text-lg")
+        for p in soup.find_all("p"):
 
-        for tag in title_tags:
-            txt = tag.get_text(strip=True)
+            class_list = " ".join(p.get("class", []))
+            txt = p.get_text(strip=True)
 
-            if "kotex" in txt.lower():
+            if (
+                "text-lg" in class_list
+                and "font-medium" in class_list
+                and "kotex" in txt.lower()
+            ):
                 title = txt
                 break
 
         # -----------------------------
-        # ✅ DESCRIPTION (BEST MATCH)
+        # ✅ DESCRIPTION (NEXT BLOCK DOWN)
         # -----------------------------
-        spans = soup.select("span.text-base")
+        spans = soup.find_all("span")
 
         best_desc = ""
 
         for span in spans:
+            class_list = " ".join(span.get("class", []))
             txt = span.get_text(" ", strip=True)
 
             if (
-                len(txt) > 150
+                "text-base" in class_list
+                and len(txt) > 150
                 and "tampon" in txt.lower()
-                and "see all" not in txt.lower()
             ):
-                # pick longest one (most complete)
                 if len(txt) > len(best_desc):
                     best_desc = txt
 
         description = best_desc
 
         # -----------------------------
-        # ✅ FEATURES (STRICT ✅)
+        # ✅ FEATURES (EXACT STRUCTURE ✅)
         # -----------------------------
-        for li in soup.select("li[id^='vendorDetailsBullet']"):
+        for li in soup.find_all("li"):
 
-            txt = li.get_text(" ", strip=True)
+            li_id = li.get("id", "")
 
-            if (
-                txt
-                and len(txt) > 5
-                and "last updated" not in txt.lower()
-            ):
-                features.append(txt)
+            if "vendorDetailsBullet" in li_id:
+
+                txt = li.get_text(" ", strip=True)
+
+                # remove garbage like timestamps
+                if (
+                    txt
+                    and "last updated" not in txt.lower()
+                ):
+                    features.append(txt)
 
         return {
             "title": title,
@@ -179,8 +186,8 @@ def get_cvs_text(url):
         }
 
     except:
-        return {"title": "", "description": "", "features": []
-               }
+        return {"title": "", "description": "", "features": []}
+
         
 # -----------------------------
 # MAIN
