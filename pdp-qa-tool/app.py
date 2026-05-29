@@ -64,50 +64,45 @@ def get_salsify_text(url):
 # ✅ CVS TEXT (FINAL WORKING VERSION ✅)
 # -----------------------------
 
-import json
-import re
+import time
 
 def get_cvs_text(url):
+    start = time.time()
+
     html = get_html(url)
 
     title = ""
     description = ""
     features = []
 
-    # ✅ Extract JSON
-    match = re.search(
-        r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
+    print("✅ HTML fetched in", round(time.time() - start, 2), "sec")
+
+    # --- YOUR WORKING REGEX VERSION HERE ---
+
+    t = re.search(r'U by Kotex Click Compact Tampons.*?Count', html)
+    if t:
+        title = t.group(0)
+
+    d = re.search(
+        r'Get up to 100% leak-free.*?HRA-eligible in the U\.S\.',
+        html,
+        re.DOTALL
+    )
+    if d:
+        description = d.group(0)
+
+    f = re.findall(
+        r'(?:\d+\s+regular tampons|Get up to 100% leak-free.*?|U by Kotex Click tampons.*?|Compact to fit.*?|Individually wrapped.*?trends)',
         html,
         re.DOTALL
     )
 
-    if not match:
-        return {"title": "", "description": "", "features": []}
+    for item in f:
+        clean = re.sub("<.*?>", "", item).strip()
+        if clean and clean not in features:
+            features.append(clean)
 
-    data = json.loads(match.group(1))
-
-    # -----------------------------
-    # ✅ DIRECT PATH (FAST ✅)
-    # -----------------------------
-    try:
-        page_props = data["props"]["pageProps"]
-
-        # ✅ TITLE
-        title = page_props.get("product", {}).get("name", "")
-
-        # ✅ DESCRIPTION
-        description = page_props.get("product", {}).get("longDescription", "")
-
-        # ✅ FEATURES (THIS IS THE KEY ✅)
-        bullets = page_props.get("product", {}).get("vendorDetailsBullets", [])
-
-        for b in bullets:
-            clean = re.sub("<.*?>", "", str(b)).strip()
-            if clean:
-                features.append(clean)
-
-    except:
-        pass
+    print("✅ Extraction done in", round(time.time() - start, 2), "sec")
 
     return {
         "title": title,
