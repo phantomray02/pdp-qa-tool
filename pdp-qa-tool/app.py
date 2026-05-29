@@ -68,71 +68,66 @@ def get_cvs_text(url):
     html = get_html(url)
     soup = BeautifulSoup(html, "html.parser")
 
-    text = soup.get_text("\n", strip=True)
-    lines = [l.strip() for l in text.split("\n") if l.strip()]
-
     title = ""
     description = ""
     features = []
 
     # -----------------------------
-    # ✅ 1. Locate "Details"
+    # ✅ 1. FIND THE ITEM TEXT
     # -----------------------------
-    start = None
-    for i, line in enumerate(lines):
-        if line.lower() == "details":
-            start = i
+    item_tag = None
+
+    for tag in soup.find_all(["p", "span", "div"]):
+        txt = tag.get_text(" ", strip=True)
+
+        if "Item #" in txt:
+            item_tag = tag
             break
 
-    if start is None:
+    if not item_tag:
         return {"title": "", "description": "", "features": []}
 
-    section = lines[start:start + 20]  # small window near Details
+    # -----------------------------
+    # ✅ 2. TITLE (RIGHT BEFORE ITEM)
+    # -----------------------------
+    for prev in item_tag.find_all_previous(["p"]):
+        txt = prev.get_text(strip=True)
 
-    # -----------------------------
-    # ✅ 2. TITLE (product-like line)
-    # -----------------------------
-    for line in section:
-        if (
-            len(line) > 30
-            and ("kotex" in line.lower() or "tampon" in line.lower())
-        ):
-            title = line
+        if len(txt) > 30:
+            title = txt
             break
 
     # -----------------------------
-    # ✅ 3. DESCRIPTION (first long line)
+    # ✅ 3. DESCRIPTION (NEXT LARGE TEXT AFTER ITEM)
     # -----------------------------
-    for line in section:
-        if len(line) > 120:
-            description = line
+    for nxt in item_tag.find_all_next(["span", "p"]):
+        txt = nxt.get_text(" ", strip=True)
+
+        if len(txt) > 150 and "tampon" in txt.lower():
+            description = txt
             break
 
     # -----------------------------
-    # ✅ 4. FEATURES (lines after description)
+    # ✅ 4. FEATURES (NEXT UL AFTER DESCRIPTION)
     # -----------------------------
-    if description in section:
-        idx = section.index(description)
+    for nxt in item_tag.find_all_next("ul"):
+        items = nxt.find_all("li")
 
-        for line in section[idx + 1:]:
-            if len(line) < 10:
-                continue
+        if len(items) >= 4:
 
-            # stop before junk
-            if any(x in line.lower() for x in [
-                "shipping", "policy", "reviews", "prescription"
-            ]):
-                break
+            for li in items:
+                txt = li.get_text(" ", strip=True)
 
-            if 10 < len(line) < 120:
-                features.append(line)
+                if txt and len(txt) > 5:
+                    features.append(txt)
+
+            break
 
     return {
         "title": title,
         "description": description,
-        "features": features[:6]
+        "features": features
     }
-
 
 # -----------------------------
 # IMAGES (KEEP YOUR WORKING VERSION)
