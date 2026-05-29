@@ -73,9 +73,9 @@ def get_cvs_text(url):
     description = ""
     features = []
 
-    # =========================================
-    # ✅ TITLE (KEEP YOUR WORKING VERSION)
-    # =========================================
+    # =========================
+    # ✅ TITLE (UNCHANGED)
+    # =========================
     t = re.search(
         r'U by Kotex Click Compact Tampons.*?Count',
         html
@@ -83,9 +83,9 @@ def get_cvs_text(url):
     if t:
         title = t.group(0).strip()
 
-    # =========================================
-    # ✅ EXTRACT ALL QUOTED STRINGS
-    # =========================================
+    # =========================
+    # ✅ EXTRACT QUOTED STRINGS
+    # =========================
     strings = re.findall(r'"(.*?)"', html)
 
     clean_strings = []
@@ -93,39 +93,41 @@ def get_cvs_text(url):
     for s in strings:
         s = s.replace('\\n', ' ').strip()
 
-        # ✅ FILTER OUT JUNK KEYS
-        if any(x in s.lower() for x in [
-            "vendor",
-            "ingredient",
-            "script",
-            "{",
-            "}",
-            ":",
-            "__next"
+        # 🚫 HARD FILTER (kills your junk)
+        if any(bad in s.lower() for bad in [
+            "shop", "shipping", "cvs pharmacy",
+            "http", "sku", "prodid",
+            "customer reviews", "span", "div",
+            "script", "href", "click compact tampons, unscented, regular",
+            "count, 16", "32 count"
         ]):
             continue
 
-        # ✅ KEEP REAL SENTENCES ONLY
-        if len(s) > 30 and any(word in s.lower() for word in [
-            "tampon", "leak", "compact", "wrapped", "fragrance"
-        ]):
+        # ✅ keep ONLY real product sentences
+        if (
+            len(s) > 40
+            and any(word in s.lower() for word in [
+                "tampon", "leak", "compact",
+                "wrapped", "fragrance", "comfort"
+            ])
+        ):
             clean_strings.append(s)
 
-    # =========================================
-    # ✅ BUILD DESCRIPTION
-    # =========================================
+    # =========================
+    # ✅ CLEAN DESCRIPTION
+    # =========================
     description = ". ".join(clean_strings)
 
     description = re.sub(r'\s+', ' ', description).strip()
 
-    # =========================================
-    # ✅ BUILD FEATURES (SHORTER SENTENCES)
-    # =========================================
+    # =========================
+    # ✅ FEATURES (short + focused)
+    # =========================
     for s in clean_strings:
-        if len(s) < 140:
-            features.append(s)
+        if 20 < len(s) < 120:
+            features.append(s.strip())
 
-    # ✅ DEDUPE + LIMIT
+    # ✅ remove duplicates
     features = list(dict.fromkeys(features))[:5]
 
     return {
