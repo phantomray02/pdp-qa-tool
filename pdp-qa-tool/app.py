@@ -8,6 +8,24 @@ st.title("PDP QA Tool")
 
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
+def get_images(url):
+    try:
+        res = requests.get(url)
+        soup = BeautifulSoup(res.text, "html.parser")
+
+        images = soup.find_all("img")
+
+        image_urls = []
+        for img in images:
+            src = img.get("src")
+            if src and "http" in src:
+                image_urls.append(src)
+
+        return list(set(image_urls))
+
+    except:
+        return []
+
 def get_text(url):
     try:
         res = requests.get(url)
@@ -22,20 +40,38 @@ if uploaded_file:
 
     results = []
 
-    for _, row in df.iterrows():
-        s_text = get_text(row["salsify_url"])
-        r_text = get_text(row["retail_url"])
+    
+for _, row in df.iterrows():
 
-        score = fuzz.ratio(s_text, r_text)
+    s_text = get_salsify_data(row["salsify_url"])
+    cvs_desc, cvs_features = get_cvs_data(row["retail_url"])
 
-        results.append({
-            "SKU": row["sku"],
-            "Title Match Score": score
-        })
+    # NEW: Image extraction
+    s_images = get_images(row["salsify_url"])
+    r_images = get_images(row["retail_url"])
 
-    result_df = pd.DataFrame(results)
+    # Compare images
+    s_set = set(s_images)
+    r_set = set(r_images)
 
-    st.dataframe(result_df)
+    match_count = len(s_set & r_set)
+    total_salsify = len(s_set)
 
-    csv = result_df.to_csv(index=False).encode('utf-8')
-    st.download_button("Download Results", csv, "results.csv")
+    image_match_pct = round((match_count / total_salsify) * 100, 1) if total_salsify > 0 else 0
+
+    # Scores
+    desc_score = fuzz.partial_ratio(s_text, cvs_desc)
+    feat_score = fuzz.partial_ratio(s_text, cvs_features)
+
+    # Status logic
+    status = "PASS" if desc_score > 85 and feat_score > 80 and image_match_pct > 50 else "FAIL"
+
+    results.append({
+        "SKU": row["sku"],
+        "Description Score": desc_score,
+        "Feature Score": feat_score,
+        "Image Match %": image_match_pct,
+        "Salsify Images": total_salsify,
+        "CVS Images": len(r_set),
+        "Status": status
+    })
