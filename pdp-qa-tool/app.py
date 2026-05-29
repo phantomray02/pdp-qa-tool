@@ -64,53 +64,51 @@ def get_salsify_text(url):
 # ✅ CVS TEXT (FINAL WORKING VERSION ✅)
 # -----------------------------
 
-def get_cvs_text(url):
-    soup = get_soup(url)
+from playwright.sync_api import sync_playwright
+from bs4 import BeautifulSoup
 
+def get_cvs_text(url):
     title = ""
     description = ""
     features = []
 
-    # -----------------------------
-    # ✅ FIND CONTAINER (FIX ✅)
-    # -----------------------------
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+
+        page.goto(url, timeout=60000)
+
+        # ✅ WAIT UNTIL DETAILS IS VISIBLE
+        page.wait_for_selector("text=Details")
+
+        html = page.content()
+        browser.close()
+
+    soup = BeautifulSoup(html, "html.parser")
+
+    # ✅ NOW THIS WILL ACTUALLY WORK
     container = None
-
     for div in soup.find_all("div"):
-        classes = div.get("class", [])
-
-        if classes and "whitespace-pre-line" in classes:
+        if div.get("class") and "whitespace-pre-line" in div.get("class"):
             container = div
             break
 
     if not container:
         return {"title": "", "description": "", "features": []}
 
-    # -----------------------------
-    # ✅ TITLE (FIRST text-lg P)
-    # -----------------------------
-    for p in container.find_all("p"):
-        class_list = p.get("class", [])
+    # ✅ TITLE
+    t = container.find("p", class_=lambda x: x and "text-lg" in x)
+    if t:
+        title = t.get_text(strip=True)
 
-        if "text-lg" in class_list:
-            title = p.get_text(strip=True)
-            break
+    # ✅ DESCRIPTION
+    d = container.find("span", class_=lambda x: x and "text-base" in x)
+    if d:
+        description = d.get_text(" ", strip=True)
 
-    # -----------------------------
-    # ✅ DESCRIPTION (text-base span)
-    # -----------------------------
-    desc_tag = container.find("span", class_=lambda x: x and "text-base" in x)
-
-    if desc_tag:
-        description = desc_tag.get_text(" ", strip=True)
-
-    # -----------------------------
-    # ✅ FEATURES (vendor bullets)
-    # -----------------------------
+    # ✅ FEATURES
     for li in container.find_all("li", id=lambda x: x and x.startswith("vendorDetailsBullet")):
-
         txt = li.get_text(strip=True)
-
         if txt:
             features.append(txt)
 
@@ -119,6 +117,7 @@ def get_cvs_text(url):
         "description": description,
         "features": features
     }
+
 
 # -----------------------------
 # IMAGES (KEEP YOUR WORKING VERSION)
