@@ -72,33 +72,44 @@ def get_cvs_text(url):
     features = []
 
     # -----------------------------
-    # ✅ 1. FIND CONTAINER
+    # ✅ 1. FIND THE CONTAINER
     # -----------------------------
-    container = soup.find("div", class_=re.compile("whitespace-pre-line"))
+    container = None
+
+    for div in soup.find_all("div"):
+        classes = " ".join(div.get("class", []))
+
+        if "whitespace-pre-line" in classes:
+            container = div
+            break
 
     if not container:
         return {"title": "", "description": "", "features": []}
 
     # -----------------------------
-    # ✅ 2. TITLE (FIRST P WITH text-lg)
+    # ✅ 2. TITLE (STRICT)
     # -----------------------------
-    title_tag = container.find("p", class_=re.compile("text-lg"))
+    for p in container.find_all("p"):
+        class_list = " ".join(p.get("class", []))
 
-    if title_tag:
-        title = title_tag.get_text(strip=True)
-
-    # -----------------------------
-    # ✅ 3. DESCRIPTION (SPAN text-base ONLY)
-    # -----------------------------
-    desc_tag = container.find("span", class_=re.compile("text-base"))
-
-    if desc_tag:
-        description = desc_tag.get_text(" ", strip=True)
+        if "text-lg" in class_list and "font-medium" in class_list:
+            title = p.get_text(strip=True)
+            break
 
     # -----------------------------
-    # ✅ 4. FEATURES (STRICT BULLET LIST ✅)
+    # ✅ 3. DESCRIPTION (STRICT)
     # -----------------------------
-    for li in container.find_all("li", id=re.compile("vendorDetailsBullet")):
+    for span in container.find_all("span"):
+        class_list = " ".join(span.get("class", []))
+
+        if "text-base" in class_list:
+            description = span.get_text(" ", strip=True)
+            break
+
+    # -----------------------------
+    # ✅ 4. FEATURES (STRICT ✅)
+    # -----------------------------
+    for li in container.find_all("li", id=re.compile("^vendorDetailsBullet")):
 
         span = li.find("span")
 
