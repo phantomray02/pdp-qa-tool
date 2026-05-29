@@ -68,66 +68,80 @@ def get_cvs_text(url):
     html = get_html(url)
     soup = BeautifulSoup(html, "html.parser")
 
+    text = soup.get_text("\n", strip=True)
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
+
     title = ""
     description = ""
     features = []
 
     # -----------------------------
-    # ✅ 1. FIND THE ITEM TEXT
+    # ✅ FIND "Item #" (best anchor ✅)
     # -----------------------------
-    item_tag = None
-
-    for tag in soup.find_all(["p", "span", "div"]):
-        txt = tag.get_text(" ", strip=True)
-
-        if "Item #" in txt:
-            item_tag = tag
+    item_index = None
+    for i, line in enumerate(lines):
+        if "Item #" in line:
+            item_index = i
             break
 
-    if not item_tag:
+    if item_index is None:
         return {"title": "", "description": "", "features": []}
 
     # -----------------------------
-    # ✅ 2. TITLE (RIGHT BEFORE ITEM)
+    # ✅ TITLE (above Item #)
     # -----------------------------
-    for prev in item_tag.find_all_previous(["p"]):
-        txt = prev.get_text(strip=True)
+    for i in range(item_index - 1, max(item_index - 10, 0), -1):
+        line = lines[i]
 
-        if len(txt) > 30:
-            title = txt
+        if len(line) > 30 and "kotex" in line.lower():
+            title = line
             break
 
     # -----------------------------
-    # ✅ 3. DESCRIPTION (NEXT LARGE TEXT AFTER ITEM)
+    # ✅ DESCRIPTION (below Item #)
     # -----------------------------
-    for nxt in item_tag.find_all_next(["span", "p"]):
-        txt = nxt.get_text(" ", strip=True)
+    desc_lines = []
+    i = item_index + 1
 
-        if len(txt) > 150 and "tampon" in txt.lower():
-            description = txt
+    while i < len(lines):
+        line = lines[i]
+
+        # ✅ STOP at next section
+        if any(x in line.lower() for x in ["rating", "reviews", "ingredients", "specifications"]):
             break
 
-    # -----------------------------
-    # ✅ 4. FEATURES (NEXT UL AFTER DESCRIPTION)
-    # -----------------------------
-    for nxt in item_tag.find_all_next("ul"):
-        items = nxt.find_all("li")
+        # ✅ skip short junk lines
+        if len(line) < 40:
+            i += 1
+            continue
 
-        if len(items) >= 4:
+        desc_lines.append(line)
+        i += 1
 
-            for li in items:
-                txt = li.get_text(" ", strip=True)
-
-                if txt and len(txt) > 5:
-                    features.append(txt)
-
+        # ✅ stop once description is long enough
+        if len(" ".join(desc_lines)) > 200:
             break
+
+    description = " ".join(desc_lines)
+
+    # -----------------------------
+    # ✅ FEATURES (lines after description)
+    # -----------------------------
+    for j in range(i, len(lines)):
+        line = lines[j]
+
+        if any(x in line.lower() for x in ["rating", "reviews", "ingredients", "specifications"]):
+            break
+
+        if 10 < len(line) < 120:
+            features.append(line)
 
     return {
         "title": title,
         "description": description,
-        "features": features
+        "features": features[:6]
     }
+
 
 # -----------------------------
 # IMAGES (KEEP YOUR WORKING VERSION)
