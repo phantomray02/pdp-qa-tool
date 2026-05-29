@@ -3,72 +3,82 @@ import streamlit as st
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
+import re
 
-st.title("PDP QA Tool (Visual Image Compare - Stable)")
+st.title("PDP QA Tool (FINAL - Real CVS Images)")
 
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
 # -----------------------------
 # GET HTML
 # -----------------------------
-def get_soup(url):
+def get_html(url):
     headers = {"User-Agent": "Mozilla/5.0"}
-    res = requests.get(url, headers=headers)
-    return BeautifulSoup(res.text, "html.parser")
+    return requests.get(url, headers=headers).text
 
 # -----------------------------
-# ✅ SALSIFY IMAGES (clean)
+# ✅ SALSIFY IMAGES
 # -----------------------------
 def get_salsify_images(url):
     try:
-        soup = get_soup(url)
+        soup = BeautifulSoup(get_html(url), "html.parser")
         imgs = soup.find_all("img")
 
         images = []
         for img in imgs:
             src = img.get("src") or ""
-
             if src.startswith("http"):
                 images.append(src)
 
-        # remove duplicates, limit to realistic carousel
         return list(dict.fromkeys(images))[:8]
 
     except:
         return []
 
 # -----------------------------
-# ✅ CVS IMAGES (WORKING VERSION)
+# ✅ CVS IMAGES (REAL FIX)
 # -----------------------------
 def get_cvs_images(url):
     try:
-        soup = get_soup(url)
-        imgs = soup.find_all("img")
+        html = get_html(url)
 
-        thumbs = []
+        # ✅ extract ALL scene7 images
+        matches = re.findall(r'https://[^"]+scene7[^"]+\\.jpg', html)
 
-        for img in imgs:
-            src = img.get("src") or ""
-            width = img.get("width")
-            height = img.get("height")
+        cleaned = []
 
-            try:
-                # ✅ thumbnails = small images
-                if width and height:
-                    if int(width) <= 300 and int(height) <= 300:
-                        if src.startswith("http"):
-                            thumbs.append(src)
-            except:
-                continue
+        for m in matches:
+            # remove resizing params
+            base = m.split("?")[0]
 
-        # ✅ remove duplicates
-        return list(dict.fromkeys(thumbs))
+            # remove icons / small junk
+            if not any(x in base.lower() for x in [
+                "icon", "logo", "swatch", "thumbnail-default"
+            ]):
+                cleaned.append(base)
+
+        # ✅ dedupe
+        unique = list(dict.fromkeys(cleaned))
+
+        # ✅ FINAL FILTER: keep REAL product images only
+        final = []
+        seen_names = set()
+
+        for img in unique:
+            name = img.split("/")[-1]
+
+            # avoid duplicates of same file
+            if name not in seen_names:
+                final.append(img)
+                seen_names.add(name)
+
+        return final[:8]
 
     except:
         return []
 
 # -----------------------------
-# ✅ SAFE IMAGE DISPLAY
+# ✅ SAFE DISPLAY
 # -----------------------------
 def display_images(label, images):
     st.markdown(f"### {label}")
@@ -97,15 +107,12 @@ if uploaded_file:
 
         st.subheader(f"SKU: {row['sku']}")
 
-        # ✅ GET IMAGES
         s_images = get_salsify_images(row["salsify_url"])
         r_images = get_cvs_images(row["retail_url"])
 
-        # ✅ COUNTS
         st.write(f"Salsify Images: {len(s_images)}")
         st.write(f"CVS Images: {len(r_images)}")
 
-        # ✅ SIDE-BY-SIDE
         col1, col2 = st.columns(2)
 
         with col1:
@@ -114,7 +121,7 @@ if uploaded_file:
         with col2:
             display_images("CVS", r_images)
 
-        # ✅ RESULT
+        # ✅ result
         if len(r_images) == len(s_images):
             st.success("✅ Images Match")
         elif len(r_images) < len(s_images):
