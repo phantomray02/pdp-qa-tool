@@ -74,7 +74,7 @@ def get_cvs_text(url):
     features = []
 
     # =========================================
-    # ✅ TITLE (keep your working version)
+    # ✅ TITLE (keep your working one)
     # =========================================
     t = re.search(
         r'U by Kotex Click Compact Tampons.*?Count',
@@ -84,44 +84,46 @@ def get_cvs_text(url):
         title = t.group(0).strip()
 
     # =========================================
-    # ✅ FEATURES (EXACT JSON TARGET ✅)
+    # ✅ DESCRIPTION (WORKING + CLEANED)
     # =========================================
-    feature_block = re.search(
-        r'vendorDetailsBullets"\s*:\s*\[(.*?)\]',
+    d = re.search(
+        r'Get up to .*?HRA-eligible in the U\.S\.',
         html,
         re.DOTALL
     )
 
-    if feature_block:
-        items = re.findall(r'"(.*?)"', feature_block.group(1))
+    if d:
+        raw = d.group(0)
 
-        for item in items:
-            clean = item.replace('\\n', ' ').strip()
+        # ✅ HARD STOP at script/json
+        raw = re.split(r'\}\]|\}\,"|__next', raw)[0]
 
-            if len(clean) > 10:
-                features.append(clean)
+        # ✅ FIX JSON STRING FORMAT
+        raw = raw.replace('","', '. ')
+        raw = raw.replace('"', '')
 
-    # =========================================
-    # ✅ DESCRIPTION (FROM SAME REGION ✅)
-    # =========================================
-    desc_block = re.search(
-        r'vendorDetailsParagraph"\s*:\s*"(.*?)"',
-        html,
-        re.DOTALL
-    )
+        # ✅ CLEAN
+        raw = re.sub("<.*?>", "", raw)
+        raw = re.sub(r'\s+', ' ', raw).strip()
 
-    if desc_block:
-        description = desc_block.group(1)
+        description = raw
 
-        # ✅ clean escaped characters
-        description = description.replace('\\n', ' ')
-        description = description.replace('\\"', '"')
+        # =========================================
+        # ✅ FEATURES (derived from description ✅)
+        # =========================================
+        parts = raw.split('. ')
 
-        # ✅ remove any HTML tags
-        description = re.sub("<.*?>", "", description)
-
-        # ✅ normalize spacing
-        description = re.sub(r'\s+', ' ', description).strip()
+        for p in parts:
+            if (
+                len(p) > 20
+                and (
+                    "tampon" in p.lower()
+                    or "compact" in p.lower()
+                    or "wrapped" in p.lower()
+                    or "leak" in p.lower()
+                )
+            ):
+                features.append(p.strip())
 
     return {
         "title": title,
