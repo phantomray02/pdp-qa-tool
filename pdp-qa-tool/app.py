@@ -65,83 +65,57 @@ def get_salsify_text(url):
 # -----------------------------
 
 def get_cvs_text(url):
-    html = get_html(url)
-    soup = BeautifulSoup(html, "html.parser")
-
-    text = soup.get_text("\n", strip=True)
-    lines = [l.strip() for l in text.split("\n") if l.strip()]
+    import requests
+    import re
 
     title = ""
     description = ""
     features = []
 
-    # -----------------------------
-    # ✅ FIND "Item #" (best anchor ✅)
-    # -----------------------------
-    item_index = None
-    for i, line in enumerate(lines):
-        if "Item #" in line:
-            item_index = i
-            break
-
-    if item_index is None:
+    # ✅ get SKU
+    match = re.search(r'skuId=(\d+)', url)
+    if not match:
         return {"title": "", "description": "", "features": []}
 
-    # -----------------------------
-    # ✅ TITLE (above Item #)
-    # -----------------------------
-    for i in range(item_index - 1, max(item_index - 10, 0), -1):
-        line = lines[i]
+    sku = match.group(1)
 
-        if len(line) > 30 and "kotex" in line.lower():
-            title = line
-            break
+    api_url = f"https://www.cvs.com/retailapi/productdetails/{sku}"
 
-    # -----------------------------
-    # ✅ DESCRIPTION (below Item #)
-    # -----------------------------
-    desc_lines = []
-    i = item_index + 1
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json"
+    }
 
-    while i < len(lines):
-        line = lines[i]
+    try:
+        res = requests.get(api_url, headers=headers)
 
-        # ✅ STOP at next section
-        if any(x in line.lower() for x in ["rating", "reviews", "ingredients", "specifications"]):
-            break
+        if res.status_code != 200:
+            return {"title": "", "description": "", "features": []}
 
-        # ✅ skip short junk lines
-        if len(line) < 40:
-            i += 1
-            continue
+        data = res.json()
 
-        desc_lines.append(line)
-        i += 1
+        # ✅ TITLE
+        title = data.get("product", {}).get("name", "")
 
-        # ✅ stop once description is long enough
-        if len(" ".join(desc_lines)) > 200:
-            break
+        # ✅ DESCRIPTION
+        description = data.get("product", {}).get("longDescription", "")
 
-    description = " ".join(desc_lines)
+        # ✅ FEATURES
+        bullets = data.get("product", {}).get("bulletDescriptions", [])
 
-    # -----------------------------
-    # ✅ FEATURES (lines after description)
-    # -----------------------------
-    for j in range(i, len(lines)):
-        line = lines[j]
+        for b in bullets:
+            clean = re.sub("<.*?>", "", b)  # remove HTML if present
+            if clean:
+                features.append(clean)
 
-        if any(x in line.lower() for x in ["rating", "reviews", "ingredients", "specifications"]):
-            break
-
-        if 10 < len(line) < 120:
-            features.append(line)
+    except:
+        pass
 
     return {
         "title": title,
         "description": description,
-        "features": features[:6]
+        "features": features
     }
-
 
 # -----------------------------
 # IMAGES (KEEP YOUR WORKING VERSION)
