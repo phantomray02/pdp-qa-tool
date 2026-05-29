@@ -30,44 +30,54 @@ def get_salsify_data(url):
 # -----------------------------
 # Get CVS data (CLEANED images)
 # -----------------------------
+
 def get_cvs_data(url):
     try:
         res = requests.get(url)
         soup = BeautifulSoup(res.text, "html.parser")
 
-        # Description
-        desc_tag = soup.find("p")
-        description = desc_tag.get_text(strip=True) if desc_tag else ""
+        # ✅ Try to find the "Details" section specifically
+        detail_section = None
 
-        # Features (bullets)
-        bullets = soup.find_all("li")
-        features = " ".join([b.get_text(strip=True) for b in bullets])
+        for div in soup.find_all("div"):
+            if div.get_text().lower().find("details") != -1:
+                detail_section = div
+                break
 
-        # ✅ FILTERED images
+        # Fallback
+        if not detail_section:
+            detail_section = soup
+
+        # ✅ Description (longest paragraph in details)
+        paragraphs = detail_section.find_all("p")
+        description = max(
+            [p.get_text(strip=True) for p in paragraphs],
+            key=len,
+            default=""
+        )
+
+        # ✅ Features (bullet points in details only)
+        bullets = detail_section.find_all("li")
+        features = " ".join([
+            b.get_text(strip=True) for b in bullets
+            if len(b.get_text(strip=True)) > 10
+        ])
+
+        # ✅ Images (only large product images)
         imgs = soup.find_all("img")
+
         image_urls = []
-
         for img in imgs:
-            src = img.get("src")
+            src = img.get("src") or ""
 
-            if not src:
-                continue
-
-            src_lower = src.lower()
-
-            # ✅ keep real product images
-            if any(k in src_lower for k in ["product", "image", "zoom", "cvs"]):
-
-                # ❌ remove junk UI images
-                if not any(bad in src_lower for bad in [
-                    "icon", "logo", "sprite", "placeholder"
-                ]):
-                    image_urls.append(src)
+            if any(x in src for x in ["zoom", "large", "product"]):
+                image_urls.append(src)
 
         return description, features, list(set(image_urls))
 
     except:
         return "", "", []
+
 
 # -----------------------------
 # MAIN
