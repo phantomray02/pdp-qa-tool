@@ -116,74 +116,51 @@ def get_salsify_text(url):
 # ✅ CVS TEXT (STRICT RULES)
 # -----------------------------
 
+
+import json
+
 def get_cvs_text(url):
     try:
         soup = get_soup(url)
 
-        title = ""
-        description = ""
-        features = []
+        scripts = soup.find_all("script")
 
-        # -----------------------------
-        # ✅ TITLE (STRICT MATCH ✅)
-        # -----------------------------
-        for p in soup.find_all("p"):
+        for script in scripts:
+            if script.string and "product" in script.string:
 
-            class_list = " ".join(p.get("class", []))
-            txt = p.get_text(strip=True)
+                try:
+                    data = json.loads(script.string)
 
-            if (
-                "text-lg" in class_list
-                and "font-medium" in class_list
-                and "kotex" in txt.lower()
-            ):
-                title = txt
-                break
+                except:
+                    continue
 
-        # -----------------------------
-        # ✅ DESCRIPTION (NEXT BLOCK DOWN)
-        # -----------------------------
-        spans = soup.find_all("span")
+                # navigate safely
+                product = data.get("product", {}).get("product", {})
 
-        best_desc = ""
+                title = product.get("name", "")
 
-        for span in spans:
-            class_list = " ".join(span.get("class", []))
-            txt = span.get_text(" ", strip=True)
+                description = ""
+                features = []
 
-            if (
-                "text-base" in class_list
-                and len(txt) > 150
-                and "tampon" in txt.lower()
-            ):
-                if len(txt) > len(best_desc):
-                    best_desc = txt
+                # ✅ description
+                if "longDescription" in product:
+                    description = product["longDescription"]
 
-        description = best_desc
+                # ✅ features
+                for attr in product.get("attributes", []):
+                    val = attr.get("values", [])
 
-        # -----------------------------
-        # ✅ FEATURES (EXACT STRUCTURE ✅)
-        # -----------------------------
-        for li in soup.find_all("li"):
+                    for v in val:
+                        if isinstance(v, str) and len(v) > 5:
+                            features.append(v)
 
-            li_id = li.get("id", "")
+                return {
+                    "title": title,
+                    "description": description,
+                    "features": features
+                }
 
-            if "vendorDetailsBullet" in li_id:
-
-                txt = li.get_text(" ", strip=True)
-
-                # remove garbage like timestamps
-                if (
-                    txt
-                    and "last updated" not in txt.lower()
-                ):
-                    features.append(txt)
-
-        return {
-            "title": title,
-            "description": description,
-            "features": features
-        }
+        return {"title": "", "description": "", "features": []}
 
     except:
         return {"title": "", "description": "", "features": []}
