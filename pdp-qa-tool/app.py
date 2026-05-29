@@ -65,99 +65,60 @@ def get_salsify_text(url):
 # -----------------------------
 
 def get_cvs_text(url):
-    html = get_html(url)
-    soup = BeautifulSoup(html, "html.parser")
+    soup = get_soup(url)
 
     title = ""
     description = ""
     features = []
 
-    # =========================================
-    # ✅ METHOD 1: DIRECT CONTAINER (BEST CASE)
-    # =========================================
-    container = soup.find("div", class_=re.compile("whitespace-pre-line"))
+    # -----------------------------
+    # ✅ 1. FEATURES (ANCHOR HERE ✅)
+    # -----------------------------
+    feature_tags = soup.find_all("li", id=re.compile("^vendorDetailsBullet"))
 
-    if container:
-        # ✅ TITLE
-        title_tag = container.find("p", class_=re.compile("text-lg"))
-        if title_tag:
-            title = title_tag.get_text(strip=True)
+    for li in feature_tags:
+        txt = li.get_text(" ", strip=True)
+        if txt:
+            features.append(txt)
 
-        # ✅ DESCRIPTION
-        desc_tag = container.find("span", class_=re.compile("text-base"))
-        if desc_tag:
-            description = desc_tag.get_text(" ", strip=True)
-
-        # ✅ FEATURES
-        for li in container.find_all("li", id=re.compile("vendorDetailsBullet")):
-            txt = li.get_text(" ", strip=True)
-            if txt:
-                features.append(txt)
-
-        if title or description or features:
-            return {
-                "title": title,
-                "description": description,
-                "features": features
-            }
-
-    # =========================================
-    # ✅ METHOD 2: FALLBACK TEXT PARSE (ALWAYS WORKS)
-    # =========================================
-    full_text = soup.get_text("\n", strip=True)
-    lines = [l.strip() for l in full_text.split("\n") if l.strip()]
-
-    start_idx = None
-
-    for i, line in enumerate(lines):
-        if line.lower() == "details":
-            start_idx = i
-            break
-
-    if start_idx is None:
+    # ✅ If no features → stop early
+    if not features:
         return {"title": "", "description": "", "features": []}
 
-    # ✅ TITLE
-    title = lines[start_idx + 1]
+    # -----------------------------
+    # ✅ 2. DESCRIPTION = nearest text BEFORE features
+    # -----------------------------
+    first_feature = feature_tags[0]
 
-    # ✅ DESCRIPTION
-    desc_parts = []
-    i = start_idx + 2
+    for el in first_feature.find_all_previous():
+        txt = el.get_text(" ", strip=True)
 
-    while i < len(lines):
-        line = lines[i]
-
-        if len(line) < 10:
-            i += 1
-            continue
-
-        if "tampon" in line.lower() or len(line) > 120:
-            desc_parts.append(line)
-
-        # stop before junk sections
-        if any(x in line.lower() for x in ["prescription", "coupon", "store"]):
+        if (
+            len(txt) > 150
+            and "tampon" in txt.lower()
+        ):
+            description = txt
             break
 
-        i += 1
+    # -----------------------------
+    # ✅ 3. TITLE = nearest product line BEFORE description
+    # -----------------------------
+    for el in first_feature.find_all_previous():
+        txt = el.get_text(" ", strip=True)
 
-    description = " ".join(desc_parts)
-
-    # ✅ FEATURES
-    for j in range(i, len(lines)):
-        line = lines[j]
-
-        if any(x in line.lower() for x in ["prescription", "coupon", "store"]):
+        if (
+            30 < len(txt) < 150
+            and "kotex" in txt.lower()
+            and "count" in txt.lower()
+        ):
+            title = txt
             break
-
-        if 10 < len(line) < 120:
-            features.append(line)
 
     return {
         "title": title,
         "description": description,
-        "features": features[:6]
+        "features": features
     }
-
 
 # -----------------------------
 # IMAGES (KEEP YOUR WORKING VERSION)
