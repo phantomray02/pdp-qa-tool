@@ -64,52 +64,49 @@ def get_salsify_text(url):
 # ✅ CVS TEXT (FINAL WORKING VERSION ✅)
 # -----------------------------
 
+
 from playwright.sync_api import sync_playwright
 from bs4 import BeautifulSoup
-import time
 
 def get_cvs_text(url):
     title = ""
     description = ""
     features = []
 
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
 
-            page.goto(url, timeout=60000)
-            time.sleep(4)  # allow JS to render
+        page.goto(url, timeout=60000)
 
-            html = page.content()
-            browser.close()
+        # ✅ wait until Details content loads
+        page.wait_for_selector("text=Details")
 
-        soup = BeautifulSoup(html, "html.parser")
+        html = page.content()
+        browser.close()
 
-        # ✅ NOW the container actually exists
-        container = soup.find("div", class_=lambda x: x and "whitespace-pre-line" in x)
+    soup = BeautifulSoup(html, "html.parser")
 
-        if not container:
-            return {"title": "", "description": "", "features": []}
+    container = soup.find("div", class_=lambda x: x and "whitespace-pre-line" in x)
 
-        # ✅ TITLE
-        t = container.find("p", class_=lambda x: x and "text-lg" in x)
-        if t:
-            title = t.get_text(strip=True)
+    if not container:
+        return {"title": "", "description": "", "features": []}
 
-        # ✅ DESCRIPTION
-        d = container.find("span", class_=lambda x: x and "text-base" in x)
-        if d:
-            description = d.get_text(" ", strip=True)
+    # ✅ TITLE
+    t = container.find("p", class_=lambda x: x and "text-lg" in x)
+    if t:
+        title = t.get_text(strip=True)
 
-        # ✅ FEATURES
-        for li in container.find_all("li", id=lambda x: x and "vendorDetailsBullet" in x):
-            txt = li.get_text(strip=True)
-            if txt:
-                features.append(txt)
+    # ✅ DESCRIPTION
+    d = container.find("span", class_=lambda x: x and "text-base" in x)
+    if d:
+        description = d.get_text(" ", strip=True)
 
-    except:
-        pass
+    # ✅ FEATURES
+    for li in container.find_all("li", id=lambda x: x and "vendorDetailsBullet" in x):
+        txt = li.get_text(strip=True)
+        if txt:
+            features.append(txt)
 
     return {
         "title": title,
