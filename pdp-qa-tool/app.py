@@ -3,22 +3,21 @@ import streamlit as st
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urlparse, parse_qs
+import json
 from PIL import Image
 from io import BytesIO
 
-st.title("PDP QA Tool (Final - Real CVS Images via SKU)")
+st.title("PDP QA Tool (REAL CVS Data Extraction)")
 
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
 # -----------------------------
-# DOWNLOAD IMAGE
+# DOWNLOAD IMAGE SAFELY
 # -----------------------------
 def download_image(url):
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
-        r = requests.get(url, headers=headers, timeout=5)
-
+        r = requests.get(url, headers=headers, timeout=10)
         if r.status_code == 200:
             return Image.open(BytesIO(r.content))
     except:
@@ -42,43 +41,54 @@ def get_salsify_images(url):
         return []
 
 # -----------------------------
-# ✅ CVS IMAGES VIA SKU (REAL FIX)
+# ✅ REAL CVS IMAGE EXTRACTION
 # -----------------------------
 def get_cvs_images(url):
+
     try:
-        parsed = urlparse(url)
-        sku = parse_qs(parsed.query).get("skuId", [None])[0]
+        html = requests.get(url).text
+        soup = BeautifulSoup(html, "html.parser")
 
-        if not sku:
-            return []
+        scripts = soup.find_all("script")
 
-        images = []
+        for script in scripts:
+            if "__INITIAL_STATE__" in script.text:
 
-        # ✅ CVS typically has up to 7 images
-        for i in range(1, 10):
-            img_url = f"https://cvs.scene7.com/is/image/CVSHealth/{sku}_{i}?wid=400&hei=400"
+                # Extract JSON block
+                text = script.text.split("=",1)[1].strip().rstrip(";")
 
-            img = download_image(img_url)
+                data = json.loads(text)
 
-            if img:
-                images.append(img_url)
-            else:
-                break  # stop when no more images
+                images = []
 
-        return images
+                try:
+                    media_items = data["product"]["product"]["media"]["items"]
+
+                    for item in media_items:
+                        src = item.get("zoomImageURL")
+
+                        if src:
+                            images.append(src)
+
+                except:
+                    continue
+
+                return images
+
+        return []
 
     except:
         return []
 
 # -----------------------------
-# DISPLAY
+# DISPLAY GRID
 # -----------------------------
-def display_images(label, urls):
+def display_images(label, image_urls):
     st.markdown(f"### {label}")
 
     cols = st.columns(3)
 
-    for i, url in enumerate(urls):
+    for i, url in enumerate(image_urls):
         img = download_image(url)
 
         if img:
@@ -115,7 +125,7 @@ if uploaded_file:
         with col2:
             display_images("CVS", r_images)
 
-        # ✅ RESULT
+        # RESULT
         if len(r_images) == len(s_images):
             st.success("✅ Images Match")
         elif len(r_images) < len(s_images):
