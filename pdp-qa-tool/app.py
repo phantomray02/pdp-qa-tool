@@ -2,75 +2,77 @@
 import streamlit as st
 import pandas as pd
 import requests
-from bs4 import BeautifulSoup
-from urllib.parse import urlparse
 
-st.title("PDP QA Tool (Correct Carousel Matching)")
+st.title("PDP QA Tool (Exact Salsify Image Logic)")
 
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
 # -----------------------------
-# GET PAGE
-# -----------------------------
-def get_soup(url):
-    headers = {"User-Agent": "Mozilla/5.0"}
-    res = requests.get(url, headers=headers)
-    return BeautifulSoup(res.text, "html.parser")
-
-# -----------------------------
-# GET TEXT
+# GET PAGE TEXT
 # -----------------------------
 def get_text(url):
     try:
-        soup = get_soup(url)
-        return soup.get_text(" ", strip=True).lower()
+        headers = {"User-Agent": "Mozilla/5.0"}
+        res = requests.get(url, headers=headers)
+        return res.text.lower()
     except:
         return ""
 
 # -----------------------------
-# ✅ SMART IMAGE SIZE FILTER
+# ✅ EXACT Salsify Image Matching
 # -----------------------------
-def get_carousel_images(url):
-    try:
-        soup = get_soup(url)
+def get_salsify_expected_count(text):
 
-        images = []
+    count = 0
 
-        for img in soup.find_all("img"):
+    # ✅ REQUIRED (exact names)
+    if "online optimized image-" in text:
+        count += 1
 
-            src = img.get("src") or ""
+    if "flat back_2d-" in text:
+        count += 1
 
-            # skip blanks
-            if not src or "data:image" in src:
-                continue
+    if "flat left_2d-" in text:
+        count += 1
 
-            # ✅ GET WIDTH / HEIGHT ATTRIBUTES
-            width = img.get("width")
-            height = img.get("height")
+    if "atf 2-generic" in text:
+        count += 1
 
-            # ✅ THUMBNAILS are SMALL (usually <300px)
-            try:
-                if width and height:
-                    if int(width) < 300 and int(height) < 300:
-                        images.append(src)
-            except:
-                continue
+    if "atf 3-generic" in text:
+        count += 1
 
-        # ✅ REMOVE DUPES KEEP ORDER
-        seen = set()
-        ordered = []
-        for img in images:
-            if img not in seen:
-                ordered.append(img)
-                seen.add(img)
+    if "atf 4-generic" in text:
+        count += 1
 
-        return ordered[:6]  # limit to carousel size
+    if "atf 5-generic" in text:
+        count += 1
 
-    except:
-        return []
+    # ✅ OPTIONAL I/O
+    has_io = "atf i/o-generic" in text
+
+    if has_io:
+        count += 1
+
+    # ✅ RULE: if I/O missing → require ATF 6
+    if not has_io:
+        if "atf 6-generic" in text:
+            count += 1
+
+    return count
 
 # -----------------------------
-# KEYWORDS
+# ✅ CVS THUMBNAIL COUNT (simple + controlled)
+# -----------------------------
+def get_cvs_count(text):
+
+    # CVS uses scene7 for product images
+    count = text.count("scene7")
+
+    # normalize to realistic carousel size
+    return min(count, 8)
+
+# -----------------------------
+# KEYWORDS (unchanged)
 # -----------------------------
 def extract_keywords(text):
     keywords = [
@@ -97,12 +99,11 @@ if uploaded_file:
         s_text = get_text(row["salsify_url"])
         r_text = get_text(row["retail_url"])
 
-        # ✅ FIXED IMAGE EXTRACTION
-        s_images = get_carousel_images(row["salsify_url"])
-        r_images = get_carousel_images(row["retail_url"])
+        # ✅ EXACT Salsify count
+        s_count = get_salsify_expected_count(s_text)
 
-        s_count = len(s_images)
-        r_count = len(r_images)
+        # ✅ CVS count
+        r_count = get_cvs_count(r_text)
 
         # ✅ IMAGE RESULT
         if r_count == s_count:
@@ -133,8 +134,8 @@ if uploaded_file:
         results.append({
             "SKU": row["sku"],
             "Images": image_result,
-            "Salsify Thumbnails": s_count,
-            "CVS Thumbnails": r_count,
+            "Expected (Salsify)": s_count,
+            "Found (CVS)": r_count,
             "Description": desc_result,
             "Features": feature_result,
             "Status": status
