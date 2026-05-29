@@ -3,21 +3,22 @@ import streamlit as st
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
-import json
+import re
 from PIL import Image
 from io import BytesIO
 
-st.title("PDP QA Tool (REAL CVS Data Extraction)")
+st.title("PDP QA Tool (FINAL WORKING CVS EXTRACTION)")
 
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
 # -----------------------------
-# DOWNLOAD IMAGE SAFELY
+# DOWNLOAD IMAGE
 # -----------------------------
 def download_image(url):
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
-        r = requests.get(url, headers=headers, timeout=10)
+        r = requests.get(url, headers=headers, timeout=8)
+
         if r.status_code == 200:
             return Image.open(BytesIO(r.content))
     except:
@@ -41,62 +42,66 @@ def get_salsify_images(url):
         return []
 
 # -----------------------------
-# ✅ REAL CVS IMAGE EXTRACTION
+# ✅ FINAL CVS IMAGE EXTRACTION
 # -----------------------------
 def get_cvs_images(url):
-
     try:
         html = requests.get(url).text
-        soup = BeautifulSoup(html, "html.parser")
 
-        scripts = soup.find_all("script")
+        # ✅ Step 1: grab ALL JPG URLs
+        all_imgs = re.findall(r'https://[^"]+\.jpg', html)
 
-        for script in scripts:
-            if "__INITIAL_STATE__" in script.text:
+        filtered = []
 
-                # Extract JSON block
-                text = script.text.split("=",1)[1].strip().rstrip(";")
+        for img in all_imgs:
 
-                data = json.loads(text)
+            # ✅ keep cvs scene7 images only
+            if "scene7" in img:
 
-                images = []
+                # remove resizing params
+                clean = img.split("?")[0]
 
-                try:
-                    media_items = data["product"]["product"]["media"]["items"]
-
-                    for item in media_items:
-                        src = item.get("zoomImageURL")
-
-                        if src:
-                            images.append(src)
-
-                except:
+                # ❌ remove junk images
+                if any(x in clean.lower() for x in [
+                    "icon", "logo", "swatch", "thumbnail-default"
+                ]):
                     continue
 
-                return images
+                filtered.append(clean)
 
-        return []
+        # ✅ UNIQUE
+        unique = list(dict.fromkeys(filtered))
+
+        # ✅ dedupe by filename (removes size variants)
+        final = []
+        seen = set()
+
+        for img in unique:
+            name = img.split("/")[-1]
+
+            if name not in seen:
+                final.append(img)
+                seen.add(name)
+
+        return final
 
     except:
         return []
 
 # -----------------------------
-# DISPLAY GRID
+# DISPLAY
 # -----------------------------
-def display_images(label, image_urls):
+def display_images(label, urls):
     st.markdown(f"### {label}")
 
     cols = st.columns(3)
 
-    for i, url in enumerate(image_urls):
+    for i, url in enumerate(urls):
+
         img = download_image(url)
 
         if img:
-            cols[i % 3].image(
-                img,
-                caption=f"{i+1}",
-                use_container_width=True
-            )
+            cols[i % 3].image(img, caption=f"{i+1}", use_container_width=True)
         else:
             cols[i % 3].write(f"{i+1} ❌")
 
