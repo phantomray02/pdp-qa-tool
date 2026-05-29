@@ -123,53 +123,47 @@ def get_salsify_text(url):
 # -----------------------------
 
 
-import json
-
 def get_cvs_text(url):
     try:
         soup = get_soup(url)
 
-        scripts = soup.find_all("script")
+        title = ""
+        description = ""
+        features = []
 
-        for script in scripts:
-            if script.string and "product" in script.string:
+        # ✅ TITLE
+        for p in soup.find_all("p"):
+            class_list = " ".join(p.get("class", []))
+            txt = p.get_text(strip=True)
 
-                try:
-                    data = json.loads(script.string)
+            if "text-lg" in class_list and "font-medium" in class_list:
+                title = txt
+                break
 
-                except:
-                    continue
+        # ✅ DESCRIPTION
+        for span in soup.find_all("span"):
+            txt = span.get_text(" ", strip=True)
 
-                # navigate safely
-                product = data.get("product", {}).get("product", {})
+            if len(txt) > 150 and "tampon" in txt.lower():
+                description = txt
+                break
 
-                title = product.get("name", "")
+        # ✅ FEATURES
+        for li in soup.find_all("li", id=re.compile("vendorDetailsBullet")):
+            txt = li.get_text(" ", strip=True)
 
-                description = ""
-                features = []
+            if txt:
+                features.append(txt)
 
-                # ✅ description
-                if "longDescription" in product:
-                    description = product["longDescription"]
-
-                # ✅ features
-                for attr in product.get("attributes", []):
-                    val = attr.get("values", [])
-
-                    for v in val:
-                        if isinstance(v, str) and len(v) > 5:
-                            features.append(v)
-
-                return {
-                    "title": title,
-                    "description": description,
-                    "features": features
-                }
-
-        return {"title": "", "description": "", "features": []}
+        return {
+            "title": title,
+            "description": description,
+            "features": features
+        }
 
     except:
         return {"title": "", "description": "", "features": []}
+
 
         
 # -----------------------------
