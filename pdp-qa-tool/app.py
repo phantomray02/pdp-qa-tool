@@ -13,8 +13,14 @@ uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 # -----------------------------
 # HELPERS
 # -----------------------------
+
 def get_html(url):
-    headers = {"User-Agent": "Mozilla/5.0"}
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "text/html,application/xhtml+xml",
+    }
+
     return requests.get(url, headers=headers).text
 
 def get_soup(url):
