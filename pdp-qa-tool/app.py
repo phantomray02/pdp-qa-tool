@@ -65,7 +65,6 @@ def get_salsify_text(url):
 # -----------------------------
 
 import re
-import json
 
 def get_cvs_text(url):
     html = get_html(url)
@@ -75,63 +74,65 @@ def get_cvs_text(url):
     features = []
 
     # =====================================
-    # ✅ TITLE (you already solved this)
+    # ✅ TITLE (keep working logic)
     # =====================================
-    t = re.search(r'U by Kotex Click Compact Tampons.*?Count', html)
+    t = re.search(r'[A-Z][A-Za-z0-9 ,\-]+(?:Count|Ct)', html)
     if t:
-        title = t.group(0)
+        title = t.group(0).strip()
 
     # =====================================
-    # ✅ FIND THE EXACT JSON OBJECT
+    # ✅ DESCRIPTION (ROBUST + GENERIC)
     # =====================================
-    match = re.search(
-        r'\{.*?vendorDetailsBullets.*?vendorDetailsParagraph.*?\}',
+    d = re.search(
+        r'(Get up to .*?)(?:vendor|__next|Reviews|Ingredients)',
         html,
         re.DOTALL
     )
 
-    if not match:
+    if not d:
         return {"title": title, "description": "", "features": []}
 
-    block = match.group(0)
+    raw = d.group(1)
+
+    # ✅ CLEAN EVERYTHING SYSTEMATICALLY
+    raw = raw.replace('\\"', '')
+    raw = raw.replace('\\n', ' ')
+    raw = raw.replace('","', '. ')
+    raw = raw.replace('"', '')
+    raw = re.sub('<.*?>', '', raw)
+    raw = re.sub(r'\s+', ' ', raw).strip()
+
+    description = raw
 
     # =====================================
-    # ✅ FIX JSON STRING (important)
+    # ✅ FEATURES (FROM CLEAN DESCRIPTION)
     # =====================================
-    try:
-        clean_block = block.replace('\\"', '"')
-        data = json.loads(clean_block)
-    except:
-        # fallback if JSON slightly malformed
-        data = {}
+    sentences = re.split(r'\.\s+', description)
 
-    # =====================================
-    # ✅ DESCRIPTION (REAL SOURCE)
-    # =====================================
-    description = data.get("vendorDetailsParagraph", "")
+    for s in sentences:
+        s = s.strip()
 
-    # clean it
-    description = re.sub("<.*?>", "", description)
-    description = description.replace("\\n", " ").strip()
-    description = re.sub(r"\s+", " ", description)
+        if (
+            25 < len(s) < 120 and
+            any(x in s.lower() for x in [
+                "tampon",
+                "leak",
+                "compact",
+                "wrapped",
+                "fragrance",
+                "comfort"
+            ])
+        ):
+            features.append(s)
 
-    # =====================================
-    # ✅ FEATURES (REAL BULLET LIST)
-    # =====================================
-    bullets = data.get("vendorDetailsBullets", [])
-
-    for b in bullets:
-        clean = re.sub("<.*?>", "", b)
-        clean = clean.replace("\\n", " ").strip()
-
-        if clean:
-            features.append(clean)
+    features = list(dict.fromkeys(features))[:5]
 
     return {
         "title": title,
         "description": description,
         "features": features
     }
+
 
 # -----------------------------
 # IMAGES (KEEP YOUR WORKING VERSION)
