@@ -6,3 +6,5 @@ libxcomposite1
 libxrandr2
 libgbm1
 libgtk-3-0
+playwright
+chromium
