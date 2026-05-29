@@ -74,32 +74,35 @@ def get_cvs_text(url):
     features = []
 
     # =====================================
-    # ✅ TITLE (keep working logic)
+    # ✅ TITLE (leave — working)
     # =====================================
     t = re.search(r'[A-Z][A-Za-z0-9 ,\-]+(?:Count|Ct)', html)
     if t:
-        title = t.group(0).strip()
+        title = t.group(0)
 
     # =====================================
-    # ✅ DESCRIPTION (ROBUST + GENERIC)
+    # ✅ EXTRACT USING TEXT-FRAGMENT LOGIC ✅
     # =====================================
-    d = re.search(
-        r'(Get up to .*?)(?:vendor|__next|Reviews|Ingredients)',
-        html,
-        re.DOTALL
-    )
+    start_marker = "Get up to"
+    end_marker = "the U.S."
 
-    if not d:
+    start_idx = html.find(start_marker)
+    end_idx = html.find(end_marker)
+
+    if start_idx == -1 or end_idx == -1:
         return {"title": title, "description": "", "features": []}
 
-    raw = d.group(1)
+    raw = html[start_idx:end_idx + len(end_marker)]
 
-    # ✅ CLEAN EVERYTHING SYSTEMATICALLY
+    # =====================================
+    # ✅ CLEAN TEXT
+    # =====================================
     raw = raw.replace('\\"', '')
     raw = raw.replace('\\n', ' ')
     raw = raw.replace('","', '. ')
     raw = raw.replace('"', '')
-    raw = re.sub('<.*?>', '', raw)
+
+    raw = re.sub("<.*?>", "", raw)
     raw = re.sub(r'\s+', ' ', raw).strip()
 
     description = raw
@@ -113,7 +116,7 @@ def get_cvs_text(url):
         s = s.strip()
 
         if (
-            25 < len(s) < 120 and
+            20 < len(s) < 120 and
             any(x in s.lower() for x in [
                 "tampon",
                 "leak",
@@ -132,7 +135,6 @@ def get_cvs_text(url):
         "description": description,
         "features": features
     }
-
 
 # -----------------------------
 # IMAGES (KEEP YOUR WORKING VERSION)
