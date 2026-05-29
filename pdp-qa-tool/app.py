@@ -3,13 +3,14 @@ import streamlit as st
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
+from urllib.parse import urlparse
 
-st.title("PDP QA Tool (Thumbnail Image Matching)")
+st.title("PDP QA Tool (Correct Carousel Matching)")
 
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
 # -----------------------------
-# Get HTML
+# GET PAGE
 # -----------------------------
 def get_soup(url):
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -17,7 +18,7 @@ def get_soup(url):
     return BeautifulSoup(res.text, "html.parser")
 
 # -----------------------------
-# Extract FULL TEXT
+# GET TEXT
 # -----------------------------
 def get_text(url):
     try:
@@ -27,39 +28,43 @@ def get_text(url):
         return ""
 
 # -----------------------------
-# ✅ EXTRACT ONLY THUMBNAIL IMAGES
+# ✅ SMART IMAGE SIZE FILTER
 # -----------------------------
-def get_thumbnail_images(url):
+def get_carousel_images(url):
     try:
         soup = get_soup(url)
 
-        thumbs = []
+        images = []
 
         for img in soup.find_all("img"):
+
             src = img.get("src") or ""
-            src_lower = src.lower()
 
-            # ✅ KEEP SMALL THUMBNAIL IMAGES ONLY
-            if any(k in src_lower for k in [
-                "thumb", "small", "120", "150", "200"
-            ]):
+            # skip blanks
+            if not src or "data:image" in src:
+                continue
 
-                # ❌ REMOVE NON-PDP
-                if not any(bad in src_lower for bad in [
-                    "icon", "logo", "sprite", "banner", "ads"
-                ]):
-                    thumbs.append(src)
+            # ✅ GET WIDTH / HEIGHT ATTRIBUTES
+            width = img.get("width")
+            height = img.get("height")
 
-        # ✅ REMOVE DUPES
+            # ✅ THUMBNAILS are SMALL (usually <300px)
+            try:
+                if width and height:
+                    if int(width) < 300 and int(height) < 300:
+                        images.append(src)
+            except:
+                continue
+
+        # ✅ REMOVE DUPES KEEP ORDER
         seen = set()
         ordered = []
-        for t in thumbs:
-            if t not in seen:
-                ordered.append(t)
-                seen.add(t)
+        for img in images:
+            if img not in seen:
+                ordered.append(img)
+                seen.add(img)
 
-        # ✅ LIMIT TO REALISTIC CAROUSEL SIZE
-        return ordered[:6]
+        return ordered[:6]  # limit to carousel size
 
     except:
         return []
@@ -92,14 +97,14 @@ if uploaded_file:
         s_text = get_text(row["salsify_url"])
         r_text = get_text(row["retail_url"])
 
-        # ✅ ONLY THUMBNAILS
-        s_images = get_thumbnail_images(row["salsify_url"])
-        r_images = get_thumbnail_images(row["retail_url"])
+        # ✅ FIXED IMAGE EXTRACTION
+        s_images = get_carousel_images(row["salsify_url"])
+        r_images = get_carousel_images(row["retail_url"])
 
         s_count = len(s_images)
         r_count = len(r_images)
 
-        # ✅ IMAGE COMPARISON
+        # ✅ IMAGE RESULT
         if r_count == s_count:
             image_result = "✅ Match"
         elif r_count < s_count:
@@ -107,7 +112,7 @@ if uploaded_file:
         else:
             image_result = f"⚠ Extra {r_count - s_count}"
 
-        # ✅ DESCRIPTION (light check)
+        # ✅ DESCRIPTION
         desc_result = "✅ OK" if s_text[:200] in r_text else "❌ Different"
 
         # ✅ FEATURES
