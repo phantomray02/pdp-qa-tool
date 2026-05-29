@@ -73,72 +73,76 @@ def get_cvs_text(url):
     description = ""
     features = []
 
-    # =========================================
-    # ✅ TITLE (leave as-is, working)
-    # =========================================
+    # ============================
+    # ✅ TITLE (keep your working)
+    # ============================
     t = re.search(
-        r'U by Kotex Click Compact Tampons.*?Count',
+        r'[A-Z].+?(?:Count|Ct)',
         html
     )
     if t:
         title = t.group(0).strip()
 
-    # =========================================
-    # ✅ DESCRIPTION BLOCK (single clean grab)
-    # =========================================
-    d = re.search(
-        r'Get up to .*?HRA-eligible in the U\.S\.',
+    # ============================
+    # ✅ STEP 1: EXTRACT LARGE CONTENT REGION
+    # ============================
+    block = re.search(
+        r'(Get up to .*?)(?:vendor|__next|script)',
         html,
         re.DOTALL
     )
 
-    if d:
-        raw = d.group(0)
+    if not block:
+        return {"title": title, "description": "", "features": []}
 
-        # ✅ HARD STOP (this removes your trailing junk like }]2f:)
-        raw = raw.split("HRA-eligible in the U.S.")[0] + "HRA-eligible in the U.S."
+    raw = block.group(1)
 
-        # ✅ FIX JSON STRING FORMAT
-        raw = raw.replace('\\"', '')
-        raw = raw.replace('\\n', ' ')
-        raw = raw.replace('","', '. ')
-        raw = raw.replace('"', '')
+    # ============================
+    # ✅ STEP 2: CLEAN TEXT
+    # ============================
+    raw = raw.replace('\\"', '')
+    raw = raw.replace('\\n', ' ')
+    raw = raw.replace('","', '. ')
+    raw = raw.replace('"', '')
 
-        # ✅ REMOVE HTML TAGS
-        raw = re.sub("<.*?>", "", raw)
+    raw = re.sub("<.*?>", "", raw)
+    raw = re.sub(r'\s+', ' ', raw).strip()
 
-        # ✅ CLEAN SPACING
-        raw = re.sub(r'\s+', ' ', raw).strip()
+    # ============================
+    # ✅ STEP 3: SPLIT SENTENCES
+    # ============================
+    sentences = re.split(r'\.\s+', raw)
 
-        description = raw
+    clean_sentences = []
 
-        # =========================================
-        # ✅ FEATURES = CLEAN SENTENCES FROM DESCRIPTION
-        # =========================================
-        sentences = re.split(r'\.\s+', description)
+    for s in sentences:
+        s = s.strip()
 
-        for s in sentences:
-            s = s.strip()
+        # ✅ remove junk
+        if any(x in s.lower() for x in [
+            "shipping", "shop", "cvs", "http",
+            "sku", "productid", "reviews"
+        ]):
+            continue
 
-            if (
-                20 < len(s) < 120 and
-                any(word in s.lower() for word in [
-                    "tampon",
-                    "leak",
-                    "compact",
-                    "wrapped",
-                    "fragrance",
-                    "comfort"
-                ])
-            ):
-                features.append(s)
+        if len(s) > 20:
+            clean_sentences.append(s)
 
-    # ✅ REMOVE DUPLICATES + LIMIT
+    # ============================
+    # ✅ STEP 4: BUILD DESCRIPTION
+    # ============================
+    description = ". ".join(clean_sentences)
+
+    # ============================
+    # ✅ STEP 5: BUILD FEATURES
+    # ============================
+    for s in clean_sentences:
+        if 20 < len(s) < 120:
+            features.append(s)
+
+    # ✅ CLEAN LIST
     features = list(dict.fromkeys(features))[:5]
 
-    # =========================================
-    # ✅ RETURN FINAL OUTPUT
-    # =========================================
     return {
         "title": title,
         "description": description,
