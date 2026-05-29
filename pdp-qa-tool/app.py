@@ -84,52 +84,48 @@ def get_cvs_text(url):
         title = t.group(0).strip()
 
     # =========================================
-    # ✅ DESCRIPTION (BACK TO WORKING VERSION ✅)
+    # ✅ EXTRACT ALL QUOTED STRINGS
     # =========================================
-    d = re.search(
-        r'Get up to .*?HRA-eligible in the U\.S\.',
-        html,
-        re.DOTALL
-    )
+    strings = re.findall(r'"(.*?)"', html)
 
-    if d:
-        raw = d.group(0)
+    clean_strings = []
 
-        # ✅ SIMPLE CLEAN (NOT COMPLEX)
-        raw = raw.replace('\\"', '')
-        raw = raw.replace('\\n', ' ')
+    for s in strings:
+        s = s.replace('\\n', ' ').strip()
 
-        # ✅ FIX STRING FORMAT
-        raw = raw.replace('","', '. ')
-        raw = raw.replace('"', '')
+        # ✅ FILTER OUT JUNK KEYS
+        if any(x in s.lower() for x in [
+            "vendor",
+            "ingredient",
+            "script",
+            "{",
+            "}",
+            ":",
+            "__next"
+        ]):
+            continue
 
-        # ✅ REMOVE ANY HTML
-        raw = re.sub("<.*?>", "", raw)
-
-        # ✅ CLEAN SPACING
-        raw = re.sub(r'\s+', ' ', raw).strip()
-
-        description = raw
+        # ✅ KEEP REAL SENTENCES ONLY
+        if len(s) > 30 and any(word in s.lower() for word in [
+            "tampon", "leak", "compact", "wrapped", "fragrance"
+        ]):
+            clean_strings.append(s)
 
     # =========================================
-    # ✅ FEATURES (SIMPLE + RELIABLE ✅)
+    # ✅ BUILD DESCRIPTION
     # =========================================
-    if description:
-        parts = description.split('. ')
+    description = ". ".join(clean_strings)
 
-        for p in parts:
-            if (
-                len(p) > 20
-                and (
-                    "tampon" in p.lower()
-                    or "compact" in p.lower()
-                    or "wrapped" in p.lower()
-                    or "leak" in p.lower()
-                )
-            ):
-                features.append(p.strip())
+    description = re.sub(r'\s+', ' ', description).strip()
 
-    # ✅ LIMIT + CLEAN
+    # =========================================
+    # ✅ BUILD FEATURES (SHORTER SENTENCES)
+    # =========================================
+    for s in clean_strings:
+        if len(s) < 140:
+            features.append(s)
+
+    # ✅ DEDUPE + LIMIT
     features = list(dict.fromkeys(features))[:5]
 
     return {
