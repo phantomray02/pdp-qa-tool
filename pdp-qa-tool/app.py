@@ -2,13 +2,14 @@
 import streamlit as st
 import pandas as pd
 import requests
+import re
 
-st.title("PDP QA Tool (Final Salsify + CVS Matching)")
+st.title("PDP QA Tool (Final Accurate CVS Fix)")
 
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
 # -----------------------------
-# GET PAGE TEXT
+# GET RAW PAGE TEXT
 # -----------------------------
 def get_text(url):
     try:
@@ -19,7 +20,7 @@ def get_text(url):
         return ""
 
 # -----------------------------
-# ✅ EXACT SALSIFY LOGIC (your rules)
+# ✅ SALSIFY LOGIC (unchanged)
 # -----------------------------
 def get_salsify_expected_count(text):
 
@@ -27,22 +28,16 @@ def get_salsify_expected_count(text):
 
     if "online optimized image-" in text:
         count += 1
-
     if "flat back_2d-" in text:
         count += 1
-
     if "flat left_2d-" in text:
         count += 1
-
     if "atf 2-generic" in text:
         count += 1
-
     if "atf 3-generic" in text:
         count += 1
-
     if "atf 4-generic" in text:
         count += 1
-
     if "atf 5-generic" in text:
         count += 1
 
@@ -57,34 +52,44 @@ def get_salsify_expected_count(text):
     return count
 
 # -----------------------------
-# ✅ FIXED CVS IMAGE COUNT
+# ✅ REAL CVS IMAGE EXTRACTION (FROM JSON)
 # -----------------------------
 def get_cvs_count(text):
 
-    images = []
+    # Find all image URLs from embedded data
+    images = re.findall(r'https://[^"]+\\.jpg', text)
 
-    parts = text.split('"')
-
-    for p in parts:
-        if "scene7" in p and ".jpg" in p:
-            clean = p.split("?")[0]
-            images.append(clean)
-
-    # ✅ keep unique images only
-    unique_images = list(set(images))
-
-    # ✅ remove tiny versions / duplicates
+    # keep ONLY product images (Scene7 + not icons)
     filtered = []
-    for img in unique_images:
-        if any(size in img for size in ["wid=", "fmt"]):
-            continue
-        filtered.append(img)
 
-    # ✅ cap to carousel size
-    return min(len(filtered), 6)
+    for img in images:
+        if "scene7.com" in img:
+
+            # remove small UI junk
+            if not any(bad in img for bad in [
+                "icon", "logo", "swatch", "thumbnail-default"
+            ]):
+                filtered.append(img.split("?")[0])
+
+    # ✅ remove duplicates
+    unique = list(set(filtered))
+
+    # ✅ REMOVE duplicates of same base image (size variations)
+    final = []
+    seen_names = set()
+
+    for img in unique:
+        name = img.split("/")[-1]
+
+        if name not in seen_names:
+            final.append(name)
+            seen_names.add(name)
+
+    # ✅ LIMIT to real carousel range
+    return min(len(final), 6)
 
 # -----------------------------
-# FEATURES (unchanged)
+# FEATURES
 # -----------------------------
 def extract_keywords(text):
     keywords = [
@@ -111,10 +116,7 @@ if uploaded_file:
         s_text = get_text(row["salsify_url"])
         r_text = get_text(row["retail_url"])
 
-        # ✅ Salsify expected
         s_count = get_salsify_expected_count(s_text)
-
-        # ✅ CVS detected
         r_count = get_cvs_count(r_text)
 
         # ✅ IMAGE RESULT
