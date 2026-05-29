@@ -74,61 +74,51 @@ def get_cvs_text(url):
     features = []
 
     # =====================================
-    # ✅ TITLE (leave — working)
+    # ✅ TITLE (keep your working one)
     # =====================================
-    t = re.search(r'[A-Z][A-Za-z0-9 ,\-]+(?:Count|Ct)', html)
+    t = re.search(r'[A-Z].+?(?:Count|Ct)', html)
     if t:
-        title = t.group(0)
+        title = t.group(0).strip()
 
     # =====================================
-    # ✅ EXTRACT USING TEXT-FRAGMENT LOGIC ✅
+    # ✅ FIND NEXT.JS DATA PAYLOAD
     # =====================================
-    start_marker = "Get up to"
-    end_marker = "the U.S."
+    match = re.search(
+        r'__next_f\.push\(\[.*?"vendorDetailsBullets".*?\]\)',
+        html,
+        re.DOTALL
+    )
 
-    start_idx = html.find(start_marker)
-    end_idx = html.find(end_marker)
-
-    if start_idx == -1 or end_idx == -1:
+    if not match:
         return {"title": title, "description": "", "features": []}
 
-    raw = html[start_idx:end_idx + len(end_marker)]
+    block = match.group(0)
 
     # =====================================
-    # ✅ CLEAN TEXT
+    # ✅ EXTRACT DESCRIPTION
     # =====================================
-    raw = raw.replace('\\"', '')
-    raw = raw.replace('\\n', ' ')
-    raw = raw.replace('","', '. ')
-    raw = raw.replace('"', '')
+    d = re.search(r'vendorDetailsParagraph":"(.*?)"', block)
+    if d:
+        description = d.group(1)
 
-    raw = re.sub("<.*?>", "", raw)
-    raw = re.sub(r'\s+', ' ', raw).strip()
-
-    description = raw
+        description = description.replace('\\n', ' ')
+        description = description.replace('\\"', '"')
+        description = re.sub("<.*?>", "", description)
+        description = re.sub(r'\s+', ' ', description).strip()
 
     # =====================================
-    # ✅ FEATURES (FROM CLEAN DESCRIPTION)
+    # ✅ EXTRACT FEATURES
     # =====================================
-    sentences = re.split(r'\.\s+', description)
+    f = re.search(r'vendorDetailsBullets":\[(.*?)\]', block)
 
-    for s in sentences:
-        s = s.strip()
+    if f:
+        items = re.findall(r'"(.*?)"', f.group(1))
 
-        if (
-            20 < len(s) < 120 and
-            any(x in s.lower() for x in [
-                "tampon",
-                "leak",
-                "compact",
-                "wrapped",
-                "fragrance",
-                "comfort"
-            ])
-        ):
-            features.append(s)
+        for item in items:
+            clean = item.replace('\\n', ' ').strip()
 
-    features = list(dict.fromkeys(features))[:5]
+            if clean:
+                features.append(clean)
 
     return {
         "title": title,
