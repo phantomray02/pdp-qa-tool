@@ -65,81 +65,60 @@ def get_salsify_text(url):
 # -----------------------------
 
 def get_cvs_text(url):
-    html = get_html(url)
-    soup = BeautifulSoup(html, "html.parser")
-
-    text = soup.get_text("\n", strip=True)
-    lines = [l.strip() for l in text.split("\n") if l.strip()]
+    soup = get_soup(url)
 
     title = ""
     description = ""
     features = []
 
     # -----------------------------
-    # ✅ FIND "Details"
+    # ✅ FIND CONTAINER (FIX ✅)
     # -----------------------------
-    start = None
-    for i, line in enumerate(lines):
-        if line.lower() == "details":
-            start = i
+    container = None
+
+    for div in soup.find_all("div"):
+        classes = div.get("class", [])
+
+        if classes and "whitespace-pre-line" in classes:
+            container = div
             break
 
-    if start is None:
+    if not container:
         return {"title": "", "description": "", "features": []}
 
     # -----------------------------
-    # ✅ TITLE (next meaningful line)
+    # ✅ TITLE (FIRST text-lg P)
     # -----------------------------
-    i = start + 1
-    while i < len(lines):
-        if len(lines[i]) > 20:
-            title = lines[i]
-            break
-        i += 1
+    for p in container.find_all("p"):
+        class_list = p.get("class", [])
 
-    # -----------------------------
-    # ✅ DESCRIPTION (until bullets start)
-    # -----------------------------
-    desc_lines = []
-    i += 1
-
-    while i < len(lines):
-        line = lines[i]
-
-        # STOP when bullets start
-        if line.startswith("•") or re.match(r"\d+\s", line):
+        if "text-lg" in class_list:
+            title = p.get_text(strip=True)
             break
 
-        # STOP if junk appears
-        if any(x in line.lower() for x in ["policy", "prescription", "coupon", "store"]):
-            break
+    # -----------------------------
+    # ✅ DESCRIPTION (text-base span)
+    # -----------------------------
+    desc_tag = container.find("span", class_=lambda x: x and "text-base" in x)
 
-        desc_lines.append(line)
-        i += 1
-
-    description = " ".join(desc_lines)
+    if desc_tag:
+        description = desc_tag.get_text(" ", strip=True)
 
     # -----------------------------
-    # ✅ FEATURES (ONLY NEXT BLOCK)
+    # ✅ FEATURES (vendor bullets)
     # -----------------------------
-    while i < len(lines):
-        line = lines[i]
+    for li in container.find_all("li", id=lambda x: x and x.startswith("vendorDetailsBullet")):
 
-        # STOP when junk begins
-        if any(x in line.lower() for x in ["policy", "prescription", "coupon", "store"]):
-            break
+        txt = li.get_text(strip=True)
 
-        if len(line) > 10:
-            features.append(line.replace("•", "").strip())
-
-        i += 1
+        if txt:
+            features.append(txt)
 
     return {
         "title": title,
         "description": description,
-        "features": features[:6]
+        "features": features
     }
-
 
 # -----------------------------
 # IMAGES (KEEP YOUR WORKING VERSION)
