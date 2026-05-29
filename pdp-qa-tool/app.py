@@ -1,5 +1,5 @@
 
-ef get_cvs_images(url):
+def get_cvs_images(url):
     try:
         soup = get_soup(url)
 
@@ -11,7 +11,7 @@ ef get_cvs_images(url):
         if not container:
             return []
 
-        # ✅ FIND ALL BUTTON TABS (NOT JUST IMGS)
+        # ✅ FIND ALL BUTTONS (THIS FIXES SCROLL ISSUE)
         buttons = container.find_all("button")
 
         for btn in buttons:
@@ -22,7 +22,7 @@ ef get_cvs_images(url):
 
             src = img.get("src") or ""
 
-            # ✅ STRICT FILTER
+            # ✅ FILTER REAL PRODUCT THUMBNAILS
             if "high_res" in src:
 
                 if src.startswith("/"):
