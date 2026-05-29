@@ -64,16 +64,17 @@ def get_salsify_text(url):
 # ✅ CVS TEXT (FINAL WORKING VERSION ✅)
 # -----------------------------
 
+
 def get_cvs_text(url):
     soup = get_soup(url)
 
     title = ""
     description = ""
     features = []
-    parent = None  # ✅ prevent crash
+    anchor = None
 
     # -----------------------------
-    # ✅ 1. TITLE
+    # ✅ 1. TITLE (ANCHOR START)
     # -----------------------------
     for p in soup.find_all("p"):
         txt = p.get_text(strip=True)
@@ -84,18 +85,16 @@ def get_cvs_text(url):
             and "count" in txt.lower()
         ):
             title = txt
-            parent = p.parent
+            anchor = p
             break
 
-    # ✅ fallback if title not found
-    if not parent:
-        body = soup.body
-        parent = body if body else soup
+    if not anchor:
+        return {"title": "", "description": "", "features": []}
 
     # -----------------------------
-    # ✅ 2. DESCRIPTION
+    # ✅ 2. DESCRIPTION (NEXT BLOCK)
     # -----------------------------
-    for el in parent.find_all_next():
+    for el in anchor.find_all_next():
         txt = el.get_text(" ", strip=True)
 
         if (
@@ -103,15 +102,21 @@ def get_cvs_text(url):
             and "tampon" in txt.lower()
         ):
             description = txt
+            anchor = el   # 🔥 move anchor forward
             break
 
     # -----------------------------
-    # ✅ 3. FEATURES
+    # ✅ 3. FEATURES (FIRST VALID UL AFTER DESCRIPTION ONLY)
     # -----------------------------
-    for ul in parent.find_all_next("ul"):
+    for ul in anchor.find_all_next("ul"):
+
         items = ul.find_all("li")
 
+        # ✅ must look like real bullet list
         if len(items) >= 4:
+
+            temp = []
+
             for li in items:
                 txt = li.get_text(" ", strip=True)
 
@@ -119,16 +124,22 @@ def get_cvs_text(url):
                     txt
                     and len(txt) > 10
                     and "prescription" not in txt.lower()
+                    and "coupon" not in txt.lower()
+                    and "store" not in txt.lower()
                 ):
-                    features.append(txt)
+                    temp.append(txt)
 
-            break
+            # ✅ ONLY accept if looks like real product bullets
+            if len(temp) >= 4:
+                features = temp
+                break
 
     return {
         "title": title,
         "description": description,
         "features": features
     }
+
 
 # -----------------------------
 # IMAGES (KEEP YOUR WORKING VERSION)
