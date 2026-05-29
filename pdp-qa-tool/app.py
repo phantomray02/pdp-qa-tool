@@ -64,61 +64,79 @@ def get_salsify_text(url):
 # ✅ CVS TEXT (FINAL WORKING VERSION ✅)
 # -----------------------------
 
-
 def get_cvs_text(url):
-    soup = get_soup(url)
+    html = get_html(url)
+
+    soup = BeautifulSoup(html, "html.parser")
+
+    full_text = soup.get_text("\n", strip=True)
+
+    lines = [l.strip() for l in full_text.split("\n") if l.strip()]
 
     title = ""
     description = ""
     features = []
 
     # -----------------------------
-    # ✅ 1. FIND DETAILS TEXT BLOCK
+    # ✅ FIND "Details" SECTION
     # -----------------------------
-    container = soup.find("div", class_=re.compile("whitespace-pre-line"))
+    start_idx = None
 
-    if not container:
-        return {"title": "", "description": "", "features": []}
-
-    full_text = container.get_text("\n", strip=True)
-
-    lines = [line.strip() for line in full_text.split("\n") if line.strip()]
-
-    # -----------------------------
-    # ✅ 2. TITLE (FIRST LINE)
-    # -----------------------------
-    if len(lines) > 0:
-        title = lines[0]
-
-    # -----------------------------
-    # ✅ 3. DESCRIPTION
-    # everything after title until bullets
-    # -----------------------------
-    desc_parts = []
-    feature_start = 0
-
-    for i, line in enumerate(lines[1:], start=1):
-
-        # detect bullet start
-        if line.startswith("•"):
-            feature_start = i
+    for i, line in enumerate(lines):
+        if line.strip().lower() == "details":
+            start_idx = i
             break
 
-        desc_parts.append(line)
-
-    description = " ".join(desc_parts)
+    if start_idx is None:
+        return {"title": "", "description": "", "features": []}
 
     # -----------------------------
-    # ✅ 4. FEATURES (bullet lines)
+    # ✅ TITLE (next line)
     # -----------------------------
-    for line in lines[feature_start:]:
-        if line.startswith("•"):
+    title = lines[start_idx + 1]
+
+    # -----------------------------
+    # ✅ DESCRIPTION (next big block)
+    # -----------------------------
+    desc_lines = []
+
+    i = start_idx + 2
+    while i < len(lines):
+
+        line = lines[i]
+
+        # stop when bullets begin
+        if line.startswith("•") or re.match(r"\d+\s", line):
+            break
+
+        # stop when unrelated content starts
+        if "prescription" in line.lower():
+            break
+
+        desc_lines.append(line)
+        i += 1
+
+    description = " ".join(desc_lines)
+
+    # -----------------------------
+    # ✅ FEATURES (next lines)
+    # -----------------------------
+    for j in range(i, len(lines)):
+        line = lines[j]
+
+        if (
+            "prescription" in line.lower()
+            or "coupon" in line.lower()
+        ):
+            break
+
+        if len(line) > 10:
             features.append(line.replace("•", "").strip())
 
     return {
         "title": title,
         "description": description,
-        "features": features
+        "features": features[:6]
     }
 
 
