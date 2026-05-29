@@ -64,70 +64,75 @@ def get_salsify_text(url):
 # ✅ CVS TEXT (FINAL WORKING VERSION ✅)
 # -----------------------------
 
-import json
-import re
-
 def get_cvs_text(url):
     html = get_html(url)
+    soup = BeautifulSoup(html, "html.parser")
+
+    text = soup.get_text("\n", strip=True)
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
 
     title = ""
     description = ""
     features = []
 
-    # ✅ find embedded JSON state
-    match = re.search(r'window\.__INITIAL_STATE__\s*=\s*({.*?});', html, re.DOTALL)
+    # -----------------------------
+    # ✅ 1. Locate "Details"
+    # -----------------------------
+    start = None
+    for i, line in enumerate(lines):
+        if line.lower() == "details":
+            start = i
+            break
 
-    if not match:
-        match = re.search(r'window\.__APOLLO_STATE__\s*=\s*({.*?});', html, re.DOTALL)
-
-    if not match:
+    if start is None:
         return {"title": "", "description": "", "features": []}
 
-    try:
-        data = json.loads(match.group(1))
-    except:
-        return {"title": "", "description": "", "features": []}
+    section = lines[start:start + 20]  # small window near Details
 
-    # ✅ extract product data safely
-    def find_dict(obj):
-        if isinstance(obj, dict):
-            if "productName" in obj:
-                return obj
-            for v in obj.values():
-                result = find_dict(v)
-                if result:
-                    return result
-        elif isinstance(obj, list):
-            for item in obj:
-                result = find_dict(item)
-                if result:
-                    return result
-        return None
+    # -----------------------------
+    # ✅ 2. TITLE (product-like line)
+    # -----------------------------
+    for line in section:
+        if (
+            len(line) > 30
+            and ("kotex" in line.lower() or "tampon" in line.lower())
+        ):
+            title = line
+            break
 
-    product = find_dict(data)
+    # -----------------------------
+    # ✅ 3. DESCRIPTION (first long line)
+    # -----------------------------
+    for line in section:
+        if len(line) > 120:
+            description = line
+            break
 
-    if not product:
-        return {"title": "", "description": "", "features": []}
+    # -----------------------------
+    # ✅ 4. FEATURES (lines after description)
+    # -----------------------------
+    if description in section:
+        idx = section.index(description)
 
-    # ✅ TITLE
-    title = product.get("productName", "")
+        for line in section[idx + 1:]:
+            if len(line) < 10:
+                continue
 
-    # ✅ DESCRIPTION
-    description = product.get("longDescription", "")
+            # stop before junk
+            if any(x in line.lower() for x in [
+                "shipping", "policy", "reviews", "prescription"
+            ]):
+                break
 
-    # ✅ FEATURES
-    bullet_list = product.get("features", [])
-
-    if isinstance(bullet_list, list):
-        for x in bullet_list:
-            if isinstance(x, str):
-                features.append(x)
+            if 10 < len(line) < 120:
+                features.append(line)
 
     return {
         "title": title,
         "description": description,
-        "features": features
+        "features": features[:6]
     }
+
 
 # -----------------------------
 # IMAGES (KEEP YOUR WORKING VERSION)
