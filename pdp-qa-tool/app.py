@@ -83,30 +83,36 @@ def get_cvs_text(url):
     if t:
         title = t.group(0).strip()
 
-    # =========================================
-    # ✅ DESCRIPTION (CLEAN + FIXED)
-    # =========================================
-    d = re.search(
-        r'Get up to .*?HRA-eligible in the U\.S\.',
-        html,
-        re.DOTALL
-    )
+  
+# =========================================
+# ✅ DESCRIPTION (FINAL CLEAN VERSION)
+# =========================================
+d = re.search(
+    r'Get up to .*?HRA-eligible in the U\.S\.',
+    html,
+    re.DOTALL
+)
 
-    if d:
-        description = d.group(0)
+if d:
+    description = d.group(0)
 
-        # ✅ REMOVE JSON / SCRIPT TRASH
-        description = re.split(r'"}|\]\}|\\n', description)[0]
+    # ✅ STOP at JSON boundary
+    description = re.split(r'"}|\]\}', description)[0]
 
-        # ✅ FIX ESCAPE CHARACTERS
-        description = description.replace('\\"', '"')
-        description = description.replace('\\n', ' ')
+    # ✅ FIX JSON STRING FORMAT
+    description = description.replace('","', '. ')
+    description = description.replace('"', '')
 
-        # ✅ REMOVE HTML TAGS
-        description = re.sub("<.*?>", "", description)
+    # ✅ FIX ESCAPED CHARACTERS
+    description = description.replace('\\n', ' ')
+    description = description.replace('\\"', '')
 
-        # ✅ CLEAN SPACING
-        description = re.sub(r'\s+', ' ', description).strip()
+    # ✅ REMOVE HTML TAGS
+    description = re.sub("<.*?>", "", description)
+
+    # ✅ CLEAN SPACING
+    description = re.sub(r'\s+', ' ', description).strip()
+
 
 
     # =========================================
