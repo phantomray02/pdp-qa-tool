@@ -116,29 +116,30 @@ def get_cvs_text(url):
         # ============================
         # ✅ FEATURES (FIXED VERSION)
         # ============================
-        sentences = re.split(r'\.\s+', description)
+       
+def extract_features_from_description(description, salsify_features):
+    import re
 
-        for s in sentences:
-            s = s.strip()
+    cvs_features = []
 
-            if len(s) > 150:
-                continue
+    desc_norm = re.sub(r'[^a-z0-9 ]', '', description.lower())
 
-            if any(word in s.lower() for word in [
-                "tampon",
-                "leak",
-                "move with you",
-                "compact",
-                "wrapped"
-            ]):
-                features.append(s)
+    for feature in salsify_features:
+        feat_norm = re.sub(r'[^a-z0-9 ]', '', feature.lower())
 
-    # ✅ ensure quantity bullet exists
-    if not any("45 regular tampons" in f.lower() for f in features):
-        features.insert(0, "45 regular tampons")
+        # ✅ basic keyword overlap
+        match_score = sum(
+            word in desc_norm
+            for word in feat_norm.split()
+        ) / len(feat_norm.split())
 
-    # ✅ remove duplicates + limit
-    features = list(dict.fromkeys(features))[:5]
+        if match_score > 0.5:
+            cvs_features.append(feature)
+        else:
+            cvs_features.append("Missing")
+
+    return cvs_features
+
 
     # ============================
     # ✅ RETURN (correct indent ✅)
