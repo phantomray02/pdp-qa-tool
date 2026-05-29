@@ -64,23 +64,21 @@ def get_salsify_text(url):
 # ✅ CVS TEXT (FINAL WORKING VERSION ✅)
 # -----------------------------
 
-
 def get_cvs_text(url):
     html = get_html(url)
     soup = BeautifulSoup(html, "html.parser")
 
-    full_text = soup.get_text("\n", strip=True)
-    lines = [l.strip() for l in full_text.split("\n") if l.strip()]
+    text = soup.get_text("\n", strip=True)
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
 
     title = ""
     description = ""
     features = []
 
     # -----------------------------
-    # ✅ 1. FIND DETAILS SECTION
+    # ✅ FIND "Details"
     # -----------------------------
     start = None
-
     for i, line in enumerate(lines):
         if line.lower() == "details":
             start = i
@@ -90,26 +88,30 @@ def get_cvs_text(url):
         return {"title": "", "description": "", "features": []}
 
     # -----------------------------
-    # ✅ 2. TITLE (NEXT LINE)
+    # ✅ TITLE (next meaningful line)
     # -----------------------------
-    if start + 1 < len(lines):
-        title = lines[start + 1]
+    i = start + 1
+    while i < len(lines):
+        if len(lines[i]) > 20:
+            title = lines[i]
+            break
+        i += 1
 
     # -----------------------------
-    # ✅ 3. DESCRIPTION
+    # ✅ DESCRIPTION (until bullets start)
     # -----------------------------
     desc_lines = []
-    i = start + 2
+    i += 1
 
     while i < len(lines):
         line = lines[i]
 
-        # stop when bullets begin
-        if line.startswith("•") or re.match(r"\d+\s+", line):
+        # STOP when bullets start
+        if line.startswith("•") or re.match(r"\d+\s", line):
             break
 
-        # stop when unrelated content
-        if any(x in line.lower() for x in ["prescription", "coupon", "store"]):
+        # STOP if junk appears
+        if any(x in line.lower() for x in ["policy", "prescription", "coupon", "store"]):
             break
 
         desc_lines.append(line)
@@ -118,22 +120,26 @@ def get_cvs_text(url):
     description = " ".join(desc_lines)
 
     # -----------------------------
-    # ✅ 4. FEATURES
+    # ✅ FEATURES (ONLY NEXT BLOCK)
     # -----------------------------
-    for j in range(i, len(lines)):
-        line = lines[j]
+    while i < len(lines):
+        line = lines[i]
 
-        if any(x in line.lower() for x in ["prescription", "coupon", "store"]):
+        # STOP when junk begins
+        if any(x in line.lower() for x in ["policy", "prescription", "coupon", "store"]):
             break
 
         if len(line) > 10:
             features.append(line.replace("•", "").strip())
+
+        i += 1
 
     return {
         "title": title,
         "description": description,
         "features": features[:6]
     }
+
 
 # -----------------------------
 # IMAGES (KEEP YOUR WORKING VERSION)
