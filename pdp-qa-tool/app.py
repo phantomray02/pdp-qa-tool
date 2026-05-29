@@ -39,70 +39,50 @@ def get_salsify_images(url):
 # ✅ FINAL CVS IMAGE EXTRACTION
 # -----------------------------
 
+
 def get_cvs_images(url):
     try:
         html = get_html(url)
-        soup = BeautifulSoup(html, "html.parser")
 
-        thumbnails = []
-
-        # -----------------------------
-        # ✅ STEP 1: Get visible thumbnails (SOURCE OF TRUTH)
-        # -----------------------------
-        container = soup.find("div", {"role": "tablist"})
-
-        if container:
-            for img in container.find_all("img"):
-                src = img.get("src") or ""
-
-                if "high_res" in src:
-                    if src.startswith("/"):
-                        src = "https://www.cvs.com" + src
-
-                    # strip params
-                    base = src.split("?")[0]
-                    thumbnails.append(base)
-
-        thumbnails = list(dict.fromkeys(thumbnails))
-
-        # -----------------------------
-        # ✅ STEP 2: Get ALL high_res images
-        # -----------------------------
+        # ✅ grab ALL high_res images INCLUDING variants (_2, _3, etc)
         matches = re.findall(
-            r'/bizcontent/merchandising/products/images/high_res/[^"]+\.jpg[\?\w=,()]*',
+            r'/bizcontent/merchandising/productimages/high_res/[^\s"]+\.jpg',
             html
         )
 
-        full_images = []
+        images = []
 
         for m in matches:
-            url_full = "https://www.cvs.com" + m
-            base = url_full.split("?")[0]
-            full_images.append(base)
 
-        full_images = list(dict.fromkeys(full_images))
+            full = "https://www.cvs.com" + m
 
-        # -----------------------------
-        # ✅ STEP 3: FILTER using thumbnail base filenames
-        # -----------------------------
-        filtered = []
+            # ✅ strip resize params
+            base = full.split("?")[0]
 
-        thumb_names = [t.split("/")[-1] for t in thumbnails]
+            images.append(base)
 
-        for img in full_images:
+        # ✅ remove duplicates
+        images = list(dict.fromkeys(images))
+
+        # ✅ OPTIONAL: filter only product group (same root)
+        final = []
+
+        seen_roots = set()
+
+        for img in images:
             name = img.split("/")[-1]
 
-            # ✅ match base image groups
-            base_name = name.split("_")[0]
+            # root = strip _# (so 3600..._6 becomes 3600...)
+            root = name.split("_")[0]
 
-            if any(base_name in t for t in thumb_names):
-                filtered.append(img)
+            if root not in seen_roots:
+                final.append(img)
+                seen_roots.add(root)
+            else:
+                # ✅ include variants too
+                final.append(img)
 
-        # ✅ fallback if matching fails
-        if not filtered:
-            filtered = thumbnails
-
-        return filtered
+        return final
 
     except:
         return []
