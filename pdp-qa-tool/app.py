@@ -13,9 +13,20 @@ uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 # -----------------------------
 # HTML HELPERS
 # -----------------------------
+
+import requests
+
 def get_html(url):
-    headers = {"User-Agent": "Mozilla/5.0"}
-    return requests.get(url, headers=headers).text
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.google.com/",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Connection": "keep-alive"
+    }
+
+    response = requests.get(url, headers=headers, timeout=20)
+    return response.text
 
 def get_soup(url):
     return BeautifulSoup(get_html(url), "html.parser")
@@ -73,52 +84,68 @@ def get_cvs_text(url):
     description = ""
     features = []
 
-    # =====================================
-    # ✅ TITLE (keep your working one)
-    # =====================================
-    t = re.search(r'[A-Z].+?(?:Count|Ct)', html)
+    # ============================
+    # ✅ TITLE (you already had working)
+    # ============================
+    t = re.search(r'[A-Z][A-Za-z0-9 ,\-]+(?:Count|Ct)', html)
     if t:
         title = t.group(0).strip()
 
-    # =====================================
-    # ✅ FIND NEXT.JS DATA PAYLOAD
-    # =====================================
-    match = re.search(
-        r'__next_f\.push\(\[.*?"vendorDetailsBullets".*?\]\)',
+    # ============================
+    # ✅ FIND CONTENT BLOCK (ROBUST)
+    # ============================
+    block = re.search(
+        r'(Get up to .*?)(?:vendorDetails|__next|Reviews|Ingredients)',
         html,
         re.DOTALL
     )
 
-    if not match:
-        return {"title": title, "description": "", "features": []}
+    if not block:
+        return {
+            "title": title,
+            "description": "",
+            "features": []
+        }
 
-    block = match.group(0)
+    raw = block.group(1)
 
-    # =====================================
-    # ✅ EXTRACT DESCRIPTION
-    # =====================================
-    d = re.search(r'vendorDetailsParagraph":"(.*?)"', block)
-    if d:
-        description = d.group(1)
+    # ============================
+    # ✅ CLEAN RAW TEXT
+    # ============================
+    raw = raw.replace('\\"', '')
+    raw = raw.replace('\\n', ' ')
+    raw = raw.replace('","', '. ')
+    raw = raw.replace('"', '')
 
-        description = description.replace('\\n', ' ')
-        description = description.replace('\\"', '"')
-        description = re.sub("<.*?>", "", description)
-        description = re.sub(r'\s+', ' ', description).strip()
+    raw = re.sub('<.*?>', '', raw)
+    raw = re.sub(r'\s+', ' ', raw).strip()
 
-    # =====================================
-    # ✅ EXTRACT FEATURES
-    # =====================================
-    f = re.search(r'vendorDetailsBullets":\[(.*?)\]', block)
+    description = raw
 
-    if f:
-        items = re.findall(r'"(.*?)"', f.group(1))
+    # ============================
+    # ✅ BUILD FEATURES FROM SENTENCES
+    # ============================
+    sentences = re.split(r'\.\s+', description)
 
-        for item in items:
-            clean = item.replace('\\n', ' ').strip()
+    for s in sentences:
+        s = s.strip()
 
-            if clean:
-                features.append(clean)
+        if (
+            25 < len(s) < 120 and
+            any(x in s.lower() for x in [
+                "tampon",
+                "leak",
+                "compact",
+                "wrapped",
+                "fragrance",
+                "comfort",
+                "fit"
+            ])
+        ):
+            features.append(s)
+
+    # ✅ remove duplicates + limit
+    features = list(dict.fromkeys(features))[:5]
 
     return {
         "title": title,
