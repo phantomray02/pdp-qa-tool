@@ -64,45 +64,67 @@ def get_salsify_text(url):
 # ✅ CVS TEXT (FINAL WORKING VERSION ✅)
 # -----------------------------
 
-import time
+import re
 
 def get_cvs_text(url):
-    start = time.time()
-
     html = get_html(url)
 
     title = ""
     description = ""
     features = []
 
-    print("✅ HTML fetched in", round(time.time() - start, 2), "sec")
-
-    # --- YOUR WORKING REGEX VERSION HERE ---
-
-    t = re.search(r'U by Kotex Click Compact Tampons.*?Count', html)
+    # -----------------------------
+    # ✅ TITLE (generic, not brand-specific)
+    # -----------------------------
+    t = re.search(
+        r'([A-Z][A-Za-z0-9 ,\-]+(?:Count|Ct))',
+        html
+    )
     if t:
-        title = t.group(0)
+        title = t.group(1).strip()
 
+    # -----------------------------
+    # ✅ DESCRIPTION (clean + flexible)
+    # -----------------------------
     d = re.search(
-        r'Get up to 100% leak-free.*?HRA-eligible in the U\.S\.',
+        r'(Get up to .*?HRA-eligible in the U\.S\.)',
         html,
         re.DOTALL
     )
+
     if d:
-        description = d.group(0)
+        description = d.group(1)
 
-    f = re.findall(
-        r'(?:\d+\s+regular tampons|Get up to 100% leak-free.*?|U by Kotex Click tampons.*?|Compact to fit.*?|Individually wrapped.*?trends)',
-        html,
-        re.DOTALL
-    )
+        # ✅ REMOVE JSON / SCRIPT JUNK
+        description = re.sub(r'"}.*', '', description)
+        description = re.sub(r'\]\}.*', '', description)
 
-    for item in f:
-        clean = re.sub("<.*?>", "", item).strip()
-        if clean and clean not in features:
-            features.append(clean)
+        # ✅ REMOVE HTML TAGS
+        description = re.sub("<.*?>", "", description)
 
-    print("✅ Extraction done in", round(time.time() - start, 2), "sec")
+        # ✅ CLEAN SPACING
+        description = re.sub(r'\s+', ' ', description).strip()
+
+    # -----------------------------
+    # ✅ FEATURES (clean bullet extraction)
+    # -----------------------------
+    feature_patterns = [
+        r'\d+\s+regular tampons',
+        r'Get up to .*?tampon',
+        r'U by Kotex Click tampons.*?fragrance',
+        r'Compact to fit.*?easy step',
+        r'Individually wrapped.*?trends'
+    ]
+
+    for pattern in feature_patterns:
+        matches = re.findall(pattern, html, re.DOTALL)
+
+        for m in matches:
+            clean = re.sub("<.*?>", "", m)
+            clean = re.sub(r'\s+', ' ', clean).strip()
+
+            if clean and clean not in features:
+                features.append(clean)
 
     return {
         "title": title,
