@@ -65,55 +65,75 @@ def get_salsify_text(url):
 # -----------------------------
 
 
-from playwright.sync_api import sync_playwright
-from bs4 import BeautifulSoup
-
 def get_cvs_text(url):
+    html = get_html(url)
+    soup = BeautifulSoup(html, "html.parser")
+
+    full_text = soup.get_text("\n", strip=True)
+    lines = [l.strip() for l in full_text.split("\n") if l.strip()]
+
     title = ""
     description = ""
     features = []
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
+    # -----------------------------
+    # ✅ 1. FIND DETAILS SECTION
+    # -----------------------------
+    start = None
 
-        page.goto(url, timeout=60000)
+    for i, line in enumerate(lines):
+        if line.lower() == "details":
+            start = i
+            break
 
-        # ✅ wait until Details content loads
-        page.wait_for_selector("text=Details")
-
-        html = page.content()
-        browser.close()
-
-    soup = BeautifulSoup(html, "html.parser")
-
-    container = soup.find("div", class_=lambda x: x and "whitespace-pre-line" in x)
-
-    if not container:
+    if start is None:
         return {"title": "", "description": "", "features": []}
 
-    # ✅ TITLE
-    t = container.find("p", class_=lambda x: x and "text-lg" in x)
-    if t:
-        title = t.get_text(strip=True)
+    # -----------------------------
+    # ✅ 2. TITLE (NEXT LINE)
+    # -----------------------------
+    if start + 1 < len(lines):
+        title = lines[start + 1]
 
-    # ✅ DESCRIPTION
-    d = container.find("span", class_=lambda x: x and "text-base" in x)
-    if d:
-        description = d.get_text(" ", strip=True)
+    # -----------------------------
+    # ✅ 3. DESCRIPTION
+    # -----------------------------
+    desc_lines = []
+    i = start + 2
 
-    # ✅ FEATURES
-    for li in container.find_all("li", id=lambda x: x and "vendorDetailsBullet" in x):
-        txt = li.get_text(strip=True)
-        if txt:
-            features.append(txt)
+    while i < len(lines):
+        line = lines[i]
+
+        # stop when bullets begin
+        if line.startswith("•") or re.match(r"\d+\s+", line):
+            break
+
+        # stop when unrelated content
+        if any(x in line.lower() for x in ["prescription", "coupon", "store"]):
+            break
+
+        desc_lines.append(line)
+        i += 1
+
+    description = " ".join(desc_lines)
+
+    # -----------------------------
+    # ✅ 4. FEATURES
+    # -----------------------------
+    for j in range(i, len(lines)):
+        line = lines[j]
+
+        if any(x in line.lower() for x in ["prescription", "coupon", "store"]):
+            break
+
+        if len(line) > 10:
+            features.append(line.replace("•", "").strip())
 
     return {
         "title": title,
         "description": description,
-        "features": features
+        "features": features[:6]
     }
-
 
 # -----------------------------
 # IMAGES (KEEP YOUR WORKING VERSION)
