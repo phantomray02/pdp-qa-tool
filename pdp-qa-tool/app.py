@@ -4,7 +4,7 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 
-st.title("PDP QA Tool (Images + Content)")
+st.title("PDP QA Tool (Accurate Images + Content)")
 
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
@@ -17,7 +17,7 @@ def get_soup(url):
     return BeautifulSoup(res.text, "html.parser")
 
 # -----------------------------
-# Get full text
+# Extract FULL PAGE TEXT
 # -----------------------------
 def get_text(url):
     try:
@@ -27,36 +27,45 @@ def get_text(url):
         return ""
 
 # -----------------------------
-# Get CLEAN PDP images
+# Extract ONLY PDP CAROUSEL IMAGES
 # -----------------------------
 def get_images(url):
     try:
         soup = get_soup(url)
-        imgs = soup.find_all("img")
 
-        cleaned = []
+        image_urls = []
 
-        for img in imgs:
+        for img in soup.find_all("img"):
             src = img.get("src") or ""
             src_lower = src.lower()
 
-            # keep product-like images only
-            if any(k in src_lower for k in ["product", "zoom", "image"]):
+            # ✅ TARGET REAL PRODUCT IMAGES ONLY
+            if any(k in src_lower for k in [
+                "zoom", "large", "500", "800"
+            ]):
 
-                # remove junk
+                # ❌ REMOVE NON-PDP IMAGES
                 if not any(bad in src_lower for bad in [
-                    "icon", "logo", "sprite", "banner", "ads"
+                    "icon", "logo", "sprite", "banner", "ads", "thumbnail-default"
                 ]):
-                    cleaned.append(src)
+                    image_urls.append(src)
 
-        # take first 8 only (PDP gallery)
-        return list(dict.fromkeys(cleaned))[:8]
+        # ✅ REMOVE DUPES BUT KEEP ORDER
+        seen = set()
+        ordered = []
+        for img in image_urls:
+            if img not in seen:
+                ordered.append(img)
+                seen.add(img)
+
+        # ✅ LIMIT TO FIRST 6 (real PDP carousel size)
+        return ordered[:6]
 
     except:
         return []
 
 # -----------------------------
-# Keyword extraction
+# Extract KEYWORDS
 # -----------------------------
 def extract_keywords(text):
     keywords = [
@@ -89,7 +98,7 @@ if uploaded_file:
         s_count = len(s_images)
         r_count = len(r_images)
 
-        # -------- IMAGE RESULT --------
+        # ✅ IMAGE COMPARISON (FIXED)
         if r_count == s_count:
             image_result = "✅ Match"
         elif r_count < s_count:
@@ -97,10 +106,10 @@ if uploaded_file:
         else:
             image_result = f"⚠ Extra {r_count - s_count}"
 
-        # -------- DESCRIPTION --------
+        # ✅ DESCRIPTION CHECK
         desc_result = "✅ OK" if s_text[:200] in r_text else "❌ Different"
 
-        # -------- FEATURES --------
+        # ✅ FEATURE CHECK
         keywords = extract_keywords(s_text)
         missing = [k for k in keywords if k not in r_text]
 
@@ -109,11 +118,11 @@ if uploaded_file:
         else:
             feature_result = f"❌ Missing: {', '.join(missing)}"
 
-        # -------- STATUS --------
+        # ✅ FINAL STATUS
         status = "PASS" if (
-            image_result == "✅ Match" and
-            desc_result == "✅ OK" and
-            feature_result == "✅ OK"
+            image_result == "✅ Match"
+            and desc_result == "✅ OK"
+            and feature_result == "✅ OK"
         ) else "FAIL"
 
         results.append({
