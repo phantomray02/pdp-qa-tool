@@ -3,23 +3,21 @@ import streamlit as st
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
-import json
 import re
 
-st.title("PDP QA Tool (FULL CVS IMAGE EXTRACTION ✅)")
+st.title("PDP QA Tool (Correct CVS Image Extraction ✅)")
 
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
 # -----------------------------
-# GET PAGE HTML
+# GET HTML
 # -----------------------------
 def get_html(url):
     headers = {"User-Agent": "Mozilla/5.0"}
     return requests.get(url, headers=headers).text
 
-
 # -----------------------------
-# ✅ SALSIFY (unchanged)
+# SALSIFY
 # -----------------------------
 def get_salsify_images(url):
     try:
@@ -37,68 +35,38 @@ def get_salsify_images(url):
     except:
         return []
 
-
 # -----------------------------
-# ✅ ✅ REAL CVS IMAGE EXTRACTION (JSON BASED)
+# ✅ FINAL CVS IMAGE EXTRACTION
 # -----------------------------
 def get_cvs_images(url):
 
     try:
         html = get_html(url)
-        soup = BeautifulSoup(html, "html.parser")
 
-        scripts = soup.find_all("script")
+        # ✅ find ALL high_res image paths
+        matches = re.findall(
+            r'/bizcontent/merchandising/products/images/high_res/[^"]+\.jpg',
+            html
+        )
 
-        for script in scripts:
+        images = []
 
-            if script.string and "media" in script.string:
+        for m in matches:
+            full_url = "https://www.cvs.com" + m
 
-                text = script.string
+            # ✅ FILTER OUT RESIZED VERSIONS
+            if "im=" in m:
+                continue
 
-                # ✅ Extract JSON object inside script
-                match = re.search(r'\{.*\}', text, re.DOTALL)
+            images.append(full_url)
 
-                if not match:
-                    continue
+        # ✅ clean duplicates
+        unique = list(dict.fromkeys(images))
 
-                try:
-                    data = json.loads(match.group())
-
-                    # ✅ Navigate to media section
-                    # structure can vary slightly so we search safely
-                    images = []
-
-                    def find_images(obj):
-                        if isinstance(obj, dict):
-                            for k, v in obj.items():
-                                if k.lower() in ["zoomimageurl", "imageurl", "image", "url"]:
-                                    if isinstance(v, str) and "scene7" in v:
-                                        images.append(v)
-                                else:
-                                    find_images(v)
-                        elif isinstance(obj, list):
-                            for item in obj:
-                                find_images(item)
-
-                    find_images(data)
-
-                    # ✅ clean + dedupe
-                    cleaned = []
-                    for img in images:
-                        base = img.split("?")[0]
-                        if base not in cleaned:
-                            cleaned.append(base)
-
-                    return cleaned
-
-                except:
-                    continue
-
-        return []
+        return unique
 
     except:
         return []
-
 
 # -----------------------------
 # DISPLAY
@@ -113,7 +81,6 @@ def display_images(label, images):
             cols[i % 4].image(img, caption=f"{i+1}", use_container_width=True)
         except:
             cols[i % 4].write(f"{i+1} ❌")
-
 
 # -----------------------------
 # MAIN
@@ -138,7 +105,7 @@ if uploaded_file:
             display_images("Salsify", s_images)
 
         with col2:
-            display_images("CVS (Full Extract ✅)", r_images)
+            display_images("CVS (True Images ✅)", r_images)
 
         # ✅ RESULT
         if len(r_images) == len(s_images):
