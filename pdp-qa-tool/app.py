@@ -4,7 +4,7 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 
-st.title("PDP QA Tool (CVS Thumbnail Extraction ✅)")
+st.title("PDP QA Tool (CVS Scroll Fix ✅)")
 
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
@@ -35,7 +35,7 @@ def get_salsify_images(url):
         return []
 
 # -----------------------------
-# ✅ CVS THUMBNAILS (FINAL FIX)
+# ✅ FINAL CVS EXTRACTION (SCROLL FIXED)
 # -----------------------------
 def get_cvs_images(url):
     try:
@@ -43,40 +43,36 @@ def get_cvs_images(url):
 
         thumbnails = []
 
-        # ✅ TARGET CAROUSEL CONTAINER
+        # ✅ target full carousel container
         container = soup.find("div", {"role": "tablist"})
 
         if not container:
             return []
 
-        # ✅ IMPORTANT: get ALL button items (not just visible imgs)
-        buttons = container.find_all("button")
+        # ✅ grab ALL images inside (not just visible ones)
+        imgs = container.find_all("img")
 
-        for btn in buttons:
-
-            img = btn.find("img")
-            if not img:
-                continue
-
+        for img in imgs:
             src = img.get("src") or ""
 
-            # ✅ ONLY REAL THUMBNAILS
+            # ✅ keep only real product images
             if "high_res" in src:
 
-                # ✅ FIX RELATIVE URLs
                 if src.startswith("/"):
                     src = "https://www.cvs.com" + src
 
                 thumbnails.append(src)
 
-        # ✅ REMOVE DUPLICATES (important)
-        return list(dict.fromkeys(thumbnails))
+        # ✅ remove duplicates
+        thumbnails = list(dict.fromkeys(thumbnails))
+
+        return thumbnails
 
     except:
         return []
 
 # -----------------------------
-# DISPLAY GRID
+# DISPLAY
 # -----------------------------
 def display_images(label, images):
     st.markdown(f"### {label}")
@@ -103,20 +99,18 @@ if uploaded_file:
         s_images = get_salsify_images(row["salsify_url"])
         r_images = get_cvs_images(row["retail_url"])
 
-        # ✅ COUNTS
         st.write(f"Salsify Images: {len(s_images)}")
         st.write(f"CVS Images: {len(r_images)}")
 
-        # ✅ SIDE BY SIDE DISPLAY
         col1, col2 = st.columns(2)
 
         with col1:
             display_images("Salsify", s_images)
 
         with col2:
-            display_images("CVS (Thumbnail Rail)", r_images)
+            display_images("CVS (Full Thumbnail Rail)", r_images)
 
-        # ✅ RESULT LOGIC
+        # ✅ result
         if len(r_images) == len(s_images):
             st.success("✅ Images Match")
         elif len(r_images) < len(s_images):
