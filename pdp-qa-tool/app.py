@@ -38,32 +38,71 @@ def get_salsify_images(url):
 # -----------------------------
 # ✅ FINAL CVS IMAGE EXTRACTION
 # -----------------------------
-def get_cvs_images(url):
 
+def get_cvs_images(url):
     try:
         html = get_html(url)
+        soup = BeautifulSoup(html, "html.parser")
 
-        # ✅ find ALL high_res image paths
+        thumbnails = []
+
+        # -----------------------------
+        # ✅ STEP 1: Get visible thumbnails (SOURCE OF TRUTH)
+        # -----------------------------
+        container = soup.find("div", {"role": "tablist"})
+
+        if container:
+            for img in container.find_all("img"):
+                src = img.get("src") or ""
+
+                if "high_res" in src:
+                    if src.startswith("/"):
+                        src = "https://www.cvs.com" + src
+
+                    # strip params
+                    base = src.split("?")[0]
+                    thumbnails.append(base)
+
+        thumbnails = list(dict.fromkeys(thumbnails))
+
+        # -----------------------------
+        # ✅ STEP 2: Get ALL high_res images
+        # -----------------------------
         matches = re.findall(
-            r'/bizcontent/merchandising/products/images/high_res/[^"]+\.jpg',
+            r'/bizcontent/merchandising/products/images/high_res/[^"]+\.jpg[\?\w=,()]*',
             html
         )
 
-        images = []
+        full_images = []
 
         for m in matches:
-            full_url = "https://www.cvs.com" + m
+            url_full = "https://www.cvs.com" + m
+            base = url_full.split("?")[0]
+            full_images.append(base)
 
-            # ✅ FILTER OUT RESIZED VERSIONS
-            if "im=" in m:
-                continue
+        full_images = list(dict.fromkeys(full_images))
 
-            images.append(full_url)
+        # -----------------------------
+        # ✅ STEP 3: FILTER using thumbnail base filenames
+        # -----------------------------
+        filtered = []
 
-        # ✅ clean duplicates
-        unique = list(dict.fromkeys(images))
+        thumb_names = [t.split("/")[-1] for t in thumbnails]
 
-        return unique
+        for img in full_images:
+            name = img.split("/")[-1]
+
+            # ✅ match base image groups
+            base_name = name.split("_")[0]
+
+            if any(base_name in t for t in thumb_names):
+                filtered.append(img)
+
+        # ✅ fallback if matching fails
+        if not filtered:
+            filtered = thumbnails
+
+        return filtered
 
     except:
         return []
