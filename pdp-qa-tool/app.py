@@ -64,86 +64,69 @@ def get_salsify_text(url):
 # ✅ CVS TEXT (FINAL WORKING VERSION ✅)
 # -----------------------------
 
+import json
+import re
+
 def get_cvs_text(url):
     html = get_html(url)
-    soup = BeautifulSoup(html, "html.parser")
-
-    text = soup.get_text("\n", strip=True)
-    lines = [l.strip() for l in text.split("\n") if l.strip()]
 
     title = ""
     description = ""
     features = []
 
-    # -----------------------------
-    # ✅ FIND "DETAILS" START
-    # -----------------------------
-    start = None
-    for i, line in enumerate(lines):
-        if line.lower() == "details":
-            start = i
-            break
+    # ✅ find embedded JSON state
+    match = re.search(r'window\.__INITIAL_STATE__\s*=\s*({.*?});', html, re.DOTALL)
 
-    if start is None:
+    if not match:
+        match = re.search(r'window\.__APOLLO_STATE__\s*=\s*({.*?});', html, re.DOTALL)
+
+    if not match:
         return {"title": "", "description": "", "features": []}
 
-    # -----------------------------
-    # ✅ FIND END OF SECTION
-    # -----------------------------
-    end = None
-    for i in range(start + 1, len(lines)):
-        if any(x in lines[i].lower() for x in [
-            "ingredients",
-            "reviews",
-            "shipping",
-            "policies",
-            "customer"
-        ]):
-            end = i
-            break
+    try:
+        data = json.loads(match.group(1))
+    except:
+        return {"title": "", "description": "", "features": []}
 
-    if end is None:
-        end = start + 20  # safe fallback
+    # ✅ extract product data safely
+    def find_dict(obj):
+        if isinstance(obj, dict):
+            if "productName" in obj:
+                return obj
+            for v in obj.values():
+                result = find_dict(v)
+                if result:
+                    return result
+        elif isinstance(obj, list):
+            for item in obj:
+                result = find_dict(item)
+                if result:
+                    return result
+        return None
 
-    section = lines[start:end]
+    product = find_dict(data)
 
-    # -----------------------------
-    # ✅ TITLE (first product-like line)
-    # -----------------------------
-    for line in section:
-        if (
-            len(line) > 30 and len(line) < 150
-            and ("kotex" in line.lower() or "tampon" in line.lower())
-        ):
-            title = line
-            break
+    if not product:
+        return {"title": "", "description": "", "features": []}
 
-    # -----------------------------
-    # ✅ DESCRIPTION (first long block)
-    # -----------------------------
-    for line in section:
-        if len(line) > 120:
-            description = line
-            break
+    # ✅ TITLE
+    title = product.get("productName", "")
 
-    # -----------------------------
-    # ✅ FEATURES (short bullet-like lines AFTER description)
-    # -----------------------------
-    desc_index = section.index(description) if description in section else 0
+    # ✅ DESCRIPTION
+    description = product.get("longDescription", "")
 
-    for line in section[desc_index + 1:]:
+    # ✅ FEATURES
+    bullet_list = product.get("features", [])
 
-        # stop if not feature-like
-        if len(line) > 120:
-            break
-
-        if len(line) > 10:
-            features.append(line)
+    if isinstance(bullet_list, list):
+        for x in bullet_list:
+            if isinstance(x, str):
+                features.append(x)
 
     return {
         "title": title,
         "description": description,
-        "features": features[:6]
+        "features": features
     }
 
 # -----------------------------
