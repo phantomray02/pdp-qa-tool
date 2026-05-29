@@ -21,8 +21,38 @@ def get_salsify_data(url):
         text = soup.get_text(" ", strip=True)
 
         # Images
-        imgs = soup.find_all("img")
-        image_urls = [img.get("src") for img in imgs if img.get("src")]
+       
+imgs = soup.find_all("img")
+
+image_urls = []
+
+for img in imgs:
+    src = img.get("src")
+
+    if not src:
+        continue
+
+    # ✅ KEEP only real product images
+    if any(keyword in src.lower() for keyword in [
+        "cvs",        # CVS CDN
+        "product",    # product paths
+        "image",      
+        "zoom"
+    ]):
+
+        # ❌ REMOVE junk images
+        if not any(bad in src.lower() for bad in [
+            "icon",
+            "logo",
+            "sprite",
+            "placeholder",
+            "thumbnail-default"
+        ]):
+            image_urls.append(src)
+
+# remove duplicates
+image_urls = list(set(image_urls))
+
 
         return text, list(set(image_urls))
 
