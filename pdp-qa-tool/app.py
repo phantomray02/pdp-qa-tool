@@ -123,37 +123,50 @@ def get_salsify_text(url):
 # -----------------------------
 
 
+
+import json
+import re
+
 def get_cvs_text(url):
     try:
-        soup = get_soup(url)
+        html = get_html(url)
 
         title = ""
         description = ""
         features = []
 
-        # ✅ TITLE
-        for p in soup.find_all("p"):
-            class_list = " ".join(p.get("class", []))
-            txt = p.get_text(strip=True)
+        # ✅ GRAB ALL JSON OBJECTS IN PAGE
+        scripts = re.findall(r'<script[^>]*>(.*?)</script>', html, re.DOTALL)
 
-            if "text-lg" in class_list and "font-medium" in class_list:
-                title = txt
-                break
+        for script in scripts:
 
-        # ✅ DESCRIPTION
-        for span in soup.find_all("span"):
-            txt = span.get_text(" ", strip=True)
+            if "product" in script and "tampon" in script.lower():
 
-            if len(txt) > 150 and "tampon" in txt.lower():
-                description = txt
-                break
+                try:
+                    data = json.loads(script)
+                except:
+                    continue
 
-        # ✅ FEATURES
-        for li in soup.find_all("li", id=re.compile("vendorDetailsBullet")):
-            txt = li.get_text(" ", strip=True)
+                # ✅ Drill into structure safely
+                product = data.get("product", {})
 
-            if txt:
-                features.append(txt)
+                # title
+                if not title:
+                    title = product.get("name", "")
+
+                # description
+                description = product.get("longDescription", "")
+
+                # features
+                attrs = product.get("attributes", [])
+                for attr in attrs:
+                    for val in attr.get("values", []):
+                        if isinstance(val, str) and len(val) > 5:
+                            features.append(val)
+
+                # stop once we found it
+                if title or description:
+                    break
 
         return {
             "title": title,
@@ -162,7 +175,7 @@ def get_cvs_text(url):
         }
 
     except:
-        return {"title": "", "description": "", "features": []}
+        return {"title": "", "description": "", "features": []
 
 
         
