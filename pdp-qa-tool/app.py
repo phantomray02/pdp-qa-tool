@@ -4,12 +4,12 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 
-st.title("PDP QA Tool (Visual Clean Compare)")
+st.title("PDP QA Tool (Visual Image Compare - Stable)")
 
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
 # -----------------------------
-# GET SOUP
+# GET HTML
 # -----------------------------
 def get_soup(url):
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -17,7 +17,7 @@ def get_soup(url):
     return BeautifulSoup(res.text, "html.parser")
 
 # -----------------------------
-# ✅ SALSIFY IMAGES
+# ✅ SALSIFY IMAGES (clean)
 # -----------------------------
 def get_salsify_images(url):
     try:
@@ -27,17 +27,18 @@ def get_salsify_images(url):
         images = []
         for img in imgs:
             src = img.get("src") or ""
+
             if src.startswith("http"):
                 images.append(src)
 
-        # remove duplicates
+        # remove duplicates, limit to realistic carousel
         return list(dict.fromkeys(images))[:8]
 
     except:
         return []
 
 # -----------------------------
-# ✅ CVS THUMBNAILS (WORKING VERSION)
+# ✅ CVS IMAGES (WORKING VERSION)
 # -----------------------------
 def get_cvs_images(url):
     try:
@@ -52,28 +53,22 @@ def get_cvs_images(url):
             height = img.get("height")
 
             try:
-                # thumbnail filter
+                # ✅ thumbnails = small images
                 if width and height:
                     if int(width) <= 300 and int(height) <= 300:
-                        thumbs.append(src)
+                        if src.startswith("http"):
+                            thumbs.append(src)
             except:
                 continue
 
-        # remove duplicates
-        seen = set()
-        ordered = []
-        for t in thumbs:
-            if t not in seen:
-                ordered.append(t)
-                seen.add(t)
-
-        return ordered
+        # ✅ remove duplicates
+        return list(dict.fromkeys(thumbs))
 
     except:
         return []
 
 # -----------------------------
-# DISPLAY GRID
+# ✅ SAFE IMAGE DISPLAY
 # -----------------------------
 def display_images(label, images):
     st.markdown(f"### {label}")
@@ -81,7 +76,15 @@ def display_images(label, images):
     cols = st.columns(3)
 
     for i, img in enumerate(images):
-        cols[i % 3].image(img, caption=f"{i+1}", use_container_width=True)
+        try:
+            if img.startswith("http"):
+                cols[i % 3].image(
+                    img,
+                    caption=f"{i+1}",
+                    use_container_width=True
+                )
+        except:
+            continue
 
 # -----------------------------
 # MAIN
@@ -94,14 +97,15 @@ if uploaded_file:
 
         st.subheader(f"SKU: {row['sku']}")
 
+        # ✅ GET IMAGES
         s_images = get_salsify_images(row["salsify_url"])
         r_images = get_cvs_images(row["retail_url"])
 
-        # counts
+        # ✅ COUNTS
         st.write(f"Salsify Images: {len(s_images)}")
         st.write(f"CVS Images: {len(r_images)}")
 
-        # side by side layout
+        # ✅ SIDE-BY-SIDE
         col1, col2 = st.columns(2)
 
         with col1:
@@ -110,7 +114,7 @@ if uploaded_file:
         with col2:
             display_images("CVS", r_images)
 
-        # comparison result
+        # ✅ RESULT
         if len(r_images) == len(s_images):
             st.success("✅ Images Match")
         elif len(r_images) < len(s_images):
