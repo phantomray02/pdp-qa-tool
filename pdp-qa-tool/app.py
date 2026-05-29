@@ -6,12 +6,12 @@ from bs4 import BeautifulSoup
 import re
 from difflib import SequenceMatcher
 
-st.title("PDP QA Tool (FULL QA FINAL ✅)")
+st.title("PDP QA Tool (FINAL ✅)")
 
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
 # -----------------------------
-# HTML HELPERS
+# HELPERS
 # -----------------------------
 def get_html(url):
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -20,8 +20,13 @@ def get_html(url):
 def get_soup(url):
     return BeautifulSoup(get_html(url), "html.parser")
 
+def score(a, b):
+    if not a or not b:
+        return 0
+    return int(SequenceMatcher(None, a.lower(), b.lower()).ratio() * 100)
+
 # -----------------------------
-# IMAGE FUNCTIONS
+# ✅ IMAGES
 # -----------------------------
 def get_salsify_images(url):
     try:
@@ -65,38 +70,37 @@ def get_cvs_images(url):
         return []
 
 # -----------------------------
-# TEXT FUNCTIONS
+# ✅ SALSIFY TEXT (STRICT)
 # -----------------------------
-
-# ✅ SALSIFY
 def get_salsify_text(url):
     try:
         soup = get_soup(url)
+        raw = soup.get_text(" ", strip=True)
 
-        title = soup.title.text.strip() if soup.title else ""
-
+        title = ""
         description = ""
         features = []
 
-        # description
-        for p in soup.find_all("p"):
-            text = p.get_text().strip()
-            if len(text) > 120 and "general feature" not in text.lower():
-                description = text
-                break
+        # TITLE
+        t = re.search(r'General Product Title(.*?)(General|$)', raw, re.I)
+        if t:
+            title = t.group(1).strip()
 
-        # structured features
-        raw = soup.get_text(" ")
+        # DESCRIPTION
+        d = re.search(r'General Description(.*?)(General Feature 1|$)', raw, re.I)
+        if d:
+            description = d.group(1).strip()
 
-        matches = re.findall(
+        # FEATURES
+        f = re.findall(
             r'General Feature \d+(.*?)(?=General Feature \d+|$)',
             raw,
-            re.IGNORECASE
+            re.I
         )
 
-        for m in matches:
-            clean = m.strip()
-            if len(clean) > 10:
+        for x in f:
+            clean = x.strip()
+            if clean:
                 features.append(clean)
 
         return {
@@ -108,9 +112,9 @@ def get_salsify_text(url):
     except:
         return {"title": "", "description": "", "features": []}
 
-
-# ✅ CVS
-
+# -----------------------------
+# ✅ CVS TEXT (STRICT RULES)
+# -----------------------------
 def get_cvs_text(url):
     try:
         soup = get_soup(url)
@@ -119,36 +123,25 @@ def get_cvs_text(url):
         description = ""
         features = []
 
-        # -----------------------------
-        # ✅ TITLE
-        # -----------------------------
+        # ✅ TITLE (p tag)
         title_tag = soup.find("p", class_=re.compile("text-lg"))
 
         if title_tag:
             title = title_tag.get_text(strip=True)
 
-        # -----------------------------
-        # ✅ DESCRIPTION
-        # -----------------------------
+        # ✅ DESCRIPTION (span)
         desc_tag = soup.find("span", class_=re.compile("text-base"))
 
         if desc_tag:
             description = desc_tag.get_text(strip=True)
 
-        # -----------------------------
-        # ✅ FEATURES (VERY IMPORTANT FIX)
-        # -----------------------------
-        for li in soup.find_all("li"):
+        # ✅ FEATURES (li → TEXT ONLY)
+        for li in soup.find_all("li", id=re.compile("vendorDetailsBullet")):
 
-            class_list = " ".join(li.get("class", []))
+            txt = li.get_text(separator=" ", strip=True)
 
-            # ✅ ONLY product bullet list (ignore nav links)
-            if "vendorDetailsBullet" in class_list:
-
-                txt = li.get_text(strip=True)
-
-                if txt and len(txt) > 5:
-                    features.append(txt)
+            if txt:
+                features.append(txt)
 
         return {
             "title": title,
@@ -157,16 +150,7 @@ def get_cvs_text(url):
         }
 
     except:
-        return {
-            "title": "",
-            "description": "",
-            "features": []
-        }
-# -----------------------------
-# MATCH SCORE
-# -----------------------------
-def score(a, b):
-    return int(SequenceMatcher(None, a.lower(), b.lower()).ratio() * 100)
+        return {"title": "", "description": "", "features": []}
 
 # -----------------------------
 # MAIN
@@ -179,6 +163,7 @@ if uploaded_file:
 
         st.subheader(f"SKU: {row['sku']}")
 
+        # DATA
         s_images = get_salsify_images(row["salsify_url"])
         r_images = get_cvs_images(row["retail_url"])
 
@@ -186,75 +171,65 @@ if uploaded_file:
         r_text = get_cvs_text(row["retail_url"])
 
         # -----------------------------
-        # IMAGE ALIGNMENT
+        # ✅ IMAGES
         # -----------------------------
         st.markdown("## Image Comparison")
 
         max_len = max(len(s_images), len(r_images))
 
         for i in range(max_len):
-
             col1, col2 = st.columns(2)
 
             with col1:
-                st.write(f"Salsify {i+1}")
                 if i < len(s_images):
-                    st.image(s_images[i], use_container_width=True)
+                    st.image(s_images[i], caption=f"Salsify {i+1}")
                 else:
                     st.error("Missing")
 
             with col2:
-                st.write(f"CVS {i+1}")
                 if i < len(r_images):
-                    st.image(r_images[i], use_container_width=True)
+                    st.image(r_images[i], caption=f"CVS {i+1}")
                 else:
                     st.error("Missing")
 
         # -----------------------------
-        # TITLE
+        # ✅ TITLE
         # -----------------------------
-        st.markdown("## Title Comparison")
+        st.markdown("## General Product Title")
 
         col1, col2 = st.columns(2)
 
         with col1:
-            st.markdown("**Salsify Title**")
             st.write(s_text["title"])
 
         with col2:
-            st.markdown("**CVS Title**")
             st.write(r_text["title"])
 
-        st.write(f"✅ Title Match: {score(s_text['title'], r_text['title'])}%")
+        st.write(f"Match: {score(s_text['title'], r_text['title'])}%")
 
         # -----------------------------
-        # DESCRIPTION
+        # ✅ DESCRIPTION
         # -----------------------------
         st.markdown("## General Description")
 
         col1, col2 = st.columns(2)
 
         with col1:
-            st.markdown("**Salsify**")
             st.write(s_text["description"])
 
         with col2:
-            st.markdown("**CVS**")
             st.write(r_text["description"])
 
-        desc_score = score(s_text["description"], r_text["description"])
-
-        st.write(f"✅ Description Match: {desc_score}%")
+        st.write(f"Match: {score(s_text['description'], r_text['description'])}%")
 
         # -----------------------------
-        # FEATURES ALIGN + SCORE ✅ FIXED
+        # ✅ FEATURES
         # -----------------------------
         st.markdown("## Features")
 
         max_len = max(len(s_text["features"]), len(r_text["features"]))
 
         for i in range(max_len):
-
             col1, col2, col3 = st.columns([3, 3, 1])
 
             f1 = s_text["features"][i] if i < len(s_text["features"]) else ""
@@ -271,9 +246,6 @@ if uploaded_file:
                     st.write("❌ Missing")
 
             with col3:
-                if f1 and f2:
-                    st.write(f"{score(f1, f2)}%")
-                else:
-                    st.write("—")
+                st.write(f"{score(f1, f2)}%" if f1 and f2 else "—")
 
         st.divider()
