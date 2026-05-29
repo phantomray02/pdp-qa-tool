@@ -71,74 +71,66 @@ def get_cvs_text(url):
     title = ""
     description = ""
     features = []
-    anchor = None
+
+    # ✅ STEP 1: Get all meaningful text blocks
+    candidates = []
+
+    for tag in soup.find_all(["p", "span", "div", "li"]):
+        text = tag.get_text(" ", strip=True)
+
+        if len(text) > 20:
+            candidates.append(text)
 
     # -----------------------------
-    # ✅ 1. TITLE (ANCHOR START)
+    # ✅ TITLE
+    # pick best "product-like" line
     # -----------------------------
-    for p in soup.find_all("p"):
-        txt = p.get_text(strip=True)
-
+    for text in candidates:
         if (
-            len(txt) > 40
-            and "kotex" in txt.lower()
-            and "count" in txt.lower()
+            40 < len(text) < 140
+            and any(word in text.lower() for word in ["count", "pack", "oz", "ml"])
         ):
-            title = txt
-            anchor = p
-            break
-
-    if not anchor:
-        return {"title": "", "description": "", "features": []}
-
-    # -----------------------------
-    # ✅ 2. DESCRIPTION (NEXT BLOCK)
-    # -----------------------------
-    for el in anchor.find_all_next():
-        txt = el.get_text(" ", strip=True)
-
-        if (
-            len(txt) > 200
-            and "tampon" in txt.lower()
-        ):
-            description = txt
-            anchor = el   # 🔥 move anchor forward
+            title = text
             break
 
     # -----------------------------
-    # ✅ 3. FEATURES (FIRST VALID UL AFTER DESCRIPTION ONLY)
+    # ✅ DESCRIPTION
+    # pick longest product paragraph
     # -----------------------------
-    for ul in anchor.find_all_next("ul"):
+    descriptions = [t for t in candidates if len(t) > 150]
 
-        items = ul.find_all("li")
+    if descriptions:
+        # ✅ choose longest meaningful one
+        description = max(descriptions, key=len)
 
-        # ✅ must look like real bullet list
-        if len(items) >= 4:
+    # -----------------------------
+    # ✅ FEATURES
+    # pick bullet-like short lines
+    # -----------------------------
+    for text in candidates:
+        if (
+            15 < len(text) < 120
+            and text != title
+            and text not in description
+        ):
+            features.append(text)
 
-            temp = []
+    # ✅ CLEAN FEATURES (remove junk)
+    clean_features = []
 
-            for li in items:
-                txt = li.get_text(" ", strip=True)
-
-                if (
-                    txt
-                    and len(txt) > 10
-                    and "prescription" not in txt.lower()
-                    and "coupon" not in txt.lower()
-                    and "store" not in txt.lower()
-                ):
-                    temp.append(txt)
-
-            # ✅ ONLY accept if looks like real product bullets
-            if len(temp) >= 4:
-                features = temp
-                break
+    for f in features:
+        if not any(junk in f.lower() for junk in [
+            "prescription", "coupon", "store", "schedule",
+            "terms", "privacy", "sign in", "shop", "orders"
+        ]):
+            clean_features.append(f)
 
     return {
         "title": title,
         "description": description,
-        "features": features
+        "features": clean_features[:6]
     }
+
 
 
 # -----------------------------
