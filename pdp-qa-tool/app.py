@@ -74,7 +74,7 @@ def get_cvs_text(url):
     features = []
 
     # =========================================
-    # ✅ TITLE (KEEP EXACTLY AS YOU HAVE IT)
+    # ✅ TITLE (leave as-is, working)
     # =========================================
     t = re.search(
         r'U by Kotex Click Compact Tampons.*?Count',
@@ -83,60 +83,67 @@ def get_cvs_text(url):
     if t:
         title = t.group(0).strip()
 
-
-# =========================================
-# ✅ DESCRIPTION (CLEAN + FINAL)
-# =========================================
-d = re.search(
-    r'Get up to .*?HRA-eligible in the U\.S\.',
-    html,
-    re.DOTALL
-)
-
-description = ""
-features = []
-
-if d:
-    raw = d.group(0)
-
-    # ✅ HARD STOP (fixes your trailing junk)
-    raw = raw.split("HRA-eligible in the U.S.")[0] + "HRA-eligible in the U.S."
-
-    # ✅ REMOVE JSON STRING ARTIFACTS
-    raw = raw.replace('","', '. ')
-    raw = raw.replace('"', '')
-    raw = raw.replace('\\n', ' ')
-
-    # ✅ CLEAN HTML + WHITESPACE
-    raw = re.sub("<.*?>", "", raw)
-    raw = re.sub(r'\s+', ' ', raw).strip()
-
-    description = raw
-
     # =========================================
-    # ✅ FEATURES (CORRECT SPLIT ✅)
+    # ✅ DESCRIPTION BLOCK (single clean grab)
     # =========================================
-    sentences = re.split(r'\.\s+', raw)
+    d = re.search(
+        r'Get up to .*?HRA-eligible in the U\.S\.',
+        html,
+        re.DOTALL
+    )
 
-    for s in sentences:
-        s = s.strip()
+    if d:
+        raw = d.group(0)
 
-        if (
-            20 < len(s) < 120 and
-            any(word in s.lower() for word in [
-                "tampon",
-                "leak",
-                "compact",
-                "wrapped",
-                "fragrance",
-                "comfort"
-            ])
-        ):
-            features.append(s)
+        # ✅ HARD STOP (this removes your trailing junk like }]2f:)
+        raw = raw.split("HRA-eligible in the U.S.")[0] + "HRA-eligible in the U.S."
 
-    # ✅ DEDUPE + LIMIT
+        # ✅ FIX JSON STRING FORMAT
+        raw = raw.replace('\\"', '')
+        raw = raw.replace('\\n', ' ')
+        raw = raw.replace('","', '. ')
+        raw = raw.replace('"', '')
+
+        # ✅ REMOVE HTML TAGS
+        raw = re.sub("<.*?>", "", raw)
+
+        # ✅ CLEAN SPACING
+        raw = re.sub(r'\s+', ' ', raw).strip()
+
+        description = raw
+
+        # =========================================
+        # ✅ FEATURES = CLEAN SENTENCES FROM DESCRIPTION
+        # =========================================
+        sentences = re.split(r'\.\s+', description)
+
+        for s in sentences:
+            s = s.strip()
+
+            if (
+                20 < len(s) < 120 and
+                any(word in s.lower() for word in [
+                    "tampon",
+                    "leak",
+                    "compact",
+                    "wrapped",
+                    "fragrance",
+                    "comfort"
+                ])
+            ):
+                features.append(s)
+
+    # ✅ REMOVE DUPLICATES + LIMIT
     features = list(dict.fromkeys(features))[:5]
 
+    # =========================================
+    # ✅ RETURN FINAL OUTPUT
+    # =========================================
+    return {
+        "title": title,
+        "description": description,
+        "features": features
+    }
 
 # -----------------------------
 # IMAGES (KEEP YOUR WORKING VERSION)
