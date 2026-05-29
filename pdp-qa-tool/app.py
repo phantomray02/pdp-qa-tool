@@ -72,53 +72,56 @@ def get_cvs_text(url):
     features = []
 
     # -----------------------------
-    # ✅ 1. FIND DETAILS SECTION
+    # ✅ 1. TITLE
     # -----------------------------
-    details_section = None
+    anchor = None
 
-    for div in soup.find_all(["div", "section"]):
-        text = div.get_text(" ", strip=True)
-
-        if "Details" in text and "tampon" in text.lower():
-            details_section = div
-            break
-
-    if not details_section:
-        return {"title": "", "description": "", "features": []}
-
-    # -----------------------------
-    # ✅ 2. TITLE (FIRST STRONG LINE)
-    # -----------------------------
-    for tag in details_section.find_all(["p", "strong", "h2", "h3"]):
-        txt = tag.get_text(strip=True)
+    for p in soup.find_all("p"):
+        txt = p.get_text(strip=True)
 
         if (
             len(txt) > 30
             and "kotex" in txt.lower()
+            and "count" in txt.lower()
         ):
             title = txt
+            anchor = p
             break
 
-    # -----------------------------
-    # ✅ 3. DESCRIPTION (LONG PARAGRAPH)
-    # -----------------------------
-    for p in details_section.find_all("p"):
-        txt = p.get_text(" ", strip=True)
+    if not anchor:
+        return {"title": "", "description": "", "features": []}
 
-        if len(txt) > 150:
+    # -----------------------------
+    # ✅ 2. DESCRIPTION (STOP EARLY ✅)
+    # -----------------------------
+    for el in anchor.find_all_next(["p", "span"]):
+        txt = el.get_text(" ", strip=True)
+
+        if (
+            150 < len(txt) < 1000   # ✅ prevents grabbing junk blocks
+            and "tampon" in txt.lower()
+            and "driver" not in txt.lower()   # ✅ remove ID verification
+        ):
             description = txt
+            anchor = el
             break
 
     # -----------------------------
-    # ✅ 4. FEATURES (ONLY THIS UL)
+    # ✅ 3. FEATURES (FIRST UL ONLY ✅)
     # -----------------------------
-    ul = details_section.find("ul")
+    ul = anchor.find_next("ul")
 
     if ul:
         for li in ul.find_all("li"):
             txt = li.get_text(" ", strip=True)
 
-            if len(txt) > 5:
+            if (
+                txt
+                and len(txt) > 10
+                and "prescription" not in txt.lower()
+                and "coupon" not in txt.lower()
+                and "store" not in txt.lower()
+            ):
                 features.append(txt)
 
     return {
@@ -126,6 +129,7 @@ def get_cvs_text(url):
         "description": description,
         "features": features
     }
+
 
 # -----------------------------
 # IMAGES (KEEP YOUR WORKING VERSION)
