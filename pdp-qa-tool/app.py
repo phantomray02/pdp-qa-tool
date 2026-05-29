@@ -2,296 +2,170 @@
 import streamlit as st
 import pandas as pd
 import requests
-from bs4 import BeautifulSoup
 import re
-from difflib import SequenceMatcher
+from bs4 import BeautifulSoup
 
-st.title("PDP QA Tool (FINAL ✅ Working CVS Text)")
-
-uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
-
-# -----------------------------
-# HTML HELPERS
-# -----------------------------
-
-import requests
-
+# =========================================
+# ✅ FETCH HTML (important for CVS)
+# =========================================
 def get_html(url):
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0",
         "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://www.google.com/",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Connection": "keep-alive"
-    }
-
-    response = requests.get(url, headers=headers, timeout=20)
-    return response.text
-
-def get_soup(url):
-    return BeautifulSoup(get_html(url), "html.parser")
-
-# -----------------------------
-# MATCH SCORE
-# -----------------------------
-def score(a, b):
-    if not a or not b:
-        return 0
-    return int(SequenceMatcher(None, a.lower(), b.lower()).ratio() * 100)
-
-# -----------------------------
-# ✅ SALSIFY (unchanged)
-# -----------------------------
-def get_salsify_text(url):
-    soup = get_soup(url)
-    raw = soup.get_text(" ", strip=True)
-
-    title = ""
-    description = ""
-    features = []
-
-    # Title
-    t = re.search(r'General Product Title(.*?)(General|$)', raw, re.I)
-    if t:
-        title = t.group(1).strip()
-
-    # Description
-    d = re.search(r'General Description(.*?)(General Feature 1|$)', raw, re.I)
-    if d:
-        description = d.group(1).strip()
-
-    # Features
-    f = re.findall(r'General Feature \d+(.*?)(?=General Feature \d+|$)', raw, re.I)
-    for x in f:
-        features.append(x.strip())
-
-    return {
-        "title": title,
-        "description": description,
-        "features": features
-    }
-
-# -----------------------------
-# ✅ CVS TEXT (FINAL WORKING VERSION ✅)
-# -----------------------------
-
-import re
-import requests
-
-def get_cvs_text(url):
-    # ============================
-    # ✅ SAFE REQUEST (prevents empty HTML issue)
-    # ============================
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://www.google.com/",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        "Referer": "https://www.google.com/"
     }
 
     try:
         res = requests.get(url, headers=headers, timeout=20)
-        html = res.text
+        return res.text
     except:
-        return {
-            "title": "",
-            "description": "",
-            "features": []
-        }
+        return ""
 
-    # ============================
-    # ✅ INIT OUTPUT
-    # ============================
+# =========================================
+# ✅ CLEAN TEXT (like immersive reader)
+# =========================================
+def extract_visible_text(html):
+    soup = BeautifulSoup(html, "html.parser")
+
+    for tag in soup(["script", "style", "noscript"]):
+        tag.decompose()
+
+    text = soup.get_text(" ")
+
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+# =========================================
+# ✅ GET CVS TEXT (STABLE VERSION)
+# =========================================
+def get_cvs_text(url):
+    html = get_html(url)
+
+    if not html:
+        return {"title": "", "description": "", "features": []}
+
+    text = extract_visible_text(html)
+
     title = ""
     description = ""
-    features = []
 
-    # ============================
-    # ✅ TITLE (robust, generic)
-    # ============================
-    t = re.search(r'[A-Z][A-Za-z0-9 ,\-]+(?:Count|Ct)', html)
+    # ✅ TITLE
+    t = re.search(r"[A-Z][A-Za-z0-9 ,\-]+(?:Count|Ct)", text)
     if t:
-        title = t.group(0).strip()
+        title = t.group(0)
 
-    # ============================
-    # ✅ DESCRIPTION (stable anchor)
-    # ============================
+    # ✅ DESCRIPTION (generic capture)
     d = re.search(
-        r'(Get up to .*?)(?:vendorDetails|__next|Reviews|Ingredients)',
-        html,
+        r"(Get .*?)(?:Rated|Reviews|Ingredients|Directions)",
+        text,
         re.DOTALL
     )
 
     if d:
-        raw = d.group(1)
+        description = d.group(1).strip()
+    else:
+        description = text[:800]
 
-        # ✅ CLEAN ALL ARTIFACTS
-        raw = raw.replace('\\"', '')
-        raw = raw.replace('\\n', ' ')
-        raw = raw.replace('","', '. ')
-        raw = raw.replace('"', '')
-
-        raw = re.sub('<.*?>', '', raw)
-        raw = re.sub(r'\s+', ' ', raw).strip()
-
-        description = raw
-
-        # ============================
-        # ✅ FEATURES (CLEAN SENTENCE SPLIT)
-        # ============================
-        sentences = re.split(r'\.\s+', description)
-
-        for s in sentences:
-            s = s.strip()
-
-            # ✅ remove garbage / giant block
-            if len(s) < 20 or len(s) > 150:
-                continue
-
-            # ✅ keep only product-relevant lines
-            if any(word in s.lower() for word in [
-                "tampon",
-                "leak",
-                "compact",
-                "wrapped",
-                "comfort",
-                "fit"
-            ]):
-                features.append(s)
-
-    # ============================
-    # ✅ ENSURE FIRST BULLET EXISTS
-    # ============================
-    if description and not any("tampon" in f.lower() and any(char.isdigit() for char in f) for f in features):
-        features.insert(0, "45 regular tampons")
-
-    # ============================
-    # ✅ FINAL CLEANUP
-    # ============================
-    features = list(dict.fromkeys(features))[:5]
-
-    # ============================
-    # ✅ ALWAYS RETURN VALID STRUCTURE
-    # ============================
     return {
         "title": title,
         "description": description,
-        "features": features
+        "features": []  # we DO NOT scrape features anymore
     }
 
-# -----------------------------
-# IMAGES (KEEP YOUR WORKING VERSION)
-# -----------------------------
-def get_salsify_images(url):
-    soup = get_soup(url)
-    imgs = []
+# =========================================
+# ✅ FEATURE MATCHING (THIS FIXES EVERYTHING)
+# =========================================
+def normalize(text):
+    return re.sub(r"[^a-z0-9 ]", "", text.lower())
 
-    for img in soup.find_all("img"):
-        src = img.get("src") or ""
-        if src.startswith("http"):
-            imgs.append(src)
+def match_features(salsify_features, cvs_description):
+    results = []
+    scores = []
 
-    return list(dict.fromkeys(imgs))[:8]
+    desc = normalize(cvs_description)
 
+    for feat in salsify_features:
+        f = normalize(feat)
 
-def get_cvs_images(url):
-    html = get_html(url)
+        words = f.split()
+        match_count = sum(1 for w in words if w in desc)
+        score = match_count / len(words) if words else 0
 
-    matches = re.findall(
-        r'/bizcontent/merchandising/productimages/high_res/[^\s"]+\.jpg\?[^\s"]*',
-        html
-    )
+        if score >= 0.5:
+            results.append(feat)
+        else:
+            results.append("❌ Missing")
 
-    image_dict = {}
+        scores.append(round(score * 100))
 
-    for m in matches:
-        full = "https://www.cvs.com" + m
-        base = full.split("?")[0]
-        name = base.split("/")[-1]
+    return results, scores
 
-        size_match = re.search(r'Resize=\((\d+),', m)
-        size = int(size_match.group(1)) if size_match else 0
+# =========================================
+# ✅ STREAMLIT APP
+# =========================================
+st.title("PDP QA Tool")
 
-        if name not in image_dict or size > image_dict[name]["size"]:
-            image_dict[name] = {"url": base, "size": size}
+uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
-    return [v["url"] for v in image_dict.values()]
-
-# -----------------------------
-# MAIN
-# -----------------------------
 if uploaded_file:
-
     df = pd.read_csv(uploaded_file)
 
     for _, row in df.iterrows():
 
-        st.subheader(f"SKU: {row['sku']}")
+        st.header("General Product Title")
 
-        s_text = get_salsify_text(row["salsify_url"])
+        # ✅ CVS data
         r_text = get_cvs_text(row["retail_url"])
 
-        s_images = get_salsify_images(row["salsify_url"])
-        r_images = get_cvs_images(row["retail_url"])
-
-        # -----------------------------
-        # ✅ IMAGES
-        # -----------------------------
-        st.markdown("## Image Comparison")
-
-        max_len = max(len(s_images), len(r_images))
-
-        for i in range(max_len):
-            col1, col2 = st.columns(2)
-
-            with col1:
-                if i < len(s_images):
-                    st.image(s_images[i], caption=f"Salsify {i+1}")
-                else:
-                    st.error("Missing")
-
-            with col2:
-                if i < len(r_images):
-                    st.image(r_images[i], caption=f"CVS {i+1}")
-                else:
-                    st.error("Missing")
-
-        # -----------------------------
-        # ✅ TITLE
-        # -----------------------------
-        st.markdown("## General Product Title")
-        st.write("Salsify:", s_text["title"])
+        st.write("Salsify:", row["title"])
         st.write("CVS:", r_text["title"])
-        st.write(f"Match: {score(s_text['title'], r_text['title'])}%")
 
-        # -----------------------------
+        # simple title match
+        title_score = 0
+        if r_text["title"]:
+            title_score = int(
+                100 * (len(set(r_text["title"].lower().split()) &
+                           set(row["title"].lower().split()))
+                       / len(row["title"].lower().split()))
+            )
+
+        st.write("Match:", f"{title_score}%")
+
+        # ============================
         # ✅ DESCRIPTION
-        # -----------------------------
-        st.markdown("## General Description")
-        st.write("Salsify:", s_text["description"])
+        # ============================
+        st.header("General Description")
+
+        st.write("Salsify:", row["description"])
         st.write("CVS:", r_text["description"])
-        st.write(f"Match: {score(s_text['description'], r_text['description'])}%")
 
-        # -----------------------------
-        # ✅ FEATURES
-        # -----------------------------
-        st.markdown("## Features")
+        desc_score = 0
+        if r_text["description"]:
+            s = normalize(row["description"])
+            c = normalize(r_text["description"])
 
-        max_len = max(len(s_text["features"]), len(r_text["features"]))
+            desc_score = int(
+                100 * (len(set(s.split()) & set(c.split())) / len(s.split()))
+            )
 
-        for i in range(max_len):
-            col1, col2, col3 = st.columns([3, 3, 1])
+        st.write("Match:", f"{desc_score}%")
 
-            f1 = s_text["features"][i] if i < len(s_text["features"]) else ""
-            f2 = r_text["features"][i] if i < len(r_text["features"]) else ""
+        # ============================
+        # ✅ FEATURES (CORRECT WAY ✅)
+        # ============================
+        st.header("Features")
 
-            with col1:
-                st.write("•", f1)
+        # Expect your CSV column already split
+        salsify_features = str(row["features"]).split("|")
 
-            with col2:
-                st.write("•", f2 if f2 else "❌ Missing")
+        cvs_results, scores = match_features(
+            salsify_features,
+            r_text["description"]
+        )
 
-            with col3:
-                st.write(f"{score(f1, f2)}%" if f1 and f2 else "—")
-
-        st.divider()
+        for i in range(len(salsify_features)):
+            st.write(
+                "•", salsify_features[i],
+                " | CVS:", cvs_results[i],
+                " | Match:", f"{scores[i]}%" if cvs_results[i] != "❌ Missing" else "--"
+            )
