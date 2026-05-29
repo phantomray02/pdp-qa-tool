@@ -65,57 +65,53 @@ def get_salsify_text(url):
 # -----------------------------
 
 def get_cvs_text(url):
-    import requests
-    import re
+    html = get_html(url)
 
     title = ""
     description = ""
     features = []
 
-    # ✅ get SKU
-    match = re.search(r'skuId=(\d+)', url)
-    if not match:
-        return {"title": "", "description": "", "features": []}
+    # -----------------------------
+    # ✅ TITLE (direct string match)
+    # -----------------------------
+    t = re.search(
+        r'U by Kotex Click Compact Tampons.*?Count',
+        html
+    )
+    if t:
+        title = t.group(0)
 
-    sku = match.group(1)
+    # -----------------------------
+    # ✅ DESCRIPTION (long paragraph)
+    # -----------------------------
+    d = re.search(
+        r'Get up to 100% leak-free.*?HRA-eligible in the U\.S\.',
+        html,
+        re.DOTALL
+    )
+    if d:
+        description = d.group(0)
 
-    api_url = f"https://www.cvs.com/retailapi/productdetails/{sku}"
+    # -----------------------------
+    # ✅ FEATURES (each sentence pattern)
+    # -----------------------------
+    f = re.findall(
+        r'(?:\d+\s+regular tampons|Get up to 100% leak-free.*?|U by Kotex Click tampons.*?|Compact to fit.*?|Individually wrapped.*?trends)',
+        html,
+        re.DOTALL
+    )
 
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "application/json"
-    }
-
-    try:
-        res = requests.get(api_url, headers=headers)
-
-        if res.status_code != 200:
-            return {"title": "", "description": "", "features": []}
-
-        data = res.json()
-
-        # ✅ TITLE
-        title = data.get("product", {}).get("name", "")
-
-        # ✅ DESCRIPTION
-        description = data.get("product", {}).get("longDescription", "")
-
-        # ✅ FEATURES
-        bullets = data.get("product", {}).get("bulletDescriptions", [])
-
-        for b in bullets:
-            clean = re.sub("<.*?>", "", b)  # remove HTML if present
-            if clean:
-                features.append(clean)
-
-    except:
-        pass
+    for item in f:
+        clean = re.sub("<.*?>", "", item).strip()
+        if clean and clean not in features:
+            features.append(clean)
 
     return {
         "title": title,
         "description": description,
         "features": features
     }
+
 
 # -----------------------------
 # IMAGES (KEEP YOUR WORKING VERSION)
