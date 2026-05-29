@@ -8,6 +8,20 @@ st.title("PDP QA Tool")
 
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
+def get_text(url):
+    try:
+        res = requests.get(url)
+        soup = BeautifulSoup(res.text, "html.parser")
+        title = soup.find("h1")
+        return title.get_text(strip=True) if title else ""
+    except:
+        return ""
+
+if uploaded_file:
+    df = pd.read_csv(uploaded_file)
+
+    results = []
+    
 def get_images(url):
     try:
         res = requests.get(url)
@@ -26,21 +40,6 @@ def get_images(url):
     except:
         return []
 
-def get_text(url):
-    try:
-        res = requests.get(url)
-        soup = BeautifulSoup(res.text, "html.parser")
-        title = soup.find("h1")
-        return title.get_text(strip=True) if title else ""
-    except:
-        return ""
-
-if uploaded_file:
-    df = pd.read_csv(uploaded_file)
-
-    results = []
-
-    
 for _, row in df.iterrows():
 
     s_text = get_salsify_data(row["salsify_url"])
