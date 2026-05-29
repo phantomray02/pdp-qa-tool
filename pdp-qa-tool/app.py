@@ -64,59 +64,66 @@ def get_salsify_text(url):
 # ✅ CVS TEXT (FINAL WORKING VERSION ✅)
 # -----------------------------
 
-from playwright.sync_api import sync_playwright
-from bs4 import BeautifulSoup
+
+import requests
+import re
 
 def get_cvs_text(url):
+
     title = ""
     description = ""
     features = []
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
+    try:
+        # ✅ extract SKU from URL
+        match = re.search(r'skuId=(\d+)', url)
+        if not match:
+            return {"title": "", "description": "", "features": []}
 
-        page.goto(url, timeout=60000)
+        sku = match.group(1)
 
-        # ✅ WAIT UNTIL DETAILS IS VISIBLE
-        page.wait_for_selector("text=Details")
+        # ✅ CVS product API endpoint (used by the site)
+        api_url = f"https://www.cvs.com/api/product-details/{sku}"
 
-        html = page.content()
-        browser.close()
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json"
+        }
 
-    soup = BeautifulSoup(html, "html.parser")
+        res = requests.get(api_url, headers=headers)
 
-    # ✅ NOW THIS WILL ACTUALLY WORK
-    container = None
-    for div in soup.find_all("div"):
-        if div.get("class") and "whitespace-pre-line" in div.get("class"):
-            container = div
-            break
+        if res.status_code != 200:
+            return {"title": "", "description": "", "features": []}
 
-    if not container:
+        data = res.json()
+
+        # -----------------------------
+        # ✅ TITLE
+        # -----------------------------
+        title = data.get("productName", "")
+
+        # -----------------------------
+        # ✅ DESCRIPTION
+        # -----------------------------
+        description = data.get("longDescription", "")
+
+        # -----------------------------
+        # ✅ FEATURES
+        # -----------------------------
+        bullets = data.get("features", [])
+
+        for b in bullets:
+            if isinstance(b, str):
+                features.append(b.strip())
+
+        return {
+            "title": title,
+            "description": description,
+            "features": features
+        }
+
+    except:
         return {"title": "", "description": "", "features": []}
-
-    # ✅ TITLE
-    t = container.find("p", class_=lambda x: x and "text-lg" in x)
-    if t:
-        title = t.get_text(strip=True)
-
-    # ✅ DESCRIPTION
-    d = container.find("span", class_=lambda x: x and "text-base" in x)
-    if d:
-        description = d.get_text(" ", strip=True)
-
-    # ✅ FEATURES
-    for li in container.find_all("li", id=lambda x: x and x.startswith("vendorDetailsBullet")):
-        txt = li.get_text(strip=True)
-        if txt:
-            features.append(txt)
-
-    return {
-        "title": title,
-        "description": description,
-        "features": features
-    }
 
 
 # -----------------------------
