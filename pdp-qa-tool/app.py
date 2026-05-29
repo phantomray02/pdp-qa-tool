@@ -6,179 +6,159 @@ from bs4 import BeautifulSoup
 import re
 from difflib import SequenceMatcher
 
-st.title("PDP QA Tool (FINAL ✅)")
+st.title("PDP QA Tool (FINAL ✅ Working CVS Text)")
 
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
 # -----------------------------
-# HELPERS
+# HTML HELPERS
 # -----------------------------
-
 def get_html(url):
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept": "text/html,application/xhtml+xml",
-    }
-
+    headers = {"User-Agent": "Mozilla/5.0"}
     return requests.get(url, headers=headers).text
 
 def get_soup(url):
     return BeautifulSoup(get_html(url), "html.parser")
 
+# -----------------------------
+# MATCH SCORE
+# -----------------------------
 def score(a, b):
     if not a or not b:
         return 0
     return int(SequenceMatcher(None, a.lower(), b.lower()).ratio() * 100)
 
 # -----------------------------
-# ✅ IMAGES
-# -----------------------------
-def get_salsify_images(url):
-    try:
-        soup = get_soup(url)
-        imgs = []
-
-        for img in soup.find_all("img"):
-            src = img.get("src") or ""
-            if src.startswith("http"):
-                imgs.append(src)
-
-        return list(dict.fromkeys(imgs))[:8]
-    except:
-        return []
-
-def get_cvs_images(url):
-    try:
-        html = get_html(url)
-
-        matches = re.findall(
-            r'/bizcontent/merchandising/productimages/high_res/[^\s"]+\.jpg\?[^\s"]*',
-            html
-        )
-
-        image_dict = {}
-
-        for m in matches:
-            full = "https://www.cvs.com" + m
-            base = full.split("?")[0]
-            name = base.split("/")[-1]
-
-            size_match = re.search(r'Resize=\((\d+),', m)
-            size = int(size_match.group(1)) if size_match else 0
-
-            if name not in image_dict or size > image_dict[name]["size"]:
-                image_dict[name] = {"url": base, "size": size}
-
-        return [v["url"] for v in image_dict.values()]
-
-    except:
-        return []}
-
-# -----------------------------
-# ✅ SALSIFY TEXT (STRICT)
+# ✅ SALSIFY (unchanged)
 # -----------------------------
 def get_salsify_text(url):
-    try:
-        soup = get_soup(url)
-        raw = soup.get_text(" ", strip=True)
+    soup = get_soup(url)
+    raw = soup.get_text(" ", strip=True)
 
-        title = ""
-        description = ""
-        features = []
+    title = ""
+    description = ""
+    features = []
 
-        # TITLE
-        t = re.search(r'General Product Title(.*?)(General|$)', raw, re.I)
-        if t:
-            title = t.group(1).strip()
+    # Title
+    t = re.search(r'General Product Title(.*?)(General|$)', raw, re.I)
+    if t:
+        title = t.group(1).strip()
 
-        # DESCRIPTION
-        d = re.search(r'General Description(.*?)(General Feature 1|$)', raw, re.I)
-        if d:
-            description = d.group(1).strip()
+    # Description
+    d = re.search(r'General Description(.*?)(General Feature 1|$)', raw, re.I)
+    if d:
+        description = d.group(1).strip()
 
-        # FEATURES
-        f = re.findall(
-            r'General Feature \d+(.*?)(?=General Feature \d+|$)',
-            raw,
-            re.I
-        )
+    # Features
+    f = re.findall(r'General Feature \d+(.*?)(?=General Feature \d+|$)', raw, re.I)
+    for x in f:
+        features.append(x.strip())
 
-        for x in f:
-            clean = x.strip()
-            if clean:
-                features.append(clean)
-
-        return {
-            "title": title,
-            "description": description,
-            "features": features
-        }
-
-    except:
-        return {"title": "", "description": "", "features": []}
+    return {
+        "title": title,
+        "description": description,
+        "features": features
+    }
 
 # -----------------------------
-# ✅ CVS TEXT (STRICT RULES)
+# ✅ CVS TEXT (FINAL WORKING VERSION ✅)
 # -----------------------------
-
-
-
-import json
-import re
-
 def get_cvs_text(url):
-    try:
-        html = get_html(url)
+    soup = get_soup(url)
 
-        title = ""
-        description = ""
-        features = []
+    title = ""
+    description = ""
+    features = []
 
-        # ✅ GRAB ALL JSON OBJECTS IN PAGE
-        scripts = re.findall(r'<script[^>]*>(.*?)</script>', html, re.DOTALL)
+    # ✅ 1. FIND TITLE (FIRST BIG PRODUCT HEADING)
+    for p in soup.find_all("p"):
+        txt = p.get_text(strip=True)
 
-        for script in scripts:
+        if (
+            len(txt) > 40
+            and "kotex" in txt.lower()
+            and "count" in txt.lower()
+        ):
+            title = txt
 
-            if "product" in script and "tampon" in script.lower():
+            # ✅ anchor from here
+            parent = p.parent
+            break
 
-                try:
-                    data = json.loads(script)
-                except:
-                    continue
+    # ✅ 2. DESCRIPTION = NEXT LARGE TEXT BLOCK
+    for el in parent.find_all_next():
+        txt = el.get_text(" ", strip=True)
 
-                # ✅ Drill into structure safely
-                product = data.get("product", {})
+        if (
+            len(txt) > 200
+            and "tampon" in txt.lower()
+        ):
+            description = txt
+            break
 
-                # title
-                if not title:
-                    title = product.get("name", "")
+    # ✅ 3. FEATURES = BULLET LIST AFTER DESCRIPTION
+    for ul in parent.find_all_next("ul"):
+        items = ul.find_all("li")
 
-                # description
-                description = product.get("longDescription", "")
+        # ✅ valid bullet list = multiple meaningful lines
+        if len(items) >= 4:
 
-                # features
-                attrs = product.get("attributes", [])
-                for attr in attrs:
-                    for val in attr.get("values", []):
-                        if isinstance(val, str) and len(val) > 5:
-                            features.append(val)
+            for li in items:
+                txt = li.get_text(" ", strip=True)
 
-                # stop once we found it
-                if title or description:
-                    break
+                if (
+                    txt
+                    and len(txt) > 10
+                    and "prescription" not in txt.lower()
+                ):
+                    features.append(txt)
 
-        return {
-            "title": title,
-            "description": description,
-            "features": features
-        }
+            break
 
-    except:
-        return {"title": "", "description": "", "features": []}
+    return {
+        "title": title,
+        "description": description,
+        "features": features
+    }
+
+# -----------------------------
+# IMAGES (KEEP YOUR WORKING VERSION)
+# -----------------------------
+def get_salsify_images(url):
+    soup = get_soup(url)
+    imgs = []
+
+    for img in soup.find_all("img"):
+        src = img.get("src") or ""
+        if src.startswith("http"):
+            imgs.append(src)
+
+    return list(dict.fromkeys(imgs))[:8]
 
 
-        
+def get_cvs_images(url):
+    html = get_html(url)
+
+    matches = re.findall(
+        r'/bizcontent/merchandising/productimages/high_res/[^\s"]+\.jpg\?[^\s"]*',
+        html
+    )
+
+    image_dict = {}
+
+    for m in matches:
+        full = "https://www.cvs.com" + m
+        base = full.split("?")[0]
+        name = base.split("/")[-1]
+
+        size_match = re.search(r'Resize=\((\d+),', m)
+        size = int(size_match.group(1)) if size_match else 0
+
+        if name not in image_dict or size > image_dict[name]["size"]:
+            image_dict[name] = {"url": base, "size": size}
+
+    return [v["url"] for v in image_dict.values()]
+
 # -----------------------------
 # MAIN
 # -----------------------------
@@ -190,12 +170,11 @@ if uploaded_file:
 
         st.subheader(f"SKU: {row['sku']}")
 
-        # DATA
-        s_images = get_salsify_images(row["salsify_url"])
-        r_images = get_cvs_images(row["retail_url"])
-
         s_text = get_salsify_text(row["salsify_url"])
         r_text = get_cvs_text(row["retail_url"])
+
+        s_images = get_salsify_images(row["salsify_url"])
+        r_images = get_cvs_images(row["retail_url"])
 
         # -----------------------------
         # ✅ IMAGES
@@ -223,30 +202,16 @@ if uploaded_file:
         # ✅ TITLE
         # -----------------------------
         st.markdown("## General Product Title")
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            st.write(s_text["title"])
-
-        with col2:
-            st.write(r_text["title"])
-
+        st.write("Salsify:", s_text["title"])
+        st.write("CVS:", r_text["title"])
         st.write(f"Match: {score(s_text['title'], r_text['title'])}%")
 
         # -----------------------------
         # ✅ DESCRIPTION
         # -----------------------------
         st.markdown("## General Description")
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            st.write(s_text["description"])
-
-        with col2:
-            st.write(r_text["description"])
-
+        st.write("Salsify:", s_text["description"])
+        st.write("CVS:", r_text["description"])
         st.write(f"Match: {score(s_text['description'], r_text['description'])}%")
 
         # -----------------------------
@@ -263,14 +228,10 @@ if uploaded_file:
             f2 = r_text["features"][i] if i < len(r_text["features"]) else ""
 
             with col1:
-                if f1:
-                    st.write("•", f1)
+                st.write("•", f1)
 
             with col2:
-                if f2:
-                    st.write("•", f2)
-                else:
-                    st.write("❌ Missing")
+                st.write("•", f2 if f2 else "❌ Missing")
 
             with col3:
                 st.write(f"{score(f1, f2)}%" if f1 and f2 else "—")
