@@ -85,14 +85,14 @@ def get_cvs_text(url):
     features = []
 
     # ============================
-    # ✅ TITLE (keep working)
+    # ✅ TITLE
     # ============================
     t = re.search(r'[A-Z][A-Za-z0-9 ,\-]+(?:Count|Ct)', html)
     if t:
         title = t.group(0).strip()
 
     # ============================
-    # ✅ DESCRIPTION (clean stop)
+    # ✅ DESCRIPTION
     # ============================
     d = re.search(
         r'(Get up to .*?latest fashion trends)',
@@ -100,61 +100,49 @@ def get_cvs_text(url):
         re.DOTALL
     )
 
-    if not d:
-        return {"title": title, "description": "", "features": []}
+    if d:
+        raw = d.group(1)
 
-    raw = d.group(1)
+        raw = raw.replace('\\"', '')
+        raw = raw.replace('\\n', ' ')
+        raw = raw.replace('","', '. ')
+        raw = raw.replace('"', '')
 
-    # ✅ CLEAN JSON / HTML
-    raw = raw.replace('\\"', '')
-    raw = raw.replace('\\n', ' ')
-    raw = raw.replace('","', '. ')
-    raw = raw.replace('"', '')
+        raw = re.sub('<.*?>', '', raw)
+        raw = re.sub(r'\s+', ' ', raw).strip()
 
-    raw = re.sub('<.*?>', '', raw)
-    raw = re.sub(r'\s+', ' ', raw).strip()
+        description = raw
 
-    description = raw
+        # ============================
+        # ✅ FEATURES (FIXED VERSION)
+        # ============================
+        sentences = re.split(r'\.\s+', description)
 
- 
-# ============================
-# ✅ FEATURES (FINAL FIX ✅)
-# ============================
+        for s in sentences:
+            s = s.strip()
 
-features = []
+            if len(s) > 150:
+                continue
 
-if description:
-    # ✅ split into INDIVIDUAL sentences FIRST
-    sentences = re.split(r'\.\s+', description)
+            if any(word in s.lower() for word in [
+                "tampon",
+                "leak",
+                "move with you",
+                "compact",
+                "wrapped"
+            ]):
+                features.append(s)
 
-    for s in sentences:
-        s = s.strip()
+    # ✅ ensure quantity bullet exists
+    if not any("45 regular tampons" in f.lower() for f in features):
+        features.insert(0, "45 regular tampons")
 
-        # ✅ remove HUGE merged block
-        if len(s) > 150:
-            continue
+    # ✅ remove duplicates + limit
+    features = list(dict.fromkeys(features))[:5]
 
-        # ✅ CLEAN sentence
-        s = re.sub(r'\s+', ' ', s)
-
-        # ✅ MATCH feature patterns
-        if any(word in s.lower() for word in [
-            "tampons",
-            "leak",
-            "move with you",
-            "compact",
-            "wrapped"
-        ]):
-            features.append(s)
-
-# ✅ add missing bullet explicitly (CVS doesn’t include it cleanly)
-if not any("45 regular tampons" in f.lower() for f in features):
-    features.insert(0, "45 regular tampons")
-
-# ✅ dedupe + limit
-features = list(dict.fromkeys(features))[:5]
-
-
+    # ============================
+    # ✅ RETURN (correct indent ✅)
+    # ============================
     return {
         "title": title,
         "description": description,
