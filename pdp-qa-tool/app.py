@@ -116,6 +116,7 @@ def get_salsify_text(url):
 # ✅ CVS TEXT (STRICT RULES)
 # -----------------------------
 
+
 def get_cvs_text(url):
     try:
         soup = get_soup(url)
@@ -125,41 +126,49 @@ def get_cvs_text(url):
         features = []
 
         # -----------------------------
-        # ✅ TITLE (EXACT MATCH)
+        # ✅ TITLE
         # -----------------------------
-        for p in soup.find_all("p", class_=re.compile("text-lg")):
-            txt = p.get_text(strip=True)
+        title_tags = soup.select("p.text-lg")
 
-            # ✅ must contain product words (avoid nav/junk)
+        for tag in title_tags:
+            txt = tag.get_text(strip=True)
+
             if "kotex" in txt.lower():
                 title = txt
                 break
 
         # -----------------------------
-        # ✅ DESCRIPTION (EXACT LONG SPAN ONLY)
+        # ✅ DESCRIPTION (BEST MATCH)
         # -----------------------------
-        for span in soup.find_all("span", class_=re.compile("text-base")):
-            txt = span.get_text(strip=True)
+        spans = soup.select("span.text-base")
 
-            # ✅ must be long + product content
-            if len(txt) > 120 and "tampon" in txt.lower():
-                description = txt
-                break
+        best_desc = ""
+
+        for span in spans:
+            txt = span.get_text(" ", strip=True)
+
+            if (
+                len(txt) > 150
+                and "tampon" in txt.lower()
+                and "see all" not in txt.lower()
+            ):
+                # pick longest one (most complete)
+                if len(txt) > len(best_desc):
+                    best_desc = txt
+
+        description = best_desc
 
         # -----------------------------
-        # ✅ FEATURES (THIS IS THE KEY FIX ✅)
+        # ✅ FEATURES (STRICT ✅)
         # -----------------------------
-        for li in soup.find_all("li", id=re.compile("vendorDetailsBullet")):
+        for li in soup.select("li[id^='vendorDetailsBullet']"):
 
-            # ✅ get ONLY inner text (no tags)
             txt = li.get_text(" ", strip=True)
 
-            # ✅ filter bad entries
             if (
                 txt
                 and len(txt) > 5
-                and "manage prescriptions" not in txt.lower()
-                and "schedule" not in txt.lower()
+                and "last updated" not in txt.lower()
             ):
                 features.append(txt)
 
@@ -170,7 +179,7 @@ def get_cvs_text(url):
         }
 
     except:
-        return {"title": "", "description": "", "features": []}
+        return {"title": "", "description": "", "features": []
 
 # -----------------------------
 # MAIN
