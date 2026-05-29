@@ -63,14 +63,18 @@ def get_salsify_text(url):
 # -----------------------------
 # ✅ CVS TEXT (FINAL WORKING VERSION ✅)
 # -----------------------------
+
 def get_cvs_text(url):
     soup = get_soup(url)
 
     title = ""
     description = ""
     features = []
+    parent = None  # ✅ prevent crash
 
-    # ✅ 1. FIND TITLE (FIRST BIG PRODUCT HEADING)
+    # -----------------------------
+    # ✅ 1. TITLE
+    # -----------------------------
     for p in soup.find_all("p"):
         txt = p.get_text(strip=True)
 
@@ -80,12 +84,17 @@ def get_cvs_text(url):
             and "count" in txt.lower()
         ):
             title = txt
-
-            # ✅ anchor from here
             parent = p.parent
             break
 
-    # ✅ 2. DESCRIPTION = NEXT LARGE TEXT BLOCK
+    # ✅ fallback if title not found
+    if not parent:
+        body = soup.body
+        parent = body if body else soup
+
+    # -----------------------------
+    # ✅ 2. DESCRIPTION
+    # -----------------------------
     for el in parent.find_all_next():
         txt = el.get_text(" ", strip=True)
 
@@ -96,13 +105,13 @@ def get_cvs_text(url):
             description = txt
             break
 
-    # ✅ 3. FEATURES = BULLET LIST AFTER DESCRIPTION
+    # -----------------------------
+    # ✅ 3. FEATURES
+    # -----------------------------
     for ul in parent.find_all_next("ul"):
         items = ul.find_all("li")
 
-        # ✅ valid bullet list = multiple meaningful lines
         if len(items) >= 4:
-
             for li in items:
                 txt = li.get_text(" ", strip=True)
 
