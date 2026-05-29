@@ -4,7 +4,7 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 
-st.title("PDP QA Tool (Accurate Images + Content)")
+st.title("PDP QA Tool (Thumbnail Image Matching)")
 
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
@@ -17,7 +17,7 @@ def get_soup(url):
     return BeautifulSoup(res.text, "html.parser")
 
 # -----------------------------
-# Extract FULL PAGE TEXT
+# Extract FULL TEXT
 # -----------------------------
 def get_text(url):
     try:
@@ -27,45 +27,45 @@ def get_text(url):
         return ""
 
 # -----------------------------
-# Extract ONLY PDP CAROUSEL IMAGES
+# ✅ EXTRACT ONLY THUMBNAIL IMAGES
 # -----------------------------
-def get_images(url):
+def get_thumbnail_images(url):
     try:
         soup = get_soup(url)
 
-        image_urls = []
+        thumbs = []
 
         for img in soup.find_all("img"):
             src = img.get("src") or ""
             src_lower = src.lower()
 
-            # ✅ TARGET REAL PRODUCT IMAGES ONLY
+            # ✅ KEEP SMALL THUMBNAIL IMAGES ONLY
             if any(k in src_lower for k in [
-                "zoom", "large", "500", "800"
+                "thumb", "small", "120", "150", "200"
             ]):
 
-                # ❌ REMOVE NON-PDP IMAGES
+                # ❌ REMOVE NON-PDP
                 if not any(bad in src_lower for bad in [
-                    "icon", "logo", "sprite", "banner", "ads", "thumbnail-default"
+                    "icon", "logo", "sprite", "banner", "ads"
                 ]):
-                    image_urls.append(src)
+                    thumbs.append(src)
 
-        # ✅ REMOVE DUPES BUT KEEP ORDER
+        # ✅ REMOVE DUPES
         seen = set()
         ordered = []
-        for img in image_urls:
-            if img not in seen:
-                ordered.append(img)
-                seen.add(img)
+        for t in thumbs:
+            if t not in seen:
+                ordered.append(t)
+                seen.add(t)
 
-        # ✅ LIMIT TO FIRST 6 (real PDP carousel size)
+        # ✅ LIMIT TO REALISTIC CAROUSEL SIZE
         return ordered[:6]
 
     except:
         return []
 
 # -----------------------------
-# Extract KEYWORDS
+# KEYWORDS
 # -----------------------------
 def extract_keywords(text):
     keywords = [
@@ -92,13 +92,14 @@ if uploaded_file:
         s_text = get_text(row["salsify_url"])
         r_text = get_text(row["retail_url"])
 
-        s_images = get_images(row["salsify_url"])
-        r_images = get_images(row["retail_url"])
+        # ✅ ONLY THUMBNAILS
+        s_images = get_thumbnail_images(row["salsify_url"])
+        r_images = get_thumbnail_images(row["retail_url"])
 
         s_count = len(s_images)
         r_count = len(r_images)
 
-        # ✅ IMAGE COMPARISON (FIXED)
+        # ✅ IMAGE COMPARISON
         if r_count == s_count:
             image_result = "✅ Match"
         elif r_count < s_count:
@@ -106,10 +107,10 @@ if uploaded_file:
         else:
             image_result = f"⚠ Extra {r_count - s_count}"
 
-        # ✅ DESCRIPTION CHECK
+        # ✅ DESCRIPTION (light check)
         desc_result = "✅ OK" if s_text[:200] in r_text else "❌ Different"
 
-        # ✅ FEATURE CHECK
+        # ✅ FEATURES
         keywords = extract_keywords(s_text)
         missing = [k for k in keywords if k not in r_text]
 
@@ -118,7 +119,6 @@ if uploaded_file:
         else:
             feature_result = f"❌ Missing: {', '.join(missing)}"
 
-        # ✅ FINAL STATUS
         status = "PASS" if (
             image_result == "✅ Match"
             and desc_result == "✅ OK"
@@ -128,8 +128,8 @@ if uploaded_file:
         results.append({
             "SKU": row["sku"],
             "Images": image_result,
-            "Salsify Count": s_count,
-            "Retail Count": r_count,
+            "Salsify Thumbnails": s_count,
+            "CVS Thumbnails": r_count,
             "Description": desc_result,
             "Features": feature_result,
             "Status": status
