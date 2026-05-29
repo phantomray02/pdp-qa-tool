@@ -64,6 +64,7 @@ def get_salsify_text(url):
 # ✅ CVS TEXT (FINAL WORKING VERSION ✅)
 # -----------------------------
 
+
 def get_cvs_text(url):
     soup = get_soup(url)
 
@@ -72,57 +73,47 @@ def get_cvs_text(url):
     features = []
 
     # -----------------------------
-    # ✅ 1. TITLE
+    # ✅ 1. FIND DETAILS TEXT BLOCK
     # -----------------------------
-    anchor = None
+    container = soup.find("div", class_=re.compile("whitespace-pre-line"))
 
-    for p in soup.find_all("p"):
-        txt = p.get_text(strip=True)
-
-        if (
-            len(txt) > 30
-            and "kotex" in txt.lower()
-            and "count" in txt.lower()
-        ):
-            title = txt
-            anchor = p
-            break
-
-    if not anchor:
+    if not container:
         return {"title": "", "description": "", "features": []}
 
-    # -----------------------------
-    # ✅ 2. DESCRIPTION (STOP EARLY ✅)
-    # -----------------------------
-    for el in anchor.find_all_next(["p", "span"]):
-        txt = el.get_text(" ", strip=True)
+    full_text = container.get_text("\n", strip=True)
 
-        if (
-            150 < len(txt) < 1000   # ✅ prevents grabbing junk blocks
-            and "tampon" in txt.lower()
-            and "driver" not in txt.lower()   # ✅ remove ID verification
-        ):
-            description = txt
-            anchor = el
+    lines = [line.strip() for line in full_text.split("\n") if line.strip()]
+
+    # -----------------------------
+    # ✅ 2. TITLE (FIRST LINE)
+    # -----------------------------
+    if len(lines) > 0:
+        title = lines[0]
+
+    # -----------------------------
+    # ✅ 3. DESCRIPTION
+    # everything after title until bullets
+    # -----------------------------
+    desc_parts = []
+    feature_start = 0
+
+    for i, line in enumerate(lines[1:], start=1):
+
+        # detect bullet start
+        if line.startswith("•"):
+            feature_start = i
             break
 
-    # -----------------------------
-    # ✅ 3. FEATURES (FIRST UL ONLY ✅)
-    # -----------------------------
-    ul = anchor.find_next("ul")
+        desc_parts.append(line)
 
-    if ul:
-        for li in ul.find_all("li"):
-            txt = li.get_text(" ", strip=True)
+    description = " ".join(desc_parts)
 
-            if (
-                txt
-                and len(txt) > 10
-                and "prescription" not in txt.lower()
-                and "coupon" not in txt.lower()
-                and "store" not in txt.lower()
-            ):
-                features.append(txt)
+    # -----------------------------
+    # ✅ 4. FEATURES (bullet lines)
+    # -----------------------------
+    for line in lines[feature_start:]:
+        if line.startswith("•"):
+            features.append(line.replace("•", "").strip())
 
     return {
         "title": title,
