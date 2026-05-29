@@ -74,7 +74,7 @@ def get_cvs_text(url):
     features = []
 
     # =========================================
-    # ✅ TITLE (DO NOT CHANGE - already working)
+    # ✅ TITLE (keep as-is, working)
     # =========================================
     t = re.search(
         r'U by Kotex Click Compact Tampons.*?Count',
@@ -83,36 +83,65 @@ def get_cvs_text(url):
     if t:
         title = t.group(0).strip()
 
-  
-# =========================================
-# ✅ DESCRIPTION (FINAL CLEAN VERSION)
-# =========================================
-d = re.search(
-    r'Get up to .*?HRA-eligible in the U\.S\.',
-    html,
-    re.DOTALL
-)
+    # =========================================
+    # ✅ DESCRIPTION (fully fixed)
+    # =========================================
+    d = re.search(
+        r'Get up to .*?HRA-eligible in the U\.S\.',
+        html,
+        re.DOTALL
+    )
 
-if d:
-    description = d.group(0)
+    if d:
+        raw_desc = d.group(0)
 
-    # ✅ STOP at JSON boundary
-    description = re.split(r'"}|\]\}', description)[0]
+        # ✅ cut off JSON tail
+        raw_desc = re.split(r'\]\s*[,}]', raw_desc)[0]
 
-    # ✅ FIX JSON STRING FORMAT
-    description = description.replace('","', '. ')
-    description = description.replace('"', '')
+        # ✅ split sentences from JSON array format
+        parts = re.split(r'","', raw_desc)
 
-    # ✅ FIX ESCAPED CHARACTERS
-    description = description.replace('\\n', ' ')
-    description = description.replace('\\"', '')
+        clean_parts = []
 
-    # ✅ REMOVE HTML TAGS
-    description = re.sub("<.*?>", "", description)
+        for p in parts:
+            p = p.replace('"', '')
+            p = p.replace('\\n', ' ').strip()
 
-    # ✅ CLEAN SPACING
-    description = re.sub(r'\s+', ' ', description).strip()
+            if len(p) > 20:
+                clean_parts.append(p)
 
+        description = ". ".join(clean_parts)
+        description = re.sub(r'\s+', ' ', description).strip()
+
+    # =========================================
+    # ✅ FEATURES (fixed extraction)
+    # =========================================
+    feature_block = re.search(
+        r'vendorDetailsBullets.*?\[(.*?)\]',
+        html,
+        re.DOTALL
+    )
+
+    if feature_block:
+        items = re.findall(r'"(.*?)"', feature_block.group(1))
+
+        for item in items:
+            clean = item.replace('\\n', ' ').strip()
+
+            if len(clean) > 10:
+                features.append(clean)
+
+    # ✅ REMOVE DUPLICATES
+    features = list(dict.fromkeys(features))
+
+    # =========================================
+    # ✅ RETURN (must be indented!)
+    # =========================================
+    return {
+        "title": title,
+        "description": description,
+        "features": features
+    }
 
 
     # =========================================
