@@ -4,12 +4,12 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 
-st.title("PDP QA Tool (Visual Image Compare)")
+st.title("PDP QA Tool (Visual Clean Compare)")
 
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
 # -----------------------------
-# GET HTML
+# GET SOUP
 # -----------------------------
 def get_soup(url):
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -17,17 +17,7 @@ def get_soup(url):
     return BeautifulSoup(res.text, "html.parser")
 
 # -----------------------------
-# GET TEXT
-# -----------------------------
-def get_text(url):
-    try:
-        soup = get_soup(url)
-        return soup.get_text(" ", strip=True).lower()
-    except:
-        return ""
-
-# -----------------------------
-# ✅ SALSIFY IMAGE EXTRACTION
+# ✅ SALSIFY IMAGES
 # -----------------------------
 def get_salsify_images(url):
     try:
@@ -35,43 +25,63 @@ def get_salsify_images(url):
         imgs = soup.find_all("img")
 
         images = []
-
         for img in imgs:
             src = img.get("src") or ""
-
-            if "http" in src:
+            if src.startswith("http"):
                 images.append(src)
 
+        # remove duplicates
         return list(dict.fromkeys(images))[:8]
 
     except:
         return []
 
 # -----------------------------
-# ✅ CVS IMAGE EXTRACTION (Scene7)
+# ✅ CVS THUMBNAILS (WORKING VERSION)
 # -----------------------------
 def get_cvs_images(url):
     try:
-        headers = {"User-Agent": "Mozilla/5.0"}
-        res = requests.get(url, headers=headers)
-        text = res.text
+        soup = get_soup(url)
+        imgs = soup.find_all("img")
 
-        images = []
+        thumbs = []
 
-        # extract Scene7 images
-        import re
-        matches = re.findall(r'https://[^"]+\\.jpg', text)
+        for img in imgs:
+            src = img.get("src") or ""
+            width = img.get("width")
+            height = img.get("height")
 
-        for m in matches:
-            if "scene7.com" in m:
-                clean = m.split("?")[0]
-                if clean not in images:
-                    images.append(clean)
+            try:
+                # thumbnail filter
+                if width and height:
+                    if int(width) <= 300 and int(height) <= 300:
+                        thumbs.append(src)
+            except:
+                continue
 
-        return images[:8]
+        # remove duplicates
+        seen = set()
+        ordered = []
+        for t in thumbs:
+            if t not in seen:
+                ordered.append(t)
+                seen.add(t)
+
+        return ordered
 
     except:
         return []
+
+# -----------------------------
+# DISPLAY GRID
+# -----------------------------
+def display_images(label, images):
+    st.markdown(f"### {label}")
+
+    cols = st.columns(3)
+
+    for i, img in enumerate(images):
+        cols[i % 3].image(img, caption=f"{i+1}", use_container_width=True)
 
 # -----------------------------
 # MAIN
@@ -84,33 +94,28 @@ if uploaded_file:
 
         st.subheader(f"SKU: {row['sku']}")
 
-        # Get images
         s_images = get_salsify_images(row["salsify_url"])
         r_images = get_cvs_images(row["retail_url"])
 
-        # ---------- COUNTS ----------
+        # counts
         st.write(f"Salsify Images: {len(s_images)}")
         st.write(f"CVS Images: {len(r_images)}")
 
-        # ---------- SIDE BY SIDE ----------
+        # side by side layout
         col1, col2 = st.columns(2)
 
         with col1:
-            st.markdown("### Salsify")
-            for i, img in enumerate(s_images):
-                st.image(img, caption=f"{i+1}", width=150)
+            display_images("Salsify", s_images)
 
         with col2:
-            st.markdown("### CVS")
-            for i, img in enumerate(r_images):
-                st.image(img, caption=f"{i+1}", width=150)
+            display_images("CVS", r_images)
 
-        # ---------- RESULT ----------
+        # comparison result
         if len(r_images) == len(s_images):
-            st.success("Images Match")
+            st.success("✅ Images Match")
         elif len(r_images) < len(s_images):
-            st.error(f"Missing {len(s_images) - len(r_images)} Images")
+            st.error(f"❌ Missing {len(s_images) - len(r_images)} images")
         else:
-            st.warning(f"Extra {len(r_images) - len(s_images)} Images")
+            st.warning(f"⚠ Extra {len(r_images) - len(s_images)} images")
 
         st.divider()
