@@ -64,67 +64,87 @@ def get_salsify_text(url):
 # ✅ CVS TEXT (FINAL WORKING VERSION ✅)
 # -----------------------------
 
-
-import requests
-import re
-
 def get_cvs_text(url):
+    html = get_html(url)
+    soup = BeautifulSoup(html, "html.parser")
+
+    text = soup.get_text("\n", strip=True)
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
 
     title = ""
     description = ""
     features = []
 
-    try:
-        # ✅ extract SKU from URL
-        match = re.search(r'skuId=(\d+)', url)
-        if not match:
-            return {"title": "", "description": "", "features": []}
+    # -----------------------------
+    # ✅ FIND "DETAILS" START
+    # -----------------------------
+    start = None
+    for i, line in enumerate(lines):
+        if line.lower() == "details":
+            start = i
+            break
 
-        sku = match.group(1)
-
-        # ✅ CVS product API endpoint (used by the site)
-        api_url = f"https://www.cvs.com/api/product-details/{sku}"
-
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "application/json"
-        }
-
-        res = requests.get(api_url, headers=headers)
-
-        if res.status_code != 200:
-            return {"title": "", "description": "", "features": []}
-
-        data = res.json()
-
-        # -----------------------------
-        # ✅ TITLE
-        # -----------------------------
-        title = data.get("productName", "")
-
-        # -----------------------------
-        # ✅ DESCRIPTION
-        # -----------------------------
-        description = data.get("longDescription", "")
-
-        # -----------------------------
-        # ✅ FEATURES
-        # -----------------------------
-        bullets = data.get("features", [])
-
-        for b in bullets:
-            if isinstance(b, str):
-                features.append(b.strip())
-
-        return {
-            "title": title,
-            "description": description,
-            "features": features
-        }
-
-    except:
+    if start is None:
         return {"title": "", "description": "", "features": []}
 
+    # -----------------------------
+    # ✅ FIND END OF SECTION
+    # -----------------------------
+    end = None
+    for i in range(start + 1, len(lines)):
+        if any(x in lines[i].lower() for x in [
+            "ingredients",
+            "reviews",
+            "shipping",
+            "policies",
+            "customer"
+        ]):
+            end = i
+            break
+
+    if end is None:
+        end = start + 20  # safe fallback
+
+    section = lines[start:end]
+
+    # -----------------------------
+    # ✅ TITLE (first product-like line)
+    # -----------------------------
+    for line in section:
+        if (
+            len(line) > 30 and len(line) < 150
+            and ("kotex" in line.lower() or "tampon" in line.lower())
+        ):
+            title = line
+            break
+
+    # -----------------------------
+    # ✅ DESCRIPTION (first long block)
+    # -----------------------------
+    for line in section:
+        if len(line) > 120:
+            description = line
+            break
+
+    # -----------------------------
+    # ✅ FEATURES (short bullet-like lines AFTER description)
+    # -----------------------------
+    desc_index = section.index(description) if description in section else 0
+
+    for line in section[desc_index + 1:]:
+
+        # stop if not feature-like
+        if len(line) > 120:
+            break
+
+        if len(line) > 10:
+            features.append(line)
+
+    return {
+        "title": title,
+        "description": description,
+        "features": features[:6]
+    }
 
 # -----------------------------
 # IMAGES (KEEP YOUR WORKING VERSION)
