@@ -64,60 +64,100 @@ def get_salsify_text(url):
 # ✅ CVS TEXT (FINAL WORKING VERSION ✅)
 # -----------------------------
 
-import json
-import re
-
 def get_cvs_text(url):
     html = get_html(url)
+    soup = BeautifulSoup(html, "html.parser")
 
     title = ""
     description = ""
     features = []
 
-    # -----------------------------
-    # ✅ FIND ALL SCRIPT BLOCKS
-    # -----------------------------
-    scripts = re.findall(r'<script[^>]*>(.*?)</script>', html, re.DOTALL)
+    # =========================================
+    # ✅ METHOD 1: DIRECT CONTAINER (BEST CASE)
+    # =========================================
+    container = soup.find("div", class_=re.compile("whitespace-pre-line"))
 
-    for script in scripts:
+    if container:
+        # ✅ TITLE
+        title_tag = container.find("p", class_=re.compile("text-lg"))
+        if title_tag:
+            title = title_tag.get_text(strip=True)
 
-        # look for product data
-        if "product" in script.lower() and "kotex" in script.lower():
+        # ✅ DESCRIPTION
+        desc_tag = container.find("span", class_=re.compile("text-base"))
+        if desc_tag:
+            description = desc_tag.get_text(" ", strip=True)
 
-            try:
-                data = json.loads(script)
-            except:
-                continue
+        # ✅ FEATURES
+        for li in container.find_all("li", id=re.compile("vendorDetailsBullet")):
+            txt = li.get_text(" ", strip=True)
+            if txt:
+                features.append(txt)
 
-            # -----------------------------
-            # ✅ NAVIGATE DATA SAFELY
-            # -----------------------------
-            product = data.get("product", {}) or data
+        if title or description or features:
+            return {
+                "title": title,
+                "description": description,
+                "features": features
+            }
 
-            # ✅ TITLE
-            title = product.get("name", "")
+    # =========================================
+    # ✅ METHOD 2: FALLBACK TEXT PARSE (ALWAYS WORKS)
+    # =========================================
+    full_text = soup.get_text("\n", strip=True)
+    lines = [l.strip() for l in full_text.split("\n") if l.strip()]
 
-            # ✅ DESCRIPTION
-            description = product.get("longDescription", "")
+    start_idx = None
 
-            # ✅ FEATURES
-            attributes = product.get("attributes", [])
+    for i, line in enumerate(lines):
+        if line.lower() == "details":
+            start_idx = i
+            break
 
-            for attr in attributes:
-                for val in attr.get("values", []):
-                    if isinstance(val, str) and len(val) > 10:
-                        if "prescription" not in val.lower():
-                            features.append(val)
+    if start_idx is None:
+        return {"title": "", "description": "", "features": []}
 
-            # ✅ stop after found
-            if title:
-                break
+    # ✅ TITLE
+    title = lines[start_idx + 1]
+
+    # ✅ DESCRIPTION
+    desc_parts = []
+    i = start_idx + 2
+
+    while i < len(lines):
+        line = lines[i]
+
+        if len(line) < 10:
+            i += 1
+            continue
+
+        if "tampon" in line.lower() or len(line) > 120:
+            desc_parts.append(line)
+
+        # stop before junk sections
+        if any(x in line.lower() for x in ["prescription", "coupon", "store"]):
+            break
+
+        i += 1
+
+    description = " ".join(desc_parts)
+
+    # ✅ FEATURES
+    for j in range(i, len(lines)):
+        line = lines[j]
+
+        if any(x in line.lower() for x in ["prescription", "coupon", "store"]):
+            break
+
+        if 10 < len(line) < 120:
+            features.append(line)
 
     return {
         "title": title,
         "description": description,
         "features": features[:6]
     }
+
 
 # -----------------------------
 # IMAGES (KEEP YOUR WORKING VERSION)
