@@ -73,7 +73,7 @@ def get_cvs_images(url):
         return [v["url"] for v in image_dict.values()]
 
     except:
-        return []
+        return []}
 
 # -----------------------------
 # ✅ SALSIFY TEXT (STRICT)
