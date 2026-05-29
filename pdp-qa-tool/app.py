@@ -75,7 +75,7 @@ def get_cvs_text(url):
     features = []
 
     # -----------------------------
-    # ✅ 1. EXTRACT __NEXT_DATA__ JSON
+    # ✅ GET __NEXT_DATA__ JSON
     # -----------------------------
     match = re.search(
         r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
@@ -92,60 +92,53 @@ def get_cvs_text(url):
         return {"title": "", "description": "", "features": []}
 
     # -----------------------------
-    # ✅ 2. SEARCH JSON RECURSIVELY
+    # ✅ SEARCH FOR TARGET KEYS
     # -----------------------------
-    def find_keys(obj):
-        results = []
+    def find_fields(obj):
+        nonlocal title, description, features
 
         if isinstance(obj, dict):
+
             for k, v in obj.items():
 
-                # ✅ TITLE
-                if k.lower() == "name" and isinstance(v, str):
-                    results.append(("title", v))
+                # ✅ TITLE (look for product name near details)
+                if (
+                    not title
+                    and isinstance(v, str)
+                    and "kotex" in v.lower()
+                    and "count" in v.lower()
+                ):
+                    title = v
 
                 # ✅ DESCRIPTION
-                if "description" in k.lower() and isinstance(v, str):
-                    results.append(("description", v))
+                if (
+                    isinstance(v, str)
+                    and "Get up to 100% leak-free" in v
+                ):
+                    description = re.sub("<.*?>", "", v)
 
                 # ✅ FEATURES
-                if "bullet" in k.lower() and isinstance(v, list):
-                    results.append(("features", v))
+                if "vendorDetailsBullets" in k and isinstance(v, list):
+                    for item in v:
+                        clean = re.sub("<.*?>", "", str(item)).strip()
+                        if clean:
+                            features.append(clean)
 
-                results.extend(find_keys(v))
+                # ✅ continue recursion
+                find_fields(v)
 
         elif isinstance(obj, list):
             for item in obj:
-                results.extend(find_keys(item))
+                find_fields(item)
 
-        return results
-
-    results = find_keys(data)
-
-    # -----------------------------
-    # ✅ 3. ASSIGN VALUES CLEANLY
-    # -----------------------------
-    for r_type, val in results:
-
-        if r_type == "title" and not title:
-            if "kotex" in val.lower():
-                title = val
-
-        elif r_type == "description" and not description:
-            if len(val) > 150:
-                description = re.sub("<.*?>", "", val)
-
-        elif r_type == "features":
-            for item in val:
-                clean = re.sub("<.*?>", "", str(item)).strip()
-                if clean and clean not in features:
-                    features.append(clean)
+    find_fields(data)
 
     return {
         "title": title,
         "description": description,
-        "features": features[:6]
+        "features": features
     }
+
 # -----------------------------
 # IMAGES (KEEP YOUR WORKING VERSION)
 # -----------------------------
