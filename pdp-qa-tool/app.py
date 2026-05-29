@@ -6,12 +6,12 @@ from bs4 import BeautifulSoup
 import re
 from difflib import SequenceMatcher
 
-st.title("PDP QA Tool (Final QA Dashboard ✅)")
+st.title("PDP QA Tool (Images + Content QA ✅)")
 
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
 # -----------------------------
-# HTML
+# HTML HELPERS
 # -----------------------------
 def get_html(url):
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -21,13 +21,13 @@ def get_soup(url):
     return BeautifulSoup(get_html(url), "html.parser")
 
 # -----------------------------
-# SALSIFY IMAGES
+# ✅ SALSIFY IMAGES
 # -----------------------------
 def get_salsify_images(url):
     try:
         soup = get_soup(url)
-        imgs = []
 
+        imgs = []
         for img in soup.find_all("img"):
             src = img.get("src") or ""
             if src.startswith("http"):
@@ -60,7 +60,7 @@ def get_cvs_images(url):
             size_match = re.search(r'Resize=\((\d+),', m)
             size = int(size_match.group(1)) if size_match else 0
 
-            # ✅ keep highest resolution only
+            # ✅ keep only largest size per image
             if name not in image_dict or size > image_dict[name]["size"]:
                 image_dict[name] = {
                     "url": base,
@@ -73,7 +73,7 @@ def get_cvs_images(url):
         return []
 
 # -----------------------------
-# ✅ SALSIFY TEXT (General Description)
+# ✅ SALSIFY TEXT (STRUCTURED)
 # -----------------------------
 def get_salsify_text(url):
     try:
@@ -82,29 +82,39 @@ def get_salsify_text(url):
         description = ""
         features = []
 
-        # ✅ long paragraph = general description
+        # ✅ GENERAL DESCRIPTION (clean)
         for p in soup.find_all("p"):
-            text = p.get_text().strip()
-            if len(text) > 120:
-                description = text
+            txt = p.get_text().strip()
+
+            if len(txt) > 120 and "general feature" not in txt.lower():
+                description = txt
                 break
 
-        # ✅ bullets
-        for li in soup.find_all("li"):
-            txt = li.get_text().strip()
-            if len(txt) > 15:
-                features.append(txt)
+        # ✅ structured features extraction
+        raw = soup.get_text(" ")
+
+        matches = re.findall(
+            r'General Feature \d+(.*?)(?=General Feature \d+|$)',
+            raw,
+            re.IGNORECASE
+        )
+
+        for m in matches:
+            clean = m.strip()
+
+            if len(clean) > 10:
+                features.append(clean)
 
         return {
             "description": description,
-            "features": features[:6]
+            "features": features
         }
 
     except:
         return {"description": "", "features": []}
 
 # -----------------------------
-# ✅ CVS TEXT (YOUR HTML STRUCTURE)
+# ✅ CVS TEXT (TARGET PDP ONLY)
 # -----------------------------
 def get_cvs_text(url):
     try:
@@ -113,24 +123,31 @@ def get_cvs_text(url):
         description = ""
         features = []
 
-        # ✅ FIRST LONG SPAN = DESCRIPTION
+        parent = None
+
+        # ✅ DESCRIPTION (your identified span)
         for span in soup.find_all("span"):
             txt = span.get_text().strip()
-            if len(txt) > 120:
+
+            if len(txt) > 120 and "tampons" in txt.lower():
                 description = txt
+                parent = span.parent
                 break
 
-        # ✅ FIRST UL = BULLETS
-        ul = soup.find("ul")
-        if ul:
-            for li in ul.find_all("li"):
-                txt = li.get_text().strip()
-                if txt:
-                    features.append(txt)
+        # ✅ FEATURES (UL AFTER DESCRIPTION)
+        if parent:
+            ul = parent.find_next("ul")
+
+            if ul:
+                for li in ul.find_all("li"):
+                    txt = li.get_text().strip()
+
+                    if 5 < len(txt) < 200:
+                        features.append(txt)
 
         return {
             "description": description,
-            "features": features[:6]
+            "features": features
         }
 
     except:
@@ -139,7 +156,7 @@ def get_cvs_text(url):
 # -----------------------------
 # ✅ MATCH SCORE
 # -----------------------------
-def get_score(a, b):
+def score(a, b):
     return int(SequenceMatcher(None, a.lower(), b.lower()).ratio() * 100)
 
 # -----------------------------
@@ -192,7 +209,7 @@ if uploaded_file:
 
             st.divider()
 
-        # ✅ RESULT
+        # ✅ IMAGE RESULT
         if len(r_images) == len(s_images):
             st.success("✅ Images Match")
         elif len(r_images) < len(s_images):
@@ -218,14 +235,11 @@ if uploaded_file:
             st.markdown("**CVS**")
             st.write(r_text["description"])
 
-        desc_score = get_score(
-            s_text["description"], r_text["description"]
-        )
-
-        st.write(f"✅ Description Match Score: {desc_score}%")
+        d_score = score(s_text["description"], r_text["description"])
+        st.write(f"✅ Description Match Score: {d_score}%")
 
         # -----------------------------
-        # ✅ FEATURES ALIGN
+        # ✅ FEATURES ALIGN + SCORE
         # -----------------------------
         st.markdown("### Features")
 
@@ -233,14 +247,21 @@ if uploaded_file:
 
         for i in range(max_len):
 
-            col1, col2 = st.columns(2)
+            col1, col2, col3 = st.columns([3, 3, 1])
+
+            f1 = s_text["features"][i] if i < len(s_text["features"]) else ""
+            f2 = r_text["features"][i] if i < len(r_text["features"]) else ""
 
             with col1:
-                if i < len(s_text["features"]):
-                    st.write("•", s_text["features"][i])
+                st.write("•", f1)
 
             with col2:
-                if i < len(r_text["features"]):
-                    st.write("•", r_text["features"][i])
+                st.write("•", f2)
+
+            with col3:
+                if f1 and f2:
+                    st.write(f"{score(f1, f2)}%")
+                else:
+                    st.write("—")
 
         st.divider()
