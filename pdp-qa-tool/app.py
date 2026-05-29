@@ -64,65 +64,59 @@ def get_salsify_text(url):
 # ✅ CVS TEXT (FINAL WORKING VERSION ✅)
 # -----------------------------
 
+import json
+import re
+
 def get_cvs_text(url):
-    soup = get_soup(url)
+    html = get_html(url)
 
     title = ""
     description = ""
     features = []
 
     # -----------------------------
-    # ✅ 1. FIND THE CONTAINER
+    # ✅ FIND ALL SCRIPT BLOCKS
     # -----------------------------
-    container = None
+    scripts = re.findall(r'<script[^>]*>(.*?)</script>', html, re.DOTALL)
 
-    for div in soup.find_all("div"):
-        classes = " ".join(div.get("class", []))
+    for script in scripts:
 
-        if "whitespace-pre-line" in classes:
-            container = div
-            break
+        # look for product data
+        if "product" in script.lower() and "kotex" in script.lower():
 
-    if not container:
-        return {"title": "", "description": "", "features": []}
+            try:
+                data = json.loads(script)
+            except:
+                continue
 
-    # -----------------------------
-    # ✅ 2. TITLE (STRICT)
-    # -----------------------------
-    for p in container.find_all("p"):
-        class_list = " ".join(p.get("class", []))
+            # -----------------------------
+            # ✅ NAVIGATE DATA SAFELY
+            # -----------------------------
+            product = data.get("product", {}) or data
 
-        if "text-lg" in class_list and "font-medium" in class_list:
-            title = p.get_text(strip=True)
-            break
+            # ✅ TITLE
+            title = product.get("name", "")
 
-    # -----------------------------
-    # ✅ 3. DESCRIPTION (STRICT)
-    # -----------------------------
-    for span in container.find_all("span"):
-        class_list = " ".join(span.get("class", []))
+            # ✅ DESCRIPTION
+            description = product.get("longDescription", "")
 
-        if "text-base" in class_list:
-            description = span.get_text(" ", strip=True)
-            break
+            # ✅ FEATURES
+            attributes = product.get("attributes", [])
 
-    # -----------------------------
-    # ✅ 4. FEATURES (STRICT ✅)
-    # -----------------------------
-    for li in container.find_all("li", id=re.compile("^vendorDetailsBullet")):
+            for attr in attributes:
+                for val in attr.get("values", []):
+                    if isinstance(val, str) and len(val) > 10:
+                        if "prescription" not in val.lower():
+                            features.append(val)
 
-        span = li.find("span")
-
-        if span:
-            txt = span.get_text(strip=True)
-
-            if txt:
-                features.append(txt)
+            # ✅ stop after found
+            if title:
+                break
 
     return {
         "title": title,
         "description": description,
-        "features": features
+        "features": features[:6]
     }
 
 # -----------------------------
