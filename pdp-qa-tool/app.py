@@ -3,7 +3,7 @@ import streamlit as st
 import pandas as pd
 import requests
 
-st.title("PDP QA Tool (Exact Salsify Image Logic)")
+st.title("PDP QA Tool (Final Salsify + CVS Matching)")
 
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
@@ -19,13 +19,12 @@ def get_text(url):
         return ""
 
 # -----------------------------
-# ✅ EXACT Salsify Image Matching
+# ✅ EXACT SALSIFY LOGIC (your rules)
 # -----------------------------
 def get_salsify_expected_count(text):
 
     count = 0
 
-    # ✅ REQUIRED (exact names)
     if "online optimized image-" in text:
         count += 1
 
@@ -47,32 +46,45 @@ def get_salsify_expected_count(text):
     if "atf 5-generic" in text:
         count += 1
 
-    # ✅ OPTIONAL I/O
     has_io = "atf i/o-generic" in text
 
     if has_io:
         count += 1
-
-    # ✅ RULE: if I/O missing → require ATF 6
-    if not has_io:
+    else:
         if "atf 6-generic" in text:
             count += 1
 
     return count
 
 # -----------------------------
-# ✅ CVS THUMBNAIL COUNT (simple + controlled)
+# ✅ FIXED CVS IMAGE COUNT
 # -----------------------------
 def get_cvs_count(text):
 
-    # CVS uses scene7 for product images
-    count = text.count("scene7")
+    images = []
 
-    # normalize to realistic carousel size
-    return min(count, 8)
+    parts = text.split('"')
+
+    for p in parts:
+        if "scene7" in p and ".jpg" in p:
+            clean = p.split("?")[0]
+            images.append(clean)
+
+    # ✅ keep unique images only
+    unique_images = list(set(images))
+
+    # ✅ remove tiny versions / duplicates
+    filtered = []
+    for img in unique_images:
+        if any(size in img for size in ["wid=", "fmt"]):
+            continue
+        filtered.append(img)
+
+    # ✅ cap to carousel size
+    return min(len(filtered), 6)
 
 # -----------------------------
-# KEYWORDS (unchanged)
+# FEATURES (unchanged)
 # -----------------------------
 def extract_keywords(text):
     keywords = [
@@ -99,14 +111,16 @@ if uploaded_file:
         s_text = get_text(row["salsify_url"])
         r_text = get_text(row["retail_url"])
 
-        # ✅ EXACT Salsify count
+        # ✅ Salsify expected
         s_count = get_salsify_expected_count(s_text)
 
-        # ✅ CVS count
+        # ✅ CVS detected
         r_count = get_cvs_count(r_text)
 
         # ✅ IMAGE RESULT
-        if r_count == s_count:
+        if s_count == 0 and r_count == 0:
+            image_result = "⚠ No Images Found"
+        elif r_count == s_count:
             image_result = "✅ Match"
         elif r_count < s_count:
             image_result = f"❌ Missing {s_count - r_count}"
