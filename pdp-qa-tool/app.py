@@ -73,9 +73,9 @@ def get_cvs_text(url):
     description = ""
     features = []
 
-    # =========================
-    # ✅ TITLE (UNCHANGED)
-    # =========================
+    # =========================================
+    # ✅ TITLE (KEEP EXACTLY AS YOU HAVE IT)
+    # =========================================
     t = re.search(
         r'U by Kotex Click Compact Tampons.*?Count',
         html
@@ -83,51 +83,60 @@ def get_cvs_text(url):
     if t:
         title = t.group(0).strip()
 
-    # =========================
-    # ✅ EXTRACT QUOTED STRINGS
-    # =========================
-    strings = re.findall(r'"(.*?)"', html)
+    # =========================================
+    # ✅ STEP 1: FIND MAIN DESCRIPTION BLOCK
+    # =========================================
+    d = re.search(
+        r'Get up to .*?HRA-eligible in the U\.S\.',
+        html,
+        re.DOTALL
+    )
 
-    clean_strings = []
+    if not d:
+        return {"title": title, "description": "", "features": []}
 
-    for s in strings:
-        s = s.replace('\\n', ' ').strip()
+    raw = d.group(0)
 
-        # 🚫 HARD FILTER (kills your junk)
-        if any(bad in s.lower() for bad in [
-            "shop", "shipping", "cvs pharmacy",
-            "http", "sku", "prodid",
-            "customer reviews", "span", "div",
-            "script", "href", "click compact tampons, unscented, regular",
-            "count, 16", "32 count"
-        ]):
-            continue
+    # =========================================
+    # ✅ STEP 2: HARD STOP BEFORE JUNK
+    # =========================================
+    raw = re.split(r'\]\s*,|__next|vendor', raw)[0]
 
-        # ✅ keep ONLY real product sentences
+    # =========================================
+    # ✅ STEP 3: FIX STRING FORMAT
+    # =========================================
+    raw = raw.replace('\\"', '')
+    raw = raw.replace('\\n', ' ')
+    raw = raw.replace('","', '. ')
+    raw = raw.replace('"', '')
+
+    # =========================================
+    # ✅ STEP 4: CLEAN TEXT
+    # =========================================
+    raw = re.sub("<.*?>", "", raw)
+    raw = re.sub(r'\s+', ' ', raw).strip()
+
+    description = raw
+
+    # =========================================
+    # ✅ STEP 5: BUILD FEATURES FROM DESCRIPTION
+    # =========================================
+    sentences = re.split(r'\.\s+', raw)
+
+    for s in sentences:
         if (
-            len(s) > 40
-            and any(word in s.lower() for word in [
-                "tampon", "leak", "compact",
-                "wrapped", "fragrance", "comfort"
+            len(s) > 20
+            and any(x in s.lower() for x in [
+                "tampon",
+                "leak",
+                "compact",
+                "wrapped",
+                "fragrance"
             ])
         ):
-            clean_strings.append(s)
-
-    # =========================
-    # ✅ CLEAN DESCRIPTION
-    # =========================
-    description = ". ".join(clean_strings)
-
-    description = re.sub(r'\s+', ' ', description).strip()
-
-    # =========================
-    # ✅ FEATURES (short + focused)
-    # =========================
-    for s in clean_strings:
-        if 20 < len(s) < 120:
             features.append(s.strip())
 
-    # ✅ remove duplicates
+    # ✅ CLEAN FEATURES
     features = list(dict.fromkeys(features))[:5]
 
     return {
