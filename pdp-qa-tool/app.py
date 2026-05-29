@@ -74,7 +74,7 @@ def get_cvs_text(url):
     features = []
 
     # =========================================
-    # ✅ TITLE (keep as-is, working)
+    # ✅ TITLE (keep your working version)
     # =========================================
     t = re.search(
         r'U by Kotex Click Compact Tampons.*?Count',
@@ -84,40 +84,10 @@ def get_cvs_text(url):
         title = t.group(0).strip()
 
     # =========================================
-    # ✅ DESCRIPTION (fully fixed)
-    # =========================================
-    d = re.search(
-        r'Get up to .*?HRA-eligible in the U\.S\.',
-        html,
-        re.DOTALL
-    )
-
-    if d:
-        raw_desc = d.group(0)
-
-        # ✅ cut off JSON tail
-        raw_desc = re.split(r'\]\s*[,}]', raw_desc)[0]
-
-        # ✅ split sentences from JSON array format
-        parts = re.split(r'","', raw_desc)
-
-        clean_parts = []
-
-        for p in parts:
-            p = p.replace('"', '')
-            p = p.replace('\\n', ' ').strip()
-
-            if len(p) > 20:
-                clean_parts.append(p)
-
-        description = ". ".join(clean_parts)
-        description = re.sub(r'\s+', ' ', description).strip()
-
-    # =========================================
-    # ✅ FEATURES (fixed extraction)
+    # ✅ FEATURES (EXACT JSON TARGET ✅)
     # =========================================
     feature_block = re.search(
-        r'vendorDetailsBullets.*?\[(.*?)\]',
+        r'vendorDetailsBullets"\s*:\s*\[(.*?)\]',
         html,
         re.DOTALL
     )
@@ -131,56 +101,33 @@ def get_cvs_text(url):
             if len(clean) > 10:
                 features.append(clean)
 
-    # ✅ REMOVE DUPLICATES
-    features = list(dict.fromkeys(features))
-
     # =========================================
-    # ✅ RETURN (must be indented!)
+    # ✅ DESCRIPTION (FROM SAME REGION ✅)
     # =========================================
-    return {
-        "title": title,
-        "description": description,
-        "features": features
-    }
-
-
-    # =========================================
-    # ✅ FEATURES (STRICT + CORRECT BULLETS)
-    # =========================================
-    raw_features = re.findall(
-        r'\\u003cspan\\u003e(.*?)\\u003c/span\\u003e',
-        html
+    desc_block = re.search(
+        r'vendorDetailsParagraph"\s*:\s*"(.*?)"',
+        html,
+        re.DOTALL
     )
 
-    for f in raw_features:
-        clean = f.strip()
+    if desc_block:
+        description = desc_block.group(1)
 
-        # ✅ FILTER REAL PRODUCT BULLETS ONLY
-        if (
-            len(clean) > 20 and
-            (
-                "tampon" in clean.lower()
-                or "leak" in clean.lower()
-                or "compact" in clean.lower()
-                or "wrapped" in clean.lower()
-                or "comfort" in clean.lower()
-            )
-        ):
-            clean = re.sub("<.*?>", "", clean)
-            clean = re.sub(r'\s+', ' ', clean)
+        # ✅ clean escaped characters
+        description = description.replace('\\n', ' ')
+        description = description.replace('\\"', '"')
 
-            if clean not in features:
-                features.append(clean)
+        # ✅ remove any HTML tags
+        description = re.sub("<.*?>", "", description)
 
-    # =========================================
-    # ✅ RETURN EVERYTHING TOGETHER
-    # =========================================
+        # ✅ normalize spacing
+        description = re.sub(r'\s+', ' ', description).strip()
+
     return {
         "title": title,
         "description": description,
         "features": features
     }
-
 
 # -----------------------------
 # IMAGES (KEEP YOUR WORKING VERSION)
