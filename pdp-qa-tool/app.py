@@ -17,42 +17,10 @@ def get_salsify_data(url):
         res = requests.get(url)
         soup = BeautifulSoup(res.text, "html.parser")
 
-        # All visible text
         text = soup.get_text(" ", strip=True)
 
-        # Images
-       
-imgs = soup.find_all("img")
-
-image_urls = []
-
-for img in imgs:
-    src = img.get("src")
-
-    if not src:
-        continue
-
-    # ✅ KEEP only real product images
-    if any(keyword in src.lower() for keyword in [
-        "cvs",        # CVS CDN
-        "product",    # product paths
-        "image",      
-        "zoom"
-    ]):
-
-        # ❌ REMOVE junk images
-        if not any(bad in src.lower() for bad in [
-            "icon",
-            "logo",
-            "sprite",
-            "placeholder",
-            "thumbnail-default"
-        ]):
-            image_urls.append(src)
-
-# remove duplicates
-image_urls = list(set(image_urls))
-
+        imgs = soup.find_all("img")
+        image_urls = [img.get("src") for img in imgs if img.get("src")]
 
         return text, list(set(image_urls))
 
@@ -60,24 +28,41 @@ image_urls = list(set(image_urls))
         return "", []
 
 # -----------------------------
-# Get CVS description + features + images
+# Get CVS data (CLEANED images)
 # -----------------------------
 def get_cvs_data(url):
     try:
         res = requests.get(url)
         soup = BeautifulSoup(res.text, "html.parser")
 
-        # Description (first paragraph)
+        # Description
         desc_tag = soup.find("p")
         description = desc_tag.get_text(strip=True) if desc_tag else ""
 
-        # Bullet points
+        # Features (bullets)
         bullets = soup.find_all("li")
         features = " ".join([b.get_text(strip=True) for b in bullets])
 
-        # Images
+        # ✅ FILTERED images
         imgs = soup.find_all("img")
-        image_urls = [img.get("src") for img in imgs if img.get("src")]
+        image_urls = []
+
+        for img in imgs:
+            src = img.get("src")
+
+            if not src:
+                continue
+
+            src_lower = src.lower()
+
+            # ✅ keep real product images
+            if any(k in src_lower for k in ["product", "image", "zoom", "cvs"]):
+
+                # ❌ remove junk UI images
+                if not any(bad in src_lower for bad in [
+                    "icon", "logo", "sprite", "placeholder"
+                ]):
+                    image_urls.append(src)
 
         return description, features, list(set(image_urls))
 
@@ -85,7 +70,7 @@ def get_cvs_data(url):
         return "", "", []
 
 # -----------------------------
-# Main logic
+# MAIN
 # -----------------------------
 if uploaded_file:
 
@@ -94,19 +79,14 @@ if uploaded_file:
 
     for _, row in df.iterrows():
 
-        # Pull data
         s_text, s_images = get_salsify_data(row["salsify_url"])
         cvs_desc, cvs_features, r_images = get_cvs_data(row["retail_url"])
 
-        # -----------------------------
-        # Text scoring
-        # -----------------------------
+        # Text scores
         desc_score = fuzz.partial_ratio(s_text, cvs_desc)
         feat_score = fuzz.partial_ratio(s_text, cvs_features)
 
-        # -----------------------------
         # Image comparison
-        # -----------------------------
         s_set = set(s_images)
         r_set = set(r_images)
 
@@ -117,18 +97,13 @@ if uploaded_file:
             (match_count / total_salsify) * 100, 1
         ) if total_salsify > 0 else 0
 
-        # -----------------------------
-        # Status logic (tune later)
-        # -----------------------------
+        # Status
         status = "PASS" if (
             desc_score > 85 and
             feat_score > 75 and
             image_match_pct > 40
         ) else "FAIL"
 
-        # -----------------------------
-        # Save result
-        # -----------------------------
         results.append({
             "SKU": row["sku"],
             "Description Score": desc_score,
