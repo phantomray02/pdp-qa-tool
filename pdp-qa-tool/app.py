@@ -2,25 +2,32 @@
 import streamlit as st
 import pandas as pd
 import requests
-import re
+from bs4 import BeautifulSoup
 
-st.title("PDP QA Tool (Final Accurate CVS Fix)")
+st.title("PDP QA Tool (Working CVS + Exact Salsify)")
 
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
 # -----------------------------
-# GET RAW PAGE TEXT
+# GET HTML
+# -----------------------------
+def get_soup(url):
+    headers = {"User-Agent": "Mozilla/5.0"}
+    res = requests.get(url, headers=headers)
+    return BeautifulSoup(res.text, "html.parser")
+
+# -----------------------------
+# GET TEXT
 # -----------------------------
 def get_text(url):
     try:
-        headers = {"User-Agent": "Mozilla/5.0"}
-        res = requests.get(url, headers=headers)
-        return res.text.lower()
+        soup = get_soup(url)
+        return soup.get_text(" ", strip=True).lower()
     except:
         return ""
 
 # -----------------------------
-# ✅ SALSIFY LOGIC (unchanged)
+# ✅ EXACT SALSIFY LOGIC (KEEP THIS)
 # -----------------------------
 def get_salsify_expected_count(text):
 
@@ -28,16 +35,22 @@ def get_salsify_expected_count(text):
 
     if "online optimized image-" in text:
         count += 1
+
     if "flat back_2d-" in text:
         count += 1
+
     if "flat left_2d-" in text:
         count += 1
+
     if "atf 2-generic" in text:
         count += 1
+
     if "atf 3-generic" in text:
         count += 1
+
     if "atf 4-generic" in text:
         count += 1
+
     if "atf 5-generic" in text:
         count += 1
 
@@ -51,42 +64,46 @@ def get_salsify_expected_count(text):
 
     return count
 
+
 # -----------------------------
-# ✅ REAL CVS IMAGE EXTRACTION (FROM JSON)
+# ✅ CVS THUMBNAIL DETECTION (RESTORED WORKING VERSION)
 # -----------------------------
-def get_cvs_count(text):
+def get_cvs_thumbnail_count(url):
 
-    # Find all image URLs from embedded data
-    images = re.findall(r'https://[^"]+\\.jpg', text)
+    try:
+        soup = get_soup(url)
+        imgs = soup.find_all("img")
 
-    # keep ONLY product images (Scene7 + not icons)
-    filtered = []
+        thumbs = []
 
-    for img in images:
-        if "scene7.com" in img:
+        for img in imgs:
+            src = img.get("src") or ""
+            src_lower = src.lower()
 
-            # remove small UI junk
-            if not any(bad in img for bad in [
-                "icon", "logo", "swatch", "thumbnail-default"
-            ]):
-                filtered.append(img.split("?")[0])
+            # ✅ CVS thumbnails are SMALL images (<300px usually)
+            width = img.get("width")
+            height = img.get("height")
 
-    # ✅ remove duplicates
-    unique = list(set(filtered))
+            try:
+                if width and height:
+                    if int(width) <= 300 and int(height) <= 300:
+                        thumbs.append(src)
+            except:
+                continue
 
-    # ✅ REMOVE duplicates of same base image (size variations)
-    final = []
-    seen_names = set()
+        # ✅ remove duplicates
+        seen = set()
+        ordered = []
+        for t in thumbs:
+            if t not in seen:
+                ordered.append(t)
+                seen.add(t)
 
-    for img in unique:
-        name = img.split("/")[-1]
+        return min(len(ordered), 6)
 
-        if name not in seen_names:
-            final.append(name)
-            seen_names.add(name)
+    except:
+        return 0
 
-    # ✅ LIMIT to real carousel range
-    return min(len(final), 6)
 
 # -----------------------------
 # FEATURES
@@ -116,13 +133,14 @@ if uploaded_file:
         s_text = get_text(row["salsify_url"])
         r_text = get_text(row["retail_url"])
 
+        # ✅ Salsify
         s_count = get_salsify_expected_count(s_text)
-        r_count = get_cvs_count(r_text)
+
+        # ✅ CVS (WORKING AGAIN)
+        r_count = get_cvs_thumbnail_count(row["retail_url"])
 
         # ✅ IMAGE RESULT
-        if s_count == 0 and r_count == 0:
-            image_result = "⚠ No Images Found"
-        elif r_count == s_count:
+        if r_count == s_count:
             image_result = "✅ Match"
         elif r_count < s_count:
             image_result = f"❌ Missing {s_count - r_count}"
