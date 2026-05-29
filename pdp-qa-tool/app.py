@@ -1,31 +1,79 @@
 
 import streamlit as st
 import pandas as pd
-import requests
-from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright
+import time
 
-st.title("PDP QA Tool (CVS Scroll Fix ✅)")
+st.title("PDP QA Tool (FINAL Scroll Extraction ✅)")
 
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
 # -----------------------------
-# GET HTML
+# ✅ PLAYWRIGHT SCROLL + EXTRACT
 # -----------------------------
-def get_soup(url):
-    headers = {"User-Agent": "Mozilla/5.0"}
-    res = requests.get(url, headers=headers)
-    return BeautifulSoup(res.text, "html.parser")
+def get_cvs_images(url):
+
+    images = []
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+
+            page.goto(url, timeout=60000)
+
+            # ✅ wait for page load
+            time.sleep(5)
+
+            # ✅ SCROLL THUMBNAIL AREA
+            for _ in range(5):
+                page.mouse.wheel(0, 500)
+                time.sleep(1)
+
+            # ✅ NOW HTML CONTAINS ALL THUMBNAILS
+            html = page.content()
+
+            # ✅ extract images
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html, "html.parser")
+
+            container = soup.find("div", {"role": "tablist"})
+
+            if container:
+                for img in container.find_all("img"):
+
+                    src = img.get("src") or ""
+
+                    if "high_res" in src:
+
+                        if src.startswith("/"):
+                            src = "https://www.cvs.com" + src
+
+                        images.append(src)
+
+            browser.close()
+
+        return list(dict.fromkeys(images))
+
+    except:
+        return []
+
 
 # -----------------------------
-# SALSIFY IMAGES
+# SALSIFY (unchanged)
 # -----------------------------
+import requests
+from bs4 import BeautifulSoup
+
 def get_salsify_images(url):
+
     try:
-        soup = get_soup(url)
+        soup = BeautifulSoup(requests.get(url).text, "html.parser")
 
         images = []
         for img in soup.find_all("img"):
             src = img.get("src") or ""
+
             if src.startswith("http"):
                 images.append(src)
 
@@ -34,51 +82,12 @@ def get_salsify_images(url):
     except:
         return []
 
-# -----------------------------
-# ✅ FINAL CVS EXTRACTION (SCROLL FIXED)
-# -----------------------------
-
-def get_cvs_images(url):
-    try:
-        soup = get_soup(url)
-
-        thumbnails = []
-
-        # ✅ FIND FULL TABLIST
-        container = soup.find("div", {"role": "tablist"})
-
-        if not container:
-            return []
-
-        # ✅ COUNT ALL TAB BUTTONS (THIS INCLUDES HIDDEN SCROLLED ITEMS)
-        buttons = container.find_all("button", {"role": "tab"})
-
-        for btn in buttons:
-
-            img = btn.find("img")
-
-            if not img:
-                continue
-
-            src = img.get("src") or ""
-
-            if "high_res" in src:
-
-                if src.startswith("/"):
-                    src = "https://www.cvs.com" + src
-
-                thumbnails.append(src)
-
-        # ✅ remove duplicates
-        return list(dict.fromkeys(thumbnails))
-
-    except:
-        return []
 
 # -----------------------------
 # DISPLAY
 # -----------------------------
 def display_images(label, images):
+
     st.markdown(f"### {label}")
 
     cols = st.columns(4)
@@ -88,6 +97,7 @@ def display_images(label, images):
             cols[i % 4].image(img, caption=f"{i+1}", use_container_width=True)
         except:
             cols[i % 4].write(f"{i+1} ❌")
+
 
 # -----------------------------
 # MAIN
@@ -112,9 +122,8 @@ if uploaded_file:
             display_images("Salsify", s_images)
 
         with col2:
-            display_images("CVS (Full Thumbnail Rail)", r_images)
+            display_images("CVS (Full Scroll Extract)", r_images)
 
-        # ✅ result
         if len(r_images) == len(s_images):
             st.success("✅ Images Match")
         elif len(r_images) < len(s_images):
