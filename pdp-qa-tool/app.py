@@ -78,77 +78,65 @@ def get_salsify_text(url):
 import re
 
 def get_cvs_text(url):
-    html = get_html(url)
+    try:
+        html = get_html(url)
 
-    title = ""
-    description = ""
-    features = []
-
-    # ============================
-    # ✅ TITLE
-    # ============================
-    t = re.search(r'[A-Z][A-Za-z0-9 ,\-]+(?:Count|Ct)', html)
-    if t:
-        title = t.group(0).strip()
-
-    # ============================
-    # ✅ DESCRIPTION
-    # ============================
-    d = re.search(
-        r'(Get up to .*?latest fashion trends)',
-        html,
-        re.DOTALL
-    )
-
-    if d:
-        raw = d.group(1)
-
-        raw = raw.replace('\\"', '')
-        raw = raw.replace('\\n', ' ')
-        raw = raw.replace('","', '. ')
-        raw = raw.replace('"', '')
-
-        raw = re.sub('<.*?>', '', raw)
-        raw = re.sub(r'\s+', ' ', raw).strip()
-
-        description = raw
+        title = ""
+        description = ""
+        features = []
 
         # ============================
-        # ✅ FEATURES (FIXED VERSION)
+        # ✅ TITLE
         # ============================
-       
-def extract_features_from_description(description, salsify_features):
-    import re
+        t = re.search(r'[A-Z][A-Za-z0-9 ,\-]+(?:Count|Ct)', html)
+        if t:
+            title = t.group(0).strip()
 
-    cvs_features = []
+        # ============================
+        # ✅ DESCRIPTION
+        # ============================
+        d = re.search(
+            r'(Get up to .*?latest fashion trends)',
+            html,
+            re.DOTALL
+        )
 
-    desc_norm = re.sub(r'[^a-z0-9 ]', '', description.lower())
+        if d:
+            raw = d.group(1)
 
-    for feature in salsify_features:
-        feat_norm = re.sub(r'[^a-z0-9 ]', '', feature.lower())
+            raw = raw.replace('\\"', '')
+            raw = raw.replace('\\n', ' ')
+            raw = raw.replace('","', '. ')
+            raw = raw.replace('"', '')
 
-        # ✅ basic keyword overlap
-        match_score = sum(
-            word in desc_norm
-            for word in feat_norm.split()
-        ) / len(feat_norm.split())
+            raw = re.sub('<.*?>', '', raw)
+            raw = re.sub(r'\s+', ' ', raw).strip()
 
-        if match_score > 0.5:
-            cvs_features.append(feature)
-        else:
-            cvs_features.append("Missing")
+            description = raw
 
-    return cvs_features
+            # ============================
+            # ✅ FEATURES (simple + safe)
+            # ============================
+            sentences = re.split(r'\.\s+', description)
 
+            for s in sentences:
+                if 25 < len(s) < 120:
+                    features.append(s.strip())
 
-    # ============================
-    # ✅ RETURN (correct indent ✅)
-    # ============================
-    return {
-        "title": title,
-        "description": description,
-        "features": features
-    }
+        # ✅ Always return dict
+        return {
+            "title": title,
+            "description": description,
+            "features": features
+        }
+
+    except Exception as e:
+        # ✅ fallback so app never crashes again
+        return {
+            "title": "",
+            "description": "",
+            "features": []
+        }
 
 # -----------------------------
 # IMAGES (KEEP YOUR WORKING VERSION)
