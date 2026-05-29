@@ -37,25 +37,31 @@ def get_salsify_images(url):
 # -----------------------------
 # ✅ FINAL CVS EXTRACTION (SCROLL FIXED)
 # -----------------------------
+
 def get_cvs_images(url):
     try:
         soup = get_soup(url)
 
         thumbnails = []
 
-        # ✅ target full carousel container
+        # ✅ FIND FULL TABLIST
         container = soup.find("div", {"role": "tablist"})
 
         if not container:
             return []
 
-        # ✅ grab ALL images inside (not just visible ones)
-        imgs = container.find_all("img")
+        # ✅ COUNT ALL TAB BUTTONS (THIS INCLUDES HIDDEN SCROLLED ITEMS)
+        buttons = container.find_all("button", {"role": "tab"})
 
-        for img in imgs:
+        for btn in buttons:
+
+            img = btn.find("img")
+
+            if not img:
+                continue
+
             src = img.get("src") or ""
 
-            # ✅ keep only real product images
             if "high_res" in src:
 
                 if src.startswith("/"):
@@ -64,9 +70,7 @@ def get_cvs_images(url):
                 thumbnails.append(src)
 
         # ✅ remove duplicates
-        thumbnails = list(dict.fromkeys(thumbnails))
-
-        return thumbnails
+        return list(dict.fromkeys(thumbnails))
 
     except:
         return []
