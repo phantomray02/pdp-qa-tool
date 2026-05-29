@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import requests
@@ -40,4 +39,3 @@ if uploaded_file:
 
     csv = result_df.to_csv(index=False).encode('utf-8')
     st.download_button("Download Results", csv, "results.csv")
-``
