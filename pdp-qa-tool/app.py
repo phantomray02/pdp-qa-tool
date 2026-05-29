@@ -83,67 +83,60 @@ def get_cvs_text(url):
     if t:
         title = t.group(0).strip()
 
-    # =========================================
-    # ✅ STEP 1: FIND MAIN DESCRIPTION BLOCK
-    # =========================================
-    d = re.search(
-        r'Get up to .*?HRA-eligible in the U\.S\.',
-        html,
-        re.DOTALL
-    )
 
-    if not d:
-        return {"title": title, "description": "", "features": []}
+# =========================================
+# ✅ DESCRIPTION (CLEAN + FINAL)
+# =========================================
+d = re.search(
+    r'Get up to .*?HRA-eligible in the U\.S\.',
+    html,
+    re.DOTALL
+)
 
+description = ""
+features = []
+
+if d:
     raw = d.group(0)
 
-    # =========================================
-    # ✅ STEP 2: HARD STOP BEFORE JUNK
-    # =========================================
-    raw = re.split(r'\]\s*,|__next|vendor', raw)[0]
+    # ✅ HARD STOP (fixes your trailing junk)
+    raw = raw.split("HRA-eligible in the U.S.")[0] + "HRA-eligible in the U.S."
 
-    # =========================================
-    # ✅ STEP 3: FIX STRING FORMAT
-    # =========================================
-    raw = raw.replace('\\"', '')
-    raw = raw.replace('\\n', ' ')
+    # ✅ REMOVE JSON STRING ARTIFACTS
     raw = raw.replace('","', '. ')
     raw = raw.replace('"', '')
+    raw = raw.replace('\\n', ' ')
 
-    # =========================================
-    # ✅ STEP 4: CLEAN TEXT
-    # =========================================
+    # ✅ CLEAN HTML + WHITESPACE
     raw = re.sub("<.*?>", "", raw)
     raw = re.sub(r'\s+', ' ', raw).strip()
 
     description = raw
 
     # =========================================
-    # ✅ STEP 5: BUILD FEATURES FROM DESCRIPTION
+    # ✅ FEATURES (CORRECT SPLIT ✅)
     # =========================================
     sentences = re.split(r'\.\s+', raw)
 
     for s in sentences:
+        s = s.strip()
+
         if (
-            len(s) > 20
-            and any(x in s.lower() for x in [
+            20 < len(s) < 120 and
+            any(word in s.lower() for word in [
                 "tampon",
                 "leak",
                 "compact",
                 "wrapped",
-                "fragrance"
+                "fragrance",
+                "comfort"
             ])
         ):
-            features.append(s.strip())
+            features.append(s)
 
-    # ✅ CLEAN FEATURES
+    # ✅ DEDUPE + LIMIT
     features = list(dict.fromkeys(features))[:5]
 
-    return {
-        "title": title,
-        "description": description,
-        "features": features
-    }
 
 # -----------------------------
 # IMAGES (KEEP YOUR WORKING VERSION)
