@@ -3,100 +3,82 @@ import streamlit as st
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
-import re
-from io import BytesIO
+from urllib.parse import urlparse, parse_qs
 from PIL import Image
+from io import BytesIO
 
-st.title("PDP QA Tool (Image Download + Compare)")
+st.title("PDP QA Tool (Final - Real CVS Images via SKU)")
 
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
 # -----------------------------
-# DOWNLOAD IMAGE (KEY FIX)
+# DOWNLOAD IMAGE
 # -----------------------------
 def download_image(url):
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
-        response = requests.get(url, headers=headers, timeout=10)
+        r = requests.get(url, headers=headers, timeout=5)
 
-        if response.status_code == 200:
-            return Image.open(BytesIO(response.content))
+        if r.status_code == 200:
+            return Image.open(BytesIO(r.content))
     except:
         return None
-
-# -----------------------------
-# GET HTML
-# -----------------------------
-def get_html(url):
-    headers = {"User-Agent": "Mozilla/5.0"}
-    return requests.get(url, headers=headers).text
 
 # -----------------------------
 # SALSIFY IMAGES
 # -----------------------------
 def get_salsify_images(url):
     try:
-        soup = BeautifulSoup(get_html(url), "html.parser")
-        images = []
+        soup = BeautifulSoup(requests.get(url).text, "html.parser")
 
+        images = []
         for img in soup.find_all("img"):
             src = img.get("src") or ""
             if src.startswith("http"):
                 images.append(src)
 
         return list(dict.fromkeys(images))[:8]
-
     except:
         return []
 
 # -----------------------------
-# CVS IMAGES (SCENE7 EXTRACTION)
+# ✅ CVS IMAGES VIA SKU (REAL FIX)
 # -----------------------------
 def get_cvs_images(url):
     try:
-        html = get_html(url)
+        parsed = urlparse(url)
+        sku = parse_qs(parsed.query).get("skuId", [None])[0]
 
-        # ✅ extract ALL scene7 images
-        matches = re.findall(r'https://[^"]+scene7[^"]+\.jpg', html)
+        if not sku:
+            return []
 
         images = []
 
-        for m in matches:
-            clean = m.split("?")[0]
+        # ✅ CVS typically has up to 7 images
+        for i in range(1, 10):
+            img_url = f"https://cvs.scene7.com/is/image/CVSHealth/{sku}_{i}?wid=400&hei=400"
 
-            if not any(x in clean.lower() for x in [
-                "icon", "logo", "swatch", "thumbnail-default"
-            ]):
-                images.append(clean)
+            img = download_image(img_url)
 
-        # remove duplicates
-        unique = list(dict.fromkeys(images))
+            if img:
+                images.append(img_url)
+            else:
+                break  # stop when no more images
 
-        # remove variations (same filename)
-        final = []
-        seen = set()
-
-        for img in unique:
-            name = img.split("/")[-1]
-
-            if name not in seen:
-                final.append(img)
-                seen.add(name)
-
-        return final[:10]
+        return images
 
     except:
         return []
 
 # -----------------------------
-# DISPLAY GRID WITH DOWNLOADED IMAGES
+# DISPLAY
 # -----------------------------
-def display_images(label, image_urls):
+def display_images(label, urls):
     st.markdown(f"### {label}")
 
     cols = st.columns(3)
 
-    for i, url in enumerate(image_urls):
+    for i, url in enumerate(urls):
         img = download_image(url)
 
         if img:
@@ -125,7 +107,6 @@ if uploaded_file:
         st.write(f"Salsify Images: {len(s_images)}")
         st.write(f"CVS Images: {len(r_images)}")
 
-        # side-by-side
         col1, col2 = st.columns(2)
 
         with col1:
@@ -134,7 +115,7 @@ if uploaded_file:
         with col2:
             display_images("CVS", r_images)
 
-        # result
+        # ✅ RESULT
         if len(r_images) == len(s_images):
             st.success("✅ Images Match")
         elif len(r_images) < len(s_images):
