@@ -83,53 +83,47 @@ def get_cvs_text(url):
     if t:
         title = t.group(0).strip()
 
-    # =========================================
-    # ✅ DESCRIPTION (WORKING + CLEANED)
-    # =========================================
-    d = re.search(
-        r'Get up to .*?HRA-eligible in the U\.S\.',
-        html,
-        re.DOTALL
-    )
 
-    if d:
-        raw = d.group(0)
+# =========================================
+# ✅ CLEAN TEXT BLOCK (EXACT EXTRACTION)
+# =========================================
+block_match = re.search(
+    r'Get up to .*?\]',
+    html,
+    re.DOTALL
+)
 
-        # ✅ HARD STOP at script/json
-        raw = re.split(r'\}\]|\}\,"|__next', raw)[0]
+description = ""
+features = []
 
-        # ✅ FIX JSON STRING FORMAT
-        raw = raw.replace('","', '. ')
-        raw = raw.replace('"', '')
+if block_match:
+    raw_block = block_match.group(0)
 
-        # ✅ CLEAN
-        raw = re.sub("<.*?>", "", raw)
-        raw = re.sub(r'\s+', ' ', raw).strip()
+    # ✅ STEP 1: extract ALL quoted strings (this is the key)
+    strings = re.findall(r'"(.*?)"', raw_block)
 
-        description = raw
+    clean_strings = []
 
-        # =========================================
-        # ✅ FEATURES (derived from description ✅)
-        # =========================================
-        parts = raw.split('. ')
+    for s in strings:
+        s = s.replace('\\n', ' ').strip()
 
-        for p in parts:
-            if (
-                len(p) > 20
-                and (
-                    "tampon" in p.lower()
-                    or "compact" in p.lower()
-                    or "wrapped" in p.lower()
-                    or "leak" in p.lower()
-                )
-            ):
-                features.append(p.strip())
+        # ✅ filter junk keys OUT
+        if any(x in s for x in ["vendorDetails", "script", "{", "}", ":"]):
+            continue
 
-    return {
-        "title": title,
-        "description": description,
-        "features": features
-    }
+        # ✅ keep only real sentences
+        if len(s) > 20:
+            clean_strings.append(s)
+
+    # ✅ DESCRIPTION = full paragraph
+    description = ". ".join(clean_strings)
+
+    # ✅ FEATURES = first 4–5 short meaningful lines
+    for s in clean_strings:
+        if len(s) < 120:
+            features.append(s)
+
+    features = list(dict.fromkeys(features))[:5]
 
 # -----------------------------
 # IMAGES (KEEP YOUR WORKING VERSION)
