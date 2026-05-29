@@ -4,13 +4,14 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 import re
+from difflib import SequenceMatcher
 
-st.title("PDP QA Tool (Images + Content ✅)")
+st.title("PDP QA Tool (Final QA Dashboard ✅)")
 
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
 # -----------------------------
-# GET HTML
+# HTML
 # -----------------------------
 def get_html(url):
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -25,20 +26,20 @@ def get_soup(url):
 def get_salsify_images(url):
     try:
         soup = get_soup(url)
-        images = []
+        imgs = []
 
         for img in soup.find_all("img"):
             src = img.get("src") or ""
             if src.startswith("http"):
-                images.append(src)
+                imgs.append(src)
 
-        return list(dict.fromkeys(images))[:8]
+        return list(dict.fromkeys(imgs))[:8]
 
     except:
         return []
 
 # -----------------------------
-# ✅ CVS IMAGES (CLEAN + HIGH RES)
+# ✅ CVS IMAGES (HIGHEST RES ONLY)
 # -----------------------------
 def get_cvs_images(url):
     try:
@@ -59,6 +60,7 @@ def get_cvs_images(url):
             size_match = re.search(r'Resize=\((\d+),', m)
             size = int(size_match.group(1)) if size_match else 0
 
+            # ✅ keep highest resolution only
             if name not in image_dict or size > image_dict[name]["size"]:
                 image_dict[name] = {
                     "url": base,
@@ -71,48 +73,74 @@ def get_cvs_images(url):
         return []
 
 # -----------------------------
-# ✅ TEXT EXTRACTION
+# ✅ SALSIFY TEXT (General Description)
 # -----------------------------
-def get_text_data(url):
+def get_salsify_text(url):
     try:
         soup = get_soup(url)
 
-        text = soup.get_text(" ", strip=True)
-
-        # simple extraction rules
-        title = ""
-        desc = ""
+        description = ""
         features = []
 
-        # title
-        if soup.title:
-            title = soup.title.text.strip()
-
-        # description
+        # ✅ long paragraph = general description
         for p in soup.find_all("p"):
-            t = p.get_text().lower()
-            if len(t) > 100:
-                desc = p.get_text()
+            text = p.get_text().strip()
+            if len(text) > 120:
+                description = text
                 break
 
-        # features
+        # ✅ bullets
         for li in soup.find_all("li"):
             txt = li.get_text().strip()
-            if len(txt) > 20:
+            if len(txt) > 15:
                 features.append(txt)
 
         return {
-            "title": title,
-            "description": desc,
-            "features": features[:5]
+            "description": description,
+            "features": features[:6]
         }
 
     except:
+        return {"description": "", "features": []}
+
+# -----------------------------
+# ✅ CVS TEXT (YOUR HTML STRUCTURE)
+# -----------------------------
+def get_cvs_text(url):
+    try:
+        soup = get_soup(url)
+
+        description = ""
+        features = []
+
+        # ✅ FIRST LONG SPAN = DESCRIPTION
+        for span in soup.find_all("span"):
+            txt = span.get_text().strip()
+            if len(txt) > 120:
+                description = txt
+                break
+
+        # ✅ FIRST UL = BULLETS
+        ul = soup.find("ul")
+        if ul:
+            for li in ul.find_all("li"):
+                txt = li.get_text().strip()
+                if txt:
+                    features.append(txt)
+
         return {
-            "title": "",
-            "description": "",
-            "features": []
+            "description": description,
+            "features": features[:6]
         }
+
+    except:
+        return {"description": "", "features": []}
+
+# -----------------------------
+# ✅ MATCH SCORE
+# -----------------------------
+def get_score(a, b):
+    return int(SequenceMatcher(None, a.lower(), b.lower()).ratio() * 100)
 
 # -----------------------------
 # MAIN
@@ -126,20 +154,23 @@ if uploaded_file:
         st.subheader(f"SKU: {row['sku']}")
 
         # -----------------------------
-        # GET DATA
+        # DATA
         # -----------------------------
         s_images = get_salsify_images(row["salsify_url"])
         r_images = get_cvs_images(row["retail_url"])
 
-        s_text = get_text_data(row["salsify_url"])
-        r_text = get_text_data(row["retail_url"])
+        s_text = get_salsify_text(row["salsify_url"])
+        r_text = get_cvs_text(row["retail_url"])
 
-        max_len = max(len(s_images), len(r_images))
+        st.write(f"Salsify Images: {len(s_images)}")
+        st.write(f"CVS Images: {len(r_images)}")
 
         # -----------------------------
         # ✅ IMAGE ALIGNMENT
         # -----------------------------
         st.markdown("## Image Comparison")
+
+        max_len = max(len(s_images), len(r_images))
 
         for i in range(max_len):
 
@@ -161,9 +192,7 @@ if uploaded_file:
 
             st.divider()
 
-        # -----------------------------
-        # ✅ IMAGE RESULT
-        # -----------------------------
+        # ✅ RESULT
         if len(r_images) == len(s_images):
             st.success("✅ Images Match")
         elif len(r_images) < len(s_images):
@@ -172,20 +201,46 @@ if uploaded_file:
             st.warning(f"⚠ Extra {len(r_images) - len(s_images)} images")
 
         # -----------------------------
-        # ✅ CONTENT QA
+        # ✅ CONTENT COMPARISON
         # -----------------------------
         st.markdown("## Content Comparison")
 
-        st.markdown("### Title")
-        st.write("Salsify:", s_text["title"])
-        st.write("CVS:", r_text["title"])
+        # ✅ DESCRIPTION
+        st.markdown("### General Description")
 
-        st.markdown("### Description")
-        st.write("Salsify:", s_text["description"])
-        st.write("CVS:", r_text["description"])
+        col1, col2 = st.columns(2)
 
+        with col1:
+            st.markdown("**Salsify**")
+            st.write(s_text["description"])
+
+        with col2:
+            st.markdown("**CVS**")
+            st.write(r_text["description"])
+
+        desc_score = get_score(
+            s_text["description"], r_text["description"]
+        )
+
+        st.write(f"✅ Description Match Score: {desc_score}%")
+
+        # -----------------------------
+        # ✅ FEATURES ALIGN
+        # -----------------------------
         st.markdown("### Features")
-        st.write("Salsify:", s_text["features"])
-        st.write("CVS:", r_text["features"])
+
+        max_len = max(len(s_text["features"]), len(r_text["features"]))
+
+        for i in range(max_len):
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                if i < len(s_text["features"]):
+                    st.write("•", s_text["features"][i])
+
+            with col2:
+                if i < len(r_text["features"]):
+                    st.write("•", r_text["features"][i])
 
         st.divider()
