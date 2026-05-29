@@ -86,24 +86,30 @@ def get_cvs_text(url):
     # -----------------------------
     # ✅ DESCRIPTION (clean + flexible)
     # -----------------------------
-    d = re.search(
-        r'(Get up to .*?HRA-eligible in the U\.S\.)',
-        html,
-        re.DOTALL
-    )
+   
+# ✅ DESCRIPTION (clean + bounded)
+d = re.search(
+    r'(Get up to .*?HRA-eligible in the U\.S\.)',
+    html,
+    re.DOTALL
+)
 
-    if d:
-        description = d.group(1)
+if d:
+    description = d.group(1)
 
-        # ✅ REMOVE JSON / SCRIPT JUNK
-        description = re.sub(r'"}.*', '', description)
-        description = re.sub(r'\]\}.*', '', description)
+    # ✅ HARD STOP at JSON start
+    description = re.split(r'"}|\]\}|\\n', description)[0]
 
-        # ✅ REMOVE HTML TAGS
-        description = re.sub("<.*?>", "", description)
+    # ✅ remove escaped junk
+    description = description.replace('\\"', '"')
+    description = description.replace('\\n', ' ')
 
-        # ✅ CLEAN SPACING
-        description = re.sub(r'\s+', ' ', description).strip()
+    # ✅ strip HTML
+    description = re.sub("<.*?>", "", description)
+
+    # ✅ normalize whitespace
+    description = re.sub(r'\s+', ' ', description).strip()
+
 
     # -----------------------------
     # ✅ FEATURES (clean bullet extraction)
