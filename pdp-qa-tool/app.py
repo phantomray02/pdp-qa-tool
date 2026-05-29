@@ -110,6 +110,7 @@ def get_salsify_text(url):
 
 
 # ✅ CVS
+
 def get_cvs_text(url):
     try:
         soup = get_soup(url)
@@ -118,39 +119,36 @@ def get_cvs_text(url):
         description = ""
         features = []
 
-        # ✅ TITLE (your screenshot target)
-        for p in soup.find_all("p"):
-            txt = p.get_text().strip()
-            if (
-                20 < len(txt) < 150
-                and "kotex" in txt.lower()
-            ):
-                title = txt
-                parent = p.parent
-                break
+        # -----------------------------
+        # ✅ TITLE
+        # -----------------------------
+        title_tag = soup.find("p", class_=re.compile("text-lg"))
 
+        if title_tag:
+            title = title_tag.get_text(strip=True)
+
+        # -----------------------------
         # ✅ DESCRIPTION
-        for span in soup.find_all("span"):
-            txt = span.get_text().strip()
+        # -----------------------------
+        desc_tag = soup.find("span", class_=re.compile("text-base"))
 
-            if len(txt) > 150 and "tampons" in txt.lower():
-                description = txt
-                parent = span.parent
-                break
+        if desc_tag:
+            description = desc_tag.get_text(strip=True)
 
-        # ✅ FEATURES (UL right after description)
-        if parent:
-            ul = parent.find_next("ul")
+        # -----------------------------
+        # ✅ FEATURES (VERY IMPORTANT FIX)
+        # -----------------------------
+        for li in soup.find_all("li"):
 
-            if ul:
-                for li in ul.find_all("li"):
-                    txt = li.get_text().strip()
+            class_list = " ".join(li.get("class", []))
 
-                    if (
-                        5 < len(txt) < 200
-                        and "manage prescriptions" not in txt.lower()
-                    ):
-                        features.append(txt)
+            # ✅ ONLY product bullet list (ignore nav links)
+            if "vendorDetailsBullet" in class_list:
+
+                txt = li.get_text(strip=True)
+
+                if txt and len(txt) > 5:
+                    features.append(txt)
 
         return {
             "title": title,
@@ -159,8 +157,11 @@ def get_cvs_text(url):
         }
 
     except:
-        return {"title": "", "description": "", "features": []}
-
+        return {
+            "title": "",
+            "description": "",
+            "features": []
+        }
 # -----------------------------
 # MATCH SCORE
 # -----------------------------
