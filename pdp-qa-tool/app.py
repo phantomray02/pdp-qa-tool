@@ -1,82 +1,39 @@
 
 import streamlit as st
 import pandas as pd
-import requests
-from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright
 from rapidfuzz import fuzz
 
-st.title("PDP QA Tool")
+st.title("PDP QA Tool (Playwright Version)")
 
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
 # -----------------------------
-# Get Salsify text + images
+# Use REAL browser to load page
 # -----------------------------
-def get_salsify_data(url):
-    try:
-        res = requests.get(url)
-        soup = BeautifulSoup(res.text, "html.parser")
+def get_page_data(url):
 
-        text = soup.get_text(" ", strip=True)
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
 
-        imgs = soup.find_all("img")
-        image_urls = [img.get("src") for img in imgs if img.get("src")]
+        page.goto(url, timeout=60000)
 
-        return text, list(set(image_urls))
+        # Wait for page to load
+        page.wait_for_timeout(5000)
 
-    except:
-        return "", []
+        # ✅ Grab visible text
+        text = page.inner_text("body")
 
-# -----------------------------
-# Get CVS data (CLEANED images)
-# -----------------------------
-
-def get_cvs_data(url):
-    try:
-        res = requests.get(url)
-        soup = BeautifulSoup(res.text, "html.parser")
-
-        # ✅ Try to find the "Details" section specifically
-        detail_section = None
-
-        for div in soup.find_all("div"):
-            if div.get_text().lower().find("details") != -1:
-                detail_section = div
-                break
-
-        # Fallback
-        if not detail_section:
-            detail_section = soup
-
-        # ✅ Description (longest paragraph in details)
-        paragraphs = detail_section.find_all("p")
-        description = max(
-            [p.get_text(strip=True) for p in paragraphs],
-            key=len,
-            default=""
+        # ✅ Grab images
+        images = page.eval_on_selector_all(
+            "img",
+            "imgs => imgs.map(img => img.src)"
         )
 
-        # ✅ Features (bullet points in details only)
-        bullets = detail_section.find_all("li")
-        features = " ".join([
-            b.get_text(strip=True) for b in bullets
-            if len(b.get_text(strip=True)) > 10
-        ])
+        browser.close()
 
-        # ✅ Images (only large product images)
-        imgs = soup.find_all("img")
-
-        image_urls = []
-        for img in imgs:
-            src = img.get("src") or ""
-
-            if any(x in src for x in ["zoom", "large", "product"]):
-                image_urls.append(src)
-
-        return description, features, list(set(image_urls))
-
-    except:
-        return "", "", []
+        return text, list(set(images))
 
 
 # -----------------------------
@@ -89,38 +46,36 @@ if uploaded_file:
 
     for _, row in df.iterrows():
 
-        s_text, s_images = get_salsify_data(row["salsify_url"])
-        cvs_desc, cvs_features, r_images = get_cvs_data(row["retail_url"])
+        # Load BOTH pages fully rendered
+        s_text, s_images = get_page_data(row["salsify_url"])
+        r_text, r_images = get_page_data(row["retail_url"])
 
-        # Text scores
-        desc_score = fuzz.partial_ratio(s_text, cvs_desc)
-        feat_score = fuzz.partial_ratio(s_text, cvs_features)
+        # -----------------------------
+        # Text comparison
+        # -----------------------------
+        desc_score = fuzz.partial_ratio(s_text, r_text)
 
-        # Image comparison
-        s_set = set(s_images)
-        r_set = set(r_images)
-
-        match_count = len(s_set & r_set)
-        total_salsify = len(s_set)
-
+        # -----------------------------
+        # Image comparison (count-based)
+        # -----------------------------
         image_match_pct = round(
-            (match_count / total_salsify) * 100, 1
-        ) if total_salsify > 0 else 0
+            (min(len(r_images), len(s_images)) / max(len(s_images), 1)) * 100,
+            1
+        )
 
-        # Status
+        # -----------------------------
+        # Status logic
+        # -----------------------------
         status = "PASS" if (
-            desc_score > 85 and
-            feat_score > 75 and
-            image_match_pct > 40
+            desc_score > 80 and image_match_pct > 60
         ) else "FAIL"
 
         results.append({
             "SKU": row["sku"],
-            "Description Score": desc_score,
-            "Feature Score": feat_score,
+            "Text Score": desc_score,
             "Image Match %": image_match_pct,
-            "Salsify Images": len(s_set),
-            "Retail Images": len(r_set),
+            "Salsify Images": len(s_images),
+            "Retail Images": len(r_images),
             "Status": status
         })
 
