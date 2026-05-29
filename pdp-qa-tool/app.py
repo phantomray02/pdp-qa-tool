@@ -115,6 +115,7 @@ def get_salsify_text(url):
 # -----------------------------
 # ✅ CVS TEXT (STRICT RULES)
 # -----------------------------
+
 def get_cvs_text(url):
     try:
         soup = get_soup(url)
@@ -123,24 +124,43 @@ def get_cvs_text(url):
         description = ""
         features = []
 
-        # ✅ TITLE (p tag)
-        title_tag = soup.find("p", class_=re.compile("text-lg"))
+        # -----------------------------
+        # ✅ TITLE (EXACT MATCH)
+        # -----------------------------
+        for p in soup.find_all("p", class_=re.compile("text-lg")):
+            txt = p.get_text(strip=True)
 
-        if title_tag:
-            title = title_tag.get_text(strip=True)
+            # ✅ must contain product words (avoid nav/junk)
+            if "kotex" in txt.lower():
+                title = txt
+                break
 
-        # ✅ DESCRIPTION (span)
-        desc_tag = soup.find("span", class_=re.compile("text-base"))
+        # -----------------------------
+        # ✅ DESCRIPTION (EXACT LONG SPAN ONLY)
+        # -----------------------------
+        for span in soup.find_all("span", class_=re.compile("text-base")):
+            txt = span.get_text(strip=True)
 
-        if desc_tag:
-            description = desc_tag.get_text(strip=True)
+            # ✅ must be long + product content
+            if len(txt) > 120 and "tampon" in txt.lower():
+                description = txt
+                break
 
-        # ✅ FEATURES (li → TEXT ONLY)
+        # -----------------------------
+        # ✅ FEATURES (THIS IS THE KEY FIX ✅)
+        # -----------------------------
         for li in soup.find_all("li", id=re.compile("vendorDetailsBullet")):
 
-            txt = li.get_text(separator=" ", strip=True)
+            # ✅ get ONLY inner text (no tags)
+            txt = li.get_text(" ", strip=True)
 
-            if txt:
+            # ✅ filter bad entries
+            if (
+                txt
+                and len(txt) > 5
+                and "manage prescriptions" not in txt.lower()
+                and "schedule" not in txt.lower()
+            ):
                 features.append(txt)
 
         return {
