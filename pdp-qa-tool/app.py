@@ -64,6 +64,9 @@ def get_salsify_text(url):
 # ✅ CVS TEXT (FINAL WORKING VERSION ✅)
 # -----------------------------
 
+import json
+import re
+
 def get_cvs_text(url):
     html = get_html(url)
 
@@ -72,47 +75,77 @@ def get_cvs_text(url):
     features = []
 
     # -----------------------------
-    # ✅ TITLE (direct string match)
+    # ✅ 1. EXTRACT __NEXT_DATA__ JSON
     # -----------------------------
-    t = re.search(
-        r'U by Kotex Click Compact Tampons.*?Count',
-        html
-    )
-    if t:
-        title = t.group(0)
-
-    # -----------------------------
-    # ✅ DESCRIPTION (long paragraph)
-    # -----------------------------
-    d = re.search(
-        r'Get up to 100% leak-free.*?HRA-eligible in the U\.S\.',
-        html,
-        re.DOTALL
-    )
-    if d:
-        description = d.group(0)
-
-    # -----------------------------
-    # ✅ FEATURES (each sentence pattern)
-    # -----------------------------
-    f = re.findall(
-        r'(?:\d+\s+regular tampons|Get up to 100% leak-free.*?|U by Kotex Click tampons.*?|Compact to fit.*?|Individually wrapped.*?trends)',
+    match = re.search(
+        r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
         html,
         re.DOTALL
     )
 
-    for item in f:
-        clean = re.sub("<.*?>", "", item).strip()
-        if clean and clean not in features:
-            features.append(clean)
+    if not match:
+        return {"title": "", "description": "", "features": []}
+
+    try:
+        data = json.loads(match.group(1))
+    except:
+        return {"title": "", "description": "", "features": []}
+
+    # -----------------------------
+    # ✅ 2. SEARCH JSON RECURSIVELY
+    # -----------------------------
+    def find_keys(obj):
+        results = []
+
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+
+                # ✅ TITLE
+                if k.lower() == "name" and isinstance(v, str):
+                    results.append(("title", v))
+
+                # ✅ DESCRIPTION
+                if "description" in k.lower() and isinstance(v, str):
+                    results.append(("description", v))
+
+                # ✅ FEATURES
+                if "bullet" in k.lower() and isinstance(v, list):
+                    results.append(("features", v))
+
+                results.extend(find_keys(v))
+
+        elif isinstance(obj, list):
+            for item in obj:
+                results.extend(find_keys(item))
+
+        return results
+
+    results = find_keys(data)
+
+    # -----------------------------
+    # ✅ 3. ASSIGN VALUES CLEANLY
+    # -----------------------------
+    for r_type, val in results:
+
+        if r_type == "title" and not title:
+            if "kotex" in val.lower():
+                title = val
+
+        elif r_type == "description" and not description:
+            if len(val) > 150:
+                description = re.sub("<.*?>", "", val)
+
+        elif r_type == "features":
+            for item in val:
+                clean = re.sub("<.*?>", "", str(item)).strip()
+                if clean and clean not in features:
+                    features.append(clean)
 
     return {
         "title": title,
         "description": description,
-        "features": features
+        "features": features[:6]
     }
-
-
 # -----------------------------
 # IMAGES (KEEP YOUR WORKING VERSION)
 # -----------------------------
