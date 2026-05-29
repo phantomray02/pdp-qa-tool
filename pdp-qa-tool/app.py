@@ -180,7 +180,8 @@ def get_cvs_text(url):
 
     except:
         return {"title": "", "description": "", "features": []
-
+               }
+        
 # -----------------------------
 # MAIN
 # -----------------------------
