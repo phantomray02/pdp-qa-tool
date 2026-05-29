@@ -74,9 +74,7 @@ def get_cvs_text(url):
     description = ""
     features = []
 
-    # -----------------------------
-    # ✅ GET __NEXT_DATA__ JSON
-    # -----------------------------
+    # ✅ Extract JSON
     match = re.search(
         r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
         html,
@@ -86,52 +84,30 @@ def get_cvs_text(url):
     if not match:
         return {"title": "", "description": "", "features": []}
 
+    data = json.loads(match.group(1))
+
+    # -----------------------------
+    # ✅ DIRECT PATH (FAST ✅)
+    # -----------------------------
     try:
-        data = json.loads(match.group(1))
+        page_props = data["props"]["pageProps"]
+
+        # ✅ TITLE
+        title = page_props.get("product", {}).get("name", "")
+
+        # ✅ DESCRIPTION
+        description = page_props.get("product", {}).get("longDescription", "")
+
+        # ✅ FEATURES (THIS IS THE KEY ✅)
+        bullets = page_props.get("product", {}).get("vendorDetailsBullets", [])
+
+        for b in bullets:
+            clean = re.sub("<.*?>", "", str(b)).strip()
+            if clean:
+                features.append(clean)
+
     except:
-        return {"title": "", "description": "", "features": []}
-
-    # -----------------------------
-    # ✅ SEARCH FOR TARGET KEYS
-    # -----------------------------
-    def find_fields(obj):
-        nonlocal title, description, features
-
-        if isinstance(obj, dict):
-
-            for k, v in obj.items():
-
-                # ✅ TITLE (look for product name near details)
-                if (
-                    not title
-                    and isinstance(v, str)
-                    and "kotex" in v.lower()
-                    and "count" in v.lower()
-                ):
-                    title = v
-
-                # ✅ DESCRIPTION
-                if (
-                    isinstance(v, str)
-                    and "Get up to 100% leak-free" in v
-                ):
-                    description = re.sub("<.*?>", "", v)
-
-                # ✅ FEATURES
-                if "vendorDetailsBullets" in k and isinstance(v, list):
-                    for item in v:
-                        clean = re.sub("<.*?>", "", str(item)).strip()
-                        if clean:
-                            features.append(clean)
-
-                # ✅ continue recursion
-                find_fields(v)
-
-        elif isinstance(obj, list):
-            for item in obj:
-                find_fields(item)
-
-    find_fields(data)
+        pass
 
     return {
         "title": title,
