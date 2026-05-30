@@ -345,13 +345,29 @@ if uploaded_file:
         c1, c2 = st.columns(2)
         c1.write(s_title)
         c2.write(r_title)
+        
+        title_score = int(SequenceMatcher(None, s_title.lower(), r_title.lower()).ratio() * 100)
+        st.write(f"✅ Title Match: {title_score}%")
 
+
+            
         # DESCRIPTION
         st.markdown("## Description")
 
         c1, c2 = st.columns(2)
         c1.write(s_text["description"])
         c2.write(r_text["description"])
+
+        # ✅ ADDED HERE
+        desc_score = int(SequenceMatcher(
+            None,
+            s_text.get("description", "").lower(),
+            r_text.get("description", "").lower()
+        ).ratio() * 100)
+
+        st.write(f"✅ Description Match: {desc_score}%")
+
+
 
         # FEATURES
         st.markdown("## Features")
