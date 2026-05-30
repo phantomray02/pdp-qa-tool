@@ -151,10 +151,11 @@ def clean_text(raw):
 def get_cvs_text(url):
     html = get_html(url)
 
+    # ✅ STEP 1: find ANY part of Details section (looser match)
     match = re.search(
-        r'Get up to 100%.*?latest fashion trends',
+        r'Get up to .*?(Compact to fit.*?easy step).*?(Individually wrapped.*?trends)',
         html,
-        re.DOTALL
+        re.DOTALL | re.IGNORECASE
     )
 
     if not match:
@@ -162,22 +163,18 @@ def get_cvs_text(url):
 
     block = clean_text(match.group(0))
 
+    description = block
+
+    # ✅ STEP 2: extract features individually
     features = []
 
     patterns = [
         r'\d+\s+regular\s+tampons',
-        r'Get up to 100% leak-free',
-        r'U by Kotex Click tampons move',
-        r'Compact to fit',
-        r'Individually wrapped',
+        r'Get up to\s+100%[^.]+',
+        r'U by Kotex Click tampons[^.]+',
+        r'Compact to fit[^.]+',
+        r'Individually wrapped[^.]+'
     ]
-
-    for p in patterns:
-        m = re.search(p, block, re.IGNORECASE)
-        if m:
-            features.append(m.group(0).strip())
-
-    return {"description": block, "features": features}
 
 # =========================================
 # ✅ SALSIFY TEXT
