@@ -161,36 +161,34 @@ def match_features(s_features, r_features, r_description):
     r_all = (" ".join(r_features) + " " + r_description).lower()
 
     for s in s_features:
-        numbers = re.findall(r'\d+', s)
 
-        if numbers:
-            if any(n in r_all for n in numbers):
-                results.append((s, f"{numbers[0]} Count", 100))
-            else:
-                results.append((s, "❌ Missing", 0))
-            continue
+        best_match = ""
+        best_score = 0
 
-        s_clean = re.sub(r'[^a-z0-9 ]', '', s.lower())
-        words = s_clean.split()
+        for r in r_features:
 
-        matches = sum(1 for w in words if w in r_all)
-        pct = int(100 * matches / len(words)) if words else 0
+            # ✅ EXACT MATCH FIRST
+            if s.strip() == r.strip():
+                results.append((s, r, 100))
+                best_match = r
+                best_score = 100
+                break
 
-      # ✅ EXACT MATCH ONLY
-if s.strip() == r.strip():
-    results.append((s, r, 100))
+            # ✅ OTHERWISE USE SIMILARITY
+            similarity = int(
+                SequenceMatcher(None, s.lower(), r.lower()).ratio() * 100
+            )
 
-# ✅ PARTIAL MATCH (fallback)
-else:
-    similarity = int(
-        SequenceMatcher(None, s.lower(), r.lower()).ratio() * 100
-    )
+            if similarity > best_score:
+                best_score = similarity
+                best_match = r
 
-    if similarity > 0:
-        results.append((s, r, similarity))
-    else:
-        results.append((s, "❌ Missing", 0))
+        if best_score == 0:
+            results.append((s, "❌ Missing", 0))
+        elif best_score < 100:
+            results.append((s, best_match, best_score))
 
+    return results
 # =========================================
 # ✅ MAIN
 # =========================================
