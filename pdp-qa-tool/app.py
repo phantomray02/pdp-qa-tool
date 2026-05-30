@@ -175,23 +175,33 @@ def clean_text(raw):
 def get_cvs_text(url):
     html = get_html(url)
 
-    description = ""
-   
-    features = []
+    # ✅ BREAK LONG FEATURE BLOCK INTO REAL FEATURES
+features = []
 
-    patterns = [
-        r'Get up to 100% leak-free[^.]+',
-        r'U by Kotex Click tampons move[^.]+',
-        r'Compact to fit[^.]+',
-        r'Individually wrapped[^.]+'
-    ]
+# split using commas BUT rebuild intelligently
+parts = description.split(",")
 
-    for p in patterns:
-        m = re.search(p, description, re.IGNORECASE)
+buffer = ""
 
-    if m:
-        features.append(m.group(0).strip())
+for part in parts:
+    part = part.strip()
 
+    if len(buffer) > 0:
+        candidate = buffer + ", " + part
+    else:
+        candidate = part
+
+    # ✅ detect meaningful stopping points
+    if any(k in candidate.lower() for k in [
+        "leak-free",
+        "move with you",
+        "compact to fit",
+        "individually wrapped"
+    ]):
+        features.append(candidate.strip())
+        buffer = ""
+    else:
+        buffer = candidate
     # ✅ ensure count feature
     count_match = re.search(r'(\d+)\s+regular\s+tampons', html, re.IGNORECASE)
     if count_match:
