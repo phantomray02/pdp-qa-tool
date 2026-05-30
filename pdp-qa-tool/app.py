@@ -99,28 +99,32 @@ def extract_text_block(html):
 
 def get_cvs_text(url):
     html = get_html(url)
+    soup = get_soup(url)
 
-    # ✅ THIS PART WORKS — DON'T TOUCH
-    desc = clean_text(extract_text_block(html))
+    # ✅ get ALL visible page text
+    full_text = soup.get_text(" ", strip=True)
 
     features = []
 
-    # ✅ SIMPLE + RELIABLE SPLIT (NO FILTERING BREAKAGE)
-    if desc:
-        sentences = re.split(r'\.\s+', desc)
+    # ✅ extract real feature phrases DIRECTLY
+    patterns = [
+        r'\d+\s*(?:count|ct|tampons?)',
+        r'Get up to .*?tampon',
+        r'U by Kotex Click tampons .*?fragrance',
+        r'Compact to fit .*?step',
+        r'Individually wrapped .*?trends'
+    ]
 
-        for s in sentences:
-            s = s.strip()
-
-            # ✅ ONLY BASIC FILTER (this is the fix)
-            if len(s) > 25:
-                features.append(s)
+    for pattern in patterns:
+        match = re.search(pattern, full_text, re.IGNORECASE)
+        if match:
+            features.append(match.group(0).strip())
 
     return {
-        "description": desc,
-        "features": features[:6]
+        "description": full_text,
+        "features": features
     }
-
+``
 
 def get_salsify_text(url):
     html = get_html(url)
