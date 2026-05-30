@@ -333,19 +333,24 @@ def compare_images_visually(s_url, r_url):
         s_img = Image.open(BytesIO(s_img_data)).convert("RGB").resize((256, 256))
         r_img = Image.open(BytesIO(r_img_data)).convert("RGB").resize((256, 256))
 
-        # ✅ multi-hash
-        diff = (
-            abs(imagehash.phash(s_img) - imagehash.phash(r_img)) +
-            abs(imagehash.average_hash(s_img) - imagehash.average_hash(r_img)) +
-            abs(imagehash.dhash(s_img) - imagehash.dhash(r_img))
-        ) / 3
+        # ✅ compute differences
+        phash_diff = abs(imagehash.phash(s_img) - imagehash.phash(r_img))
+        ahash_diff = abs(imagehash.average_hash(s_img) - imagehash.average_hash(r_img))
+        dhash_diff = abs(imagehash.dhash(s_img) - imagehash.dhash(r_img))
 
-       
-# ✅ shortcut for near-identical images
-if diff < 8:
-    return 95
-elif diff < 15:
-    return 85
+        diff = (phash_diff + ahash_diff + dhash_diff) / 3
+
+        # ✅ RELAXED SCORING (INSIDE try ✅)
+        if diff < 5:
+            return 100
+        elif diff < 10:
+            return 90
+        elif diff < 15:
+            return 75
+        elif diff < 25:
+            return 60
+        else:
+            return max(10, int(80 - diff * 2))
 
     except:
         return 0
