@@ -166,77 +166,73 @@ def match_features(s_features, r_features):
 # ✅ MAIN
 # =========================================
 
+
 if uploaded_file:
 
     df = pd.read_csv(uploaded_file)
 
     for _, row in df.iterrows():
 
+        # ✅ HEADER
         st.subheader(f"SKU: {row['sku']}")
 
+        # ✅ DATA (aligned properly)
         s_images = get_salsify_images(row["salsify_url"])
         r_images = get_cvs_images(row["retail_url"])
 
         s_text = get_salsify_text(row["salsify_url"])
         r_text = get_cvs_text(row["retail_url"])
 
-# =========================================
-# ✅ TITLE (ADD THIS)
-# =========================================
-st.markdown("## Title")
+        # =========================================
+        # ✅ TITLE (NEW)
+        # =========================================
+        st.markdown("## Title")
 
-c1, c2 = st.columns(2)
+        c1, c2 = st.columns(2)
 
-# extract titles using same pattern
-title_pattern = r'[A-Z][A-Za-z0-9 ,\-]+(?:Count|Ct)'
+        title_pattern = r'[A-Z][A-Za-z0-9 ,\-]+(?:Count|Ct)'
 
-s_title_match = re.search(title_pattern, get_html(row["salsify_url"]))
-r_title_match = re.search(title_pattern, get_html(row["retail_url"]))
+        s_title_match = re.search(title_pattern, get_html(row["salsify_url"]))
+        r_title_match = re.search(title_pattern, get_html(row["retail_url"]))
 
-s_title = s_title_match.group(0) if s_title_match else ""
-r_title = r_title_match.group(0) if r_title_match else ""
+        s_title = s_title_match.group(0) if s_title_match else ""
+        r_title = r_title_match.group(0) if r_title_match else ""
 
-with c1:
-    st.write("Salsify")
-    st.write(s_title)
+        with c1:
+            st.write("Salsify")
+            st.write(s_title)
 
-with c2:
-    st.write("CVS")
-    st.write(r_title)
-    
-        s_images = get_salsify_images(row["salsify_url"])
-        r_images = get_cvs_images(row["retail_url"])
+        with c2:
+            st.write("CVS")
+            st.write(r_title)
 
-        s_text = get_salsify_text(row["salsify_url"])
-        r_text = get_cvs_text(row["retail_url"])
-
-        # =========================
+        # =========================================
         # ✅ IMAGE COMPARISON
-        # =========================
+        # =========================================
         st.markdown("## Image Comparison")
 
         max_len = max(len(s_images), len(r_images))
 
         for i in range(max_len):
-            c1, c2 = st.columns(2)
+            col1, col2 = st.columns(2)
 
-            with c1:
+            with col1:
                 st.write(f"Salsify {i+1}")
                 if i < len(s_images):
                     st.image(s_images[i])
                 else:
                     st.error("Missing")
 
-            with c2:
+            with col2:
                 st.write(f"CVS {i+1}")
                 if i < len(r_images):
                     st.image(r_images[i])
                 else:
                     st.error("Missing")
 
-        # =========================
+        # =========================================
         # ✅ DESCRIPTION
-        # =========================
+        # =========================================
         st.markdown("## Description")
 
         c1, c2 = st.columns(2)
@@ -249,11 +245,14 @@ with c2:
             st.write("CVS")
             st.write(r_text["description"])
 
-        st.write("Match:", f"{score(s_text['description'], r_text['description'])}%")
+        st.write(
+            "Match:",
+            f"{score(s_text['description'], r_text['description'])}%"
+        )
 
-        # =========================
-        # ✅ FEATURES (FIXED)
-        # =========================
+        # =========================================
+        # ✅ FEATURES (MATCHED)
+        # =========================================
         st.markdown("## Features")
 
         matched = match_features(
@@ -278,3 +277,4 @@ with c2:
                     st.write(f"{sc}%")
 
         st.divider()
+
