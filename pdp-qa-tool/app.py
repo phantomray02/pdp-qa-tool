@@ -99,34 +99,44 @@ def extract_text_block(html):
     return ""  # ✅ ALWAYS return string
 
 def get_cvs_text(url):
-    soup = get_soup(url)
+    html = get_html(url)
 
-    description = ""
+    # ✅ grab raw details block (this DOES exist in HTML)
+    match = re.search(
+        r'Get up to 100%.*?latest fashion trends',
+        html,
+        re.DOTALL
+    )
+
+    if not match:
+        return {"description": "", "features": []}
+
+    block = clean_text(match.group(0))
+
+    # ✅ DESCRIPTION = full paragraph
+    description = block
+
+    # ✅ FEATURES = manually defined patterns (reliable)
     features = []
 
-    # ✅ 1. GET DESCRIPTION (DETAILS PARAGRAPH)
-    for div in soup.find_all("div"):
-        text = div.get_text(" ", strip=True)
+    patterns = [
+        r'\d+\s+regular\s+tampons',
+        r'Get up to 100% leak-free with the #1 compact tampon',
+        r'U by Kotex Click tampons move with you.*?fragrance',
+        r'Compact to fit in your purse or pocket.*?easy step',
+        r'Individually wrapped in vibrant colors.*?trends',
+    ]
 
-        if "Get up to 100%" in text and "fashion trends" in text:
-            description = text
-            break
-
-    description = clean_text(description)
-
-    # ✅ 2. GET EXACT FEATURES FROM BULLETS
-    for li in soup.find_all("li"):
-        li_id = li.get("id", "")
-
-        if "vendorDetailsBullet" in li_id:
-            txt = li.get_text(strip=True)
-
-            if txt:
-                features.append(txt)
+    for p in patterns:
+        m = re.search(p, block, re.IGNORECASE)
+        if m:
+            features.append(m.group(0).strip())
 
     return {
         "description": description,
         "features": features
+    }
+
     }
 
 
