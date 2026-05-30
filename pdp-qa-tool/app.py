@@ -213,6 +213,7 @@ def match_features(s_features, r_features):
 # =========================================
 # ✅ MAIN
 # =========================================
+
 if uploaded_file:
 
     df = pd.read_csv(uploaded_file)
@@ -221,11 +222,37 @@ if uploaded_file:
 
         st.subheader(f"SKU: {row['sku']}")
 
-        s_images = get_salsify_images(row["salsify_url"])
-        r_images = get_cvs_images(row["retail_url"])
+        # ✅ TITLE
+        st.markdown("## Title")
+        ...
 
-        s_text = get_salsify_text(row["salsify_url"])
-        r_text = get_cvs_text(row["retail_url"])
+        # ✅ DESCRIPTION
+        st.markdown("## Description")
+        ...
+
+        # ✅ FEATURES
+        st.markdown("## Features")
+        ...
+
+        # ✅ IMAGE COMPARISON (FIXED INDENT ✅)
+        st.markdown("## Image Comparison")
+
+        max_len = max(len(s_images), len(r_images))
+
+        for i in range(max_len):
+            col1, col2 = st.columns(2)
+
+            if i < len(s_images):
+                col1.image(s_images[i])
+            else:
+                col1.error("Missing")
+
+            if i < len(r_images):
+                col2.image(r_images[i])
+            else:
+                col2.error("Missing")
+
+        st.divider()
 
         # ✅ TITLE
         st.markdown("## Title")
