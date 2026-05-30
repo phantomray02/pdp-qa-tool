@@ -150,6 +150,7 @@ def clean_text(raw):
     raw = re.sub(r'"@type".*?"name"\s*:\s*"', '', raw)
     raw = raw.replace('"}', '')
     raw = raw.replace('","', '. ')
+    raw = re.sub(r'^[,.\s]+', '', raw)
     
     # ✅ remove trailing comma + curly brace artifacts
     raw = re.sub(r',\s*\{.*$', '', raw)
