@@ -99,39 +99,26 @@ def extract_text_block(html):
 def get_cvs_text(url):
     html = get_html(url)
 
-    desc = extract_text_block(html)
+    desc = clean_text(extract_text_block(html))
 
     features = []
 
-    # ✅ FIND FEATURES BLOCK AFTER DESCRIPTION
-    # CVS features appear as repeated phrases near the end
-    matches = re.findall(
-        r'(\d+\s*\w*\s*(?:tampons|count|ct)|Get up to .*?|U by Kotex Click tampons.*?|Compact to fit.*?|Individually wrapped.*?)($|\.)',
-        html,
-        re.IGNORECASE
-    )
+    # ✅ SPLIT CLEAN TEXT INTO FEATURES
+    if desc:
+        sentences = re.split(r'\.\s+', desc)
 
-    for m in matches:
-        text = m[0].strip()
-
-        # ✅ filter real features (ignore junk)
-        if 20 < len(text) < 200:
-            features.append(text)
-
-    # ✅ fallback if regex fails
-    if not features:
-        for s in re.split(r'\.\s+', desc):
+        for s in sentences:
             s = s.strip()
-            if len(s) > 25:
-                features.append(s)
 
-    # ✅ remove duplicates
-    features = list(dict.fromkeys(features))
+            # ✅ KEEP ALL REAL FEATURE SENTENCES
+            if len(s) > 40:
+                features.append(s)
 
     return {
         "description": desc,
         "features": features[:6]
     }
+
 def get_salsify_text(url):
     html = get_html(url)
     desc = extract_text_block(html)
@@ -170,22 +157,31 @@ def strict_title_score(a, b):
 def match_features(s_features, r_features, r_description):
     results = []
 
+    r_all = " ".join(r_features).lower()
+
     for s in s_features:
+
+        s_clean = s.lower()
 
         best_match = ""
         best_score = 0
 
         for r in r_features:
 
-            score = int(
-                SequenceMatcher(None, s.lower(), r.lower()).ratio() * 100
-            )
+            r_clean = r.lower()
+
+            # ✅ WORD OVERLAP MATCH (THIS FIXES Feature 2 & 3)
+            s_words = set(re.findall(r'\w+', s_clean))
+            r_words = set(re.findall(r'\w+', r_clean))
+
+            overlap = len(s_words & r_words)
+            score = int(100 * overlap / len(s_words)) if s_words else 0
 
             if score > best_score:
                 best_score = score
                 best_match = r
 
-        if best_score > 50:
+        if best_score >= 40:
             results.append((s, best_match, best_score))
         else:
             results.append((s, "❌ Missing", 0))
