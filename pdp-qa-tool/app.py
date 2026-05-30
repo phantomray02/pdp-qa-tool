@@ -241,10 +241,12 @@ if uploaded_file:
         # =========================================
         st.markdown("## Features")
 
-        matched = match_features(
-            s_text["features"],
-            r_text["features"]
-        )
+       
+matched = match_features(
+    s_text["features"],
+    r_text["features"],
+    r_text["description"]
+)
 
         match_count = 0
 
