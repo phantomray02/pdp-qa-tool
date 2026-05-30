@@ -468,6 +468,7 @@ st.divider()
 
 from openpyxl import load_workbook
 from openpyxl.drawing.image import Image as XLImage
+from openpyxl.utils import get_column_letter
 from io import BytesIO
 
 # =========================================
@@ -480,15 +481,22 @@ if export_rows:
     file_name = "pdp_qa_results.xlsx"
     export_df.to_excel(file_name, index=False)
 
+    # ✅ LOAD WORKBOOK
     wb = load_workbook(file_name)
     ws = wb.active
 
-    # ✅ START COLUMN FOR IMAGES
-    start_col = ws.max_column - (20 - 1)  # adjust if you change image count
+    # ✅ NUMBER OF IMAGES PER TYPE
+    num_images = 10
+
+    # ✅ FIND START COLUMN FOR IMAGES
+    start_col = ws.max_column - (num_images * 2) + 1
 
     for row_idx, row_data in enumerate(export_rows, start=2):
 
-        for i in range(10):
+        # ✅ adjust row height so images display cleanly
+        ws.row_dimensions[row_idx].height = 80
+
+        for i in range(num_images):
 
             # -------------------------
             # ✅ SALSIFY IMAGES
@@ -501,7 +509,7 @@ if export_rows:
                     img.width = 90
                     img.height = 90
 
-                    col_letter = chr(64 + start_col + i)
+                    col_letter = get_column_letter(start_col + i)
                     ws.add_image(img, f"{col_letter}{row_idx}")
                 except:
                     pass
@@ -517,13 +525,15 @@ if export_rows:
                     img.width = 90
                     img.height = 90
 
-                    col_letter = chr(64 + start_col + 10 + i)
+                    col_letter = get_column_letter(start_col + num_images + i)
                     ws.add_image(img, f"{col_letter}{row_idx}")
                 except:
                     pass
 
+    # ✅ SAVE FILE
     wb.save(file_name)
 
+    # ✅ DOWNLOAD BUTTON (TOP)
     with open(file_name, "rb") as f:
         download_placeholder.download_button(
             label="📥 Download Excel Report",
@@ -531,4 +541,3 @@ if export_rows:
             file_name=file_name,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-
