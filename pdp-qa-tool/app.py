@@ -190,25 +190,28 @@ def get_cvs_text(url):
         return {"description": "", "features": []}
 
     description = clean_text(match.group(0))
-
+    
     features = []
 
-    # ✅ extract each feature explicitly
-    f1 = re.search(r'Get up to 100% leak-free[^.]+', description, re.IGNORECASE)
-    if f1:
-        features.append(f1.group(0).strip())
+# ✅ EXACT feature extraction (NO splitting)
 
-    f2 = re.search(r'U by Kotex Click tampons move[^.]+', description, re.IGNORECASE)
-    if f2:
-        features.append(f2.group(0).strip())
+f1 = re.search(r'Get up to 100% leak-free[^,]+', description, re.IGNORECASE)
+if f1:
+    features.append(f1.group(0).strip())
 
-    f3 = re.search(r'Compact to fit[^.]+', description, re.IGNORECASE)
-    if f3:
-        features.append(f3.group(0).strip())
+f2 = re.search(r'U by Kotex Click tampons move[^,]+', description, re.IGNORECASE)
+if f2:
+    features.append(f2.group(0).strip())
 
-    f4 = re.search(r'Individually wrapped[^.]+', description, re.IGNORECASE)
-    if f4:
-        features.append(f4.group(0).strip())
+f3 = re.search(r'Compact to fit[^,]+', description, re.IGNORECASE)
+if f3:
+    features.append(f3.group(0).strip())
+
+f4 = re.search(r'Individually wrapped[^,]+', description, re.IGNORECASE)
+if f4:
+    features.append(f4.group(0).strip())
+
+    
 
     # ✅ count feature
     count_match = re.search(r'(\d+)\s+regular\s+tampons', html, re.IGNORECASE)
