@@ -452,16 +452,16 @@ if uploaded_file:
         
         
         # =========================================
-                # ✅ IMAGE COMPARISON (VISUAL ✅)
-                # =========================================
-                st.markdown("## Image Comparison ✅")
+        # ✅ IMAGE COMPARISON (VISUAL ✅)
+        # =========================================
+         st.markdown("## Image Comparison ✅")
         
-                image_matches = match_images_visual(s_images, r_images)
+         image_matches = match_images_visual(s_images, r_images)
         
-                # ✅ DEBUG
-                st.write("Salsify images:", len(s_images))
-                st.write("CVS images:", len(r_images))
-                st.write("Image matches found:", len(image_matches))
+        # ✅ DEBUG
+         st.write("Salsify images:", len(s_images))
+         st.write("CVS images:", len(r_images))
+         st.write("Image matches found:", len(image_matches))
         
                 
         # ✅ IMAGE COMPARISON
