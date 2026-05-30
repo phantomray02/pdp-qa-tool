@@ -162,20 +162,26 @@ def get_cvs_text(url):
 
     block = clean_text(match.group(0))
 
-    features = []
+    
+# ✅ NEW CLEAN FEATURE SPLIT
+features = []
 
-    patterns = [
-        r'\d+\s+regular\s+tampons',
-        r'Get up to\s+100%[^.]+',
-        r'U by Kotex Click tampons[^.]+',
-        r'Compact to fit[^.]+',
-        r'Individually wrapped[^.]+'
-    ]
+sentences = re.split(r'\.\s+', block)
 
-    for p in patterns:
-        m = re.search(p, block, re.IGNORECASE)
-        if m:
-            features.append(m.group(0).strip())
+for s in sentences:
+    s = s.strip()
+
+    if len(s) < 20:
+        continue
+
+    if any(k in s.lower() for k in [
+        "tampon",
+        "leak",
+        "compact",
+        "wrapped",
+        "comfort"
+    ]):
+        features.append(s)
 
     return {
         "description": block,
