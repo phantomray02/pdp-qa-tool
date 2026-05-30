@@ -6,7 +6,7 @@ import re
 
 
 # =========================================
-# ✅ FETCH HTML (keep this exactly)
+# ✅ GET HTML
 # =========================================
 def get_html(url):
     headers = {
@@ -19,23 +19,34 @@ def get_html(url):
 
 
 # =========================================
-# ✅ CVS EXTRACTION (THIS IS YOUR WORKING VERSION)
+# ✅ GET CVS IMAGE
+# =========================================
+def get_cvs_image(html):
+    m = re.search(r'"imageUrl":"(https:[^"]+)"', html)
+    if m:
+        return m.group(1)
+    return ""
+
+
+# =========================================
+# ✅ CVS TEXT (WORKING VERSION YOU HAD)
 # =========================================
 def get_cvs_text(url):
     html = get_html(url)
 
     title = ""
     description = ""
+    image = ""
 
     if not html:
-        return {"title": "", "description": ""}
+        return {"title": "", "description": "", "image": ""}
 
-    # ✅ TITLE (this part was already working)
+    # ✅ TITLE
     t = re.search(r'[A-Z][A-Za-z0-9 ,\-]+(?:Count|Ct)', html)
     if t:
         title = t.group(0).strip()
 
-    # ✅ DESCRIPTION (THIS IS THE KEY PART ✅)
+    # ✅ DESCRIPTION (your working pattern)
     d = re.search(
         r'Get up to .*?latest fashion trends',
         html,
@@ -45,7 +56,6 @@ def get_cvs_text(url):
     if d:
         raw = d.group(0)
 
-        # ✅ CLEAN (light cleanup only)
         raw = raw.replace('\\"', '')
         raw = raw.replace('\\n', ' ')
         raw = raw.replace('","', '. ')
@@ -56,14 +66,18 @@ def get_cvs_text(url):
 
         description = raw
 
+    # ✅ IMAGE
+    image = get_cvs_image(html)
+
     return {
         "title": title,
-        "description": description
+        "description": description,
+        "image": image
     }
 
 
 # =========================================
-# ✅ SALSIFY EXTRACTION (same logic)
+# ✅ SALSIFY TEXT
 # =========================================
 def get_salsify_text(url):
     html = get_html(url)
@@ -101,22 +115,16 @@ def get_salsify_text(url):
 
 
 # =========================================
-# ✅ NORMALIZE TEXT
+# ✅ FEATURES (FROM DESCRIPTION)
 # =========================================
-def normalize(text):
-    return re.sub(r'[^a-z0-9 ]', '', str(text).lower())
-
-
-# =========================================
-# ✅ FEATURE MATCHING (THIS PART WORKED BEFORE)
-# =========================================
-def match_features(description):
+def extract_features(description):
     sentences = re.split(r'\.\s+', description)
 
     features = []
 
     for s in sentences:
         s = s.strip()
+
         if (
             20 < len(s) < 120 and
             any(word in s.lower() for word in [
@@ -133,7 +141,14 @@ def match_features(description):
 
 
 # =========================================
-# ✅ STREAMLIT APP
+# ✅ NORMALIZE
+# =========================================
+def normalize(text):
+    return re.sub(r'[^a-z0-9 ]', '', str(text).lower())
+
+
+# =========================================
+# ✅ APP UI
 # =========================================
 st.title("PDP QA Tool")
 
@@ -149,12 +164,17 @@ if file:
         cvs = get_cvs_text(row["retail_url"])
         s_title, s_desc = get_salsify_text(row["salsify_url"])
 
-        # ============================
+        # =========================================
         st.header("General Product Title")
 
         st.write("Salsify:", s_title)
         st.write("CVS:", cvs["title"])
 
+        # ✅ IMAGE (fixed)
+        if cvs["image"]:
+            st.image(cvs["image"], width=200)
+
+        # MATCH
         title_score = 0
         if s_title:
             title_score = int(
@@ -165,7 +185,7 @@ if file:
 
         st.write("Match:", f"{title_score}%")
 
-        # ============================
+        # =========================================
         st.header("General Description")
 
         st.write("Salsify:", s_desc)
@@ -181,10 +201,10 @@ if file:
 
         st.write("Match:", f"{desc_score}%")
 
-        # ============================
+        # =========================================
         st.header("Features")
 
-        cvs_features = match_features(cvs["description"])
+        cvs_features = extract_features(cvs["description"])
 
         for f in cvs_features:
             st.write("•", f)
