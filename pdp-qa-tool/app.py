@@ -333,29 +333,24 @@ def compare_images_visually(s_url, r_url):
         s_img = Image.open(BytesIO(s_img_data)).convert("RGB").resize((256, 256))
         r_img = Image.open(BytesIO(r_img_data)).convert("RGB").resize((256, 256))
 
-        # ✅ quick pixel similarity (VERY IMPORTANT ADD)
-        diff_pixels = sum(
+        # ✅ simple difference (FAST + RELIABLE)
+        diff = sum(
             abs(a - b)
-            for a, b in zip(s_img.getdata(), r_img.getdata())
-            for a, b in zip(a, b)
+            for p1, p2 in zip(s_img.getdata(), r_img.getdata())
+            for a, b in zip(p1, p2)
         ) / (256 * 256 * 3)
 
-        # ✅ normalize pixel difference
-        pixel_score = max(0, 100 - diff_pixels / 2)
-
-        # ✅ hash comparison (backup signal)
-        diff_hash = (
-            abs(imagehash.phash(s_img) - imagehash.phash(r_img)) +
-            abs(imagehash.average_hash(s_img) - imagehash.average_hash(r_img)) +
-            abs(imagehash.dhash(s_img) - imagehash.dhash(r_img))
-        ) / 3
-
-        hash_score = max(0, 100 - diff_hash * 3)
-
-        # ✅ COMBINE BOTH (IMPORTANT)
-        final_score = int((pixel_score * 0.6) + (hash_score * 0.4))
-
-        return min(max(final_score, 10), 100)
+        # ✅ normalize properly
+        if diff < 5:
+            return 100
+        elif diff < 10:
+            return 95
+        elif diff < 20:
+            return 85
+        elif diff < 40:
+            return 70
+        else:
+            return 40
 
     except:
         return 0
