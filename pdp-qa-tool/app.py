@@ -179,7 +179,7 @@ def get_salsify_text(url):
 def get_cvs_text(url):
     html = get_html(url)
 
-    # ✅ STEP 1 — extract FULL description block
+    # ✅ STEP 1 — grab full area (including duplicate)
     match = re.search(
         r'Get up to 100% leak-free.*?eligible in the U\.S\.',
         html,
@@ -194,21 +194,29 @@ def get_cvs_text(url):
 
     raw = match.group(0)
 
-    # ✅ STEP 2 — remove escape + junk first
+    # ✅ STEP 2 — remove escape junk
     raw = raw.replace('\\n', ' ')
     raw = raw.replace('\\t', ' ')
     raw = raw.replace('\\', '')
 
-    # ✅ STEP 3 — REMOVE metadata / JSON garbage
-    raw = re.sub(r'\d+VendorDetails.*?(?=Get up to)', '', raw, flags=re.DOTALL)
-    raw = re.sub(r'_meta.*?', '', raw, flags=re.DOTALL)
-    raw = re.sub(r'modelVersionName.*?', '', raw)
-    raw = re.sub(r'"[^"]*"', '', raw)  # remove random quoted fragments
+    # ✅ STEP 3 — REMOVE DUPLICATE BLOCK
+    # keeps ONLY the first occurrence
+    parts = re.split(r'Get up to 100% leak-free', raw, flags=re.IGNORECASE)
 
-    # ✅ STEP 4 — clean final text
+    if len(parts) > 1:
+        raw = "Get up to 100% leak-free" + parts[1]
+        # remove everything after the second occurrence
+        raw = re.split(r'Get up to 100% leak-free', raw, maxsplit=1)[0]
+
+    # ✅ STEP 4 — clean remaining junk
+    raw = re.sub(r'\d+VendorDetails.*', '', raw, flags=re.DOTALL)
+    raw = re.sub(r'_meta.*', '', raw, flags=re.DOTALL)
+    raw = re.sub(r'modelVersionName.*', '', raw)
+
+    # ✅ STEP 5 — final clean
     description = clean_text(raw)
 
-    # ✅ FEATURES (leave exactly as your working version)
+    # ✅ FEATURES (UNCHANGED — already working)
     features = []
 
     m = re.search(
@@ -251,6 +259,7 @@ def get_cvs_text(url):
         "description": description,
         "features": features
     }
+
 # =========================================
 # ✅ MATCH FEATURES
 # =========================================
