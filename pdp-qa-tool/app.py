@@ -360,12 +360,14 @@ def compare_images_visually(s_url, r_url):
         else:
             return 70
 
-            
-        if score >= 90:
-        return 100
+        except:
+            return 0
+        
+        if diff < 10:
+            return 100   
 
-    except:
-        return 0
+
+    
         
 def match_images_visual(s_images, r_images):
     results = []
