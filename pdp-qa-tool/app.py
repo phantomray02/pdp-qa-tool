@@ -140,6 +140,12 @@ def get_salsify_text(url):
 # ✅ SCORING
 # =========================================
 def score(a, b):
+    # ✅ prevent crash
+    if not isinstance(a, str):
+        a = ""
+    if not isinstance(b, str):
+        b = ""
+
     a_words = set(re.sub(r'[^a-z0-9 ]', '', a.lower()).split())
     b_words = set(re.sub(r'[^a-z0-9 ]', '', b.lower()).split())
 
@@ -147,12 +153,6 @@ def score(a, b):
         return 0
 
     return int(100 * len(a_words & b_words) / len(a_words))
-
-def strict_title_score(a, b):
-    return int(
-        SequenceMatcher(None, a.strip().lower(), b.strip().lower()).ratio() * 100
-    )
-
 # =========================================
 # ✅ FEATURE MATCHING
 # =========================================
@@ -232,8 +232,11 @@ if uploaded_file:
         st.markdown("## Description")
 
         c1, c2 = st.columns(2)
-        c1.write(s_text["description"])
-        c2.write(r_text["description"])
+        
+c1.write(s_text.get("description") or "")
+c2.write(r_text.get("description") or "")
+``
+
 
         st.write(f"✅ Description Match: {score(s_text['description'], r_text['description'])}%")
 
