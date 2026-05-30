@@ -146,10 +146,21 @@ def get_cvs_text(url):
     description = ""
     features = []
 
-    # ✅ STEP 1 — isolate everything AFTER VendorDetailsParagraph
+    # ✅ STEP 1 — shrink search space (CRITICAL FIX)
+    start_idx = html.lower().find("vendordetailsparagraph")
+    if start_idx == -1:
+        return {
+            "description": "",
+            "features": []
+        }
+
+    # ✅ only look at relevant slice
+    html_slice = html[start_idx:start_idx + 4000]
+
+    # ✅ STEP 2 — extract description safely
     match = re.search(
-        r'VendorDetailsParagraph:(Get up to 100% leak-free.*)',
-        html,
+        r'Get up to 100% leak-free.*?U\.S\.',
+        html_slice,
         re.DOTALL | re.IGNORECASE
     )
 
@@ -159,29 +170,21 @@ def get_cvs_text(url):
             "features": []
         }
 
-    raw = match.group(1)
+    raw = match.group(0)
 
-    # ✅ STEP 2 — stop cleanly at end of sentence (U.S.)
-    end_match = re.search(r'U\.S\.', raw)
-    if end_match:
-        raw = raw[:end_match.end()]
-
-    # ✅ STEP 3 — clean encoding junk ONLY
+    # ✅ STEP 3 — clean junk ONLY
     raw = raw.replace('\\n', ' ')
     raw = raw.replace('\\t', ' ')
     raw = raw.replace('\\', '')
     raw = raw.replace('u0026', '&')
+    raw = raw.replace('u0026amp;', '&')
 
     description = clean_text(raw)
 
     # ======================================
-    # ✅ FEATURES (UNCHANGED — DO NOT TOUCH)
+    # ✅ FEATURES (UNCHANGED)
     # ======================================
-    m = re.search(
-        r'(\d+)\s+regular\s+tampons',
-        html,
-        re.IGNORECASE
-    )
+    m = re.search(r'(\d+)\s+regular\s+tampons', html, re.IGNORECASE)
     if m:
         features.append(m.group(0))
 
@@ -221,6 +224,7 @@ def get_cvs_text(url):
         "description": description,
         "features": features
     }
+
 # =========================================
 # ✅ MATCH FEATURES
 # =========================================
