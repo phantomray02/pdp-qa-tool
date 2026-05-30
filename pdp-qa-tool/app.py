@@ -158,49 +158,46 @@ def get_cvs_text(url):
     )
 
     if not match:
-        return {"description": "", "features": []}  # ✅ SAFE RETURN
+        return {"description": "", "features": []}
 
     block = clean_text(match.group(0))
 
-    
+    description = block
 
-# ✅ CLEAN + SPLIT USING CVS STRUCTURE
-features = []
+    # ✅ CLEAN SPLIT (FIXED ✅)
+    features = []
 
-# ✅ step 1: normalize the string
-clean_block = block.replace('\\"', '"')
+    clean_block = block.replace('\\"', '"')
 
-# ✅ step 2: split using comma-separated structure
-parts = re.split(r'\",\s*\"', clean_block)
+    parts = re.split(r'\",\s*\"', clean_block)
 
-for p in parts:
+    for p in parts:
+        p = p.replace('"', '').strip()
 
-    p = p.replace('"', '').strip()
+        if len(p) < 20:
+            continue
 
-    if len(p) < 20:
-        continue
+        if any(k in p.lower() for k in [
+            "tampon",
+            "leak",
+            "compact",
+            "wrapped",
+            "comfort"
+        ]):
+            features.append(p)
 
-    # ✅ only keep real PDP feature lines
-    if any(k in p.lower() for k in [
-        "tampon",
-        "leak",
-        "compact",
-        "wrapped",
-        "comfort"
-    ]):
-        features.append(p)
+    # ✅ ensure count feature is included
+    count_match = re.search(r'(\d+)\s+regular\s+tampons', html, re.IGNORECASE)
 
-count_match = re.search(r'(\d+)\s+regular\s+tampons', html, re.IGNORECASE)
-
-if count_match:
-    features.insert(0, count_match.group(0))
-
+    if count_match:
+        count_feature = count_match.group(0)
+        if count_feature not in features:
+            features.insert(0, count_feature)
 
     return {
-        "description": block,
+        "description": description,
         "features": features
     }
-
 # =========================================
 # ✅ SALSIFY TEXT
 # =========================================
