@@ -316,34 +316,35 @@ if uploaded_file:
             c2.write(r)
             c3.write(f"{sc}%")
 
-        # ✅ IMAGE ORDERED VIEW (FINAL ✅)
-      st.markdown("## Image Comparison (Salsify Driven ✅)")
 
-# ✅ get ordered Salsify map
-s_ordered = order_salsify(s_images)
+        # =========================================
+        # ✅ IMAGE COMPARISON (SALSIFY DRIVEN ✅)
+        # =========================================
+        st.markdown("## Image Comparison (Salsify Driven ✅)")
 
-# ✅ ONLY keep slots that actually EXIST in Salsify
-valid_slots = [
-    k for k, v in s_ordered.items()
-    if v is not None
-]
+        # ✅ order Salsify images
+        s_ordered = order_salsify(s_images)
 
-for i, key in enumerate(valid_slots):
+        # ✅ only keep valid slots
+        valid_slots = [k for k, v in s_ordered.items() if v]
 
-    col1, col2 = st.columns(2)
+        for i, key in enumerate(valid_slots):
 
-    # ✅ SALSIFY SIDE
-    with col1:
-        st.write(f"Salsify ({key})")
-        st.image(s_ordered[key])
+            col1, col2 = st.columns(2)
 
-    # ✅ CVS SIDE
-    with col2:
-        st.write(f"CVS ({key})")
+            # ✅ SALSIFY
+            with col1:
+                st.write(f"Salsify ({key})")
+                st.image(s_ordered[key])
 
-        if i < len(r_images):
-            st.image(r_images[i])
-        else:
-            st.error("Missing")
+            # ✅ CVS
+            with col2:
+                st.write(f"CVS ({key})")
+
+                if i < len(r_images):
+                    st.image(r_images[i])
+                else:
+                    st.error("Missing")
 
         st.divider()
+
