@@ -95,7 +95,6 @@ def extract_text_block(html):
         re.DOTALL
     )
     return clean_text(match.group(0)) if match else ""
-
 def get_cvs_text(url):
     html = get_html(url)
 
@@ -103,14 +102,12 @@ def get_cvs_text(url):
 
     features = []
 
-    # ✅ FORCE FEATURES FROM DESCRIPTION (RELIABLE)
+    # ✅ THIS IS THE WORKING METHOD YOU HAD
     if desc:
-        sentences = re.split(r'\.\s+', desc)
-
-        for s in sentences:
+        for s in re.split(r'\.\s+', desc):
             s = s.strip()
 
-            if 30 < len(s) < 200:
+            if 20 < len(s) < 140:
                 features.append(s)
 
     return {
