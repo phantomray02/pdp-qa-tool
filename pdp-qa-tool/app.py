@@ -179,7 +179,7 @@ def get_salsify_text(url):
 def get_cvs_text(url):
     html = get_html(url)
 
-    # ✅ STEP 1 — extract full description block
+    # ✅ STEP 1 — extract full description
     match = re.search(
         r'Get up to .*?latest fashion trends',
         html,
@@ -192,20 +192,18 @@ def get_cvs_text(url):
             "features": []
         }
 
-    # ✅ STEP 2 — clean description
-    raw_desc = match.group(0)
+    raw = match.group(0)
 
-    # remove escape garbage BEFORE clean_text
-    raw_desc = raw_desc.replace('\\n', ' ')
-    raw_desc = raw_desc.replace('\\t', ' ')
-    raw_desc = raw_desc.replace('\\', '')
+    # ✅ clean escape junk
+    raw = raw.replace('\\n', ' ')
+    raw = raw.replace('\\t', ' ')
+    raw = raw.replace('\\', '')
 
-    description = clean_text(raw_desc)
+    description = clean_text(raw)
 
-    # ✅ STEP 3 — extract features precisely (NO truncation)
     features = []
 
-    # ✅ Feature 2 (FULL — FIXED)
+    # ✅ Feature 2 (FULL)
     m = re.search(
         r'Get up to 100% leak[-\s]?free with the #1 compact tampon',
         description,
@@ -214,18 +212,18 @@ def get_cvs_text(url):
     if m:
         features.append(m.group(0).strip())
 
-    # ✅ Feature 3
+    # ✅ Feature 3 (FIXED ✅)
     m = re.search(
-        r'U by Kotex Click tampons move[^.]+',
+        r'U by Kotex Click tampons move.*?fragrance',
         description,
         re.IGNORECASE
     )
     if m:
         features.append(m.group(0).strip())
 
-    # ✅ Feature 4
+    # ✅ Feature 4 (FIXED ✅)
     m = re.search(
-        r'Compact to fit[^.]+',
+        r'Compact to fit.*?easy step',
         description,
         re.IGNORECASE
     )
@@ -234,14 +232,14 @@ def get_cvs_text(url):
 
     # ✅ Feature 5
     m = re.search(
-        r'Individually wrapped[^.]+',
+        r'Individually wrapped.*?fashion trends',
         description,
         re.IGNORECASE
     )
     if m:
         features.append(m.group(0).strip())
 
-    # ✅ STEP 4 — add count feature FIRST
+    # ✅ Feature 1 (count)
     count_match = re.search(
         r'(\d+)\s+regular\s+tampons',
         html,
@@ -250,7 +248,6 @@ def get_cvs_text(url):
     if count_match:
         features.insert(0, count_match.group(0))
 
-    # ✅ FINAL RETURN (safe structure)
     return {
         "description": description,
         "features": features
