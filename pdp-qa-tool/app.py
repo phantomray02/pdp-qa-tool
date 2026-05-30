@@ -88,14 +88,23 @@ def get_cvs_images(url):
 # -----------------------------
 # ✅ SALSIFY TEXT (FIXED ✅ CLEAN)
 # -----------------------------
+# -----------------------------
+# ✅ SALSIFY TEXT (TITLE + CLEAN DESCRIPTION ✅)
+# -----------------------------
 def get_salsify_text(url):
     try:
         html = get_html(url)
 
+        title = ""
         description = ""
         features = []
 
-        # ✅ TARGET SAME REAL TEXT BLOCK AS CVS
+        # ✅ TITLE (this is what was missing)
+        t = re.search(r'[A-Z][A-Za-z0-9 ,\-]+(?:Count|Ct)', html)
+        if t:
+            title = t.group(0).strip()
+
+        # ✅ DESCRIPTION (same working logic)
         d = re.search(
             r'Get up to .*?latest fashion trends',
             html,
@@ -115,22 +124,21 @@ def get_salsify_text(url):
 
             description = raw
 
-        # ✅ FEATURES = CLEAN SENTENCES
+        # ✅ FEATURES (clean sentences)
         sentences = re.split(r'\.\s+', description)
 
         for s in sentences:
-            s = s.strip()
-
-            if 20 < len(s) < 140:
-                features.append(s)
+            if 20 < len(s.strip()) < 140:
+                features.append(s.strip())
 
         return {
+            "title": title,
             "description": description,
             "features": features[:6]
         }
 
     except:
-        return {"description": "", "features": []}
+        return {"title": "", "description": "", "features": []}
 
 # -----------------------------
 # ✅ CVS TEXT ✅ FIXED (FAST + CLEAN)
