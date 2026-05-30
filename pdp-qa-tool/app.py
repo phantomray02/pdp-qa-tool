@@ -449,45 +449,45 @@ if uploaded_file:
             c2.write(r)
             c3.write(f"{sc}%")
 
-
-
-# =========================================
-        # ✅ IMAGE COMPARISON (VISUAL ✅)
-        # =========================================
-        st.markdown("## Image Comparison ✅")
-
-        image_matches = match_images_visual(s_images, r_images)
-
-        # ✅ DEBUG
-        st.write("Salsify images:", len(s_images))
-        st.write("CVS images:", len(r_images))
-        st.write("Image matches found:", len(image_matches))
-
         
-# ✅ IMAGE COMPARISON
-if not image_matches:
-    st.warning("No images found to compare.")
-else:
-    for s, r, sc in image_matches:
-        c1, c2, c3 = st.columns([4, 4, 1])
-
-        if s:
-            c1.image(s, use_container_width=True)
+        
+        # =========================================
+                # ✅ IMAGE COMPARISON (VISUAL ✅)
+                # =========================================
+                st.markdown("## Image Comparison ✅")
+        
+                image_matches = match_images_visual(s_images, r_images)
+        
+                # ✅ DEBUG
+                st.write("Salsify images:", len(s_images))
+                st.write("CVS images:", len(r_images))
+                st.write("Image matches found:", len(image_matches))
+        
+                
+        # ✅ IMAGE COMPARISON
+        if not image_matches:
+            st.warning("No images found to compare.")
         else:
-            c1.write("Missing")
-
-        if r:
-            c2.image(r, use_container_width=True)
-        else:
-            c2.write("Missing")
-
-        c3.write(f"{sc}%")
-
-# ✅ IMAGE SCORE (ONLY ONCE, BELOW LOOP)
-img_scores = [sc for _, _, sc in image_matches if sc > 0]
-avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
-
-st.write(f"✅ Image Match: {avg_img_score}%")
+            for s, r, sc in image_matches:
+                c1, c2, c3 = st.columns([4, 4, 1])
+        
+                if s:
+                    c1.image(s, use_container_width=True)
+                else:
+                    c1.write("Missing")
+        
+                if r:
+                    c2.image(r, use_container_width=True)
+                else:
+                    c2.write("Missing")
+        
+                c3.write(f"{sc}%")
+        
+        # ✅ IMAGE SCORE (ONLY ONCE, BELOW LOOP)
+        img_scores = [sc for _, _, sc in image_matches if sc > 0]
+        avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
+        
+        st.write(f"✅ Image Match: {avg_img_score}%")
 
         # =========================================
         # ✅ STORE FOR EXPORT (END OF LOOP)
