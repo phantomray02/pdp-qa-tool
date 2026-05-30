@@ -105,21 +105,20 @@ def get_cvs_text(url):
     features = []
 
     if desc:
-        # ✅ SPLIT BY KEY PHRASES (THIS IS THE FIX)
-        splits = re.split(
-            r'(Get up to .*?|U by Kotex Click tampons .*?|Compact to fit .*?|Individually wrapped .*?)',
-            desc
-        )
+        # ✅ split by FULL sentences (period-based)
+        sentences = re.split(r'\.\s+', desc)
 
-        # re.split returns fragments — rebuild clean features
-        for s in splits:
+        for s in sentences:
             s = s.strip()
 
-            if len(s) > 40:
+            # ✅ only keep full meaningful sentences
+            if (
+                len(s) > 40 and
+                any(k in s.lower() for k in [
+                    "leak", "tampon", "compact", "wrapped", "comfort"
+                ])
+            ):
                 features.append(s)
-
-    # ✅ remove duplicates
-    features = list(dict.fromkeys(features))
 
     return {
         "description": desc,
