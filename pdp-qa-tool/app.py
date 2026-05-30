@@ -178,34 +178,17 @@ def get_cvs_text(url):
     description = ""
     features = []
 
-    match = re.search(
-        r'Get up to .*?latest fashion trends',
-        html,
-        re.DOTALL | re.IGNORECASE
-    )
+    patterns = [
+    r'Get up to 100% leak-free[^.]+',
+    r'U by Kotex Click tampons move[^.]+',
+    r'Compact to fit[^.]+',
+    r'Individually wrapped[^.]+'
+    ]
 
-    if match:
-        description = clean_text(match.group(0))
-    else:
-        return {"description": "", "features": []}
-
-    # ✅ SAFE FEATURE EXTRACTION
-    parts = re.split(r'[.,]\s+', description)
-
-    for p in parts:
-        p = p.strip()
-
-        if len(p) < 25:
-            continue
-
-        if any(k in p.lower() for k in [
-            "tampon",
-            "leak",
-            "compact",
-            "wrapped",
-            "comfort"
-        ]):
-            features.append(p)
+    for p in patterns:
+    m = re.search(p, description, re.IGNORECASE)
+    if m:
+        features.append(m.group(0).strip())
 
     # ✅ ensure count feature
     count_match = re.search(r'(\d+)\s+regular\s+tampons', html, re.IGNORECASE)
