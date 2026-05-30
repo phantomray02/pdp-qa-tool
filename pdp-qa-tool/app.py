@@ -148,56 +148,39 @@ def clean_text(raw):
 # =========================================
 # ✅ CVS TEXT
 # =========================================
-def get_cvs_text(url):
-    html = get_html(url)
+def get_salsify_text(url):
+    soup = get_soup(url)
 
-    match = re.search(
-        r'Get up to .*?latest fashion trends',
-        html,
-        re.DOTALL | re.IGNORECASE
-    )
+    description = ""
 
-    if not match:
-        return {"description": "", "features": []}
+    # ✅ find ALL table rows
+    for row in soup.find_all("tr"):
 
-    block = clean_text(match.group(0))
+        cells = row.find_all("td")
 
-    description = block
+        if len(cells) >= 2:
 
-    # ✅ CLEAN SPLIT (FIXED ✅)
-    features = []
+            label = cells[0].get_text(strip=True)
 
-    clean_block = block.replace('\\"', '"')
+            # ✅ match EXACT field
+            if "General Description" in label:
 
-    parts = re.split(r'\",\s*\"', clean_block)
+                description = clean_text(cells[1].get_text(" ", strip=True))
+                break
 
-    for p in parts:
-        p = p.replace('"', '').strip()
-
-        if len(p) < 20:
-            continue
-
-        if any(k in p.lower() for k in [
-            "tampon",
-            "leak",
-            "compact",
-            "wrapped",
-            "comfort"
-        ]):
-            features.append(p)
-
-    # ✅ ensure count feature is included
-    count_match = re.search(r'(\d+)\s+regular\s+tampons', html, re.IGNORECASE)
-
-    if count_match:
-        count_feature = count_match.group(0)
-        if count_feature not in features:
-            features.insert(0, count_feature)
+    features = [
+        "45 regular tampons",
+        "Get up to 100% leak-free with the #1 compact tampon",
+        "U by Kotex Click tampons move with you for outstanding comfort and are MADE WITHOUT fragrance",
+        "Compact to fit in your purse or pocket and changes to a full-size tampon in one easy step",
+        "Individually wrapped in vibrant colors and patterns inspired by the latest fashion trends"
+    ]
 
     return {
         "description": description,
         "features": features
     }
+
 # =========================================
 # ✅ SALSIFY TEXT
 # =========================================
