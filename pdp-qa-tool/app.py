@@ -47,17 +47,34 @@ def get_salsify_images(url):
         return []
 
 def get_cvs_images(url):
-    try:
-        html = get_html(url)
+    html = get_html(url)
 
-        matches = re.findall(
-            r'/bizcontent/merchandising/productimages/high_res/[^\s"]+\.jpg',
-            html
-        )
+    matches = re.findall(
+        r'/bizcontent/merchandising/productimages/high_res/[^\s"]+\.jpg\?[^\s"]*',
+        html
+    )
 
-        return ["https://www.cvs.com" + m for m in matches]
-    except:
-        return []
+    image_dict = {}
+
+    for m in matches:
+        full = "https://www.cvs.com" + m
+
+        base = full.split("?")[0]  # remove resize params
+        name = base.split("/")[-1]
+
+        # ✅ extract width from resize param
+        size_match = re.search(r'Resize=\((\d+)', m)
+        size = int(size_match.group(1)) if size_match else 0
+
+        # ✅ keep ONLY highest resolution
+        if name not in image_dict or size > image_dict[name]["size"]:
+            image_dict[name] = {
+                "url": base,
+                "size": size
+            }
+
+    # ✅ return highest-quality images only
+    return [v["url"] for v in image_dict.values()][:6]
 
 # =========================================
 # ✅ CLEAN TEXT
@@ -266,23 +283,18 @@ if uploaded_file:
         # =========================================
         st.markdown("## Image Comparison")
 
-        max_len = max(len(s_images), len(r_images))
+max_len = min(len(s_images), len(r_images))  # ✅ strictly paired
 
-        for i in range(max_len):
-            col1, col2 = st.columns(2)
+for i in range(max_len):
+    col1, col2 = st.columns(2)
 
-            with col1:
-                st.write(f"Salsify {i+1}")
-                if i < len(s_images):
-                    st.image(s_images[i])
-                else:
-                    st.error("Missing")
+    with col1:
+        st.write(f"Salsify {i+1}")
+        st.image(s_images[i])
 
-            with col2:
-                st.write(f"CVS {i+1}")
-                if i < len(r_images):
-                    st.image(r_images[i])
-                else:
-                    st.error("Missing")
+    with col2:
+        st.write(f"CVS {i+1}")
+        st.image(r_images[i])
+
 
         st.divider()
