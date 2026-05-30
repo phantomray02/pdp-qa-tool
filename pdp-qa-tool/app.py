@@ -165,6 +165,9 @@ def clean_text(raw):
     raw = raw.rstrip(' ,')
 
     # normalize spaces
+    
+    raw = raw.lstrip(' ,.')
+    raw = raw.rstrip(' ,')
     raw = re.sub(r'\s+', ' ', raw)
 
     return raw.strip()
@@ -175,6 +178,7 @@ def clean_text(raw):
 # ✅ CVS TEXT
 # =========================================
 # ✅ NEW FEATURE SPLIT (STABLE)
+
 def get_cvs_text(url):
     html = get_html(url)
 
@@ -188,34 +192,38 @@ def get_cvs_text(url):
         return {"description": "", "features": []}
 
     description = clean_text(match.group(0))
+
     features = []
 
-# ✅ split the long CVS string into real feature chunks
-chunks = re.split(r',\s*(?=[A-Z])', description)
+    # ✅ extract features cleanly from continuous text
+    chunks = re.split(r',\s*(?=[A-Z])', description)
 
-for c in chunks:
-    c = c.strip()
+    for c in chunks:
+        c = c.strip()
 
-    if len(c) < 25:
-        continue
+        if len(c) < 25:
+            continue
 
-    if any(k in c.lower() for k in [
-        "leak-free",
-        "move with you",
-        "compact to fit",
-        "individually wrapped"
-    ]):
-        features.append(c)
+        if any(k in c.lower() for k in [
+            "leak-free",
+            "move with you",
+            "compact to fit",
+            "individually wrapped"
+        ]):
+            features.append(c)
 
-    # ✅ count
+    # ✅ ensure count always first
     count_match = re.search(r'(\d+)\s+regular\s+tampons', html, re.IGNORECASE)
     if count_match:
-        features.insert(0, count_match.group(0))
+        count = count_match.group(0)
+        if count not in features:
+            features.insert(0, count)
 
     return {
         "description": description,
         "features": features
     }
+
 # =========================================
 # ✅ SALSIFY TEXT
 # =========================================
