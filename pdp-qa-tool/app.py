@@ -179,7 +179,7 @@ def get_salsify_text(url):
 def get_cvs_text(url):
     html = get_html(url)
 
-    # ✅ STEP 1 — extract raw description block
+    # ✅ STEP 1 — extract full description block
     match = re.search(
         r'Get up to .*?latest fashion trends',
         html,
@@ -192,34 +192,65 @@ def get_cvs_text(url):
             "features": []
         }
 
-    # ✅ STEP 2 — clean text (removes \ junk too)
-    description = clean_text(match.group(0))
+    # ✅ STEP 2 — clean description
+    raw_desc = match.group(0)
 
-    # ✅ STEP 3 — extract individual features directly
+    # remove escape garbage BEFORE clean_text
+    raw_desc = raw_desc.replace('\\n', ' ')
+    raw_desc = raw_desc.replace('\\t', ' ')
+    raw_desc = raw_desc.replace('\\', '')
+
+    description = clean_text(raw_desc)
+
+    # ✅ STEP 3 — extract features precisely (NO truncation)
     features = []
 
-    f1 = re.search(r'Get up to 100% leak[\w\s\-]+', description, re.IGNORECASE)
-    if f1:
-        features.append(f1.group(0).strip())
+    # ✅ Feature 2 (FULL — FIXED)
+    m = re.search(
+        r'Get up to 100% leak[-\s]?free with the #1 compact tampon',
+        description,
+        re.IGNORECASE
+    )
+    if m:
+        features.append(m.group(0).strip())
 
-    f2 = re.search(r'U by Kotex Click tampons move[\w\s\-]+', description, re.IGNORECASE)
-    if f2:
-        features.append(f2.group(0).strip())
+    # ✅ Feature 3
+    m = re.search(
+        r'U by Kotex Click tampons move[^.]+',
+        description,
+        re.IGNORECASE
+    )
+    if m:
+        features.append(m.group(0).strip())
 
-    f3 = re.search(r'Compact to fit[\w\s\-]+', description, re.IGNORECASE)
-    if f3:
-        features.append(f3.group(0).strip())
+    # ✅ Feature 4
+    m = re.search(
+        r'Compact to fit[^.]+',
+        description,
+        re.IGNORECASE
+    )
+    if m:
+        features.append(m.group(0).strip())
 
-    f4 = re.search(r'Individually wrapped[\w\s\-]+', description, re.IGNORECASE)
-    if f4:
-        features.append(f4.group(0).strip())
+    # ✅ Feature 5
+    m = re.search(
+        r'Individually wrapped[^.]+',
+        description,
+        re.IGNORECASE
+    )
+    if m:
+        features.append(m.group(0).strip())
 
-    # ✅ STEP 4 — add count feature
-    count_match = re.search(r'(\d+)\s+regular\s+tampons', html, re.IGNORECASE)
+    # ✅ STEP 4 — add count feature FIRST
+    count_match = re.search(
+        r'(\d+)\s+regular\s+tampons',
+        html,
+        re.IGNORECASE
+    )
     if count_match:
         features.insert(0, count_match.group(0))
 
-    # ✅ STEP 5 — return clean result
+    # ✅ FINAL RETURN (safe structure)
     return {
         "description": description,
         "features": features
