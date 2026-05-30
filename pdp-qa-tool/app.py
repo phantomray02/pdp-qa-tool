@@ -104,50 +104,31 @@ def get_cvs_text(url):
     description = ""
     features = []
 
-    # ✅ GET ALL TEXT
-    full_text = soup.get_text("\n", strip=True)
+    # ✅ 1. GET DESCRIPTION (DETAILS PARAGRAPH)
+    for div in soup.find_all("div"):
+        text = div.get_text(" ", strip=True)
 
-    lines = full_text.split("\n")
-
-    details_lines = []
-    capture = False
-
-    # ✅ STEP 1: isolate "Details" section
-    for line in lines:
-        if "Get up to 100%" in line:
-            capture = True
-
-        if capture:
-            details_lines.append(line)
-
-        # stop when section ends
-        if "Specifications" in line:
+        if "Get up to 100%" in text and "fashion trends" in text:
+            description = text
             break
 
-    # ✅ STEP 2: clean lines
-    details_lines = [l.strip() for l in details_lines if len(l.strip()) > 10]
+    description = clean_text(description)
 
-    if not details_lines:
-        return {"description": "", "features": []}
+    # ✅ 2. GET EXACT FEATURES FROM BULLETS
+    for li in soup.find_all("li"):
+        li_id = li.get("id", "")
 
-    # ✅ STEP 3: first long sentence = description
-    description = " ".join(details_lines[:3])
+        if "vendorDetailsBullet" in li_id:
+            txt = li.get_text(strip=True)
 
-    # ✅ STEP 4: extract features (the shorter repeated lines)
-    for line in details_lines:
-        if len(line) < 200:
-            if any(k in line.lower() for k in [
-                "tampons", "leak", "compact", "wrapped", "comfort"
-            ]):
-                features.append(line)
-
-    # ✅ remove duplicates
-    features = list(dict.fromkeys(features))
+            if txt:
+                features.append(txt)
 
     return {
         "description": description,
-        "features": features[:5]
+        "features": features
     }
+
 
 def get_salsify_text(url):
     html = get_html(url)
