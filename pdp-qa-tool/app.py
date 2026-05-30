@@ -202,28 +202,20 @@ def get_cvs_text(url):
 # ✅ SALSIFY TEXT
 # =========================================
 def get_salsify_text(url):
-    soup = get_soup(url)
+    html = get_html(url)
 
-    text_blocks = []
+    description = ""
 
-    # ✅ Grab all paragraph-like text
-    for tag in soup.find_all(["p", "div", "span"]):
-        txt = tag.get_text(" ", strip=True)
+    # ✅ TARGET EXACT FIELD FROM TABLE
+    match = re.search(
+        r'General Description.*?(Get up to .*?latest fashion trends)',
+        html,
+        re.DOTALL | re.IGNORECASE
+    )
 
-        # ✅ filter: keep meaningful description text
-        if len(txt) > 80:
-            text_blocks.append(txt)
+    if match:
+        description = clean_text(match.group(1))
 
-    # ✅ remove duplicates
-    text_blocks = list(dict.fromkeys(text_blocks))
-
-    # ✅ combine everything
-    description = " ".join(text_blocks)
-
-    # ✅ CLEAN it
-    description = clean_text(description)
-
-    # ✅ your fixed Salsify feature set
     features = [
         "45 regular tampons",
         "Get up to 100% leak-free with the #1 compact tampon",
