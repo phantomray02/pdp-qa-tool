@@ -207,30 +207,6 @@ if uploaded_file:
             st.write(r_title)
 
         # =========================================
-        # ✅ IMAGE COMPARISON
-        # =========================================
-        st.markdown("## Image Comparison")
-
-        max_len = max(len(s_images), len(r_images))
-
-        for i in range(max_len):
-            col1, col2 = st.columns(2)
-
-            with col1:
-                st.write(f"Salsify {i+1}")
-                if i < len(s_images):
-                    st.image(s_images[i])
-                else:
-                    st.error("Missing")
-
-            with col2:
-                st.write(f"CVS {i+1}")
-                if i < len(r_images):
-                    st.image(r_images[i])
-                else:
-                    st.error("Missing")
-
-        # =========================================
         # ✅ DESCRIPTION
         # =========================================
         st.markdown("## Description")
@@ -277,4 +253,29 @@ if uploaded_file:
                     st.write(f"{sc}%")
 
         st.divider()
+        
+        # =========================================
+        # ✅ IMAGE COMPARISON
+        # =========================================
+        st.markdown("## Image Comparison")
+
+        max_len = max(len(s_images), len(r_images))
+
+        for i in range(max_len):
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.write(f"Salsify {i+1}")
+                if i < len(s_images):
+                    st.image(s_images[i])
+                else:
+                    st.error("Missing")
+
+            with col2:
+                st.write(f"CVS {i+1}")
+                if i < len(r_images):
+                    st.image(r_images[i])
+                else:
+                    st.error("Missing")
+
 
