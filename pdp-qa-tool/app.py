@@ -3,14 +3,13 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 import re
-from difflib import SequenceMatcher
 
-st.title("PDP QA Tool (Final QA Dashboard ✅)")
+st.title("PDP QA Tool ✅")
 
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
 # =========================================
-# ✅ HTML CACHE (MASSIVE SPEED FIX ✅)
+# ✅ CACHE (FAST)
 # =========================================
 html_cache = {}
 
@@ -30,9 +29,9 @@ def get_html(url):
 def get_soup(url):
     return BeautifulSoup(get_html(url), "html.parser")
 
-# -----------------------------
-# ✅ SALSIFY IMAGES (UNCHANGED)
-# -----------------------------
+# =========================================
+# ✅ IMAGES (UNCHANGED)
+# =========================================
 def get_salsify_images(url):
     try:
         soup = get_soup(url)
@@ -44,13 +43,9 @@ def get_salsify_images(url):
                 imgs.append(src)
 
         return list(dict.fromkeys(imgs))[:8]
-
     except:
         return []
 
-# -----------------------------
-# ✅ CVS IMAGES (UNCHANGED ✅)
-# -----------------------------
 def get_cvs_images(url):
     try:
         html = get_html(url)
@@ -71,150 +66,100 @@ def get_cvs_images(url):
             size = int(size_match.group(1)) if size_match else 0
 
             if name not in image_dict or size > image_dict[name]["size"]:
-                image_dict[name] = {
-                    "url": base,
-                    "size": size
-                }
+                image_dict[name] = {"url": base, "size": size}
 
         return [v["url"] for v in image_dict.values()]
-
     except:
         return []
 
-# -----------------------------
-# ✅ SALSIFY TEXT (UNCHANGED)
-# -----------------------------
+# =========================================
+# ✅ CLEAN TEXT
+# =========================================
+def clean_text(raw):
+    raw = raw.replace('\\"', '')
+    raw = raw.replace('\\n', ' ')
+    raw = raw.replace('","', '. ')
+    raw = raw.replace('"', '')
+    raw = re.sub('<.*?>', '', raw)
+    raw = re.sub(r'\s+', ' ', raw)
+    return raw.strip()
 
-# -----------------------------
-# ✅ SALSIFY TEXT (FIXED ✅ CLEAN)
-# -----------------------------
-# -----------------------------
-# ✅ SALSIFY TEXT (TITLE + CLEAN DESCRIPTION ✅)
-# -----------------------------
-def get_salsify_text(url):
-    try:
-        html = get_html(url)
+# =========================================
+# ✅ TEXT EXTRACTION (WORKING)
+# =========================================
+def extract_text_block(html):
+    match = re.search(
+        r'Get up to .*?latest fashion trends',
+        html,
+        re.DOTALL
+    )
 
-        title = ""
-        description = ""
-        features = []
+    if match:
+        return clean_text(match.group(0))
 
-        # ✅ TITLE (this is what was missing)
-        t = re.search(r'[A-Z][A-Za-z0-9 ,\-]+(?:Count|Ct)', html)
-        if t:
-            title = t.group(0).strip()
+    return ""
 
-        # ✅ DESCRIPTION (same working logic)
-        d = re.search(
-            r'Get up to .*?latest fashion trends',
-            html,
-            re.DOTALL
-        )
-
-        if d:
-            raw = d.group(0)
-
-            raw = raw.replace('\\"', '')
-            raw = raw.replace('\\n', ' ')
-            raw = raw.replace('","', '. ')
-            raw = raw.replace('"', '')
-
-            raw = re.sub('<.*?>', '', raw)
-            raw = re.sub(r'\s+', ' ', raw).strip()
-
-            description = raw
-
-        # ✅ FEATURES (clean sentences)
-        sentences = re.split(r'\.\s+', description)
-
-        for s in sentences:
-            if 20 < len(s.strip()) < 140:
-                features.append(s.strip())
-
-        return {
-            "title": title,
-            "description": description,
-            "features": features[:6]
-        }
-
-    except:
-        return {"title": "", "description": "", "features": []}
-
-# -----------------------------
-# ✅ CVS TEXT ✅ FIXED (FAST + CLEAN)
-# -----------------------------
 def get_cvs_text(url):
-    try:
-        html = get_html(url)
+    html = get_html(url)
+    desc = extract_text_block(html)
 
-        description = ""
-        features = []
+    # features from sentences
+    features = []
+    for s in re.split(r'\.\s+', desc):
+        if 20 < len(s) < 140:
+            features.append(s.strip())
 
-        # ✅ TARGET REAL PRODUCT COPY ONLY
-        d = re.search(
-            r'Get up to .*?latest fashion trends',
-            html,
-            re.DOTALL
-        )
+    return {"description": desc, "features": features[:6]}
 
-        if d:
-            raw = d.group(0)
+def get_salsify_text(url):
+    html = get_html(url)
+    desc = extract_text_block(html)
 
-            # ✅ CLEAN JSON / HTML
-            raw = raw.replace('\\"', '')
-            raw = raw.replace('\\n', ' ')
-            raw = raw.replace('","', '. ')
-            raw = raw.replace('"', '')
+    features = []
+    for s in re.split(r'\.\s+', desc):
+        if 20 < len(s) < 140:
+            features.append(s.strip())
 
-            raw = re.sub('<.*?>', '', raw)
+    return {"description": desc, "features": features[:6]}
 
-            # ✅ REMOVE PAGE JUNK (from your screenshot)
-            junk = [
-                "Home", "Shop", "Customer reviews",
-                "Health Benefits", "OTC Eligible",
-                "General content", "SKU", "GTIN",
-                "CVS PDP Deck", "Online Optimized Image",
-                "Same-Day Delivery policies"
-            ]
+# =========================================
+# ✅ BETTER SCORING (FIXED)
+# =========================================
+def score(a, b):
+    a_words = set(re.sub(r'[^a-z0-9 ]', '', a.lower()).split())
+    b_words = set(re.sub(r'[^a-z0-9 ]', '', b.lower()).split())
 
-            for j in junk:
-                raw = raw.replace(j, "")
+    if not a_words:
+        return 0
 
-            raw = re.sub(r'\s+', ' ', raw).strip()
+    return int(100 * len(a_words & b_words) / len(a_words))
 
-            description = raw
+# =========================================
+# ✅ FEATURE MATCHING
+# =========================================
+def match_features(s_features, r_features):
+    results = []
 
-        # ✅ BUILD FEATURES (FROM CLEAN TEXT)
-        sentences = re.split(r'\.\s+', description)
+    for s in s_features:
+        best_match = ""
+        best_score = 0
 
-        for s in sentences:
-            s = s.strip()
+        for r in r_features:
+            sc = score(s, r)
+            if sc > best_score:
+                best_score = sc
+                best_match = r
 
-            if (
-                20 < len(s) < 140 and
-                any(word in s.lower() for word in [
-                    "tampon", "leak", "compact", "wrapped", "comfort", "fit"
-                ])
-            ):
-                features.append(s)
+        if best_score >= 50:
+            results.append((s, best_match, best_score))
+        else:
+            results.append((s, "❌ Missing", 0))
 
-        return {
-            "description": description,
-            "features": features[:6]
-        }
+    return results
 
-    except:
-        return {"description": "", "features": []}
-
-# -----------------------------
-# ✅ MATCH SCORE
-# -----------------------------
-def get_score(a, b):
-    return int(SequenceMatcher(None, a.lower(), b.lower()).ratio() * 100)
-
-# -----------------------------
-# MAIN
-# -----------------------------
+# =========================================
+# ✅ MAIN
+# =========================================
 if uploaded_file:
 
     df = pd.read_csv(uploaded_file)
@@ -223,93 +168,77 @@ if uploaded_file:
 
         st.subheader(f"SKU: {row['sku']}")
 
-        # -----------------------------
-        # ✅ DATA (NOW FAST ✅)
-        # -----------------------------
         s_images = get_salsify_images(row["salsify_url"])
         r_images = get_cvs_images(row["retail_url"])
 
         s_text = get_salsify_text(row["salsify_url"])
         r_text = get_cvs_text(row["retail_url"])
 
-        st.write(f"Salsify Images: {len(s_images)}")
-        st.write(f"CVS Images: {len(r_images)}")
-
-        # -----------------------------
-        # ✅ IMAGE ALIGNMENT (UNCHANGED)
-        # -----------------------------
+        # =========================
+        # ✅ IMAGE COMPARISON
+        # =========================
         st.markdown("## Image Comparison")
 
         max_len = max(len(s_images), len(r_images))
 
         for i in range(max_len):
+            c1, c2 = st.columns(2)
 
-            col1, col2 = st.columns(2)
-
-            with col1:
+            with c1:
                 st.write(f"Salsify {i+1}")
                 if i < len(s_images):
-                    st.image(s_images[i], use_container_width=True)
+                    st.image(s_images[i])
                 else:
                     st.error("Missing")
 
-            with col2:
+            with c2:
                 st.write(f"CVS {i+1}")
                 if i < len(r_images):
-                    st.image(r_images[i], use_container_width=True)
+                    st.image(r_images[i])
                 else:
                     st.error("Missing")
 
-            st.divider()
-
-        if len(r_images) == len(s_images):
-            st.success("✅ Images Match")
-        elif len(r_images) < len(s_images):
-            st.error(f"❌ Missing {len(s_images) - len(r_images)} images")
-        else:
-            st.warning(f"⚠ Extra {len(r_images) - len(s_images)} images")
-
-        # -----------------------------
-        # ✅ CONTENT COMPARISON
-        # -----------------------------
-        st.markdown("## Content Comparison")
-
+        # =========================
         # ✅ DESCRIPTION
-        st.markdown("### General Description")
+        # =========================
+        st.markdown("## Description")
 
-        col1, col2 = st.columns(2)
+        c1, c2 = st.columns(2)
 
-        with col1:
-            st.markdown("**Salsify**")
+        with c1:
+            st.write("Salsify")
             st.write(s_text["description"])
 
-        with col2:
-            st.markdown("**CVS**")
+        with c2:
+            st.write("CVS")
             st.write(r_text["description"])
 
-        desc_score = get_score(
-            s_text["description"], r_text["description"]
+        st.write("Match:", f"{score(s_text['description'], r_text['description'])}%")
+
+        # =========================
+        # ✅ FEATURES (FIXED)
+        # =========================
+        st.markdown("## Features")
+
+        matched = match_features(
+            s_text["features"],
+            r_text["features"]
         )
 
-        st.write(f"✅ Description Match Score: {desc_score}%")
+        for s, r, sc in matched:
+            c1, c2, c3 = st.columns([3, 3, 1])
 
-        # -----------------------------
-        # ✅ FEATURES
-        # -----------------------------
-        st.markdown("### Features")
+            with c1:
+                st.write("•", s)
 
-        max_len = max(len(s_text["features"]), len(r_text["features"]))
+            with c2:
+                if r == "❌ Missing":
+                    st.error("Missing")
+                else:
+                    st.write("•", r)
 
-        for i in range(max_len):
-
-            col1, col2 = st.columns(2)
-
-            with col1:
-                if i < len(s_text["features"]):
-                    st.write("•", s_text["features"][i])
-
-            with col2:
-                if i < len(r_text["features"]):
-                    st.write("•", r_text["features"][i])
+            with c3:
+                if sc:
+                    st.write(f"{sc}%")
 
         st.divider()
