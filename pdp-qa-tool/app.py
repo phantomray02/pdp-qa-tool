@@ -97,15 +97,34 @@ def extract_text_block(html):
     return clean_text(match.group(0)) if match else ""
 
 def get_cvs_text(url):
+    soup = get_soup(url)
     html = get_html(url)
+
     desc = extract_text_block(html)
-
     features = []
-    for s in re.split(r'\.\s+', desc):
-        if 20 < len(s) < 140:
-            features.append(s.strip())
 
-    return {"description": desc, "features": features[:6]}
+    # ✅ 1. TRY REAL BULLET LIST FIRST
+    for ul in soup.find_all("ul"):
+        for li in ul.find_all("li"):
+            text = li.get_text(strip=True)
+            if 20 < len(text) < 200:
+                features.append(text)
+
+    # ✅ 2. FALLBACK → SENTENCE SPLIT (what you had)
+    if not features:
+        for s in re.split(r'\.\s+', desc):
+            if 20 < len(s) < 140:
+                features.append(s.strip())
+
+    # ✅ 3. OPTIONAL: add count explicitly
+    count_match = re.search(r'(\d+)\s*(Count|Ct)', html, re.IGNORECASE)
+    if count_match:
+        features.insert(0, f"{count_match.group(1)} Count")
+
+    return {
+        "description": desc,
+        "features": features[:6]
+    }
 
 def get_salsify_text(url):
     html = get_html(url)
