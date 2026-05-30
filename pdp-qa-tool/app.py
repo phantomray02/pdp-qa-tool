@@ -5,6 +5,7 @@ import requests
 from bs4 import BeautifulSoup
 import re
 from difflib import SequenceMatcher
+from PIL import ImageFilter
 
 st.title("PDP QA Tool ✅")
 
@@ -330,30 +331,42 @@ def compare_images_visually(s_url, r_url):
         s_img_data = requests.get(s_url, timeout=10).content
         r_img_data = requests.get(r_url, timeout=10).content
 
-        s_img = Image.open(BytesIO(s_img_data)).convert("RGB").resize((256, 256))
-        r_img = Image.open(BytesIO(r_img_data)).convert("RGB").resize((256, 256))
+        s_img = Image.open(BytesIO(s_img_data)).convert("L")
+        r_img = Image.open(BytesIO(r_img_data)).convert("L")
 
-        # ✅ simple difference (FAST + RELIABLE)
+        # ✅ FORCE SAME SIZE (CRITICAL FIX)
+        s_img = s_img.resize((256, 256))
+        r_img = r_img.resize((256, 256))
+
+        # ✅ BLUR TO REMOVE COMPRESSION DIFFERENCES
+        
+        s_img = s_img.filter(ImageFilter.BLUR)
+        r_img = r_img.filter(ImageFilter.BLUR)
+
+        # ✅ SIMPLE DIFFERENCE
         diff = sum(
             abs(a - b)
-            for p1, p2 in zip(s_img.getdata(), r_img.getdata())
-            for a, b in zip(p1, p2)
-        ) / (256 * 256 * 3)
+            for a, b in zip(s_img.getdata(), r_img.getdata())
+        ) / (256 * 256)
 
-        # ✅ normalize properly
-        if diff < 5:
+        # ✅ NORMALIZED SCORING (KEY CHANGE)
+            
+        if diff < 10:
             return 100
-        elif diff < 10:
-            return 95
         elif diff < 20:
+            return 95
+        elif diff < 30:
             return 85
-        elif diff < 40:
-            return 70
         else:
-            return 40
+            return 70
+
+            
+        if score >= 90:
+        return 100
 
     except:
         return 0
+        
 def match_images_visual(s_images, r_images):
     results = []
 
