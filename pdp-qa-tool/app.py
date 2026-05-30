@@ -167,24 +167,54 @@ def clean_text(raw):
 # ✅ CVS TEXT
 # =========================================
 # ✅ NEW FEATURE SPLIT (STABLE)
-features = []
+def get_cvs_text(url):
+    html = get_html(url)
 
-sentences = re.split(r'\.\s+', description)
+    match = re.search(
+        r'Get up to .*?latest fashion trends',
+        html,
+        re.DOTALL | re.IGNORECASE
+    )
 
-for s in sentences:
-    s = s.strip()
+    if not match:
+        return {"description": "", "features": []}
 
-    if len(s) < 20:
-        continue
+    block = clean_text(match.group(0))
 
-    if any(k in s.lower() for k in [
-        "tampon",
-        "leak",
-        "compact",
-        "wrapped",
-        "comfort"
-    ]):
-        features.append(s)
+    description = block   # ✅ THIS EXISTS HERE
+
+    # ✅ FIXED FEATURE EXTRACTION
+    features = []
+
+    sentences = re.split(r'\.\s+', description)  # ✅ NOW WORKS
+
+    for s in sentences:
+        s = s.strip()
+
+        if len(s) < 20:
+            continue
+
+        if any(k in s.lower() for k in [
+            "tampon",
+            "leak",
+            "compact",
+            "wrapped",
+            "comfort"
+        ]):
+            features.append(s)
+
+    # ✅ count feature
+    count_match = re.search(r'(\d+)\s+regular\s+tampons', html, re.IGNORECASE)
+
+    if count_match:
+        count_feature = count_match.group(0)
+        if count_feature not in features:
+            features.insert(0, count_feature)
+
+    return {
+        "description": description,
+        "features": features
+    }
 
 
 # =========================================
