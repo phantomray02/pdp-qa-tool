@@ -176,34 +176,53 @@ def get_salsify_text(url):
 # =========================================
 # ✅ CVS TEXT (FIXED ✅)
 # =========================================
-def clean_text(raw):
-    if not raw:
-        return ""
+def get_cvs_text(url):
+    html = get_html(url)
 
-    # ✅ remove escape characters FIRST
-    raw = raw.replace('\\n', ' ')
-    raw = raw.replace('\\t', ' ')
-    raw = raw.replace('\\', '')   # ✅ THIS removes trailing "\"
+    # ✅ STEP 1 — extract raw description block
+    match = re.search(
+        r'Get up to .*?latest fashion trends',
+        html,
+        re.DOTALL | re.IGNORECASE
+    )
 
-    # ✅ remove HTML tags
-    raw = re.sub(r'<.*?>', '', raw)
+    if not match:
+        return {
+            "description": "",
+            "features": []
+        }
 
-    # ✅ remove JSON leftovers
-    raw = raw.replace('"value":"', '')
-    raw = raw.replace('"}', '')
+    # ✅ STEP 2 — clean text (removes \ junk too)
+    description = clean_text(match.group(0))
 
-    # ✅ remove braces + quotes
-    raw = raw.replace('{', '').replace('}', '')
-    raw = raw.replace('"', '')
+    # ✅ STEP 3 — extract individual features directly
+    features = []
 
-    # ✅ trim punctuation
-    raw = raw.lstrip(' ,.')
-    raw = raw.rstrip(' ,.')
+    f1 = re.search(r'Get up to 100% leak[\w\s\-]+', description, re.IGNORECASE)
+    if f1:
+        features.append(f1.group(0).strip())
 
-    # ✅ normalize spacing
-    raw = re.sub(r'\s+', ' ', raw)
+    f2 = re.search(r'U by Kotex Click tampons move[\w\s\-]+', description, re.IGNORECASE)
+    if f2:
+        features.append(f2.group(0).strip())
 
-    return raw.strip()
+    f3 = re.search(r'Compact to fit[\w\s\-]+', description, re.IGNORECASE)
+    if f3:
+        features.append(f3.group(0).strip())
+
+    f4 = re.search(r'Individually wrapped[\w\s\-]+', description, re.IGNORECASE)
+    if f4:
+        features.append(f4.group(0).strip())
+
+    # ✅ STEP 4 — add count feature
+    count_match = re.search(r'(\d+)\s+regular\s+tampons', html, re.IGNORECASE)
+    if count_match:
+        features.insert(0, count_match.group(0))
+
+    # ✅ STEP 5 — return clean result
+    return {
+        "description": description,
+        "features": features
     }
 # =========================================
 # ✅ MATCH FEATURES
