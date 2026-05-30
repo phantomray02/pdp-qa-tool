@@ -102,18 +102,27 @@ def get_cvs_text(url):
     description = ""
     features = []
 
-    # ✅ REAL DESCRIPTION (kept as-is)
     html = get_html(url)
     description = extract_text_block(html)
 
-    # ✅ ✅ REAL CVS BULLET FEATURES (THIS IS THE FIX)
-    for ul in soup.find_all("ul"):
-        for li in ul.find_all("li"):
-            txt = li.get_text(strip=True)
+    # ✅ TARGET ONLY PRODUCT FEATURE AREA
+    for section in soup.find_all(["div", "section"]):
 
-            # ✅ filter real product bullets (not nav junk)
-            if 20 < len(txt) < 200 and not any(x in txt.lower() for x in ["shop", "home", "review"]):
-                features.append(txt)
+        text_block = section.get_text(" ", strip=True).lower()
+
+        # ✅ ONLY sections that look like product features
+        if any(k in text_block for k in [
+            "leak", "compact", "tampon", "wrapped", "comfort"
+        ]):
+
+            for li in section.find_all("li"):
+                txt = li.get_text(strip=True)
+
+                if 20 < len(txt) < 200:
+                    features.append(txt)
+
+    # ✅ CLEAN DUPES
+    features = list(dict.fromkeys(features))
 
     return {
         "description": description,
