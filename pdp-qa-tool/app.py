@@ -101,55 +101,34 @@ def extract_text_block(html):
 def get_cvs_text(url):
     soup = get_soup(url)
 
-    details_text = ""
-
-    # ✅ Find the "Details" section
-    for div in soup.find_all("div"):
-        text = div.get_text(" ", strip=True)
-
-        if "Get up to 100%" in text and "fashion trends" in text:
-            details_text = text
-            break
-
-    details_text = clean_text(details_text)
-
     description = ""
     features = []
 
-    if details_text:
+    # ✅ Find "Details" section
+    for section in soup.find_all(["div", "section"]):
+        text = section.get_text(" ", strip=True)
 
-        # ✅ Split bullets vs description
-        parts = re.split(r'(\d+\s+\w+\s+tampons)', details_text)
+        if "Get up to 100%" in text and "fashion trends" in text:
 
-        # ✅ First part = full description
-        description = parts[0].strip()
+            # ✅ Split lines
+            lines = text.split(". ")
 
-        # ✅ Rebuild features cleanly
-        for part in parts[1:]:
-            p = part.strip()
+            # ✅ First long block = description
+            description = lines[0].strip()
 
-            if len(p) > 10:
-                features.append(p)
+            # ✅ Remaining lines = features
+            for line in lines[1:]:
+                line = line.strip()
 
-        # ✅ ALSO capture other bullet lines
-        extra = re.findall(
-            r'(Get up to .*?|U by Kotex Click tampons .*?|Compact to fit .*?|Individually wrapped .*?)($|(?=\d+\s+\w+))',
-            details_text
-        )
+                if len(line) > 20:
+                    features.append(line)
 
-        for e in extra:
-            txt = e[0].strip()
-            if txt not in features:
-                features.append(txt)
-
-    # ✅ dedupe + limit
-    features = list(dict.fromkeys(features))[:5]
+            break
 
     return {
         "description": description,
-        "features": features
+        "features": features[:5]
     }
-
 def get_salsify_text(url):
     html = get_html(url)
     desc = extract_text_block(html)
