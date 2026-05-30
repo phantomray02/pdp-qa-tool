@@ -137,21 +137,26 @@ def score(a, b):
 # =========================================
 # ✅ FEATURE MATCHING
 # =========================================
+
 def match_features(s_features, r_features):
     results = []
 
+    r_joined = " ".join(r_features).lower()
+
     for s in s_features:
-        best_match = ""
-        best_score = 0
+        s_clean = re.sub(r'[^a-z0-9 ]', '', s.lower())
+        words = s_clean.split()
 
-        for r in r_features:
-            sc = score(s, r)
-            if sc > best_score:
-                best_score = sc
-                best_match = r
+        if not words:
+            results.append((s, "❌ Missing", 0))
+            continue
 
-        if best_score >= 50:
-            results.append((s, best_match, best_score))
+        # ✅ count how many words appear anywhere in CVS
+        matches = sum(1 for w in words if w in r_joined)
+        score = int(100 * matches / len(words))
+
+        if score >= 40:   # ✅ LOWER + MORE FLEXIBLE
+            results.append((s, "✅ Found in description", score))
         else:
             results.append((s, "❌ Missing", 0))
 
