@@ -176,17 +176,19 @@ def get_cvs_text(url):
     html = get_html(url)
 
     description = ""
+   
     features = []
 
     patterns = [
-    r'Get up to 100% leak-free[^.]+',
-    r'U by Kotex Click tampons move[^.]+',
-    r'Compact to fit[^.]+',
-    r'Individually wrapped[^.]+'
+        r'Get up to 100% leak-free[^.]+',
+        r'U by Kotex Click tampons move[^.]+',
+        r'Compact to fit[^.]+',
+        r'Individually wrapped[^.]+'
     ]
 
     for p in patterns:
-    m = re.search(p, description, re.IGNORECASE)
+        m = re.search(p, description, re.IGNORECASE)
+
     if m:
         features.append(m.group(0).strip())
 
