@@ -142,27 +142,23 @@ def clean_text(raw):
     if not raw:
         return ""
 
-    # ✅ remove HTML tags
+    # remove HTML tags
     raw = re.sub(r'<.*?>', '', raw)
 
-    # ✅ remove JSON keys and noise
+    # remove JSON labels
     raw = re.sub(r'"value"\s*:\s*"', '', raw)
     raw = re.sub(r'"@type".*?"name"\s*:\s*"', '', raw)
-    raw = raw.replace('"}', '')
-    raw = raw.replace('","', '. ')
-    raw = re.sub(r'^[,.\s]+', '', raw)
-    
-    # ✅ remove trailing comma + curly brace artifacts
-    raw = re.sub(r',\s*\{.*$', '', raw)
 
-    # ✅ remove any remaining trailing commas
-    raw = re.sub(r',[\s]*$', '', raw)
+    # remove junk braces
+    raw = raw.replace('{', '').replace('}', '')
 
-
-    # ✅ remove extra quotes
+    # remove quotes
     raw = raw.replace('"', '')
 
-    # ✅ clean whitespace
+    # ✅ remove leading comma FIX
+    raw = raw.lstrip(' ,.')
+
+    # normalize spacing
     raw = re.sub(r'\s+', ' ', raw)
 
     return raw.strip()
@@ -170,28 +166,25 @@ def clean_text(raw):
 # =========================================
 # ✅ CVS TEXT
 # =========================================
-def get_cvs_text(url):
-    html = get_html(url)
+# ✅ NEW FEATURE SPLIT (STABLE)
+features = []
 
-    description = ""
-    features = []
+sentences = re.split(r'\.\s+', description)
 
-    # ✅ STEP 1 — extract description block
-    match = re.search(
-        r'Get up to .*?latest fashion trends',
-        html,
-        re.DOTALL | re.IGNORECASE
-    )
+for s in sentences:
+    s = s.strip()
 
-    if match:
-        description = clean_text(match.group(0))
-    else:
-        # ✅ fallback: grab a large visible chunk
-        soup = get_soup(url)
-        description = clean_text(soup.get_text(" ", strip=True))[:1000]
+    if len(s) < 20:
+        continue
 
-    # ✅ STEP 2 — split features correctly
-    clean_block = description.replace('\\"', '"')
+    if any(k in s.lower() for k in [
+        "tampon",
+        "leak",
+        "compact",
+        "wrapped",
+        "comfort"
+    ]):
+        features.append(s)
 
 
 # =========================================
@@ -342,12 +335,14 @@ def get_cvs_text(url):
             features.append(p)
 
     # ✅ ensure count feature is included
-    count_match = re.search(r'(\d+)\s+regular\s+tampons', html, re.IGNORECASE)
+  
+        count_match = re.search(r'(\d+)\s+regular\s+tampons', html, re.IGNORECASE)
 
-    if count_match:
-        count_feature = count_match.group(0)
+        if count_match:
+            count_feature = count_match.group(0)
         if count_feature not in features:
             features.insert(0, count_feature)
+
 
     return {
         "description": description,
