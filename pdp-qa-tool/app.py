@@ -141,8 +141,22 @@ def get_salsify_images(url):
 def clean_text(raw):
     if not raw:
         return ""
+
+    # ✅ remove HTML tags
     raw = re.sub(r'<.*?>', '', raw)
+
+    # ✅ remove JSON keys and noise
+    raw = re.sub(r'"value"\s*:\s*"', '', raw)
+    raw = re.sub(r'"@type".*?"name"\s*:\s*"', '', raw)
+    raw = raw.replace('"}', '')
+    raw = raw.replace('","', '. ')
+
+    # ✅ remove extra quotes
+    raw = raw.replace('"', '')
+
+    # ✅ clean whitespace
     raw = re.sub(r'\s+', ' ', raw)
+
     return raw.strip()
 
 # =========================================
