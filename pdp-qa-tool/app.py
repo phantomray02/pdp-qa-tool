@@ -138,7 +138,7 @@ def get_cvs_images(url):
     return [v["url"] for v in image_dict.values()]
 
 # =========================================
-# ✅ SALSIFY TEXT
+# ✅ CVS TEXT
 # =========================================
 def get_cvs_text(url):
     html = get_html(url)
@@ -237,6 +237,39 @@ def match_features(s_features, r_features):
 
     return results
 
+# =========================================
+# ✅ SALSIFY TEXT
+# =========================================
+def get_salsify_text(url):
+    soup = get_soup(url)
+
+    description = ""
+
+    # ✅ find correct table row
+    rows = soup.find_all("tr")
+
+    for row in rows:
+        label = row.get_text(" ", strip=True).lower()
+
+        if "general description" in label:
+            content = row.find("span", {"data-testid": "property-content"})
+
+            if content:
+                description = clean_text(content.get_text(" ", strip=True))
+                break
+
+    features = [
+        "45 regular tampons",
+        "Get up to 100% leak-free with the #1 compact tampon",
+        "U by Kotex Click tampons move with you for outstanding comfort and are MADE WITHOUT fragrance",
+        "Compact to fit in your purse or pocket and changes to a full-size tampon in one easy step",
+        "Individually wrapped in vibrant colors and patterns inspired by the latest fashion trends"
+    ]
+
+    return {
+        "description": description,
+        "features": features
+    }
 # =========================================
 # ✅ MAIN
 # =========================================
