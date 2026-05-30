@@ -270,27 +270,6 @@ def get_cvs_text(url):
 # ✅ MATCH FEATURES
 # =========================================
 def match_features(s_features, r_features):
-    results = []
-
-    for s in s_features:
-        best_match = ""
-        best_score = 0
-
-        for r in r_features:
-            sim = SequenceMatcher(None, s.lower(), r.lower()).ratio()
-            if sim > best_score:
-                best_score = sim
-                best_match = r
-
-        if best_score >= 0.7:
-            
-            if best_r_url:   # ✅ only keep real matches
-                results.append((s_url, best_r_url, best_score))
-
-        else:
-            results.append((s, "❌ Missing", 0))
-
-    return results
 
 # =========================================
 # ✅ SALSIFY TEXT
