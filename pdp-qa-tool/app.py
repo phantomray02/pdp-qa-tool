@@ -1,212 +1,190 @@
-
 import streamlit as st
 import pandas as pd
 import requests
+from bs4 import BeautifulSoup
 import re
 
+st.title("PDP QA Tool (Images + Content ✅)")
 
-# =========================================
-# ✅ GET HTML
-# =========================================
+uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
+
+# -----------------------------
+# GET HTML
+# -----------------------------
 def get_html(url):
-    headers = {
-        "User-Agent": "Mozilla/5.0"
-    }
+    headers = {"User-Agent": "Mozilla/5.0"}
+    return requests.get(url, headers=headers).text
+
+def get_soup(url):
+    return BeautifulSoup(get_html(url), "html.parser")
+
+# -----------------------------
+# SALSIFY IMAGES
+# -----------------------------
+def get_salsify_images(url):
     try:
-        return requests.get(url, headers=headers, timeout=20).text
+        soup = get_soup(url)
+        images = []
+
+        for img in soup.find_all("img"):
+            src = img.get("src") or ""
+            if src.startswith("http"):
+                images.append(src)
+
+        return list(dict.fromkeys(images))[:8]
+
     except:
-        return ""
+        return []
 
+# -----------------------------
+# ✅ CVS IMAGES (CLEAN + HIGH RES)
+# -----------------------------
+def get_cvs_images(url):
+    try:
+        html = get_html(url)
 
-# =========================================
-# ✅ GET CVS IMAGE
-# =========================================
-def get_cvs_image(html):
-    m = re.search(r'"imageUrl":"(https:[^"]+)"', html)
-    if m:
-        return m.group(1)
-    return ""
+        matches = re.findall(
+            r'/bizcontent/merchandising/productimages/high_res/[^\s"]+\.jpg\?[^\s"]*',
+            html
+        )
 
+        image_dict = {}
 
-# =========================================
-# ✅ CVS TEXT (WORKING VERSION YOU HAD)
-# =========================================
-def get_cvs_text(url):
-    html = get_html(url)
+        for m in matches:
+            full = "https://www.cvs.com" + m
+            base = full.split("?")[0]
+            name = base.split("/")[-1]
 
-    title = ""
-    description = ""
-    image = ""
+            size_match = re.search(r'Resize=\((\d+),', m)
+            size = int(size_match.group(1)) if size_match else 0
 
-    if not html:
-        return {"title": "", "description": "", "image": ""}
+            if name not in image_dict or size > image_dict[name]["size"]:
+                image_dict[name] = {
+                    "url": base,
+                    "size": size
+                }
 
-    # ✅ TITLE
-    t = re.search(r'[A-Z][A-Za-z0-9 ,\-]+(?:Count|Ct)', html)
-    if t:
-        title = t.group(0).strip()
+        return [v["url"] for v in image_dict.values()]
 
-    # ✅ DESCRIPTION (your working pattern)
-    d = re.search(
-        r'Get up to .*?latest fashion trends',
-        html,
-        re.DOTALL
-    )
+    except:
+        return []
 
-    if d:
-        raw = d.group(0)
+# -----------------------------
+# ✅ TEXT EXTRACTION
+# -----------------------------
+def get_text_data(url):
+    try:
+        soup = get_soup(url)
 
-        raw = raw.replace('\\"', '')
-        raw = raw.replace('\\n', ' ')
-        raw = raw.replace('","', '. ')
-        raw = raw.replace('"', '')
+        text = soup.get_text(" ", strip=True)
 
-        raw = re.sub('<.*?>', '', raw)
-        raw = re.sub(r'\s+', ' ', raw).strip()
+        # simple extraction rules
+        title = ""
+        desc = ""
+        features = []
 
-        description = raw
+        # title
+        if soup.title:
+            title = soup.title.text.strip()
 
-    # ✅ IMAGE
-    image = get_cvs_image(html)
+        # description
+        for p in soup.find_all("p"):
+            t = p.get_text().lower()
+            if len(t) > 100:
+                desc = p.get_text()
+                break
 
-    return {
-        "title": title,
-        "description": description,
-        "image": image
-    }
+        # features
+        for li in soup.find_all("li"):
+            txt = li.get_text().strip()
+            if len(txt) > 20:
+                features.append(txt)
 
+        return {
+            "title": title,
+            "description": desc,
+            "features": features[:5]
+        }
 
-# =========================================
-# ✅ SALSIFY TEXT
-# =========================================
-def get_salsify_text(url):
-    html = get_html(url)
+    except:
+        return {
+            "title": "",
+            "description": "",
+            "features": []
+        }
 
-    title = ""
-    description = ""
+# -----------------------------
+# MAIN
+# -----------------------------
+if uploaded_file:
 
-    if not html:
-        return "", ""
-
-    t = re.search(r'[A-Z][A-Za-z0-9 ,\-]+(?:Count|Ct)', html)
-    if t:
-        title = t.group(0).strip()
-
-    d = re.search(
-        r'Get up to .*?latest fashion trends',
-        html,
-        re.DOTALL
-    )
-
-    if d:
-        raw = d.group(0)
-
-        raw = raw.replace('\\"', '')
-        raw = raw.replace('\\n', ' ')
-        raw = raw.replace('","', '. ')
-        raw = raw.replace('"', '')
-
-        raw = re.sub('<.*?>', '', raw)
-        raw = re.sub(r'\s+', ' ', raw).strip()
-
-        description = raw
-
-    return title, description
-
-
-# =========================================
-# ✅ FEATURES (FROM DESCRIPTION)
-# =========================================
-def extract_features(description):
-    sentences = re.split(r'\.\s+', description)
-
-    features = []
-
-    for s in sentences:
-        s = s.strip()
-
-        if (
-            20 < len(s) < 120 and
-            any(word in s.lower() for word in [
-                "tampon",
-                "leak",
-                "compact",
-                "wrapped",
-                "comfort"
-            ])
-        ):
-            features.append(s)
-
-    return list(dict.fromkeys(features))[:5]
-
-
-# =========================================
-# ✅ NORMALIZE
-# =========================================
-def normalize(text):
-    return re.sub(r'[^a-z0-9 ]', '', str(text).lower())
-
-
-# =========================================
-# ✅ APP UI
-# =========================================
-st.title("PDP QA Tool")
-
-file = st.file_uploader("Upload CSV", type="csv")
-
-if file:
-    df = pd.read_csv(file)
-
-    st.write("Columns:", df.columns.tolist())
+    df = pd.read_csv(uploaded_file)
 
     for _, row in df.iterrows():
 
-        cvs = get_cvs_text(row["retail_url"])
-        s_title, s_desc = get_salsify_text(row["salsify_url"])
+        st.subheader(f"SKU: {row['sku']}")
 
-        # =========================================
-        st.header("General Product Title")
+        # -----------------------------
+        # GET DATA
+        # -----------------------------
+        s_images = get_salsify_images(row["salsify_url"])
+        r_images = get_cvs_images(row["retail_url"])
 
-        st.write("Salsify:", s_title)
-        st.write("CVS:", cvs["title"])
+        s_text = get_text_data(row["salsify_url"])
+        r_text = get_text_data(row["retail_url"])
 
-        # ✅ IMAGE (fixed)
-        if cvs["image"]:
-            st.image(cvs["image"], width=200)
+        max_len = max(len(s_images), len(r_images))
 
-        # MATCH
-        title_score = 0
-        if s_title:
-            title_score = int(
-                100 * len(set(normalize(s_title).split()) &
-                          set(normalize(cvs["title"]).split()))
-                / len(set(normalize(s_title).split()))
-            )
+        # -----------------------------
+        # ✅ IMAGE ALIGNMENT
+        # -----------------------------
+        st.markdown("## Image Comparison")
 
-        st.write("Match:", f"{title_score}%")
+        for i in range(max_len):
 
-        # =========================================
-        st.header("General Description")
+            col1, col2 = st.columns(2)
 
-        st.write("Salsify:", s_desc)
-        st.write("CVS:", cvs["description"])
+            with col1:
+                st.write(f"Salsify {i+1}")
+                if i < len(s_images):
+                    st.image(s_images[i], use_container_width=True)
+                else:
+                    st.error("Missing")
 
-        desc_score = 0
-        if s_desc:
-            desc_score = int(
-                100 * len(set(normalize(s_desc).split()) &
-                          set(normalize(cvs["description"]).split()))
-                / len(set(normalize(s_desc).split()))
-            )
+            with col2:
+                st.write(f"CVS {i+1}")
+                if i < len(r_images):
+                    st.image(r_images[i], use_container_width=True)
+                else:
+                    st.error("Missing")
 
-        st.write("Match:", f"{desc_score}%")
+            st.divider()
 
-        # =========================================
-        st.header("Features")
+        # -----------------------------
+        # ✅ IMAGE RESULT
+        # -----------------------------
+        if len(r_images) == len(s_images):
+            st.success("✅ Images Match")
+        elif len(r_images) < len(s_images):
+            st.error(f"❌ Missing {len(s_images) - len(r_images)} images")
+        else:
+            st.warning(f"⚠ Extra {len(r_images) - len(s_images)} images")
 
-        cvs_features = extract_features(cvs["description"])
+        # -----------------------------
+        # ✅ CONTENT QA
+        # -----------------------------
+        st.markdown("## Content Comparison")
 
-        for f in cvs_features:
-            st.write("•", f)
+        st.markdown("### Title")
+        st.write("Salsify:", s_text["title"])
+        st.write("CVS:", r_text["title"])
+
+        st.markdown("### Description")
+        st.write("Salsify:", s_text["description"])
+        st.write("CVS:", r_text["description"])
+
+        st.markdown("### Features")
+        st.write("Salsify:", s_text["features"])
+        st.write("CVS:", r_text["features"])
 
         st.divider()
