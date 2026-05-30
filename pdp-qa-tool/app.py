@@ -149,24 +149,19 @@ def clean_text(raw):
 # ✅ CVS TEXT
 # =========================================
 def get_salsify_text(url):
-    soup = get_soup(url)
+    html = get_html(url)
 
     description = ""
 
-    # ✅ find ALL table rows
-    for row in soup.find_all("tr"):
+    # ✅ Extract EXACT field using label-based parsing
+    match = re.search(
+        r'General Description\s*(.*?)\s*General Feature 1',
+        html,
+        re.DOTALL | re.IGNORECASE
+    )
 
-        cells = row.find_all("td")
-
-        if len(cells) >= 2:
-
-            label = cells[0].get_text(strip=True)
-
-            # ✅ match EXACT field
-            if "General Description" in label:
-
-                description = clean_text(cells[1].get_text(" ", strip=True))
-                break
+    if match:
+        description = clean_text(match.group(1))
 
     features = [
         "45 regular tampons",
