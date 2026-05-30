@@ -351,20 +351,32 @@ def compare_images_visually(s_url, r_url):
 
 def match_images_visual(s_images, r_images):
     results = []
+    used_r = set()
 
-    max_len = max(len(s_images), len(r_images))
+    for s_img in s_images:
+        s_url = s_img["url"]
 
-    for i in range(max_len):
+        best_score = 0
+        best_r_url = ""
 
-        s_url = s_images[i]["url"] if i < len(s_images) else ""
-        r_url = r_images[i] if i < len(r_images) else ""
+        for idx, r_url in enumerate(r_images):
 
-        if s_url and r_url:
+            if idx in used_r:
+                continue
+
             score = compare_images_visually(s_url, r_url)
-        else:
-            score = 0
 
-        results.append((s_url, r_url, score))
+            if score > best_score:
+                best_score = score
+                best_r_url = r_url
+                best_idx = idx
+
+        if best_score > 50:
+            used_r.add(best_idx)
+        else:
+            best_r_url = ""
+
+        results.append((s_url, best_r_url, best_score))
 
     return results
 # =========================================
