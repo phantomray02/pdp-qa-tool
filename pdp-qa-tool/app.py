@@ -179,7 +179,7 @@ def get_salsify_text(url):
 def get_cvs_text(url):
     html = get_html(url)
 
-    # ✅ STEP 1 — extract FULL description block (extended)
+    # ✅ STEP 1 — extract FULL description block
     match = re.search(
         r'Get up to 100% leak-free.*?eligible in the U\.S\.',
         html,
@@ -194,17 +194,23 @@ def get_cvs_text(url):
 
     raw = match.group(0)
 
-    # ✅ STEP 2 — clean escape junk
+    # ✅ STEP 2 — remove escape + junk first
     raw = raw.replace('\\n', ' ')
     raw = raw.replace('\\t', ' ')
     raw = raw.replace('\\', '')
 
+    # ✅ STEP 3 — REMOVE metadata / JSON garbage
+    raw = re.sub(r'\d+VendorDetails.*?(?=Get up to)', '', raw, flags=re.DOTALL)
+    raw = re.sub(r'_meta.*?', '', raw, flags=re.DOTALL)
+    raw = re.sub(r'modelVersionName.*?', '', raw)
+    raw = re.sub(r'"[^"]*"', '', raw)  # remove random quoted fragments
+
+    # ✅ STEP 4 — clean final text
     description = clean_text(raw)
 
-    # ✅ STEP 3 — extract ALL features cleanly
+    # ✅ FEATURES (leave exactly as your working version)
     features = []
 
-    # Feature 2
     m = re.search(
         r'Get up to 100% leak[-\s]?free with the #1 compact tampon',
         description,
@@ -213,7 +219,6 @@ def get_cvs_text(url):
     if m:
         features.append(m.group(0))
 
-    # Feature 3
     m = re.search(
         r'U by Kotex Click tampons move.*?fragrance',
         description,
@@ -222,7 +227,6 @@ def get_cvs_text(url):
     if m:
         features.append(m.group(0))
 
-    # Feature 4
     m = re.search(
         r'Compact to fit.*?easy step',
         description,
@@ -231,7 +235,6 @@ def get_cvs_text(url):
     if m:
         features.append(m.group(0))
 
-    # Feature 5
     m = re.search(
         r'Individually wrapped.*?fashion trends',
         description,
@@ -240,7 +243,6 @@ def get_cvs_text(url):
     if m:
         features.append(m.group(0))
 
-    # ✅ count feature
     count_match = re.search(r'(\d+)\s+regular\s+tampons', html, re.IGNORECASE)
     if count_match:
         features.insert(0, count_match.group(0))
