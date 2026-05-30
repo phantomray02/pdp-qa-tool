@@ -37,12 +37,10 @@ def get_salsify_images(url):
     try:
         soup = get_soup(url)
         imgs = []
-
         for img in soup.find_all("img"):
             src = img.get("src") or ""
             if src.startswith("http"):
                 imgs.append(src)
-
         return list(dict.fromkeys(imgs))[:8]
     except:
         return []
@@ -57,7 +55,6 @@ def get_cvs_images(url):
         )
 
         image_dict = {}
-
         for m in matches:
             full = "https://www.cvs.com" + m
             base = full.split("?")[0]
@@ -77,6 +74,8 @@ def get_cvs_images(url):
 # ✅ CLEAN TEXT
 # =========================================
 def clean_text(raw):
+    if not raw:
+        return ""
     raw = raw.replace('\\"', '')
     raw = raw.replace('\\n', ' ')
     raw = raw.replace('","', '. ')
@@ -86,33 +85,30 @@ def clean_text(raw):
     return raw.strip()
 
 # =========================================
-# ✅ TEXT EXTRACTION
+# ✅ TEXT EXTRACTION (FIXED ✅)
 # =========================================
-
 def extract_text_block(html):
-    # ✅ target ONLY the main product description section
     match = re.search(
         r'Item #.*?(Get up to .*?fashion trends)',
         html,
         re.DOTALL
     )
-
     if match:
         return clean_text(match.group(1))
 
-    return
+    return ""  # ✅ ALWAYS return string
 
 def get_cvs_text(url):
     html = get_html(url)
 
     desc = extract_text_block(html)
-
     features = []
 
     if desc:
-        for s in re.split(r'\.\s+', desc):
-            s = s.strip()
+        sentences = re.split(r'\.\s+', desc)
 
+        for s in sentences:
+            s = s.strip()
             if len(s) > 25:
                 features.append(s)
 
@@ -125,7 +121,6 @@ def get_salsify_text(url):
     html = get_html(url)
     desc = extract_text_block(html)
 
-    # ✅ EXACT Salsify Features
     features = [
         "45 regular tampons",
         "Get up to 100% leak-free with the #1 compact tampon",
@@ -140,7 +135,6 @@ def get_salsify_text(url):
 # ✅ SCORING
 # =========================================
 def score(a, b):
-    # ✅ prevent crash
     if not isinstance(a, str):
         a = ""
     if not isinstance(b, str):
@@ -153,41 +147,39 @@ def score(a, b):
         return 0
 
     return int(100 * len(a_words & b_words) / len(a_words))
+
+def strict_title_score(a, b):
+    return int(SequenceMatcher(None, a.lower(), b.lower()).ratio() * 100)
+
 # =========================================
 # ✅ FEATURE MATCHING
 # =========================================
-def match_features(s_features, r_features, r_description):
+def match_features(s_features, r_features):
     results = []
 
     for s in s_features:
-
         best_match = ""
         best_score = 0
 
         for r in r_features:
-
-            # ✅ exact match
             if s.strip().lower() == r.strip().lower():
                 best_match = r
                 best_score = 100
                 break
 
-            # ✅ whole sentence similarity (NOT chopped overlap)
-            similarity = int(
-                SequenceMatcher(None, s.lower(), r.lower()).ratio() * 100
-            )
+            similarity = int(SequenceMatcher(None, s.lower(), r.lower()).ratio() * 100)
 
             if similarity > best_score:
                 best_score = similarity
                 best_match = r
 
-        # ✅ threshold
         if best_score >= 70:
             results.append((s, best_match, best_score))
         else:
             results.append((s, "❌ Missing", 0))
 
     return results
+
 # =========================================
 # ✅ MAIN
 # =========================================
@@ -218,24 +210,18 @@ if uploaded_file:
         s_title = s_title.group(0) if s_title else ""
         r_title = r_title.group(0) if r_title else ""
 
-        with col1:
-            st.write("Salsify")
-            st.write(s_title)
-
-        with col2:
-            st.write("CVS")
-            st.write(r_title)
+        col1.write(s_title)
+        col2.write(r_title)
 
         st.write(f"✅ Title Match: {strict_title_score(s_title, r_title)}%")
 
-        # ✅ DESCRIPTION
+        # ✅ DESCRIPTION (FIXED INDENT ✅)
         st.markdown("## Description")
 
         c1, c2 = st.columns(2)
-        
-c1.write(s_text.get("description") or "")
-c2.write(r_text.get("description") or "")
 
+        c1.write(s_text.get("description") or "")
+        c2.write(r_text.get("description") or "")
 
         st.write(f"✅ Description Match: {score(s_text['description'], r_text['description'])}%")
 
@@ -244,8 +230,7 @@ c2.write(r_text.get("description") or "")
 
         matched = match_features(
             s_text["features"],
-            r_text["features"],
-            r_text["description"]
+            r_text["features"]
         )
 
         match_count = 0
@@ -254,19 +239,16 @@ c2.write(r_text.get("description") or "")
 
             c1, c2, c3 = st.columns([3, 3, 1])
 
-            with c1:
-                st.write(f"**General Feature {i}**")
-                st.write(s)
+            c1.write(f"**General Feature {i}**")
+            c1.write(s)
 
-            with c2:
-                if "Missing" in r:
-                    st.error("Missing")
-                else:
-                    st.write(r)
-                    match_count += 1
+            if "Missing" in r:
+                c2.error("Missing")
+            else:
+                c2.write(r)
+                match_count += 1
 
-            with c3:
-                st.write(f"{sc}%")
+            c3.write(f"{sc}%")
 
         feature_score = int(100 * match_count / len(matched)) if matched else 0
         st.write(f"✅ Features Match: {feature_score}%")
@@ -279,16 +261,14 @@ c2.write(r_text.get("description") or "")
         for i in range(max_len):
             col1, col2 = st.columns(2)
 
-            with col1:
-                if i < len(s_images):
-                    st.image(s_images[i])
-                else:
-                    st.error("Missing")
+            if i < len(s_images):
+                col1.image(s_images[i])
+            else:
+                col1.error("Missing")
 
-            with col2:
-                if i < len(r_images):
-                    st.image(r_images[i])
-                else:
-                    st.error("Missing")
+            if i < len(r_images):
+                col2.image(r_images[i])
+            else:
+                col2.error("Missing")
 
         st.divider()
