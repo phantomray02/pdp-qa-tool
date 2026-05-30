@@ -357,38 +357,21 @@ def compare_images_visually(s_url, r_url):
 
 def match_images_visual(s_images, r_images):
     results = []
-    used_r = set()
 
-    for s_img in s_images:
+    if not s_images:
+        return []
+
+    for i, s_img in enumerate(s_images):
         s_url = s_img["url"]
 
-        best_score = -1
-        best_r_url = ""
-        best_idx = None
-
-        for idx, r_url in enumerate(r_images):
-
-            if idx in used_r:
-                continue
-
-            raw_score = compare_images_visually(s_url, r_url)
-
-            if raw_score > best_score:
-                best_score = raw_score
-                best_r_url = r_url
-                best_idx = idx
-
-        # ✅ NORMALIZE SCORE (THIS FIXES 0%)
-        if best_score >= 0:
-            # scale relative score
-            normalized_score = int(min(100, max(10, best_score * 2)))
+        if i < len(r_images):
+            r_url = r_images[i]
+            score = compare_images_visually(s_url, r_url)
         else:
-            normalized_score = 0
+            r_url = ""
+            score = 0
 
-        if best_idx is not None:
-            used_r.add(best_idx)
-
-        results.append((s_url, best_r_url, normalized_score))
+        results.append((s_url, r_url, score))
 
     return results
 # =========================================
@@ -405,6 +388,9 @@ if uploaded_file:
 
         s_images = get_salsify_images(row["salsify_url"])
         r_images = get_cvs_images(row["retail_url"])
+
+        st.write(f"Salsify images: {len(s_images)}")
+        st.write(f"CVS images: {len(r_images)}")
 
         s_text = get_salsify_text(row["salsify_url"])
         r_text = get_cvs_text(row["retail_url"])
@@ -465,6 +451,7 @@ if uploaded_file:
         st.markdown("## Image Comparison ✅")
 
         image_matches = match_images_visual(s_images, r_images)
+        st.write(f"Image matches found: {len(image_matches)}")
 
         for s, r, sc in image_matches:
             c1, c2, c3 = st.columns([4, 4, 1])
@@ -486,6 +473,24 @@ if uploaded_file:
         avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
 
         st.write(f"✅ Image Match: {avg_img_score}%")
+
+        if not image_matches:
+    st.warning("No images found to compare.")
+else:
+    for s, r, sc in image_matches:
+        c1, c2, c3 = st.columns([4, 4, 1])
+
+        if s:
+            c1.image(s, use_container_width=True)
+        else:
+            c1.write("Missing")
+
+        if r:
+            c2.image(r, use_container_width=True)
+        else:
+            c2.write("Missing")
+
+        c3.write(f"{sc}%")
 
         # =========================================
         # ✅ STORE FOR EXPORT (END OF LOOP)
