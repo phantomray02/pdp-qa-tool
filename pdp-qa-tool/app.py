@@ -256,32 +256,47 @@ if uploaded_file:
         st.write(f"✅ Description Match: {score(s_text['description'], r_text['description'])}%")
 
         # ✅ FEATURES
-        st.markdown("## Features")
+       
+st.markdown("## Features")
 
-        matched = match_features(
-            s_text["features"],
-            r_text["features"]
-        )
+matched = match_features(
+    s_text["features"],
+    r_text["features"]
+)
 
-        match_count = 0
+# ✅ HEADER ROW (optional but nice)
+h1, h2, h3, h4 = st.columns([2, 4, 4, 1])
 
-        for i, (s, r, sc) in enumerate(matched, start=1):
+h1.write("**Feature**")
+h2.write("**Salsify**")
+h3.write("**CVS**")
+h4.write("**%**")
 
-            c1, c2, c3 = st.columns([3, 3, 1])
+match_count = 0
 
-            c1.write(f"**General Feature {i}**")
-            c1.write(s)
+for i, (s, r, sc) in enumerate(matched, start=1):
 
-            if "Missing" in r:
-                c2.error("Missing")
-            else:
-                c2.write(r)
-                match_count += 1
+    c1, c2, c3, c4 = st.columns([2, 4, 4, 1])
 
-            c3.write(f"{sc}%")
+    # ✅ Feature label
+    c1.write(f"GF{i}")
 
-        feature_score = int(100 * match_count / len(matched)) if matched else 0
-        st.write(f"✅ Features Match: {feature_score}%")
+    # ✅ Salsify (LEFT)
+    c2.write(s)
+
+    # ✅ CVS (RIGHT)
+    if "Missing" in r:
+        c3.error("Missing")
+    else:
+        c3.write(r)
+        match_count += 1
+
+    # ✅ Score
+    c4.write(f"{sc}%")
+
+# ✅ overall score
+feature_score = int(100 * match_count / len(matched)) if matched else 0
+st.write(f"✅ Features Match: {feature_score}%")
 
         # ✅ IMAGES
         st.markdown("## Image Comparison")
