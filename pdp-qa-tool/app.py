@@ -275,6 +275,10 @@ if uploaded_file:
 
         s_text = get_salsify_text(row["salsify_url"])
         r_text = get_cvs_text(row["retail_url"])
+        
+        # ✅ DEBUG LINE (ADD HERE)
+        st.write("DEBUG CVS TEXT:", r_text)
+
 
         # ✅ TITLE
         st.markdown("## Title")
@@ -298,9 +302,9 @@ if uploaded_file:
 
         c1, c2 = st.columns(2)
         c1.write(s_text["description"])
-        c2.write(r_text["description"])
+        c2.write((r_text or {}).get("description", ""))
 
-        st.write(f"✅ Description Match: {score(s_text['description'], r_text['description'])}%")
+        st.write(f"✅ Description Match: {score(s_text.get('description'), (r_text or {}).get('description'))}%")
 
         # ✅ FEATURES
         st.markdown("## Features")
