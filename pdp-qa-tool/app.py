@@ -167,8 +167,6 @@ def strict_title_score(a, b):
 def match_features(s_features, r_features, r_description):
     results = []
 
-    r_all = (" ".join(r_features) + " " + r_description).lower()
-
     for s in s_features:
 
         best_match = ""
@@ -176,26 +174,18 @@ def match_features(s_features, r_features, r_description):
 
         for r in r_features:
 
-            # ✅ EXACT MATCH FIRST
-            if s.strip() == r.strip():
-                results.append((s, r, 100))
-                best_match = r
-                best_score = 100
-                break
-
-            # ✅ OTHERWISE USE SIMILARITY
-            similarity = int(
+            score = int(
                 SequenceMatcher(None, s.lower(), r.lower()).ratio() * 100
             )
 
-            if similarity > best_score:
-                best_score = similarity
+            if score > best_score:
+                best_score = score
                 best_match = r
 
-        if best_score == 0:
-            results.append((s, "❌ Missing", 0))
-        elif best_score < 100:
+        if best_score > 50:
             results.append((s, best_match, best_score))
+        else:
+            results.append((s, "❌ Missing", 0))
 
     return results
 # =========================================
