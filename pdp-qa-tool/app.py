@@ -350,8 +350,6 @@ def compare_images_visually(s_url, r_url):
         ) / (256 * 256)
 
         # ✅ NORMALIZED SCORING (KEY CHANGE)
-            
-           
          if diff < 10:
                     return 100
                 elif diff < 20:
@@ -361,13 +359,8 @@ def compare_images_visually(s_url, r_url):
                 else:
                     return 70
         
-            except:
+        except:
                 return 0
-
-
-
-    
-        
 def match_images_visual(s_images, r_images):
     results = []
 
