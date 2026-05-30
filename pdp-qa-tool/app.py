@@ -143,9 +143,9 @@ def get_cvs_images(url):
 def get_cvs_text(url):
     html = get_html(url)
 
-    # ✅ STEP 1 — find ALL candidates (short + full versions)
+    # ✅ STEP 1 — capture ALL possible description blocks
     matches = re.findall(
-        r'Get up to 100% leak-free.*?(?:U\.S\.|fashion trends)',
+        r'Get up to 100% leak-free.*?U\.S\.',
         html,
         re.DOTALL | re.IGNORECASE
     )
@@ -161,44 +161,48 @@ def get_cvs_text(url):
     for m in matches:
         block = m
 
-        # ✅ remove escape junk
+        # ✅ STEP 2 — remove escape / encoding junk
         block = block.replace('\\n', ' ')
         block = block.replace('\\t', ' ')
         block = block.replace('\\', '')
 
-        # ✅ remove metadata junk ONLY
+        # ✅ fix encoded HTML
+        block = block.replace('u0026', '&')
+
+        # ✅ remove JS / hydration junk
+        block = re.sub(r'__next.*?(?=Get up to|$)', ' ', block, flags=re.DOTALL)
+        block = re.sub(r'push\(\[.*?\]\)', ' ', block)
+
+        # ✅ remove known metadata junk
         block = re.sub(r'\d+VendorDetails.*?(?=Get up to|$)', ' ', block, flags=re.DOTALL)
-        block = re.sub(r'VendorDetails.*?(?=Get up to|$)', ' ', block, flags=re.DOTALL)
         block = re.sub(r'_meta.*?(?=Get up to|$)', ' ', block, flags=re.DOTALL)
-        block = re.sub(r'modelVersionName.*?(?=Get up to|$)', ' ', block, flags=re.DOTALL)
+        block = re.sub(r'modelVersionName.*?(?=Get up to|$)', ' ', block)
 
         block = clean_text(block)
 
         cleaned_blocks.append(block)
 
-    # ✅ STEP 2 — PICK THE BEST BLOCK
+    # ✅ STEP 3 — select BEST block (complete version)
     def score(text):
         s = 0
 
-        # ✅ MUST include full ending to win
         if "eligible in the u.s." in text.lower():
-            s += 10
+            s += 10   # ✅ REQUIRED → ensures full version
 
         if "absorbenc" in text.lower():
             s += 5
 
         if "gynecologist tested" in text.lower():
-            s += 2
+            s += 3
 
-        # ✅ length bonus
-        s += len(text) / 1000
+        s += len(text) / 1000  # length bonus
 
         return s
 
     description = max(cleaned_blocks, key=score)
 
     # =========================================
-    # ✅ FEATURES (UNCHANGED)
+    # ✅ FEATURES (UNCHANGED — WORKING)
     # =========================================
     features = []
 
