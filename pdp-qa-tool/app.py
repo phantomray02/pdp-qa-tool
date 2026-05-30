@@ -179,9 +179,9 @@ def get_salsify_text(url):
 def get_cvs_text(url):
     html = get_html(url)
 
-    # ✅ STEP 1 — extract full description
+    # ✅ STEP 1 — extract FULL description block (extended)
     match = re.search(
-        r'Get up to .*?latest fashion trends',
+        r'Get up to 100% leak-free.*?eligible in the U\.S\.',
         html,
         re.DOTALL | re.IGNORECASE
     )
@@ -194,57 +194,54 @@ def get_cvs_text(url):
 
     raw = match.group(0)
 
-    # ✅ clean escape junk
+    # ✅ STEP 2 — clean escape junk
     raw = raw.replace('\\n', ' ')
     raw = raw.replace('\\t', ' ')
     raw = raw.replace('\\', '')
 
     description = clean_text(raw)
 
+    # ✅ STEP 3 — extract ALL features cleanly
     features = []
 
-    # ✅ Feature 2 (FULL)
+    # Feature 2
     m = re.search(
         r'Get up to 100% leak[-\s]?free with the #1 compact tampon',
         description,
         re.IGNORECASE
     )
     if m:
-        features.append(m.group(0).strip())
+        features.append(m.group(0))
 
-    # ✅ Feature 3 (FIXED ✅)
+    # Feature 3
     m = re.search(
         r'U by Kotex Click tampons move.*?fragrance',
         description,
         re.IGNORECASE
     )
     if m:
-        features.append(m.group(0).strip())
+        features.append(m.group(0))
 
-    # ✅ Feature 4 (FIXED ✅)
+    # Feature 4
     m = re.search(
         r'Compact to fit.*?easy step',
         description,
         re.IGNORECASE
     )
     if m:
-        features.append(m.group(0).strip())
+        features.append(m.group(0))
 
-    # ✅ Feature 5
+    # Feature 5
     m = re.search(
         r'Individually wrapped.*?fashion trends',
         description,
         re.IGNORECASE
     )
     if m:
-        features.append(m.group(0).strip())
+        features.append(m.group(0))
 
-    # ✅ Feature 1 (count)
-    count_match = re.search(
-        r'(\d+)\s+regular\s+tampons',
-        html,
-        re.IGNORECASE
-    )
+    # ✅ count feature
+    count_match = re.search(r'(\d+)\s+regular\s+tampons', html, re.IGNORECASE)
     if count_match:
         features.insert(0, count_match.group(0))
 
