@@ -205,6 +205,11 @@ if uploaded_file:
         with c2:
             st.write("CVS")
             st.write(r_title)
+            
+title_score = score(s_title, r_title)
+
+st.write(f"✅ Title Match: {title_score}%")
+
 
         # =========================================
         # ✅ DESCRIPTION
@@ -225,6 +230,10 @@ if uploaded_file:
             "Match:",
             f"{score(s_text['description'], r_text['description'])}%"
         )
+
+desc_score = score(s_text["description"], r_text["description"])
+
+st.write(f"✅ Description Match: {desc_score}%")
 
         # =========================================
         # ✅ FEATURES (MATCHED)
