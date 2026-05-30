@@ -163,25 +163,33 @@ def get_cvs_text(url):
     block = clean_text(match.group(0))
 
     
-# ✅ NEW CLEAN FEATURE SPLIT
+
+# ✅ CLEAN + SPLIT USING CVS STRUCTURE
 features = []
 
-sentences = re.split(r'\.\s+', block)
+# ✅ step 1: normalize the string
+clean_block = block.replace('\\"', '"')
 
-for s in sentences:
-    s = s.strip()
+# ✅ step 2: split using comma-separated structure
+parts = re.split(r'\",\s*\"', clean_block)
 
-    if len(s) < 20:
+for p in parts:
+
+    p = p.replace('"', '').strip()
+
+    if len(p) < 20:
         continue
 
-    if any(k in s.lower() for k in [
+    # ✅ only keep real PDP feature lines
+    if any(k in p.lower() for k in [
         "tampon",
         "leak",
         "compact",
         "wrapped",
         "comfort"
     ]):
-        features.append(s)
+        features.append(p)
+
 
     return {
         "description": block,
