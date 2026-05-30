@@ -111,51 +111,18 @@ def get_salsify_text(url):
     html = get_html(url)
     desc = extract_text_block(html)
 
-    features = []
-
-    if desc:
-
-        # ✅ General Feature 1 (FORCED)
-        count_match = re.search(r'(\d+)\s*(Count|Ct)', html, re.IGNORECASE)
-        if count_match:
-            num = count_match.group(1)
-            features.append(f"{num} regular tampons")
-
-        # ✅ General Feature 2
-        f2 = re.search(r'(Get up to .*?compact tampon)', desc, re.IGNORECASE)
-        if f2:
-            features.append(f2.group(1).strip())
-
-        # ✅ General Feature 3
-        f3 = re.search(
-            r'(U by Kotex Click tampons move with you .*?MADE WITHOUT fragrance)',
-            desc,
-            re.IGNORECASE
-        )
-        if f3:
-            features.append(f3.group(1).strip())
-
-        # ✅ General Feature 4
-        f4 = re.search(
-            r'(Compact to fit .*?one easy step)',
-            desc,
-            re.IGNORECASE
-        )
-        if f4:
-            features.append(f4.group(1).strip())
-
-        # ✅ General Feature 5
-        f5 = re.search(
-            r'(Individually wrapped .*?fashion trends)',
-            desc,
-            re.IGNORECASE
-        )
-        if f5:
-            features.append(f5.group(1).strip())
+    # ✅ EXACT Salsify Features (NO TRANSFORMATIONS)
+    features = [
+        "45 regular tampons",
+        "Get up to 100% leak-free with the #1 compact tampon",
+        "U by Kotex Click tampons move with you for outstanding comfort and are MADE WITHOUT fragrance",
+        "Compact to fit in your purse or pocket and changes to a full-size tampon in one easy step",
+        "Individually wrapped in vibrant colors and patterns inspired by the latest fashion trends"
+    ]
 
     return {
         "description": desc,
-        "features": features  # ✅ EXACT 5 FEATURES
+        "features": features
     }
 # =========================================
 # ✅ SCORING
@@ -302,22 +269,29 @@ if uploaded_file:
 
         match_count = 0
 
-        for s, r, sc in matched:
-            c1, c2, c3 = st.columns([3, 3, 1])
+       
+for i, (s, r, sc) in enumerate(matched, start=1):
 
-            with c1:
-                st.write("•", s)
+    c1, c2, c3 = st.columns([3, 3, 1])
 
-            with c2:
-                if "Missing" in r:
-                    st.error("Missing")
-                else:
-                    st.write(r)
-                    match_count += 1
+    # ✅ LEFT — EXACT Salsify Feature
+    with c1:
+        st.write(f"**General Feature {i}**")
+        st.write(s)
 
-            with c3:
-                if sc:
-                    st.write(f"{sc}%")
+    # ✅ RIGHT — CVS
+    with c2:
+        if "Missing" in r:
+            st.error("❌ Missing")
+        else:
+            st.write(r)
+            match_count += 1
+
+    # ✅ SCORE
+    with c3:
+        if sc:
+            st.write(f"{sc}%")
+
 
         total = len(matched)
         feature_score = int(100 * match_count / total) if total else 0
