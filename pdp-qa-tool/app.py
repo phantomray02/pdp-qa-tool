@@ -317,26 +317,33 @@ if uploaded_file:
             c3.write(f"{sc}%")
 
         # ✅ IMAGE ORDERED VIEW (FINAL ✅)
-        st.markdown("## Image Comparison (Ordered ✅)")
+      st.markdown("## Image Comparison (Salsify Driven ✅)")
 
-        for i, key in enumerate(IMAGE_ORDER):
+# ✅ get ordered Salsify map
+s_ordered = order_salsify(s_images)
 
-            col1, col2 = st.columns(2)
+# ✅ ONLY keep slots that actually EXIST in Salsify
+valid_slots = [
+    k for k, v in s_ordered.items()
+    if v is not None
+]
 
-            # Salsify
-            with col1:
-                st.write(f"Salsify ({key})")
-                if s_ordered[key]:
-                    st.image(s_ordered[key])
-                else:
-                    st.error("Missing")
+for i, key in enumerate(valid_slots):
 
-            # CVS
-            with col2:
-                st.write(f"CVS ({key})")
-                if i < len(r_images):
-                    st.image(r_images[i])
-                else:
-                    st.error("Missing")
+    col1, col2 = st.columns(2)
+
+    # ✅ SALSIFY SIDE
+    with col1:
+        st.write(f"Salsify ({key})")
+        st.image(s_ordered[key])
+
+    # ✅ CVS SIDE
+    with col2:
+        st.write(f"CVS ({key})")
+
+        if i < len(r_images):
+            st.image(r_images[i])
+        else:
+            st.error("Missing")
 
         st.divider()
