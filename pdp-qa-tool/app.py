@@ -182,41 +182,38 @@ def get_cvs_text(url):
 
     description = clean_text(match.group(0))
 
-    # ✅ FIXED FEATURE SPLIT
+    # ✅ FIX FEATURE SPLITTING
+    features = []
+
     chunks = re.split(r',\s*(?=[A-Z])', description)
 
-    
-features = []
+    for c in chunks:
+        c = c.strip()
 
-# ✅ split long sentence into real chunks
-chunks = re.split(r',\s*(?=[A-Z])', description)
+        if len(c) < 25:
+            continue
 
-for c in chunks:
-    c = c.strip()
+        if "get up to 100%" in c.lower():
+            features.append(c)
 
-    if len(c) < 25:
-        continue
+        elif "u by kotex click tampons move" in c.lower():
+            features.append(c)
 
-    # ✅ exact alignment with Salsify features
-    if "get up to 100%" in c.lower():
-        features.append(c)
+        elif "compact to fit" in c.lower():
+            features.append(c)
 
-    elif "u by kotex click tampons move" in c.lower():
-        features.append(c)
+        elif "individually wrapped" in c.lower():
+            features.append(c)
 
-    elif "compact to fit" in c.lower():
-        features.append(c)
-
-    elif "individually wrapped" in c.lower():
-        features.append(c)
-
-    # ✅ COUNT
+    # ✅ COUNT FEATURE
     count_match = re.search(r'(\d+)\s+regular\s+tampons', html, re.IGNORECASE)
     if count_match:
         features.insert(0, count_match.group(0))
 
-    return {"description": description, "features": features}
-
+    return {
+        "description": description,
+        "features": features
+    }
 # =========================================
 # ✅ MATCH FEATURES
 # =========================================
