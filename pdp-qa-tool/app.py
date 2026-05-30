@@ -236,41 +236,42 @@ if uploaded_file:
 
         st.write(f"✅ Description Match: {score(s_text['description'], r_text['description'])}%")
 
-        # =========================================
-        # ✅ FEATURES
-        # =========================================
-        st.markdown("## Features")
+    
+# =========================================
+# ✅ FEATURES
+# =========================================
+st.markdown("## Features")
 
-       
 matched = match_features(
     s_text["features"],
     r_text["features"],
     r_text["description"]
 )
 
-        match_count = 0
+match_count = 0  # ✅ correctly aligned OUTSIDE loop
 
-        for s, r, sc in matched:
-            c1, c2, c3 = st.columns([3, 3, 1])
+for s, r, sc in matched:
+    c1, c2, c3 = st.columns([3, 3, 1])
 
-            with c1:
-                st.write("•", s)
+    with c1:
+        st.write("•", s)
 
-            with c2:
-                if "Missing" in r:
-                    st.error("Missing")
-                else:
-                    st.write(r)
-                    match_count += 1
+    with c2:
+        if "Missing" in r:
+            st.error("Missing")
+        else:
+            st.write(r)
+            match_count += 1  # ✅ only increment when found
 
-            with c3:
-                if sc:
-                    st.write(f"{sc}%")
+    with c3:
+        if sc:
+            st.write(f"{sc}%")
 
-        total = len(matched)
-        feature_score = int(100 * match_count / total) if total else 0
+# ✅ calculate AFTER loop
+total = len(matched)
+feature_score = int(100 * match_count / total) if total else 0
 
-        st.write(f"✅ Features Match: {feature_score}%")
+st.write(f"✅ Features Match: {feature_score}%")
 
         # =========================================
         # ✅ IMAGE COMPARISON
