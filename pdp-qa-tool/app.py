@@ -235,7 +235,6 @@ if uploaded_file:
         
 c1.write(s_text.get("description") or "")
 c2.write(r_text.get("description") or "")
-``
 
 
         st.write(f"✅ Description Match: {score(s_text['description'], r_text['description'])}%")
