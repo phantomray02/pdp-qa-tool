@@ -176,6 +176,8 @@ def match_features(s_features, r_features, r_description):
 
     return results
 
+
+
 # =========================================
 # ✅ MAIN
 # =========================================
@@ -185,9 +187,10 @@ if uploaded_file:
 
     for _, row in df.iterrows():
 
+        # ✅ HEADER
         st.subheader(f"SKU: {row['sku']}")
 
-        # DATA
+        # ✅ DATA
         s_images = get_salsify_images(row["salsify_url"])
         r_images = get_cvs_images(row["retail_url"])
 
@@ -199,21 +202,21 @@ if uploaded_file:
         # =========================================
         st.markdown("## Title")
 
-        c1, c2 = st.columns(2)
+        col1, col2 = st.columns(2)
 
         pattern = r'[A-Z][A-Za-z0-9 ,\-]+(?:Count|Ct)'
 
-        s_title = re.search(pattern, get_html(row["salsify_url"]))
-        r_title = re.search(pattern, get_html(row["retail_url"]))
+        s_title_match = re.search(pattern, get_html(row["salsify_url"]))
+        r_title_match = re.search(pattern, get_html(row["retail_url"]))
 
-        s_title = s_title.group(0) if s_title else ""
-        r_title = r_title.group(0) if r_title else ""
+        s_title = s_title_match.group(0) if s_title_match else ""
+        r_title = r_title_match.group(0) if r_title_match else ""
 
-        with c1:
+        with col1:
             st.write("Salsify")
             st.write(s_title)
 
-        with c2:
+        with col2:
             st.write("CVS")
             st.write(r_title)
 
@@ -224,84 +227,55 @@ if uploaded_file:
         # =========================================
         st.markdown("## Description")
 
-        c1, c2 = st.columns(2)
+        col1, col2 = st.columns(2)
 
-        with c1:
+        with col1:
             st.write("Salsify")
             st.write(s_text["description"])
 
-        with c2:
+        with col2:
             st.write("CVS")
             st.write(r_text["description"])
 
         st.write(f"✅ Description Match: {score(s_text['description'], r_text['description'])}%")
 
-    
+        # =========================================
+        # ✅ FEATURES
+        # =========================================
+        st.markdown("## Features")
 
-# =========================================
-# ✅ FEATURES
-# =========================================
-st.markdown("## Features")
+        matched = match_features(
+            s_text["features"],
+            r_text["features"],
+            r_text["description"]
+        )
 
-matched = match_features(
-    s_text["features"],
-    r_text["features"],
-    r_text["description"]
-)
+        match_count = 0
 
-match_count = 0
+        for s, r, sc in matched:
+            c1, c2, c3 = st.columns([3, 3, 1])
 
-for s, r, sc in matched:
-    c1, c2, c3 = st.columns([3, 3, 1])
+            with c1:
+                st.write("•", s)
 
-    with c1:
-        st.write("•", s)
+            with c2:
+                if "Missing" in r:
+                    st.error("Missing")
+                else:
+                    st.write(r)
+                    match_count += 1
 
-    with c2:
-        if "Missing" in r:
-            st.error("Missing")
-        else:
-            st.write(r)
-            match_count += 1
+            with c3:
+                if sc:
+                    st.write(f"{sc}%")
 
-    with c3:
-        if sc:
-            st.write(f"{sc}%")
+        total = len(matched)
+        feature_score = int(100 * match_count / total) if total else 0
 
-total = len(matched)
-feature_score = int(100 * match_count / total) if total else 0
-
-st.write(f"✅ Features Match: {feature_score}%")
-
-
-# =========================================
-# ✅ IMAGE COMPARISON
-# =========================================
-st.markdown("## Image Comparison")
-
-max_len = max(len(s_images), len(r_images))
-
-for i in range(max_len):
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.write(f"Salsify {i+1}")
-        if i < len(s_images):
-            st.image(s_images[i])
-        else:
-            st.error("Missing")
-
-    with col2:
-        st.write(f"CVS {i+1}")
-        if i < len(r_images):
-            st.image(r_images[i])
-        else:
-            st.error("Missing")
-
-st.divider()
+        st.write(f"✅ Features Match: {feature_score}%")
 
         # =========================================
-        # ✅ IMAGE COMPARISON
+        # ✅ IMAGE COMPARISON (CORRECT POSITION ✅)
         # =========================================
         st.markdown("## Image Comparison")
 
@@ -325,3 +299,4 @@ st.divider()
                     st.error("Missing")
 
         st.divider()
+
