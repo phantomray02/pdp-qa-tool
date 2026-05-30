@@ -176,24 +176,32 @@ def get_cvs_text(url):
 # ✅ SALSIFY TEXT
 # =========================================
 def get_salsify_text(url):
-    soup = get_soup(url)
+    html = get_html(url)
 
     description = ""
 
-    # ✅ loop through rows and find EXACT match
-    for row in soup.find_all("tr"):
+    # ✅ normalize escaped quotes
+    clean_html = html.replace('\\"', '"')
 
-        cells = row.find_all("td")
+    # ✅ extract using CSV-like pattern
+    match = re.search(
+        r'"General Description","(.*?)","General Feature 1"',
+        clean_html,
+        re.DOTALL | re.IGNORECASE
+    )
 
-        if len(cells) >= 2:
+    if match:
+        description = clean_text(match.group(1))
 
-            label = cells[0].get_text(" ", strip=True).lower()
-
-            if label == "general description":
-                description = clean_text(
-                    cells[1].get_text(" ", strip=True)
-                )
-                break
+    # ✅ fallback (important if format shifts slightly)
+    if not description:
+        match = re.search(
+            r'General Description(.*?)General Feature 1',
+            html,
+            re.DOTALL | re.IGNORECASE
+        )
+        if match:
+            description = clean_text(match.group(1))
 
     features = [
         "45 regular tampons",
