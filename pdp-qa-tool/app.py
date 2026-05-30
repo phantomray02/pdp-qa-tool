@@ -143,7 +143,7 @@ def get_cvs_images(url):
 def get_cvs_text(url):
     html = get_html(url)
 
-    # ✅ STEP 1 — capture ALL possible description blocks
+    # ✅ STEP 1 — find ALL possible description blocks
     matches = re.findall(
         r'Get up to 100% leak-free.*?U\.S\.',
         html,
@@ -156,32 +156,31 @@ def get_cvs_text(url):
             "features": []
         }
 
-    # ✅ STEP 2 — pick BEST version (longest = full clean description)
-    raw = max(matches, key=len)
+    # ✅ STEP 2 — pick the CORRECT full block
+    # pick the one that contains required keywords
+    best_match = ""
 
-    # ✅ STEP 3 — CLEAN SYSTEM JUNK FIRST
+    for m in matches:
+        if "gynecologist tested" in m.lower() and "eligible in the u.s." in m.lower():
+            best_match = m
+            break
+
+    # fallback to longest if needed
+    if not best_match:
+        best_match = max(matches, key=len)
+
+    raw = best_match
+
+    # ✅ STEP 3 — clean ONLY formatting (no content removal)
     raw = raw.replace('\\n', ' ')
     raw = raw.replace('\\t', ' ')
     raw = raw.replace('\\', '')
 
-    # ✅ remove metadata blocks safely
-    raw = re.sub(r'\d+VendorDetails.*?(?=Get up to|$)', ' ', raw, flags=re.DOTALL)
-    raw = re.sub(r'_meta.*?(?=Get up to|$)', ' ', raw, flags=re.DOTALL)
-    raw = re.sub(r'modelVersionName.*?(?=Get up to|$)', ' ', raw, flags=re.DOTALL)
-
-    # ✅ STEP 4 — REMOVE accidental duplication
-    # keep only the first full sentence sequence
-    split = re.split(r'Get up to 100% leak-free', raw, flags=re.IGNORECASE)
-
-    if len(split) > 2:
-        raw = 'Get up to 100% leak-free' + split[1]
-
-    # ✅ STEP 5 — final cleanup
     description = clean_text(raw)
 
-    # ====================================
-    # ✅ FEATURES (UNCHANGED — WORKING ✅)
-    # ====================================
+    # ======================================
+    # ✅ FEATURES (unchanged + correct)
+    # ======================================
     features = []
 
     m = re.search(
