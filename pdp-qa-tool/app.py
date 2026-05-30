@@ -143,7 +143,7 @@ def get_cvs_images(url):
 def get_cvs_text(url):
     html = get_html(url)
 
-    # ✅ STEP 1 — find ALL candidate blocks
+    # ✅ STEP 1 — find ALL candidates (short + full versions)
     matches = re.findall(
         r'Get up to 100% leak-free.*?(?:U\.S\.|fashion trends)',
         html,
@@ -156,7 +156,7 @@ def get_cvs_text(url):
             "features": []
         }
 
-    cleaned_matches = []
+    cleaned_blocks = []
 
     for m in matches:
         block = m
@@ -166,7 +166,7 @@ def get_cvs_text(url):
         block = block.replace('\\t', ' ')
         block = block.replace('\\', '')
 
-        # ✅ remove metadata junk INSIDE block only
+        # ✅ remove metadata junk ONLY
         block = re.sub(r'\d+VendorDetails.*?(?=Get up to|$)', ' ', block, flags=re.DOTALL)
         block = re.sub(r'VendorDetails.*?(?=Get up to|$)', ' ', block, flags=re.DOTALL)
         block = re.sub(r'_meta.*?(?=Get up to|$)', ' ', block, flags=re.DOTALL)
@@ -174,40 +174,31 @@ def get_cvs_text(url):
 
         block = clean_text(block)
 
-        cleaned_matches.append(block)
+        cleaned_blocks.append(block)
 
-    # ✅ STEP 2 — PICK BEST BLOCK (this is the key improvement)
-    def score_block(text):
-        score = 0
+    # ✅ STEP 2 — PICK THE BEST BLOCK
+    def score(text):
+        s = 0
 
-        # ✅ reward real content
-        keywords = [
-            "gynecologist tested",
-            "made without fragrance",
-            "pesticides",
-            "bpa",
-            "compact to fit",
-            "pull until you hear",
-            "individually wrapped",
-            "absorbencies",
-            "eligible in the u.s."
-        ]
+        # ✅ MUST include full ending to win
+        if "eligible in the u.s." in text.lower():
+            s += 10
 
-        for k in keywords:
-            if k in text.lower():
-                score += 1
+        if "absorbenc" in text.lower():
+            s += 5
 
-        # ✅ longer = better (but not alone)
-        score += len(text) / 1000
+        if "gynecologist tested" in text.lower():
+            s += 2
 
-        return score
+        # ✅ length bonus
+        s += len(text) / 1000
 
-    best_block = max(cleaned_matches, key=score_block)
+        return s
 
-    description = best_block
+    description = max(cleaned_blocks, key=score)
 
     # =========================================
-    # ✅ FEATURES (LEAVE UNCHANGED)
+    # ✅ FEATURES (UNCHANGED)
     # =========================================
     features = []
 
