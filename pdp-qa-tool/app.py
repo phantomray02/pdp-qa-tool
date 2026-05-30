@@ -11,21 +11,8 @@ st.title("PDP QA Tool ✅")
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
 # ✅ EXPORT TO EXCEL
+
 if export_rows:
-    export_df = pd.DataFrame(export_rows)
-
-    file_name = "pdp_qa_results.xlsx"
-    export_df.to_csv("pdp_qa_results.csv", index=False)
-
-    
-with open("pdp_qa_results.csv", "rb") as f:
-    st.download_button(
-        label="📥 Download CSV Report",
-        data=f,
-        file_name="pdp_qa_results.csv",
-        mime="text/csv"
-    )
-    if export_rows:
     export_df = pd.DataFrame(export_rows)
 
     file_name = "pdp_qa_results.xlsx"
@@ -38,6 +25,7 @@ with open("pdp_qa_results.csv", "rb") as f:
             file_name=file_name,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
+
 
 # =========================================
 # ✅ IMAGE ORDER
