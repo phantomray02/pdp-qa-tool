@@ -143,9 +143,9 @@ def get_cvs_images(url):
 def get_cvs_text(url):
     html = get_html(url)
 
-    # ✅ STEP 1 — find ALL possible description blocks
+    # ✅ STEP 1 — find ALL candidate blocks
     matches = re.findall(
-        r'Get up to 100% leak-free.*?U\.S\.',
+        r'Get up to 100% leak-free.*?(?:U\.S\.|fashion trends)',
         html,
         re.DOTALL | re.IGNORECASE
     )
@@ -156,31 +156,59 @@ def get_cvs_text(url):
             "features": []
         }
 
-    # ✅ STEP 2 — pick the CORRECT full block
-    # pick the one that contains required keywords
-    best_match = ""
+    cleaned_matches = []
 
     for m in matches:
-        if "gynecologist tested" in m.lower() and "eligible in the u.s." in m.lower():
-            best_match = m
-            break
+        block = m
 
-    # fallback to longest if needed
-    if not best_match:
-        best_match = max(matches, key=len)
+        # ✅ remove escape junk
+        block = block.replace('\\n', ' ')
+        block = block.replace('\\t', ' ')
+        block = block.replace('\\', '')
 
-    raw = best_match
+        # ✅ remove metadata junk INSIDE block only
+        block = re.sub(r'\d+VendorDetails.*?(?=Get up to|$)', ' ', block, flags=re.DOTALL)
+        block = re.sub(r'VendorDetails.*?(?=Get up to|$)', ' ', block, flags=re.DOTALL)
+        block = re.sub(r'_meta.*?(?=Get up to|$)', ' ', block, flags=re.DOTALL)
+        block = re.sub(r'modelVersionName.*?(?=Get up to|$)', ' ', block, flags=re.DOTALL)
 
-    # ✅ STEP 3 — clean ONLY formatting (no content removal)
-    raw = raw.replace('\\n', ' ')
-    raw = raw.replace('\\t', ' ')
-    raw = raw.replace('\\', '')
+        block = clean_text(block)
 
-    description = clean_text(raw)
+        cleaned_matches.append(block)
 
-    # ======================================
-    # ✅ FEATURES (unchanged + correct)
-    # ======================================
+    # ✅ STEP 2 — PICK BEST BLOCK (this is the key improvement)
+    def score_block(text):
+        score = 0
+
+        # ✅ reward real content
+        keywords = [
+            "gynecologist tested",
+            "made without fragrance",
+            "pesticides",
+            "bpa",
+            "compact to fit",
+            "pull until you hear",
+            "individually wrapped",
+            "absorbencies",
+            "eligible in the u.s."
+        ]
+
+        for k in keywords:
+            if k in text.lower():
+                score += 1
+
+        # ✅ longer = better (but not alone)
+        score += len(text) / 1000
+
+        return score
+
+    best_block = max(cleaned_matches, key=score_block)
+
+    description = best_block
+
+    # =========================================
+    # ✅ FEATURES (LEAVE UNCHANGED)
+    # =========================================
     features = []
 
     m = re.search(
