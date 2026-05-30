@@ -113,24 +113,50 @@ def get_salsify_text(url):
 
     features = []
 
-    # ✅ -------- FORCE GENERAL FEATURE 1 --------
-    # extract "45 Count" and convert to your format
-    count_match = re.search(r'(\d+)\s*(Count|Ct)', html, re.IGNORECASE)
+    if desc:
 
-    if count_match:
-        num = count_match.group(1)
-        features.append(f"{num} regular tampons")  # ✅ FORCE THIS EXACT FORMAT
+        # ✅ General Feature 1 (FORCED)
+        count_match = re.search(r'(\d+)\s*(Count|Ct)', html, re.IGNORECASE)
+        if count_match:
+            num = count_match.group(1)
+            features.append(f"{num} regular tampons")
 
-    # ✅ NORMAL FEATURES FROM DESCRIPTION
-    for s in re.split(r'\.\s+', desc):
-        if 20 < len(s) < 140:
-            features.append(s.strip())
+        # ✅ General Feature 2
+        f2 = re.search(r'(Get up to .*?compact tampon)', desc, re.IGNORECASE)
+        if f2:
+            features.append(f2.group(1).strip())
+
+        # ✅ General Feature 3
+        f3 = re.search(
+            r'(U by Kotex Click tampons move with you .*?MADE WITHOUT fragrance)',
+            desc,
+            re.IGNORECASE
+        )
+        if f3:
+            features.append(f3.group(1).strip())
+
+        # ✅ General Feature 4
+        f4 = re.search(
+            r'(Compact to fit .*?one easy step)',
+            desc,
+            re.IGNORECASE
+        )
+        if f4:
+            features.append(f4.group(1).strip())
+
+        # ✅ General Feature 5
+        f5 = re.search(
+            r'(Individually wrapped .*?fashion trends)',
+            desc,
+            re.IGNORECASE
+        )
+        if f5:
+            features.append(f5.group(1).strip())
 
     return {
         "description": desc,
-        "features": features[:6]
+        "features": features  # ✅ EXACT 5 FEATURES
     }
-
 # =========================================
 # ✅ SCORING
 # =========================================
