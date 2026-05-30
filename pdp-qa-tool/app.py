@@ -167,7 +167,30 @@ if uploaded_file:
     for _, row in df.iterrows():
 
         st.subheader(f"SKU: {row['sku']}")
+# =========================================
+# ✅ TITLE (ADD THIS)
+# =========================================
+st.markdown("## Title")
 
+c1, c2 = st.columns(2)
+
+# extract titles using same pattern
+title_pattern = r'[A-Z][A-Za-z0-9 ,\-]+(?:Count|Ct)'
+
+s_title_match = re.search(title_pattern, get_html(row["salsify_url"]))
+r_title_match = re.search(title_pattern, get_html(row["retail_url"]))
+
+s_title = s_title_match.group(0) if s_title_match else ""
+r_title = r_title_match.group(0) if r_title_match else ""
+
+with c1:
+    st.write("Salsify")
+    st.write(s_title)
+
+with c2:
+    st.write("CVS")
+    st.write(r_title)
+    
         s_images = get_salsify_images(row["salsify_url"])
         r_images = get_cvs_images(row["retail_url"])
 
