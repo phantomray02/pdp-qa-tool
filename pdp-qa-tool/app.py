@@ -148,51 +148,52 @@ def clean_text(raw):
 # =========================================
 # ✅ CVS TEXT
 # =========================================
-def get_salsify_text(url):
+def get_cvs_text(url):
     html = get_html(url)
 
     description = ""
+    features = []
 
-    # ✅ Extract EXACT field using label-based parsing
+    # ✅ STEP 1 — extract description block
     match = re.search(
-        r'General Description\s*(.*?)\s*General Feature 1',
+        r'Get up to .*?latest fashion trends',
         html,
         re.DOTALL | re.IGNORECASE
     )
 
     if match:
-        description = clean_text(match.group(1))
+        description = clean_text(match.group(0))
+    else:
+        # ✅ fallback: grab a large visible chunk
+        soup = get_soup(url)
+        description = clean_text(soup.get_text(" ", strip=True))[:1000]
 
-    features = [
-        "45 regular tampons",
-        "Get up to 100% leak-free with the #1 compact tampon",
-        "U by Kotex Click tampons move with you for outstanding comfort and are MADE WITHOUT fragrance",
-        "Compact to fit in your purse or pocket and changes to a full-size tampon in one easy step",
-        "Individually wrapped in vibrant colors and patterns inspired by the latest fashion trends"
-    ]
+    # ✅ STEP 2 — split features correctly
+    clean_block = description.replace('\\"', '"')
 
-    return {
-        "description": description,
-        "features": features
-    }
 
 # =========================================
 # ✅ SALSIFY TEXT
 # =========================================
 def get_salsify_text(url):
-    html = get_html(url)
+    soup = get_soup(url)
 
-    # ✅ extract FULL General Description cell
-    match = re.search(
-        r'General Description.*?<td.*?>(.*?)</td>',
-        html,
-        re.DOTALL | re.IGNORECASE
-    )
+    description = ""
 
-    if match:
-        description = clean_text(match.group(1))
-    else:
-        description = ""
+    # ✅ loop through rows and find EXACT match
+    for row in soup.find_all("tr"):
+
+        cells = row.find_all("td")
+
+        if len(cells) >= 2:
+
+            label = cells[0].get_text(" ", strip=True).lower()
+
+            if label == "general description":
+                description = clean_text(
+                    cells[1].get_text(" ", strip=True)
+                )
+                break
 
     features = [
         "45 regular tampons",
