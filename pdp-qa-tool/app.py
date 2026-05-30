@@ -164,31 +164,30 @@ def strict_title_score(a, b):
 def match_features(s_features, r_features, r_description):
     results = []
 
-    r_all = " ".join(r_features).lower()
-
     for s in s_features:
-
-        s_clean = s.lower()
 
         best_match = ""
         best_score = 0
 
         for r in r_features:
 
-            r_clean = r.lower()
+            # ✅ exact match
+            if s.strip().lower() == r.strip().lower():
+                best_match = r
+                best_score = 100
+                break
 
-            # ✅ WORD OVERLAP MATCH (THIS FIXES Feature 2 & 3)
-            s_words = set(re.findall(r'\w+', s_clean))
-            r_words = set(re.findall(r'\w+', r_clean))
+            # ✅ whole sentence similarity (NOT chopped overlap)
+            similarity = int(
+                SequenceMatcher(None, s.lower(), r.lower()).ratio() * 100
+            )
 
-            overlap = len(s_words & r_words)
-            score = int(100 * overlap / len(s_words)) if s_words else 0
-
-            if score > best_score:
-                best_score = score
+            if similarity > best_score:
+                best_score = similarity
                 best_match = r
 
-        if best_score >= 40:
+        # ✅ threshold
+        if best_score >= 70:
             results.append((s, best_match, best_score))
         else:
             results.append((s, "❌ Missing", 0))
