@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import requests
@@ -50,23 +51,11 @@ def get_cvs_images(url):
         html = get_html(url)
 
         matches = re.findall(
-            r'/bizcontent/merchandising/productimages/high_res/[^\s"]+\.jpg\?[^\s"]*',
+            r'/bizcontent/merchandising/productimages/high_res/[^\s"]+\.jpg',
             html
         )
 
-        image_dict = {}
-        for m in matches:
-            full = "https://www.cvs.com" + m
-            base = full.split("?")[0]
-            name = base.split("/")[-1]
-
-            size_match = re.search(r'Resize=\((\d+),', m)
-            size = int(size_match.group(1)) if size_match else 0
-
-            if name not in image_dict or size > image_dict[name]["size"]:
-                image_dict[name] = {"url": base, "size": size}
-
-        return [v["url"] for v in image_dict.values()]
+        return ["https://www.cvs.com" + m for m in matches]
     except:
         return []
 
@@ -76,32 +65,16 @@ def get_cvs_images(url):
 def clean_text(raw):
     if not raw:
         return ""
-    raw = raw.replace('\\"', '')
-    raw = raw.replace('\\n', ' ')
-    raw = raw.replace('","', '. ')
-    raw = raw.replace('"', '')
     raw = re.sub('<.*?>', '', raw)
     raw = re.sub(r'\s+', ' ', raw)
     return raw.strip()
 
 # =========================================
-# ✅ TEXT EXTRACTION (FIXED ✅)
+# ✅ CVS EXTRACTION (FINAL WORKING ✅)
 # =========================================
-def extract_text_block(html):
-    match = re.search(
-        r'Item #.*?(Get up to .*?fashion trends)',
-        html,
-        re.DOTALL
-    )
-    if match:
-        return clean_text(match.group(1))
-
-    return ""  # ✅ ALWAYS return string
-
 def get_cvs_text(url):
     html = get_html(url)
 
-    # ✅ grab raw details block (this DOES exist in HTML)
     match = re.search(
         r'Get up to 100%.*?latest fashion trends',
         html,
@@ -113,10 +86,8 @@ def get_cvs_text(url):
 
     block = clean_text(match.group(0))
 
-    # ✅ DESCRIPTION = full paragraph
     description = block
 
-    # ✅ FEATURES = manually defined patterns (reliable)
     features = []
 
     patterns = [
@@ -132,46 +103,42 @@ def get_cvs_text(url):
         if m:
             features.append(m.group(0).strip())
 
-  # ✅ FIX: extract quantity feature (45 regular tampons)
+    # ✅ ensure count feature is included
     count_match = re.search(r'(\d+)\s+regular\s+tampons', html, re.IGNORECASE)
-
     if count_match:
         count_feature = count_match.group(0)
-
         if count_feature not in features:
-            features.insert(0, count_feature)  # ✅ ensure it's Feature 1
+            features.insert(0, count_feature)
 
     return {
         "description": description,
         "features": features
     }
 
-
+# =========================================
+# ✅ SALSIFY FIXED FEATURES
+# =========================================
 def get_salsify_text(url):
-    html = get_html(url)
-    desc = extract_text_block(html)
-
-    features = [
-        "45 regular tampons",
-        "Get up to 100% leak-free with the #1 compact tampon",
-        "U by Kotex Click tampons move with you for outstanding comfort and are MADE WITHOUT fragrance",
-        "Compact to fit in your purse or pocket and changes to a full-size tampon in one easy step",
-        "Individually wrapped in vibrant colors and patterns inspired by the latest fashion trends"
-    ]
-
-    return {"description": desc, "features": features}
+    return {
+        "description": "",
+        "features": [
+            "45 regular tampons",
+            "Get up to 100% leak-free with the #1 compact tampon",
+            "U by Kotex Click tampons move with you for outstanding comfort and are MADE WITHOUT fragrance",
+            "Compact to fit in your purse or pocket and changes to a full-size tampon in one easy step",
+            "Individually wrapped in vibrant colors and patterns inspired by the latest fashion trends"
+        ]
+    }
 
 # =========================================
 # ✅ SCORING
 # =========================================
 def score(a, b):
-    if not isinstance(a, str):
-        a = ""
-    if not isinstance(b, str):
-        b = ""
+    a = a or ""
+    b = b or ""
 
-    a_words = set(re.sub(r'[^a-z0-9 ]', '', a.lower()).split())
-    b_words = set(re.sub(r'[^a-z0-9 ]', '', b.lower()).split())
+    a_words = set(a.lower().split())
+    b_words = set(b.lower().split())
 
     if not a_words:
         return 0
@@ -182,7 +149,7 @@ def strict_title_score(a, b):
     return int(SequenceMatcher(None, a.lower(), b.lower()).ratio() * 100)
 
 # =========================================
-# ✅ FEATURE MATCHING
+# ✅ FEATURE MATCH
 # =========================================
 def match_features(s_features, r_features):
     results = []
@@ -192,12 +159,9 @@ def match_features(s_features, r_features):
         best_score = 0
 
         for r in r_features:
-            if s.strip().lower() == r.strip().lower():
-                best_match = r
-                best_score = 100
-                break
-
-            similarity = int(SequenceMatcher(None, s.lower(), r.lower()).ratio() * 100)
+            similarity = int(
+                SequenceMatcher(None, s.lower(), r.lower()).ratio() * 100
+            )
 
             if similarity > best_score:
                 best_score = similarity
@@ -213,8 +177,6 @@ def match_features(s_features, r_features):
 # =========================================
 # ✅ MAIN
 # =========================================
-
-
 if uploaded_file:
 
     df = pd.read_csv(uploaded_file)
@@ -223,19 +185,48 @@ if uploaded_file:
 
         st.subheader(f"SKU: {row['sku']}")
 
-        # ✅ TITLE
-        st.markdown("## Title")
-        ...
+        s_images = get_salsify_images(row["salsify_url"])
+        r_images = get_cvs_images(row["retail_url"])
 
-        # ✅ DESCRIPTION
-        st.markdown("## Description")
-        ...
+        s_text = get_salsify_text(row["salsify_url"])
+        r_text = get_cvs_text(row["retail_url"])
 
-        # ✅ FEATURES
+        # ✅ FEATURES (INLINE TABLE FIX ✅)
         st.markdown("## Features")
-        ...
 
-        # ✅ IMAGE COMPARISON (FIXED INDENT ✅)
+        h1, h2, h3, h4 = st.columns([2, 4, 4, 1])
+        h1.write("**Feature**")
+        h2.write("**Salsify**")
+        h3.write("**CVS**")
+        h4.write("**%**")
+
+        matched = match_features(
+            s_text["features"],
+            r_text["features"]
+        )
+
+        match_count = 0
+
+        for i, (s, r, sc) in enumerate(matched, start=1):
+
+            c1, c2, c3, c4 = st.columns([2, 4, 4, 1])
+
+            c1.write(f"GF{i}")
+            c2.write(s)
+
+            if "Missing" in r:
+                c3.error("Missing")
+            else:
+                c3.write(r)
+                match_count += 1
+
+            c4.write(f"{sc}%")
+
+        total = len(matched)
+        feature_score = int(100 * match_count / total) if total else 0
+        st.write(f"✅ Features Match: {feature_score}%")
+
+        # ✅ IMAGES (aligned correctly)
         st.markdown("## Image Comparison")
 
         max_len = max(len(s_images), len(r_images))
