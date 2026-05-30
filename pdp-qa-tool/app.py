@@ -328,6 +328,7 @@ if uploaded_file:
 
     df = pd.read_csv(uploaded_file)
     export_rows = []
+
     for _, row in df.iterrows():
 
         st.subheader(f"SKU: {row['sku']}")
@@ -338,7 +339,9 @@ if uploaded_file:
         s_text = get_salsify_text(row["salsify_url"])
         r_text = get_cvs_text(row["retail_url"])
 
-        # TITLE
+        # =========================================
+        # ✅ TITLE
+        # =========================================
         st.markdown("## Title")
 
         pattern = r'[A-Z][A-Za-z0-9 ,\-]+(?:Count|Ct)'
@@ -352,20 +355,19 @@ if uploaded_file:
         c1, c2 = st.columns(2)
         c1.write(s_title)
         c2.write(r_title)
-        
+
         title_score = int(SequenceMatcher(None, s_title.lower(), r_title.lower()).ratio() * 100)
         st.write(f"✅ Title Match: {title_score}%")
 
-
-            
-        # DESCRIPTION
+        # =========================================
+        # ✅ DESCRIPTION
+        # =========================================
         st.markdown("## Description")
 
         c1, c2 = st.columns(2)
         c1.write(s_text["description"])
         c2.write(r_text["description"])
 
-        # ✅ ADDED HERE
         desc_score = int(SequenceMatcher(
             None,
             s_text.get("description", "").lower(),
@@ -374,9 +376,9 @@ if uploaded_file:
 
         st.write(f"✅ Description Match: {desc_score}%")
 
-
-
-        # FEATURES
+        # =========================================
+        # ✅ FEATURES
+        # =========================================
         st.markdown("## Features")
 
         matched = match_features(s_text["features"], r_text["features"])
@@ -387,11 +389,12 @@ if uploaded_file:
             c2.write(r)
             c3.write(f"{sc}%")
 
-        # ✅ IMAGE SECTION RESTORED
+        # =========================================
+        # ✅ IMAGE DISPLAY (VISUAL ONLY)
+        # =========================================
         st.markdown("## Image Comparison (Salsify Driven ✅)")
 
         s_ordered = order_salsify(s_images)
-
         valid_slots = [k for k, v in s_ordered.items() if v]
 
         for i, key in enumerate(valid_slots):
@@ -408,136 +411,121 @@ if uploaded_file:
                     st.image(r_images[i])
                 else:
                     st.error("Missing")
+
+        # =========================================
+        # ✅ STORE FOR EXPORT (INSIDE LOOP ✅)
+        # =========================================
+
+        feature_scores = [sc for _, _, sc in matched]
+        avg_feature_score = int(sum(feature_scores) / len(feature_scores)) if feature_scores else 0
+
+        overall_score = int((title_score + desc_score + avg_feature_score) / 3)
+
+        export_row = {
+            "SKU": row["sku"],
+
+            "Salsify Title": s_title,
+            "CVS Title": r_title,
+            "Title Match %": title_score,
+
+            "Salsify Description": s_text["description"],
+            "CVS Description": r_text["description"],
+            "Description Match %": desc_score,
+
+            "Feature 1": matched[0][1],
+            "Feature 1 %": matched[0][2],
+
+            "Feature 2": matched[1][1],
+            "Feature 2 %": matched[1][2],
+
+            "Feature 3": matched[2][1],
+            "Feature 3 %": matched[2][2],
+
+            "Feature 4": matched[3][1],
+            "Feature 4 %": matched[3][2],
+
+            "Feature 5": matched[4][1],
+            "Feature 5 %": matched[4][2],
+
+            "Avg Feature %": avg_feature_score,
+            "Overall Score %": overall_score
+        }
+
+        # ✅ ADD IMAGE URLS (for export only)
+        for i in range(10):
+            export_row[f"Salsify Image {i+1}"] = (
+                s_images[i]["url"] if i < len(s_images) else ""
+            )
+            export_row[f"CVS Image {i+1}"] = (
+                r_images[i] if i < len(r_images) else ""
+            )
+
+        export_rows.append(export_row)
+
+        # ✅ divider BETWEEN SKUs
         st.divider()
-        
-# ✅ STORE FOR EXPORT (END OF LOOP CONTENT)
 
-feature_scores = [sc for _, _, sc in matched]
-avg_feature_score = int(sum(feature_scores) / len(feature_scores)) if feature_scores else 0
+    # =========================================
+    # ✅ EXPORT TO EXCEL (AFTER LOOP ✅)
+    # =========================================
+    from openpyxl import load_workbook
+    from openpyxl.drawing.image import Image as XLImage
+    from openpyxl.utils import get_column_letter
+    from io import BytesIO
 
-overall_score = int((title_score + desc_score + avg_feature_score) / 3)
+    if export_rows:
 
-# ✅ BUILD BASE ROW
-export_row = {
-    "SKU": row["sku"],
+        export_df = pd.DataFrame(export_rows)
 
-    "Salsify Title": s_title,
-    "CVS Title": r_title,
-    "Title Match %": title_score,
+        file_name = "pdp_qa_results.xlsx"
+        export_df.to_excel(file_name, index=False)
 
-    "Salsify Description": s_text["description"],
-    "CVS Description": r_text["description"],
-    "Description Match %": desc_score,
+        wb = load_workbook(file_name)
+        ws = wb.active
 
-    "Feature 1": matched[0][1],
-    "Feature 1 %": matched[0][2],
+        num_images = 10
+        start_col = ws.max_column - (num_images * 2) + 1
 
-    "Feature 2": matched[1][1],
-    "Feature 2 %": matched[1][2],
+        for row_idx, row_data in enumerate(export_rows, start=2):
 
-    "Feature 3": matched[2][1],
-    "Feature 3 %": matched[2][2],
+            ws.row_dimensions[row_idx].height = 80
 
-    "Feature 4": matched[3][1],
-    "Feature 4 %": matched[3][2],
+            for i in range(num_images):
 
-    "Feature 5": matched[4][1],
-    "Feature 5 %": matched[4][2],
+                # ✅ Salsify images
+                s_url = row_data.get(f"Salsify Image {i+1}")
+                if s_url:
+                    try:
+                        img_data = requests.get(s_url, timeout=10).content
+                        img = XLImage(BytesIO(img_data))
+                        img.width = 90
+                        img.height = 90
 
-    "Avg Feature %": avg_feature_score,
-    "Overall Score %": overall_score
-}
+                        col_letter = get_column_letter(start_col + i)
+                        ws.add_image(img, f"{col_letter}{row_idx}")
+                    except:
+                        pass
 
-# ✅ ADD ALL IMAGE URLS (CRITICAL FOR EXCEL STEP)
-for i in range(10):
-    export_row[f"Salsify Image {i+1}"] = (
-        s_images[i]["url"] if i < len(s_images) else ""
-    )
+                # ✅ CVS images
+                r_url = row_data.get(f"CVS Image {i+1}")
+                if r_url:
+                    try:
+                        img_data = requests.get(r_url, timeout=10).content
+                        img = XLImage(BytesIO(img_data))
+                        img.width = 90
+                        img.height = 90
 
-    export_row[f"CVS Image {i+1}"] = (
-        r_images[i] if i < len(r_images) else ""
-    )
+                        col_letter = get_column_letter(start_col + num_images + i)
+                        ws.add_image(img, f"{col_letter}{row_idx}")
+                    except:
+                        pass
 
-# ✅ FINAL APPEND
-export_rows.append(export_row)
+        wb.save(file_name)
 
-# ✅ divider BETWEEN SKUs (INSIDE LOOP)
-st.divider()
-
-
-
-from openpyxl import load_workbook
-from openpyxl.drawing.image import Image as XLImage
-from openpyxl.utils import get_column_letter
-from io import BytesIO
-
-# =========================================
-# ✅ EXPORT TO EXCEL (WITH ALL IMAGES)
-# =========================================
-if export_rows:
-
-    export_df = pd.DataFrame(export_rows)
-
-    file_name = "pdp_qa_results.xlsx"
-    export_df.to_excel(file_name, index=False)
-
-    # ✅ LOAD WORKBOOK
-    wb = load_workbook(file_name)
-    ws = wb.active
-
-    # ✅ NUMBER OF IMAGES PER TYPE
-    num_images = 10
-
-    # ✅ FIND START COLUMN FOR IMAGES
-    start_col = ws.max_column - (num_images * 2) + 1
-
-    for row_idx, row_data in enumerate(export_rows, start=2):
-
-        # ✅ adjust row height so images display cleanly
-        ws.row_dimensions[row_idx].height = 80
-
-        for i in range(num_images):
-
-            # -------------------------
-            # ✅ SALSIFY IMAGES
-            # -------------------------
-            s_url = row_data.get(f"Salsify Image {i+1}")
-            if s_url:
-                try:
-                    img_data = requests.get(s_url, timeout=10).content
-                    img = XLImage(BytesIO(img_data))
-                    img.width = 90
-                    img.height = 90
-
-                    col_letter = get_column_letter(start_col + i)
-                    ws.add_image(img, f"{col_letter}{row_idx}")
-                except:
-                    pass
-
-            # -------------------------
-            # ✅ CVS IMAGES
-            # -------------------------
-            r_url = row_data.get(f"CVS Image {i+1}")
-            if r_url:
-                try:
-                    img_data = requests.get(r_url, timeout=10).content
-                    img = XLImage(BytesIO(img_data))
-                    img.width = 90
-                    img.height = 90
-
-                    col_letter = get_column_letter(start_col + num_images + i)
-                    ws.add_image(img, f"{col_letter}{row_idx}")
-                except:
-                    pass
-
-    # ✅ SAVE FILE
-    wb.save(file_name)
-
-    # ✅ DOWNLOAD BUTTON (TOP)
-    with open(file_name, "rb") as f:
-        download_placeholder.download_button(
-            label="📥 Download Excel Report",
-            data=f,
-            file_name=file_name,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+        with open(file_name, "rb") as f:
+            download_placeholder.download_button(
+                label="📥 Download Excel Report",
+                data=f,
+                file_name=file_name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
