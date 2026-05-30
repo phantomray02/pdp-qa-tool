@@ -140,48 +140,12 @@ def get_cvs_images(url):
 # =========================================
 # ✅ SALSIFY TEXT
 # =========================================
-def get_salsify_text(url):
-    soup = get_soup(url)
-
-    description = ""
-
-    # ✅ Find ALL property rows
-    rows = soup.find_all("tr")
-
-    for row in rows:
-
-        label = row.get_text(" ", strip=True).lower()
-
-        # ✅ find the correct row
-        if "general description" in label:
-
-            content = row.find("span", {"data-testid": "property-content"})
-
-            if content:
-                description = clean_text(content.get_text(" ", strip=True))
-                break
-
-    features = [
-        "45 regular tampons",
-        "Get up to 100% leak-free with the #1 compact tampon",
-        "U by Kotex Click tampons move with you for outstanding comfort and are MADE WITHOUT fragrance",
-        "Compact to fit in your purse or pocket and changes to a full-size tampon in one easy step",
-        "Individually wrapped in vibrant colors and patterns inspired by the latest fashion trends"
-    ]
-
-    return {
-        "description": description,
-        "features": features
-    }
-# =========================================
-# ✅ CVS TEXT (FIXED ✅)
-# =========================================
 def get_cvs_text(url):
     html = get_html(url)
 
-    # ✅ STEP 1 — grab full area (including duplicate)
+    # ✅ STEP 1 — grab LARGE block safely (don’t over-trim)
     match = re.search(
-        r'Get up to 100% leak-free.*?eligible in the U\.S\.',
+        r'Get up to 100% leak-free.*?U\.S\.',
         html,
         re.DOTALL | re.IGNORECASE
     )
@@ -199,24 +163,15 @@ def get_cvs_text(url):
     raw = raw.replace('\\t', ' ')
     raw = raw.replace('\\', '')
 
-    # ✅ STEP 3 — REMOVE DUPLICATE BLOCK
-    # keeps ONLY the first occurrence
-    parts = re.split(r'Get up to 100% leak-free', raw, flags=re.IGNORECASE)
+    # ✅ STEP 3 — REMOVE ONLY SYSTEM JUNK (NOT CONTENT)
+    raw = re.sub(r'\d+VendorDetails.*?(?=Get up to|$)', ' ', raw, flags=re.DOTALL)
+    raw = re.sub(r'_meta.*?(?=Get up to|$)', ' ', raw, flags=re.DOTALL)
+    raw = re.sub(r'modelVersionName.*?(?=Get up to|$)', ' ', raw, flags=re.DOTALL)
 
-    if len(parts) > 1:
-        raw = "Get up to 100% leak-free" + parts[1]
-        # remove everything after the second occurrence
-        raw = re.split(r'Get up to 100% leak-free', raw, maxsplit=1)[0]
-
-    # ✅ STEP 4 — clean remaining junk
-    raw = re.sub(r'\d+VendorDetails.*', '', raw, flags=re.DOTALL)
-    raw = re.sub(r'_meta.*', '', raw, flags=re.DOTALL)
-    raw = re.sub(r'modelVersionName.*', '', raw)
-
-    # ✅ STEP 5 — final clean
+    # ✅ STEP 4 — clean text
     description = clean_text(raw)
 
-    # ✅ FEATURES (UNCHANGED — already working)
+    # ✅ FEATURES (leave working logic as-is)
     features = []
 
     m = re.search(
@@ -259,7 +214,6 @@ def get_cvs_text(url):
         "description": description,
         "features": features
     }
-
 # =========================================
 # ✅ MATCH FEATURES
 # =========================================
