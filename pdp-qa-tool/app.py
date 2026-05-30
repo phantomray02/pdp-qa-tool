@@ -5,8 +5,9 @@ import requests
 import re
 from bs4 import BeautifulSoup
 
+
 # =========================================
-# ✅ FETCH HTML (important for CVS)
+# ✅ FETCH HTML
 # =========================================
 def get_html(url):
     headers = {
@@ -21,8 +22,9 @@ def get_html(url):
     except:
         return ""
 
+
 # =========================================
-# ✅ CLEAN TEXT (like immersive reader)
+# ✅ CLEAN PAGE TEXT (IMMERSIVE STYLE)
 # =========================================
 def extract_visible_text(html):
     soup = BeautifulSoup(html, "html.parser")
@@ -35,14 +37,15 @@ def extract_visible_text(html):
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
+
 # =========================================
-# ✅ GET CVS TEXT (STABLE VERSION)
+# ✅ CVS TEXT EXTRACTION (STABLE)
 # =========================================
 def get_cvs_text(url):
     html = get_html(url)
 
     if not html:
-        return {"title": "", "description": "", "features": []}
+        return {"title": "", "description": ""}
 
     text = extract_visible_text(html)
 
@@ -54,9 +57,9 @@ def get_cvs_text(url):
     if t:
         title = t.group(0)
 
-    # ✅ DESCRIPTION (generic capture)
+    # ✅ DESCRIPTION (broad but stable)
     d = re.search(
-        r"(Get .*?)(?:Rated|Reviews|Ingredients|Directions)",
+        r"(Get .*?)(?:Rated|Reviews|Directions|Ingredients)",
         text,
         re.DOTALL
     )
@@ -64,20 +67,24 @@ def get_cvs_text(url):
     if d:
         description = d.group(1).strip()
     else:
-        description = text[:800]
+        description = text[:1000]
 
     return {
         "title": title,
-        "description": description,
-        "features": []  # we DO NOT scrape features anymore
+        "description": description
     }
 
+
 # =========================================
-# ✅ FEATURE MATCHING (THIS FIXES EVERYTHING)
+# ✅ NORMALIZATION
 # =========================================
 def normalize(text):
-    return re.sub(r"[^a-z0-9 ]", "", text.lower())
+    return re.sub(r"[^a-z0-9 ]", "", str(text).lower())
 
+
+# =========================================
+# ✅ FEATURE MATCHING (THIS FIXES YOUR ISSUE)
+# =========================================
 def match_features(salsify_features, cvs_description):
     results = []
     scores = []
@@ -88,20 +95,21 @@ def match_features(salsify_features, cvs_description):
         f = normalize(feat)
 
         words = f.split()
-        match_count = sum(1 for w in words if w in desc)
-        score = match_count / len(words) if words else 0
+        matches = sum(1 for w in words if w in desc)
+        score = matches / len(words) if words else 0
 
         if score >= 0.5:
             results.append(feat)
         else:
             results.append("❌ Missing")
 
-        scores.append(round(score * 100))
+        scores.append(int(score * 100))
 
     return results, scores
 
+
 # =========================================
-# ✅ STREAMLIT APP
+# ✅ STREAMLIT UI
 # =========================================
 st.title("PDP QA Tool")
 
@@ -110,53 +118,77 @@ uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 if uploaded_file:
     df = pd.read_csv(uploaded_file)
 
+    # ✅ show column names (so no KeyError again)
+    st.write("Detected Columns:", df.columns.tolist())
+
+    # =========================================
+    # ✅ AUTO COLUMN DETECTION (no guessing)
+    # =========================================
+    def find_col(name_list):
+        for col in df.columns:
+            for name in name_list:
+                if name.lower() in col.lower():
+                    return col
+        return None
+
+    TITLE_COL = find_col(["title", "name"])
+    DESC_COL = find_col(["description"])
+    FEAT_COL = find_col(["feature", "bullet"])
+    URL_COL = find_col(["url"])
+
+    st.write("Using Columns:", TITLE_COL, DESC_COL, FEAT_COL, URL_COL)
+
+    # =========================================
+    # ✅ MAIN LOOP
+    # =========================================
     for _, row in df.iterrows():
 
         st.header("General Product Title")
 
-        # ✅ CVS data
-        r_text = get_cvs_text(row["retail_url"])
+        s_title = row.get(TITLE_COL, "")
+        s_desc = row.get(DESC_COL, "")
+        s_feats_raw = row.get(FEAT_COL, "")
+        url = row.get(URL_COL, "")
 
-        st.write("Salsify:", row["title"])
+        r_text = get_cvs_text(url)
+
+        st.write("Salsify:", s_title)
         st.write("CVS:", r_text["title"])
 
-        # simple title match
+        # ✅ TITLE MATCH
         title_score = 0
         if r_text["title"]:
-            title_score = int(
-                100 * (len(set(r_text["title"].lower().split()) &
-                           set(row["title"].lower().split()))
-                       / len(row["title"].lower().split()))
-            )
+            title_words = set(normalize(s_title).split())
+            cvs_words = set(normalize(r_text["title"]).split())
+
+            if title_words:
+                title_score = int(
+                    100 * len(title_words & cvs_words) / len(title_words)
+                )
 
         st.write("Match:", f"{title_score}%")
 
-        # ============================
-        # ✅ DESCRIPTION
-        # ============================
+        # =========================================
         st.header("General Description")
 
-        st.write("Salsify:", row["description"])
+        st.write("Salsify:", s_desc)
         st.write("CVS:", r_text["description"])
 
         desc_score = 0
         if r_text["description"]:
-            s = normalize(row["description"])
-            c = normalize(r_text["description"])
+            s = set(normalize(s_desc).split())
+            c = set(normalize(r_text["description"]).split())
 
-            desc_score = int(
-                100 * (len(set(s.split()) & set(c.split())) / len(s.split()))
-            )
+            if s:
+                desc_score = int(100 * len(s & c) / len(s))
 
         st.write("Match:", f"{desc_score}%")
 
-        # ============================
-        # ✅ FEATURES (CORRECT WAY ✅)
-        # ============================
+        # =========================================
         st.header("Features")
 
-        # Expect your CSV column already split
-        salsify_features = str(row["features"]).split("|")
+        # ✅ split Salsify features safely
+        salsify_features = str(s_feats_raw).split("|")
 
         cvs_results, scores = match_features(
             salsify_features,
@@ -165,7 +197,9 @@ if uploaded_file:
 
         for i in range(len(salsify_features)):
             st.write(
-                "•", salsify_features[i],
+                f"• {salsify_features[i]}",
                 " | CVS:", cvs_results[i],
                 " | Match:", f"{scores[i]}%" if cvs_results[i] != "❌ Missing" else "--"
             )
+
+        st.divider()
