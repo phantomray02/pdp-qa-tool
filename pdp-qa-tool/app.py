@@ -137,19 +137,28 @@ def match_features(s_features, r_features):
 
     r_joined = " ".join(r_features).lower()
 
+    # ✅ words to ignore (THIS IS THE FIX)
+    stopwords = set([
+        "our", "are", "the", "and", "for", "with", "you",
+        "your", "these", "this", "they", "them", "women",
+        "tampons", "use", "will", "one", "in", "on", "to"
+    ])
+
     for s in s_features:
         s_clean = re.sub(r'[^a-z0-9 ]', '', s.lower())
-        words = s_clean.split()
+
+        # ✅ remove filler words
+        words = [w for w in s_clean.split() if w not in stopwords]
 
         if not words:
             results.append((s, "❌ Missing", 0))
             continue
 
         matches = sum(1 for w in words if w in r_joined)
-        sc = int(100 * matches / len(words))
+        score = int(100 * matches / len(words))
 
-        if sc >= 40:
-            results.append((s, "✅ Found", sc))
+        if score >= 40:
+            results.append((s, "✅ Found in description", score))
         else:
             results.append((s, "❌ Missing", 0))
 
