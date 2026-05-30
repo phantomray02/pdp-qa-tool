@@ -100,29 +100,25 @@ def extract_text_block(html):
 def get_cvs_text(url):
     html = get_html(url)
 
+    # ✅ THIS PART WORKS — DON'T TOUCH
     desc = clean_text(extract_text_block(html))
 
     features = []
 
+    # ✅ SIMPLE + RELIABLE SPLIT (NO FILTERING BREAKAGE)
     if desc:
-        # ✅ split by FULL sentences (period-based)
         sentences = re.split(r'\.\s+', desc)
 
         for s in sentences:
             s = s.strip()
 
-            # ✅ only keep full meaningful sentences
-            if (
-                len(s) > 40 and
-                any(k in s.lower() for k in [
-                    "leak", "tampon", "compact", "wrapped", "comfort"
-                ])
-            ):
+            # ✅ ONLY BASIC FILTER (this is the fix)
+            if len(s) > 25:
                 features.append(s)
 
     return {
         "description": desc,
-        "features": features[:5]
+        "features": features[:6]
     }
 
 
