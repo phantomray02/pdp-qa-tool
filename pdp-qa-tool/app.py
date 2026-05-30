@@ -234,6 +234,31 @@ def match_features(s_features, r_features):
             results.append((s, "❌ Missing", 0))
 
     return results
+# =========================================
+# ✅ ORDER SALSIFY IMAGES (CRITICAL ✅)
+# =========================================
+def order_salsify(images):
+
+    ordered = {k: None for k in IMAGE_ORDER}
+
+    # ✅ STEP 1 — match by detected type
+    for img in images:
+        t = img.get("type")
+        if t in ordered and ordered[t] is None:
+            ordered[t] = img["url"]
+
+    # ✅ STEP 2 — fallback to POSITION (fixes missing issue)
+    img_list = [img["url"] for img in images]
+
+    for i, key in enumerate(IMAGE_ORDER):
+        if ordered[key] is None and i < len(img_list):
+            ordered[key] = img_list[i]
+
+    # ✅ STEP 3 — ATF fallback rule
+    if not ordered["ATF I/O-Generic"]:
+        ordered["ATF I/O-Generic"] = ordered.get("ATF 6-Generic")
+
+    return ordered
 
 # =========================================
 # ✅ MAIN
