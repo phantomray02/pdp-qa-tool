@@ -446,6 +446,7 @@ if uploaded_file:
             c3.write(f"{sc}%")
 
 
+
 # =========================================
         # ✅ IMAGE COMPARISON (VISUAL ✅)
         # =========================================
@@ -453,17 +454,16 @@ if uploaded_file:
 
         image_matches = match_images_visual(s_images, r_images)
 
-        # ✅ DEBUG (leave this for now)
-        st.write(f"Salsify images: {len(s_images)}")
-        st.write(f"CVS images: {len(r_images)}")
-        st.write(f"Image matches found: {len(image_matches)}")
+        # ✅ DEBUG
+        st.write("Salsify images:", len(s_images))
+        st.write("CVS images:", len(r_images))
+        st.write("Image matches found:", len(image_matches))
 
         # ✅ SAFE RENDER
         if not image_matches:
             st.warning("No images found to compare.")
         else:
             for s, r, sc in image_matches:
-
                 c1, c2, c3 = st.columns([4, 4, 1])
 
                 if s:
@@ -484,25 +484,23 @@ if uploaded_file:
 
         st.write(f"✅ Image Match: {avg_img_score}%")
 
-
-        if not image_matches:
-    st.warning("No images found to compare.")
-else:
-    for s, r, sc in image_matches:
-        c1, c2, c3 = st.columns([4, 4, 1])
-
-        if s:
-            c1.image(s, use_container_width=True)
+if not image_matches:
+            st.warning("No images found to compare.")
         else:
-            c1.write("Missing")
+            for s, r, sc in image_matches:
+                c1, c2, c3 = st.columns([4, 4, 1])
 
-        if r:
-            c2.image(r, use_container_width=True)
-        else:
-            c2.write("Missing")
+                if s:
+                    c1.image(s, use_container_width=True)
+                else:
+                    c1.write("Missing")
 
-        c3.write(f"{sc}%")
+                if r:
+                    c2.image(r, use_container_width=True)
+                else:
+                    c2.write("Missing")
 
+                c3.write(f"{sc}%")
         # =========================================
         # ✅ STORE FOR EXPORT (END OF LOOP)
         # =========================================
