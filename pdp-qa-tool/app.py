@@ -3,13 +3,14 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 import re
+from difflib import SequenceMatcher
 
 st.title("PDP QA Tool ✅")
 
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
 # =========================================
-# ✅ CACHE (FAST)
+# ✅ CACHE
 # =========================================
 html_cache = {}
 
@@ -129,13 +130,23 @@ def score(a, b):
 
     return int(100 * len(a_words & b_words) / len(a_words))
 
+# ✅ STRICT TITLE MATCH (KEY FIX ✅)
+def strict_title_score(a, b):
+    return int(
+        SequenceMatcher(
+            None,
+            a.strip().lower(),
+            b.strip().lower()
+        ).ratio() * 100
+    )
+
 # =========================================
-# ✅ FEATURE MATCHING
+# ✅ FEATURE MATCHING (FINAL VERSION ✅)
 # =========================================
 def match_features(s_features, r_features, r_description):
     results = []
 
-    r_all_text = ( " ".join(r_features) + " " + r_description ).lower()
+    r_all = (" ".join(r_features) + " " + r_description).lower()
 
     stopwords = set([
         "our", "are", "the", "and", "for", "with", "you",
@@ -146,36 +157,31 @@ def match_features(s_features, r_features, r_description):
     for s in s_features:
         s_clean = re.sub(r'[^a-z0-9 ]', '', s.lower())
 
-        # ✅ ---- SPECIAL CASE: NUMERIC FEATURE ----
+        # ✅ handle numbers (45 count etc)
         numbers = re.findall(r'\d+', s_clean)
-
         if numbers:
-            found_number = any(num in r_all_text for num in numbers)
-
-            if found_number:
-                results.append((s, "✅ Found (quantity match)", 100))
+            if any(n in r_all for n in numbers):
+                results.append((s, "✅ Found (quantity)", 100))
             else:
                 results.append((s, "❌ Missing", 0))
+            continue
 
-            continue  # ✅ skip normal logic
-
-        # ✅ NORMAL MATCHING
+        # ✅ normal matching
         words = [w for w in s_clean.split() if w not in stopwords]
 
         if not words:
             results.append((s, "❌ Missing", 0))
             continue
 
-        matches = sum(1 for w in words if w in r_all_text)
-        score = int(100 * matches / len(words))
+        matches = sum(1 for w in words if w in r_all)
+        pct = int(100 * matches / len(words))
 
-        if score >= 40:
-            results.append((s, "✅ Found", score))
+        if pct >= 40:
+            results.append((s, "✅ Found", pct))
         else:
             results.append((s, "❌ Missing", 0))
 
     return results
-
 
 
 # =========================================
@@ -187,30 +193,26 @@ if uploaded_file:
 
     for _, row in df.iterrows():
 
-        # ✅ HEADER
         st.subheader(f"SKU: {row['sku']}")
 
-        # ✅ DATA
         s_images = get_salsify_images(row["salsify_url"])
         r_images = get_cvs_images(row["retail_url"])
 
         s_text = get_salsify_text(row["salsify_url"])
         r_text = get_cvs_text(row["retail_url"])
 
-        # =========================================
         # ✅ TITLE
-        # =========================================
         st.markdown("## Title")
 
         col1, col2 = st.columns(2)
 
         pattern = r'[A-Z][A-Za-z0-9 ,\-]+(?:Count|Ct)'
 
-        s_title_match = re.search(pattern, get_html(row["salsify_url"]))
-        r_title_match = re.search(pattern, get_html(row["retail_url"]))
+        s_title = re.search(pattern, get_html(row["salsify_url"]))
+        r_title = re.search(pattern, get_html(row["retail_url"]))
 
-        s_title = s_title_match.group(0) if s_title_match else ""
-        r_title = r_title_match.group(0) if r_title_match else ""
+        s_title = s_title.group(0) if s_title else ""
+        r_title = r_title.group(0) if r_title else ""
 
         with col1:
             st.write("Salsify")
@@ -220,11 +222,16 @@ if uploaded_file:
             st.write("CVS")
             st.write(r_title)
 
-        st.write(f"✅ Title Match: {score(s_title, r_title)}%")
+        title_pct = strict_title_score(s_title, r_title)
 
-        # =========================================
+        st.write(f"✅ Title Match: {title_pct}%")
+
+        if s_title.strip().lower() == r_title.strip().lower():
+            st.success("✅ Exact Match")
+        else:
+            st.error("❌ Not Exact Match")
+
         # ✅ DESCRIPTION
-        # =========================================
         st.markdown("## Description")
 
         col1, col2 = st.columns(2)
@@ -239,9 +246,7 @@ if uploaded_file:
 
         st.write(f"✅ Description Match: {score(s_text['description'], r_text['description'])}%")
 
-        # =========================================
         # ✅ FEATURES
-        # =========================================
         st.markdown("## Features")
 
         matched = match_features(
@@ -274,9 +279,7 @@ if uploaded_file:
 
         st.write(f"✅ Features Match: {feature_score}%")
 
-        # =========================================
-        # ✅ IMAGE COMPARISON (CORRECT POSITION ✅)
-        # =========================================
+        # ✅ IMAGES
         st.markdown("## Image Comparison")
 
         max_len = max(len(s_images), len(r_images))
@@ -299,4 +302,3 @@ if uploaded_file:
                     st.error("Missing")
 
         st.divider()
-
