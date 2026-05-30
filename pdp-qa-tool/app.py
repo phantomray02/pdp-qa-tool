@@ -141,19 +141,25 @@ def get_cvs_images(url):
 # ✅ SALSIFY TEXT
 # =========================================
 def get_salsify_text(url):
-    html = get_html(url)
+    soup = get_soup(url)
 
-    clean_html = html.replace('\\"', '"')
+    description = ""
 
-    
-    match = re.search(
-        r'General Description[^"]*"value"\s*:\s*"(.*?)".*?General Feature 1',
-        clean_html,
-        re.DOTALL
-            )
+    # ✅ Find ALL property rows
+    rows = soup.find_all("tr")
 
+    for row in rows:
 
-    description = clean_text(match.group(1)) if match else ""
+        label = row.get_text(" ", strip=True).lower()
+
+        # ✅ find the correct row
+        if "general description" in label:
+
+            content = row.find("span", {"data-testid": "property-content"})
+
+            if content:
+                description = clean_text(content.get_text(" ", strip=True))
+                break
 
     features = [
         "45 regular tampons",
@@ -163,8 +169,10 @@ def get_salsify_text(url):
         "Individually wrapped in vibrant colors and patterns inspired by the latest fashion trends"
     ]
 
-    return {"description": description, "features": features}
-
+    return {
+        "description": description,
+        "features": features
+    }
 # =========================================
 # ✅ CVS TEXT (FIXED ✅)
 # =========================================
