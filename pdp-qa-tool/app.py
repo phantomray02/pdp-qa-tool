@@ -143,7 +143,7 @@ def get_cvs_images(url):
 def get_cvs_text(url):
     html = get_html(url)
 
-    # ✅ STEP 1 — find ALL description matches
+    # ✅ STEP 1 — capture ALL possible description blocks
     matches = re.findall(
         r'Get up to 100% leak-free.*?U\.S\.',
         html,
@@ -156,23 +156,32 @@ def get_cvs_text(url):
             "features": []
         }
 
-    # ✅ STEP 2 — pick the LONGEST (this is your highlighted correct one ✅)
+    # ✅ STEP 2 — pick BEST version (longest = full clean description)
     raw = max(matches, key=len)
 
-    # ✅ STEP 3 — clean escape junk
+    # ✅ STEP 3 — CLEAN SYSTEM JUNK FIRST
     raw = raw.replace('\\n', ' ')
     raw = raw.replace('\\t', ' ')
     raw = raw.replace('\\', '')
 
-    # ✅ STEP 4 — remove metadata junk ONLY (safe)
+    # ✅ remove metadata blocks safely
     raw = re.sub(r'\d+VendorDetails.*?(?=Get up to|$)', ' ', raw, flags=re.DOTALL)
     raw = re.sub(r'_meta.*?(?=Get up to|$)', ' ', raw, flags=re.DOTALL)
     raw = re.sub(r'modelVersionName.*?(?=Get up to|$)', ' ', raw, flags=re.DOTALL)
 
-    # ✅ STEP 5 — final clean
+    # ✅ STEP 4 — REMOVE accidental duplication
+    # keep only the first full sentence sequence
+    split = re.split(r'Get up to 100% leak-free', raw, flags=re.IGNORECASE)
+
+    if len(split) > 2:
+        raw = 'Get up to 100% leak-free' + split[1]
+
+    # ✅ STEP 5 — final cleanup
     description = clean_text(raw)
 
-    # ✅ FEATURES (leave as-is, already working)
+    # ====================================
+    # ✅ FEATURES (UNCHANGED — WORKING ✅)
+    # ====================================
     features = []
 
     m = re.search(
@@ -207,7 +216,11 @@ def get_cvs_text(url):
     if m:
         features.append(m.group(0))
 
-    count_match = re.search(r'(\d+)\s+regular\s+tampons', html, re.IGNORECASE)
+    count_match = re.search(
+        r'(\d+)\s+regular\s+tampons',
+        html,
+        re.IGNORECASE
+    )
     if count_match:
         features.insert(0, count_match.group(0))
 
