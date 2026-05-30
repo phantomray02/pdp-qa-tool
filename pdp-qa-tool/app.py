@@ -124,7 +124,6 @@ def get_cvs_text(url):
         "description": full_text,
         "features": features
     }
-``
 
 def get_salsify_text(url):
     html = get_html(url)
