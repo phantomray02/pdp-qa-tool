@@ -98,31 +98,25 @@ def extract_text_block(html):
 
 def get_cvs_text(url):
     soup = get_soup(url)
-    html = get_html(url)
 
-    desc = extract_text_block(html)
+    description = ""
     features = []
 
-    # ✅ 1. TRY REAL BULLET LIST FIRST
+    # ✅ REAL DESCRIPTION (kept as-is)
+    html = get_html(url)
+    description = extract_text_block(html)
+
+    # ✅ ✅ REAL CVS BULLET FEATURES (THIS IS THE FIX)
     for ul in soup.find_all("ul"):
         for li in ul.find_all("li"):
-            text = li.get_text(strip=True)
-            if 20 < len(text) < 200:
-                features.append(text)
+            txt = li.get_text(strip=True)
 
-    # ✅ 2. FALLBACK → SENTENCE SPLIT (what you had)
-    if not features:
-        for s in re.split(r'\.\s+', desc):
-            if 20 < len(s) < 140:
-                features.append(s.strip())
-
-    # ✅ 3. OPTIONAL: add count explicitly
-    count_match = re.search(r'(\d+)\s*(Count|Ct)', html, re.IGNORECASE)
-    if count_match:
-        features.insert(0, f"{count_match.group(1)} Count")
+            # ✅ filter real product bullets (not nav junk)
+            if 20 < len(txt) < 200 and not any(x in txt.lower() for x in ["shop", "home", "review"]):
+                features.append(txt)
 
     return {
-        "description": desc,
+        "description": description,
         "features": features[:6]
     }
 
@@ -182,12 +176,20 @@ def match_features(s_features, r_features, r_description):
         matches = sum(1 for w in words if w in r_all)
         pct = int(100 * matches / len(words)) if words else 0
 
-        if pct >= 40:
-            results.append((s, s, pct))
-        else:
-            results.append((s, "❌ Missing", 0))
+      # ✅ EXACT MATCH ONLY
+if s.strip() == r.strip():
+    results.append((s, r, 100))
 
-    return results
+# ✅ PARTIAL MATCH (fallback)
+else:
+    similarity = int(
+        SequenceMatcher(None, s.lower(), r.lower()).ratio() * 100
+    )
+
+    if similarity > 0:
+        results.append((s, r, similarity))
+    else:
+        results.append((s, "❌ Missing", 0))
 
 # =========================================
 # ✅ MAIN
