@@ -155,13 +155,18 @@ def clean_text(raw):
     # remove quotes
     raw = raw.replace('"', '')
 
-    # ✅ remove leading comma FIX
+  
+    # remove leading punctuation
     raw = raw.lstrip(' ,.')
 
-    # normalize spacing
+    # ✅ remove trailing comma FIX
+    raw = re.sub(r',[\s]*$', '', raw)
+
+    # normalize spaces
     raw = re.sub(r'\s+', ' ', raw)
 
     return raw.strip()
+
 
 # =========================================
 # ✅ CVS TEXT
@@ -184,25 +189,27 @@ def get_cvs_text(url):
     description = block   # ✅ THIS EXISTS HERE
 
     # ✅ FIXED FEATURE EXTRACTION
-    features = []
+    # ✅ FINAL STABLE FEATURE EXTRACTION
+# ✅ FINAL STABLE FEATURE EXTRACTION
+features = []
 
-    sentences = re.split(r'\.\s+', description)  # ✅ NOW WORKS
+# ✅ split on BOTH periods and commas (CRITICAL FIX)
+parts = re.split(r'[.,]\s+', description)
 
-    for s in sentences:
-        s = s.strip()
+for p in parts:
+    p = p.strip()
 
-        if len(s) < 20:
-            continue
+    if len(p) < 25:
+        continue
 
-        if any(k in s.lower() for k in [
-            "tampon",
-            "leak",
-            "compact",
-            "wrapped",
-            "comfort"
-        ]):
-            features.append(s)
-
+    if any(k in p.lower() for k in [
+        "tampon",
+        "leak",
+        "compact",
+        "wrapped",
+        "comfort"
+    ]):
+        features.append(p)
     # ✅ count feature
     count_match = re.search(r'(\d+)\s+regular\s+tampons', html, re.IGNORECASE)
 
