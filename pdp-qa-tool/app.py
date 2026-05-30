@@ -444,13 +444,15 @@ if export_rows:
     export_df = pd.DataFrame(export_rows)
 
     file_name = "pdp_qa_results.xlsx"
-    export_df.to_excel(file_name, index=False)
+    export_df.to_csv("pdp_qa_results.csv", index=False)
 
-    with open(file_name, "rb") as f:
-        st.download_button(
-            label="📥 Download Excel Report",
-            data=f,
-            file_name=file_name,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+    
+with open("pdp_qa_results.csv", "rb") as f:
+    st.download_button(
+        label="📥 Download CSV Report",
+        data=f,
+        file_name="pdp_qa_results.csv",
+        mime="text/csv"
+    )
+
         st.divider()
