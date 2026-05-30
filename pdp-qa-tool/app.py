@@ -98,38 +98,25 @@ def extract_text_block(html):
 
 def get_cvs_text(url):
     html = get_html(url)
-    soup = get_soup(url)
 
     desc = extract_text_block(html)
 
     features = []
 
-    # ✅ TRY TO GET REAL BULLETS FIRST
-    for li in soup.find_all("li"):
-        txt = li.get_text(strip=True)
+    # ✅ FORCE FEATURES FROM DESCRIPTION (RELIABLE)
+    if desc:
+        sentences = re.split(r'\.\s+', desc)
 
-        if (
-            20 < len(txt) < 200 and
-            any(word in txt.lower() for word in [
-                "tampon", "leak", "compact", "wrapped", "comfort"
-            ])
-        ):
-            features.append(txt)
+        for s in sentences:
+            s = s.strip()
 
-    # ✅ ✅ CRITICAL FIX: FALLBACK TO DESCRIPTION
-    if not features:
-        for s in re.split(r'\.\s+', desc):
-            if 20 < len(s) < 140:
-                features.append(s.strip())
-
-    # ✅ REMOVE DUPES
-    features = list(dict.fromkeys(features))
+            if 30 < len(s) < 200:
+                features.append(s)
 
     return {
         "description": desc,
         "features": features[:6]
     }
-
 def get_salsify_text(url):
     html = get_html(url)
     desc = extract_text_block(html)
