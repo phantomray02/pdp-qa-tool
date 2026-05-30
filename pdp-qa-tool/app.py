@@ -270,6 +270,27 @@ def get_cvs_text(url):
 # ✅ MATCH FEATURES
 # =========================================
 def match_features(s_features, r_features):
+    results = []
+
+    for s in s_features:
+        best_match = ""
+        best_score = 0
+
+        for r in r_features:
+            sim = SequenceMatcher(None, s.lower(), r.lower()).ratio()
+            if sim > best_score:
+                best_score = sim
+                best_match = r
+
+        if best_score >= 0.7:
+            
+            if best_r_url:   # ✅ only keep real matches
+                results.append((s_url, best_r_url, best_score))
+
+        else:
+            results.append((s, "❌ Missing", 0))
+
+    return results
 
 # =========================================
 # ✅ SALSIFY TEXT
@@ -372,7 +393,6 @@ if uploaded_file:
         s_images = get_salsify_images(row["salsify_url"])
         r_images = get_cvs_images(row["retail_url"])
 
-        # DEBUG
         st.write(f"Salsify images: {len(s_images)}")
         st.write(f"CVS images: {len(r_images)}")
 
@@ -429,42 +449,50 @@ if uploaded_file:
             c2.write(r)
             c3.write(f"{sc}%")
 
+        
+        
         # =========================================
+        # ✅ IMAGE COMPARISON (VISUAL ✅)
+        # =========================================
+         st.markdown("## Image Comparison ✅")
+        
+         image_matches = match_images_visual(s_images, r_images)
+        
+        # ✅ DEBUG
+         st.write("Salsify images:", len(s_images))
+         st.write("CVS images:", len(r_images))
+         st.write("Image matches found:", len(image_matches))
+        
+                
         # ✅ IMAGE COMPARISON
-        # =========================================
-        st.markdown("## Image Comparison ✅")
-
-        image_matches = match_images_visual(s_images, r_images)
-
-        st.write("Image matches found:", len(image_matches))
-
         if not image_matches:
             st.warning("No images found to compare.")
         else:
             for s, r, sc in image_matches:
                 c1, c2, c3 = st.columns([4, 4, 1])
-
+        
                 if s:
                     c1.image(s, use_container_width=True)
                 else:
                     c1.write("Missing")
-
+        
                 if r:
                     c2.image(r, use_container_width=True)
                 else:
                     c2.write("Missing")
-
+        
                 c3.write(f"{sc}%")
-
-        # ✅ IMAGE SCORE
+        
+        # ✅ IMAGE SCORE (ONLY ONCE, BELOW LOOP)
         img_scores = [sc for _, _, sc in image_matches if sc > 0]
         avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
-
+        
         st.write(f"✅ Image Match: {avg_img_score}%")
 
         # =========================================
-        # ✅ STORE FOR EXPORT
+        # ✅ STORE FOR EXPORT (END OF LOOP)
         # =========================================
+
         feature_scores = [sc for _, _, sc in matched]
         avg_feature_score = int(sum(feature_scores) / len(feature_scores)) if feature_scores else 0
 
@@ -504,9 +532,10 @@ if uploaded_file:
         st.divider()
 
     # =========================================
-    # ✅ EXPORT
+    # ✅ EXPORT (NO IMAGE EMBEDDING ✅ CLEAN)
     # =========================================
     if export_rows:
+
         export_df = pd.DataFrame(export_rows)
 
         file_name = "pdp_qa_results.xlsx"
