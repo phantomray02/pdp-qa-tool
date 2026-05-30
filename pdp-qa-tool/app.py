@@ -331,36 +331,31 @@ def compare_images_visually(s_url, r_url):
         s_img_data = requests.get(s_url, timeout=10).content
         r_img_data = requests.get(r_url, timeout=10).content
 
-        s_img = Image.open(BytesIO(s_img_data)).convert("L")
-        r_img = Image.open(BytesIO(r_img_data)).convert("L")
+        s_img = Image.open(BytesIO(s_img_data)).convert("L").resize((256, 256))
+        r_img = Image.open(BytesIO(r_img_data)).convert("L").resize((256, 256))
 
-        # ✅ FORCE SAME SIZE (CRITICAL FIX)
-        s_img = s_img.resize((256, 256))
-        r_img = r_img.resize((256, 256))
-
-        # ✅ BLUR TO REMOVE COMPRESSION DIFFERENCES
-        
+        from PIL import ImageFilter
         s_img = s_img.filter(ImageFilter.BLUR)
         r_img = r_img.filter(ImageFilter.BLUR)
 
-        # ✅ SIMPLE DIFFERENCE
+        # ✅ pixel difference
         diff = sum(
             abs(a - b)
             for a, b in zip(s_img.getdata(), r_img.getdata())
         ) / (256 * 256)
 
-        # ✅ NORMALIZED SCORING (KEY CHANGE)
-         if diff < 10:
-                    return 100
-                elif diff < 20:
-                    return 95
-                elif diff < 30:
-                    return 85
-                else:
-                    return 70
-        
-        except:
-                return 0
+        # ✅ THIS MUST ALIGN WITH diff (NOT DEEPER)
+        if diff < 10:
+            return 100
+        elif diff < 20:
+            return 95
+        elif diff < 30:
+            return 85
+        else:
+            return 70
+
+    except:
+        return 0
 def match_images_visual(s_images, r_images):
     results = []
 
