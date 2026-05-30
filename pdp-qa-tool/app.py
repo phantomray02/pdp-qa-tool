@@ -351,20 +351,19 @@ def compare_images_visually(s_url, r_url):
 
         # ✅ NORMALIZED SCORING (KEY CHANGE)
             
-        if diff < 10:
-            return 100
-        elif diff < 20:
-            return 95
-        elif diff < 30:
-            return 85
-        else:
-            return 70
-
-        except:
-            return 0
+           
+         if diff < 10:
+                    return 100
+                elif diff < 20:
+                    return 95
+                elif diff < 30:
+                    return 85
+                else:
+                    return 70
         
-        if diff < 10:
-            return 100   
+            except:
+                return 0
+
 
 
     
