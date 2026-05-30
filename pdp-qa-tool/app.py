@@ -143,68 +143,47 @@ def get_cvs_images(url):
 def get_cvs_text(url):
     html = get_html(url)
 
-    # ✅ STEP 1 — capture ALL possible description blocks
-    matches = re.findall(
-        r'Get up to 100% leak-free.*?U\.S\.',
+    description = ""
+    features = []
+
+    # ✅ STEP 1 — isolate everything AFTER VendorDetailsParagraph
+    match = re.search(
+        r'VendorDetailsParagraph:(Get up to 100% leak-free.*)',
         html,
         re.DOTALL | re.IGNORECASE
     )
 
-    if not matches:
+    if not match:
         return {
             "description": "",
             "features": []
         }
 
-    cleaned_blocks = []
+    raw = match.group(1)
 
-    for m in matches:
-        block = m
+    # ✅ STEP 2 — stop cleanly at end of sentence (U.S.)
+    end_match = re.search(r'U\.S\.', raw)
+    if end_match:
+        raw = raw[:end_match.end()]
 
-        # ✅ STEP 2 — remove escape / encoding junk
-        block = block.replace('\\n', ' ')
-        block = block.replace('\\t', ' ')
-        block = block.replace('\\', '')
+    # ✅ STEP 3 — clean encoding junk ONLY
+    raw = raw.replace('\\n', ' ')
+    raw = raw.replace('\\t', ' ')
+    raw = raw.replace('\\', '')
+    raw = raw.replace('u0026', '&')
 
-        # ✅ fix encoded HTML
-        block = block.replace('u0026', '&')
+    description = clean_text(raw)
 
-        # ✅ remove JS / hydration junk
-        block = re.sub(r'__next.*?(?=Get up to|$)', ' ', block, flags=re.DOTALL)
-        block = re.sub(r'push\(\[.*?\]\)', ' ', block)
-
-        # ✅ remove known metadata junk
-        block = re.sub(r'\d+VendorDetails.*?(?=Get up to|$)', ' ', block, flags=re.DOTALL)
-        block = re.sub(r'_meta.*?(?=Get up to|$)', ' ', block, flags=re.DOTALL)
-        block = re.sub(r'modelVersionName.*?(?=Get up to|$)', ' ', block)
-
-        block = clean_text(block)
-
-        cleaned_blocks.append(block)
-
-    # ✅ STEP 3 — select BEST block (complete version)
-    def score(text):
-        s = 0
-
-        if "eligible in the u.s." in text.lower():
-            s += 10   # ✅ REQUIRED → ensures full version
-
-        if "absorbenc" in text.lower():
-            s += 5
-
-        if "gynecologist tested" in text.lower():
-            s += 3
-
-        s += len(text) / 1000  # length bonus
-
-        return s
-
-    description = max(cleaned_blocks, key=score)
-
-    # =========================================
-    # ✅ FEATURES (UNCHANGED — WORKING)
-    # =========================================
-    features = []
+    # ======================================
+    # ✅ FEATURES (UNCHANGED — DO NOT TOUCH)
+    # ======================================
+    m = re.search(
+        r'(\d+)\s+regular\s+tampons',
+        html,
+        re.IGNORECASE
+    )
+    if m:
+        features.append(m.group(0))
 
     m = re.search(
         r'Get up to 100% leak[-\s]?free with the #1 compact tampon',
@@ -237,14 +216,6 @@ def get_cvs_text(url):
     )
     if m:
         features.append(m.group(0))
-
-    count_match = re.search(
-        r'(\d+)\s+regular\s+tampons',
-        html,
-        re.IGNORECASE
-    )
-    if count_match:
-        features.insert(0, count_match.group(0))
 
     return {
         "description": description,
