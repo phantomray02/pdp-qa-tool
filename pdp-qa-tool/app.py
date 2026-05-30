@@ -382,6 +382,7 @@ if uploaded_file:
 
     df = pd.read_csv(uploaded_file)
     export_rows = []
+    summary_rows = []
 
     for _, row in df.iterrows():
 
@@ -389,9 +390,6 @@ if uploaded_file:
 
         s_images = get_salsify_images(row["salsify_url"])
         r_images = get_cvs_images(row["retail_url"])
-
-        st.write(f"Salsify images: {len(s_images)}")
-        st.write(f"CVS images: {len(r_images)}")
 
         s_text = get_salsify_text(row["salsify_url"])
         r_text = get_cvs_text(row["retail_url"])
@@ -470,17 +468,16 @@ if uploaded_file:
                     c2.write("Missing")
 
                 c3.write(f"{sc}%")
-        
-        # ✅ IMAGE SCORE (ONLY ONCE, BELOW LOOP)
+
+        # ✅ IMAGE SCORE
         img_scores = [sc for _, _, sc in image_matches if sc > 0]
         avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
-        
+
         st.write(f"✅ Image Match: {avg_img_score}%")
 
         # =========================================
-        # ✅ STORE FOR EXPORT (END OF LOOP)
+        # ✅ FEATURE + OVERALL SCORE
         # =========================================
-
         feature_scores = [sc for _, _, sc in matched]
         avg_feature_score = int(sum(feature_scores) / len(feature_scores)) if feature_scores else 0
 
@@ -488,31 +485,42 @@ if uploaded_file:
             (title_score + desc_score + avg_feature_score + avg_img_score) / 4
         )
 
+        # =========================================
+        # ✅ SHEET 1 (SUMMARY)
+        # =========================================
+        summary_row = {
+            "SKU": row["sku"],
+            "Title %": title_score,
+            "Description %": desc_score,
+            "Feature %": avg_feature_score,
+        }
+
+        # ✅ ADD IMAGE % PER IMAGE
+        for i, (_, _, sc) in enumerate(image_matches):
+            summary_row[f"Image {i+1} %"] = sc
+
+        summary_row["Image Match %"] = avg_img_score
+        summary_row["Overall %"] = overall_score
+
+        summary_rows.append(summary_row)
+
+        # =========================================
+        # ✅ SHEET 2 (DETAIL)
+        # =========================================
         export_row = {
             "SKU": row["sku"],
 
             "Salsify Title": s_title,
             "CVS Title": r_title,
-            "Title Match %": title_score,
 
             "Salsify Description": s_text["description"],
             "CVS Description": r_text["description"],
-            "Description Match %": desc_score,
 
             "Feature 1": matched[0][1],
-            "Feature 1 %": matched[0][2],
             "Feature 2": matched[1][1],
-            "Feature 2 %": matched[1][2],
             "Feature 3": matched[2][1],
-            "Feature 3 %": matched[2][2],
             "Feature 4": matched[3][1],
-            "Feature 4 %": matched[3][2],
             "Feature 5": matched[4][1],
-            "Feature 5 %": matched[4][2],
-
-            "Avg Feature %": avg_feature_score,
-            "Image Match %": avg_img_score,
-            "Overall Score %": overall_score
         }
 
         export_rows.append(export_row)
@@ -520,14 +528,18 @@ if uploaded_file:
         st.divider()
 
     # =========================================
-    # ✅ EXPORT (NO IMAGE EMBEDDING ✅ CLEAN)
+    # ✅ EXPORT (2 SHEETS)
     # =========================================
-    if export_rows:
+    if summary_rows:
 
-        export_df = pd.DataFrame(export_rows)
+        summary_df = pd.DataFrame(summary_rows)
+        detail_df = pd.DataFrame(export_rows)
 
         file_name = "pdp_qa_results.xlsx"
-        export_df.to_excel(file_name, index=False)
+
+        with pd.ExcelWriter(file_name, engine="openpyxl") as writer:
+            summary_df.to_excel(writer, index=False, sheet_name="Summary")
+            detail_df.to_excel(writer, index=False, sheet_name="Details")
 
         with open(file_name, "rb") as f:
             download_placeholder.download_button(
