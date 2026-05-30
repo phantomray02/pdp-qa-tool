@@ -31,7 +31,7 @@ def get_soup(url):
     return BeautifulSoup(get_html(url), "html.parser")
 
 # =========================================
-# ✅ IMAGES (UNCHANGED)
+# ✅ IMAGES
 # =========================================
 def get_salsify_images(url):
     try:
@@ -111,7 +111,7 @@ def get_salsify_text(url):
     html = get_html(url)
     desc = extract_text_block(html)
 
-    # ✅ EXACT Salsify Features (NO TRANSFORMATIONS)
+    # ✅ EXACT Salsify Features
     features = [
         "45 regular tampons",
         "Get up to 100% leak-free with the #1 compact tampon",
@@ -120,10 +120,8 @@ def get_salsify_text(url):
         "Individually wrapped in vibrant colors and patterns inspired by the latest fashion trends"
     ]
 
-    return {
-        "description": desc,
-        "features": features
-    }
+    return {"description": desc, "features": features}
+
 # =========================================
 # ✅ SCORING
 # =========================================
@@ -136,61 +134,37 @@ def score(a, b):
 
     return int(100 * len(a_words & b_words) / len(a_words))
 
-# ✅ STRICT TITLE MATCH (KEY FIX ✅)
 def strict_title_score(a, b):
     return int(
-        SequenceMatcher(
-            None,
-            a.strip().lower(),
-            b.strip().lower()
-        ).ratio() * 100
+        SequenceMatcher(None, a.strip().lower(), b.strip().lower()).ratio() * 100
     )
 
 # =========================================
-# ✅ FEATURE MATCHING (FINAL VERSION ✅)
+# ✅ FEATURE MATCHING
 # =========================================
 def match_features(s_features, r_features, r_description):
     results = []
 
     r_all = (" ".join(r_features) + " " + r_description).lower()
 
-    stopwords = set([
-        "our", "are", "the", "and", "for", "with", "you",
-        "your", "these", "this", "they", "them", "women",
-        "use", "will", "one", "in", "on", "to"
-    ])
-
     for s in s_features:
-        s_clean = re.sub(r'[^a-z0-9 ]', '', s.lower())
-
-        # ✅ ---- NUMERIC FEATURE HANDLING ----
-        numbers = re.findall(r'\d+', s_clean)
+        numbers = re.findall(r'\d+', s)
 
         if numbers:
-            num_match = any(n in r_all for n in numbers)
-            keywords = ["tampon", "count", "ct", "pack"]
-
-            keyword_match = any(k in r_all for k in keywords)
-
-            if num_match and keyword_match:
+            if any(n in r_all for n in numbers):
                 results.append((s, f"{numbers[0]} Count", 100))
             else:
                 results.append((s, "❌ Missing", 0))
-
-            continue  # ✅ important
-
-        # ✅ ---- NORMAL MATCH ----
-        words = [w for w in s_clean.split() if w not in stopwords]
-
-        if not words:
-            results.append((s, "❌ Missing", 0))
             continue
 
+        s_clean = re.sub(r'[^a-z0-9 ]', '', s.lower())
+        words = s_clean.split()
+
         matches = sum(1 for w in words if w in r_all)
-        pct = int(100 * matches / len(words))
+        pct = int(100 * matches / len(words)) if words else 0
 
         if pct >= 40:
-            results.append((s, s, pct))   # ✅ show CVS text
+            results.append((s, s, pct))
         else:
             results.append((s, "❌ Missing", 0))
 
@@ -234,27 +208,14 @@ if uploaded_file:
             st.write("CVS")
             st.write(r_title)
 
-        title_pct = strict_title_score(s_title, r_title)
-
-        st.write(f"✅ Title Match: {title_pct}%")
-
-        if s_title.strip().lower() == r_title.strip().lower():
-            st.success("✅ Exact Match")
-        else:
-            st.error("❌ Not Exact Match")
+        st.write(f"✅ Title Match: {strict_title_score(s_title, r_title)}%")
 
         # ✅ DESCRIPTION
         st.markdown("## Description")
 
-        col1, col2 = st.columns(2)
-
-        with col1:
-            st.write("Salsify")
-            st.write(s_text["description"])
-
-        with col2:
-            st.write("CVS")
-            st.write(r_text["description"])
+        c1, c2 = st.columns(2)
+        c1.write(s_text["description"])
+        c2.write(r_text["description"])
 
         st.write(f"✅ Description Match: {score(s_text['description'], r_text['description'])}%")
 
@@ -269,33 +230,25 @@ if uploaded_file:
 
         match_count = 0
 
-       
-for i, (s, r, sc) in enumerate(matched, start=1):
+        for i, (s, r, sc) in enumerate(matched, start=1):
 
-    c1, c2, c3 = st.columns([3, 3, 1])
+            c1, c2, c3 = st.columns([3, 3, 1])
 
-    # ✅ LEFT — EXACT Salsify Feature
-    with c1:
-        st.write(f"**General Feature {i}**")
-        st.write(s)
+            with c1:
+                st.write(f"**General Feature {i}**")
+                st.write(s)
 
-    # ✅ RIGHT — CVS
-    with c2:
-        if "Missing" in r:
-            st.error("❌ Missing")
-        else:
-            st.write(r)
-            match_count += 1
+            with c2:
+                if "Missing" in r:
+                    st.error("Missing")
+                else:
+                    st.write(r)
+                    match_count += 1
 
-    # ✅ SCORE
-    with c3:
-        if sc:
-            st.write(f"{sc}%")
+            with c3:
+                st.write(f"{sc}%")
 
-
-        total = len(matched)
-        feature_score = int(100 * match_count / total) if total else 0
-
+        feature_score = int(100 * match_count / len(matched)) if matched else 0
         st.write(f"✅ Features Match: {feature_score}%")
 
         # ✅ IMAGES
@@ -307,14 +260,12 @@ for i, (s, r, sc) in enumerate(matched, start=1):
             col1, col2 = st.columns(2)
 
             with col1:
-                st.write(f"Salsify {i+1}")
                 if i < len(s_images):
                     st.image(s_images[i])
                 else:
                     st.error("Missing")
 
             with col2:
-                st.write(f"CVS {i+1}")
                 if i < len(r_images):
                     st.image(r_images[i])
                 else:
