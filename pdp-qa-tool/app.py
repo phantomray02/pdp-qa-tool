@@ -202,17 +202,32 @@ def get_cvs_text(url):
 # ✅ SALSIFY TEXT
 # =========================================
 def get_salsify_text(url):
-    return {
-        "description": "",
-        "features": [
-            "45 regular tampons",
-            "Get up to 100% leak-free with the #1 compact tampon",
-            "U by Kotex Click tampons move with you for outstanding comfort and are MADE WITHOUT fragrance",
-            "Compact to fit in your purse or pocket and changes to a full-size tampon in one easy step",
-            "Individually wrapped in vibrant colors and patterns inspired by the latest fashion trends"
-        ]
-    }
+    html = get_html(url)
 
+    # ✅ attempt to pull description block from Salsify
+    match = re.search(
+        r'Get up to .*?latest fashion trends',
+        html,
+        re.DOTALL | re.IGNORECASE
+    )
+
+    if match:
+        description = clean_text(match.group(0))
+    else:
+        description = ""
+
+    features = [
+        "45 regular tampons",
+        "Get up to 100% leak-free with the #1 compact tampon",
+        "U by Kotex Click tampons move with you for outstanding comfort and are MADE WITHOUT fragrance",
+        "Compact to fit in your purse or pocket and changes to a full-size tampon in one easy step",
+        "Individually wrapped in vibrant colors and patterns inspired by the latest fashion trends"
+    ]
+
+    return {
+        "description": description,
+        "features": features
+    }
 # =========================================
 # ✅ SCORING
 # =========================================
