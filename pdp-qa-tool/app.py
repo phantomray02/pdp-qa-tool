@@ -159,12 +159,21 @@ def match_features(s_features, r_features, r_description):
 
         # ✅ handle numbers (45 count etc)
         numbers = re.findall(r'\d+', s_clean)
-        if numbers:
-            if any(n in r_all for n in numbers):
-                results.append((s, "✅ Found (quantity)", 100))
-            else:
-                results.append((s, "❌ Missing", 0))
-            continue
+       
+if numbers:
+    num_match = any(n in r_all for n in numbers)
+
+    # ✅ check for product words too
+    keywords = ["tampon", "count", "ct", "pack"]
+    keyword_match = any(k in r_all for k in keywords)
+
+    if num_match and keyword_match:
+        results.append((s, "✅ Found (quantity match)", 100))
+    else:
+        results.append((s, "❌ Missing", 0))
+
+    continue
+
 
         # ✅ normal matching
         words = [w for w in s_clean.split() if w not in stopwords]
