@@ -321,6 +321,51 @@ def get_salsify_text(url):
         "description": description,
         "features": features
     }
+    import imagehash
+from PIL import Image
+from io import BytesIO
+
+def compare_images_visually(s_url, r_url):
+    try:
+        s_img_data = requests.get(s_url, timeout=10).content
+        r_img_data = requests.get(r_url, timeout=10).content
+
+        s_img = Image.open(BytesIO(s_img_data))
+        r_img = Image.open(BytesIO(r_img_data))
+
+        # ✅ perceptual hash
+        s_hash = imagehash.phash(s_img)
+        r_hash = imagehash.phash(r_img)
+
+        diff = abs(s_hash - r_hash)
+
+        # ✅ convert difference → percentage
+        score = max(0, 100 - diff * 3)
+
+        return min(score, 100)
+
+    except:
+        return 0
+
+
+def match_images_visual(s_images, r_images):
+    results = []
+
+    max_len = max(len(s_images), len(r_images))
+
+    for i in range(max_len):
+
+        s_url = s_images[i]["url"] if i < len(s_images) else ""
+        r_url = r_images[i] if i < len(r_images) else ""
+
+        if s_url and r_url:
+            score = compare_images_visually(s_url, r_url)
+        else:
+            score = 0
+
+        results.append((s_url, r_url, score))
+
+    return results
 # =========================================
 # ✅ MAIN
 # =========================================
