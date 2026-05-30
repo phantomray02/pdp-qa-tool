@@ -277,7 +277,56 @@ def order_salsify(images):
         ordered["ATF I/O-Generic"] = ordered.get("ATF 6-Generic")
 
     return ordered
+def get_cvs_text(url):
+    html = get_html(url)
 
+    match = re.search(
+        r'Get up to .*?latest fashion trends',
+        html,
+        re.DOTALL | re.IGNORECASE
+    )
+
+    if not match:
+        return {"description": "", "features": []}
+
+    block = clean_text(match.group(0))
+
+    description = block
+
+    # ✅ FIXED FEATURE EXTRACTION
+    features = []
+
+    clean_block = block.replace('\\"', '"')
+
+    parts = re.split(r'\",\s*\"', clean_block)
+
+    for p in parts:
+        p = p.replace('"', '').strip()
+
+        if len(p) < 20:
+            continue
+
+        if any(k in p.lower() for k in [
+            "tampon",
+            "leak",
+            "compact",
+            "wrapped",
+            "comfort"
+        ]):
+            features.append(p)
+
+    # ✅ ensure count feature is included
+    count_match = re.search(r'(\d+)\s+regular\s+tampons', html, re.IGNORECASE)
+
+    if count_match:
+        count_feature = count_match.group(0)
+        if count_feature not in features:
+            features.insert(0, count_feature)
+
+    return {
+        "description": description,
+        "features": features
+    }
 # =========================================
 # ✅ MAIN
 # =========================================
