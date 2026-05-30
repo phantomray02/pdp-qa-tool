@@ -99,23 +99,36 @@ def extract_text_block(html):
     return ""  # ✅ ALWAYS return string
 
 def get_cvs_text(url):
-    html = get_html(url)
+    soup = get_soup(url)
 
-    desc = extract_text_block(html)
+    # ✅ get ALL visible text safely
+    full_text = soup.get_text(" ", strip=True)
+
+    # ✅ find the REAL product feature area
+    start = full_text.lower().find("get up to 100%")
+    end = full_text.lower().find("rating & reviews")
+
+    if start != -1 and end != -1:
+        desc = full_text[start:end]
+    else:
+        desc = full_text  # fallback
+
+    desc = clean_text(desc)
+
     features = []
 
-    if desc:
-        sentences = re.split(r'\.\s+', desc)
+    # ✅ split into features cleanly
+    for s in re.split(r'\.\s+', desc):
+        s = s.strip()
 
-        for s in sentences:
-            s = s.strip()
-            if len(s) > 25:
-                features.append(s)
+        if len(s) > 25:
+            features.append(s)
 
     return {
         "description": desc,
         "features": features[:6]
     }
+
 
 def get_salsify_text(url):
     html = get_html(url)
