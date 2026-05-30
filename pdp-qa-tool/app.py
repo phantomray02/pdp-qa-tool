@@ -104,31 +104,51 @@ def get_cvs_text(url):
     description = ""
     features = []
 
-    # ✅ Find "Details" section
-    for section in soup.find_all(["div", "section"]):
-        text = section.get_text(" ", strip=True)
+    # ✅ GET ALL TEXT
+    full_text = soup.get_text("\n", strip=True)
 
-        if "Get up to 100%" in text and "fashion trends" in text:
+    lines = full_text.split("\n")
 
-            # ✅ Split lines
-            lines = text.split(". ")
+    details_lines = []
+    capture = False
 
-            # ✅ First long block = description
-            description = lines[0].strip()
+    # ✅ STEP 1: isolate "Details" section
+    for line in lines:
+        if "Get up to 100%" in line:
+            capture = True
 
-            # ✅ Remaining lines = features
-            for line in lines[1:]:
-                line = line.strip()
+        if capture:
+            details_lines.append(line)
 
-                if len(line) > 20:
-                    features.append(line)
-
+        # stop when section ends
+        if "Specifications" in line:
             break
+
+    # ✅ STEP 2: clean lines
+    details_lines = [l.strip() for l in details_lines if len(l.strip()) > 10]
+
+    if not details_lines:
+        return {"description": "", "features": []}
+
+    # ✅ STEP 3: first long sentence = description
+    description = " ".join(details_lines[:3])
+
+    # ✅ STEP 4: extract features (the shorter repeated lines)
+    for line in details_lines:
+        if len(line) < 200:
+            if any(k in line.lower() for k in [
+                "tampons", "leak", "compact", "wrapped", "comfort"
+            ]):
+                features.append(line)
+
+    # ✅ remove duplicates
+    features = list(dict.fromkeys(features))
 
     return {
         "description": description,
         "features": features[:5]
     }
+
 def get_salsify_text(url):
     html = get_html(url)
     desc = extract_text_block(html)
