@@ -157,7 +157,6 @@ def clean_text(raw):
 
   
     # remove leading punctuation
-    
     raw = raw.lstrip(' ,.')
     raw = raw.rstrip(' ,')
 
@@ -166,8 +165,6 @@ def clean_text(raw):
     raw = raw.rstrip(' ,')
 
     # normalize spaces
-    raw = raw.lstrip(' ,.')
-    raw = raw.rstrip(' ,')
     raw = re.sub(r'\s+', ' ', raw)
 
     return raw.strip()
@@ -191,26 +188,24 @@ def get_cvs_text(url):
         return {"description": "", "features": []}
 
     description = clean_text(match.group(0))
-
     features = []
 
-    # ✅ extract each feature directly (NO splitting bugs)
+# ✅ split the long CVS string into real feature chunks
+chunks = re.split(r',\s*(?=[A-Z])', description)
 
-    f1 = re.search(r'Get up to 100% leak-free[^,]+', description, re.IGNORECASE)
-    if f1:
-        features.append(f1.group(0))
+for c in chunks:
+    c = c.strip()
 
-    f2 = re.search(r'U by Kotex Click tampons move[^,]+', description, re.IGNORECASE)
-    if f2:
-        features.append(f2.group(0))
+    if len(c) < 25:
+        continue
 
-    f3 = re.search(r'Compact to fit[^,]+', description, re.IGNORECASE)
-    if f3:
-        features.append(f3.group(0))
-
-    f4 = re.search(r'Individually wrapped[^,]+', description, re.IGNORECASE)
-    if f4:
-        features.append(f4.group(0))
+    if any(k in c.lower() for k in [
+        "leak-free",
+        "move with you",
+        "compact to fit",
+        "individually wrapped"
+    ]):
+        features.append(c)
 
     # ✅ count
     count_match = re.search(r'(\d+)\s+regular\s+tampons', html, re.IGNORECASE)
