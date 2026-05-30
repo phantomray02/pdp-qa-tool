@@ -95,7 +95,7 @@ def extract_text_block(html):
         re.DOTALL
     )
     return clean_text(match.group(0)) if match else ""
-```python
+
 def get_cvs_text(url):
     html = get_html(url)
 
