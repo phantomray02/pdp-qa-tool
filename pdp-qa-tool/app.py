@@ -60,7 +60,6 @@ def clean_text(raw):
 
     raw = raw.lstrip(' ,.')
     raw = raw.rstrip(' ,')
-
     raw = re.sub(r'\s+', ' ', raw)
 
     return raw.strip()
@@ -75,7 +74,6 @@ def get_salsify_images(url):
 
     for img in soup.find_all("img"):
         src = img.get("src") or ""
-
         if not src.startswith("http"):
             continue
 
@@ -84,14 +82,19 @@ def get_salsify_images(url):
 
         if parent:
             text = parent.get_text(" ", strip=True)
+
             for t in IMAGE_ORDER:
                 if t.lower() in text.lower():
                     label = t
                     break
 
-        images.append({"url": src, "type": label})
+        images.append({
+            "url": src,
+            "type": label
+        })
 
     return images
+
 
 # =========================================
 # ✅ CVS IMAGES
@@ -163,20 +166,29 @@ def get_cvs_text(url):
     description = clean_text(match.group(0))
 
     # ✅ FIX: split long paragraph correctly
-    chunks = re.split(r',\s*(?=[A-Z])', description)
-
     features = []
 
-    for c in chunks:
-        c = c.strip()
+# ✅ FIX: split at comma BEFORE capital letter
+chunks = re.split(r',\s*(?=[A-Z])', description)
 
-        if any(k in c.lower() for k in [
-            "leak-free",
-            "move with you",
-            "compact to fit",
-            "individually wrapped"
-        ]):
-            features.append(c)
+for c in chunks:
+    c = c.strip()
+
+    if len(c) < 25:
+        continue
+
+    # ✅ map correctly to expected feature types
+    if c.lower().startswith("get up to"):
+        features.append(c)
+
+    elif c.lower().startswith("u by kotex"):
+        features.append(c)
+
+    elif c.lower().startswith("compact to fit"):
+        features.append(c)
+
+    elif c.lower().startswith("individually wrapped"):
+        features.append(c)
 
     # ✅ count feature
     count_match = re.search(r'(\d+)\s+regular\s+tampons', html, re.IGNORECASE)
