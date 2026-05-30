@@ -156,16 +156,19 @@ def clean_text(raw):
     raw = raw.replace('"', '')
 
   
-  # remove leading punctuation
-raw = raw.lstrip(' ,.')
+    # remove leading punctuation
+    
+    raw = raw.lstrip(' ,.')
+    raw = raw.rstrip(' ,')
 
-# ✅ remove trailing comma
-raw = raw.rstrip(' ,')
 
-# normalize spaces
-raw = re.sub(r'\s+', ' ', raw)
+    # ✅ remove trailing comma
+    raw = raw.rstrip(' ,')
 
-return raw.strip()
+    # normalize spaces
+    raw = re.sub(r'\s+', ' ', raw)
+
+    return raw.strip()
 
 
 
