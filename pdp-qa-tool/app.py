@@ -97,35 +97,36 @@ def extract_text_block(html):
     return clean_text(match.group(0)) if match else ""
 
 def get_cvs_text(url):
+    html = get_html(url)
     soup = get_soup(url)
 
-    description = ""
+    desc = extract_text_block(html)
+
     features = []
 
-    html = get_html(url)
-    description = extract_text_block(html)
+    # ✅ TRY TO GET REAL BULLETS FIRST
+    for li in soup.find_all("li"):
+        txt = li.get_text(strip=True)
 
-    # ✅ TARGET ONLY PRODUCT FEATURE AREA
-    for section in soup.find_all(["div", "section"]):
+        if (
+            20 < len(txt) < 200 and
+            any(word in txt.lower() for word in [
+                "tampon", "leak", "compact", "wrapped", "comfort"
+            ])
+        ):
+            features.append(txt)
 
-        text_block = section.get_text(" ", strip=True).lower()
+    # ✅ ✅ CRITICAL FIX: FALLBACK TO DESCRIPTION
+    if not features:
+        for s in re.split(r'\.\s+', desc):
+            if 20 < len(s) < 140:
+                features.append(s.strip())
 
-        # ✅ ONLY sections that look like product features
-        if any(k in text_block for k in [
-            "leak", "compact", "tampon", "wrapped", "comfort"
-        ]):
-
-            for li in section.find_all("li"):
-                txt = li.get_text(strip=True)
-
-                if 20 < len(txt) < 200:
-                    features.append(txt)
-
-    # ✅ CLEAN DUPES
+    # ✅ REMOVE DUPES
     features = list(dict.fromkeys(features))
 
     return {
-        "description": description,
+        "description": desc,
         "features": features[:6]
     }
 
