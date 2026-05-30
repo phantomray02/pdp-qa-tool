@@ -132,33 +132,45 @@ def score(a, b):
 # =========================================
 # ✅ FEATURE MATCHING
 # =========================================
-def match_features(s_features, r_features):
+def match_features(s_features, r_features, r_description):
     results = []
 
-    r_joined = " ".join(r_features).lower()
+    r_all_text = ( " ".join(r_features) + " " + r_description ).lower()
 
-    # ✅ words to ignore (THIS IS THE FIX)
     stopwords = set([
         "our", "are", "the", "and", "for", "with", "you",
         "your", "these", "this", "they", "them", "women",
-        "tampons", "use", "will", "one", "in", "on", "to"
+        "use", "will", "one", "in", "on", "to"
     ])
 
     for s in s_features:
         s_clean = re.sub(r'[^a-z0-9 ]', '', s.lower())
 
-        # ✅ remove filler words
+        # ✅ ---- SPECIAL CASE: NUMERIC FEATURE ----
+        numbers = re.findall(r'\d+', s_clean)
+
+        if numbers:
+            found_number = any(num in r_all_text for num in numbers)
+
+            if found_number:
+                results.append((s, "✅ Found (quantity match)", 100))
+            else:
+                results.append((s, "❌ Missing", 0))
+
+            continue  # ✅ skip normal logic
+
+        # ✅ NORMAL MATCHING
         words = [w for w in s_clean.split() if w not in stopwords]
 
         if not words:
             results.append((s, "❌ Missing", 0))
             continue
 
-        matches = sum(1 for w in words if w in r_joined)
+        matches = sum(1 for w in words if w in r_all_text)
         score = int(100 * matches / len(words))
 
         if score >= 40:
-            results.append((s, "✅ Found in description", score))
+            results.append((s, "✅ Found", score))
         else:
             results.append((s, "❌ Missing", 0))
 
