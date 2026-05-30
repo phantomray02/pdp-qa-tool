@@ -143,35 +143,36 @@ def get_cvs_images(url):
 def get_cvs_text(url):
     html = get_html(url)
 
-    # ✅ STEP 1 — grab LARGE block safely (don’t over-trim)
-    match = re.search(
+    # ✅ STEP 1 — find ALL description matches
+    matches = re.findall(
         r'Get up to 100% leak-free.*?U\.S\.',
         html,
         re.DOTALL | re.IGNORECASE
     )
 
-    if not match:
+    if not matches:
         return {
             "description": "",
             "features": []
         }
 
-    raw = match.group(0)
+    # ✅ STEP 2 — pick the LONGEST (this is your highlighted correct one ✅)
+    raw = max(matches, key=len)
 
-    # ✅ STEP 2 — remove escape junk
+    # ✅ STEP 3 — clean escape junk
     raw = raw.replace('\\n', ' ')
     raw = raw.replace('\\t', ' ')
     raw = raw.replace('\\', '')
 
-    # ✅ STEP 3 — REMOVE ONLY SYSTEM JUNK (NOT CONTENT)
+    # ✅ STEP 4 — remove metadata junk ONLY (safe)
     raw = re.sub(r'\d+VendorDetails.*?(?=Get up to|$)', ' ', raw, flags=re.DOTALL)
     raw = re.sub(r'_meta.*?(?=Get up to|$)', ' ', raw, flags=re.DOTALL)
     raw = re.sub(r'modelVersionName.*?(?=Get up to|$)', ' ', raw, flags=re.DOTALL)
 
-    # ✅ STEP 4 — clean text
+    # ✅ STEP 5 — final clean
     description = clean_text(raw)
 
-    # ✅ FEATURES (leave working logic as-is)
+    # ✅ FEATURES (leave as-is, already working)
     features = []
 
     m = re.search(
