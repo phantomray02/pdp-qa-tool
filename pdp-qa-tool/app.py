@@ -207,14 +207,18 @@ def get_salsify_text(url):
     description = ""
 
     # ✅ TARGET EXACT FIELD FROM TABLE
-    match = re.search(
-        r'General Description.*?(Get up to .*?latest fashion trends)',
-        html,
-        re.DOTALL | re.IGNORECASE
-    )
 
-    if match:
-        description = clean_text(match.group(1))
+match = re.search(
+    r'General Description.*?<td.*?>(.*?)</td>',
+    html,
+    re.DOTALL | re.IGNORECASE
+)
+
+if match:
+    description = clean_text(match.group(1))
+else:
+    description = ""
+
 
     features = [
         "45 regular tampons",
