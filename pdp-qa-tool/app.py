@@ -88,13 +88,20 @@ def clean_text(raw):
 # =========================================
 # ✅ TEXT EXTRACTION
 # =========================================
+
 def extract_text_block(html):
+    # ✅ target ONLY the main product description section
     match = re.search(
-        r'Get up to .*?latest fashion trends',
+        r'Item #.*?(Get up to .*?fashion trends)',
         html,
         re.DOTALL
     )
-    return clean_text(match.group(0)) if match else ""
+
+    if match:
+        return clean_text(match.group(1))
+
+    return "
+
 
 
 def get_cvs_text(url):
