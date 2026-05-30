@@ -278,20 +278,17 @@ def match_features(s_features, r_features):
 
         for r in r_features:
             sim = SequenceMatcher(None, s.lower(), r.lower()).ratio()
+
             if sim > best_score:
                 best_score = sim
                 best_match = r
 
         if best_score >= 0.7:
-            
-            if best_r_url:   # ✅ only keep real matches
-                results.append((s_url, best_r_url, best_score))
-
+            results.append((s, best_match, int(best_score * 100)))
         else:
             results.append((s, "❌ Missing", 0))
 
     return results
-
 # =========================================
 # ✅ SALSIFY TEXT
 # =========================================
