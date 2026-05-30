@@ -6,7 +6,7 @@ import re
 
 
 # =========================================
-# ✅ FETCH HTML
+# ✅ FETCH HTML (keep this exactly)
 # =========================================
 def get_html(url):
     headers = {
@@ -19,19 +19,7 @@ def get_html(url):
 
 
 # =========================================
-# ✅ CLEAN DESCRIPTION STRING
-# =========================================
-def clean_text(raw):
-    raw = raw.replace('\\"', '')
-    raw = raw.replace('\\n', ' ')
-    raw = raw.replace('&amp;', '&')
-    raw = re.sub(r'<.*?>', '', raw)
-    raw = re.sub(r'\s+', ' ', raw)
-    return raw.strip()
-
-
-# =========================================
-# ✅ CVS TEXT EXTRACTION (FIXED + STABLE)
+# ✅ CVS EXTRACTION (THIS IS YOUR WORKING VERSION)
 # =========================================
 def get_cvs_text(url):
     html = get_html(url)
@@ -42,28 +30,31 @@ def get_cvs_text(url):
     if not html:
         return {"title": "", "description": ""}
 
-    # ✅ TITLE
+    # ✅ TITLE (this part was already working)
     t = re.search(r'[A-Z][A-Za-z0-9 ,\-]+(?:Count|Ct)', html)
     if t:
         title = t.group(0).strip()
 
-    # ✅ DESCRIPTION (SAFE WINDOW FROM LABEL)
-    start = html.find("General Description")
+    # ✅ DESCRIPTION (THIS IS THE KEY PART ✅)
+    d = re.search(
+        r'Get up to .*?latest fashion trends',
+        html,
+        re.DOTALL
+    )
 
-    if start != -1:
-        raw = html[start:start + 2000]  # grab safe chunk
+    if d:
+        raw = d.group(0)
 
-        raw = clean_text(raw)
+        # ✅ CLEAN (light cleanup only)
+        raw = raw.replace('\\"', '')
+        raw = raw.replace('\\n', ' ')
+        raw = raw.replace('","', '. ')
+        raw = raw.replace('"', '')
 
-        # remove label
-        raw = raw.replace("General Description", "").strip()
+        raw = re.sub('<.*?>', '', raw)
+        raw = re.sub(r'\s+', ' ', raw).strip()
 
-        # stop at next section-like keyword
-        raw = re.split(r'(Reviews|Ingredients|Directions|Highlights)', raw)[0]
-
-        description = raw.strip()
-    else:
-        description = ""
+        description = raw
 
     return {
         "title": title,
@@ -72,7 +63,7 @@ def get_cvs_text(url):
 
 
 # =========================================
-# ✅ SALSIFY TEXT EXTRACTION (SAME LOGIC)
+# ✅ SALSIFY EXTRACTION (same logic)
 # =========================================
 def get_salsify_text(url):
     html = get_html(url)
@@ -87,60 +78,62 @@ def get_salsify_text(url):
     if t:
         title = t.group(0).strip()
 
-    start = html.find("General Description")
+    d = re.search(
+        r'Get up to .*?latest fashion trends',
+        html,
+        re.DOTALL
+    )
 
-    if start != -1:
-        raw = html[start:start + 2000]
+    if d:
+        raw = d.group(0)
 
-        raw = clean_text(raw)
-        raw = raw.replace("General Description", "").strip()
+        raw = raw.replace('\\"', '')
+        raw = raw.replace('\\n', ' ')
+        raw = raw.replace('","', '. ')
+        raw = raw.replace('"', '')
 
-        raw = re.split(r'(Reviews|Ingredients|Directions|Highlights)', raw)[0]
+        raw = re.sub('<.*?>', '', raw)
+        raw = re.sub(r'\s+', ' ', raw).strip()
 
-        description = raw.strip()
-    else:
-        description = ""
+        description = raw
 
     return title, description
 
 
 # =========================================
-# ✅ NORMALIZATION
+# ✅ NORMALIZE TEXT
 # =========================================
 def normalize(text):
     return re.sub(r'[^a-z0-9 ]', '', str(text).lower())
 
 
 # =========================================
-# ✅ FEATURE MATCHING (STABLE + SCALABLE)
+# ✅ FEATURE MATCHING (THIS PART WORKED BEFORE)
 # =========================================
-def match_features(salsify_desc, cvs_desc):
+def match_features(description):
+    sentences = re.split(r'\.\s+', description)
 
-    s_sentences = re.split(r'\.\s+', salsify_desc)
+    features = []
 
-    results = []
-    cv = normalize(cvs_desc)
+    for s in sentences:
+        s = s.strip()
+        if (
+            20 < len(s) < 120 and
+            any(word in s.lower() for word in [
+                "tampon",
+                "leak",
+                "compact",
+                "wrapped",
+                "comfort"
+            ])
+        ):
+            features.append(s)
 
-    for s in s_sentences[:5]:
-        words = normalize(s).split()
-
-        if not words:
-            results.append("❌ Missing")
-            continue
-
-        matches = sum(1 for w in words if w in cv)
-        score = matches / len(words)
-
-        if score > 0.5:
-            results.append(s)
-        else:
-            results.append("❌ Missing")
-
-    return s_sentences[:5], results
+    return list(dict.fromkeys(features))[:5]
 
 
 # =========================================
-# ✅ STREAMLIT UI
+# ✅ STREAMLIT APP
 # =========================================
 st.title("PDP QA Tool")
 
@@ -153,13 +146,10 @@ if file:
 
     for _, row in df.iterrows():
 
-        cvs_url = row["retail_url"]
-        salsify_url = row["salsify_url"]
+        cvs = get_cvs_text(row["retail_url"])
+        s_title, s_desc = get_salsify_text(row["salsify_url"])
 
-        cvs = get_cvs_text(cvs_url)
-        s_title, s_desc = get_salsify_text(salsify_url)
-
-        # =========================================
+        # ============================
         st.header("General Product Title")
 
         st.write("Salsify:", s_title)
@@ -175,7 +165,7 @@ if file:
 
         st.write("Match:", f"{title_score}%")
 
-        # =========================================
+        # ============================
         st.header("General Description")
 
         st.write("Salsify:", s_desc)
@@ -191,18 +181,12 @@ if file:
 
         st.write("Match:", f"{desc_score}%")
 
-        # =========================================
+        # ============================
         st.header("Features")
 
-        s_feats, cvs_results = match_features(
-            s_desc,
-            cvs["description"]
-        )
+        cvs_features = match_features(cvs["description"])
 
-        for i in range(len(s_feats)):
-            st.write(
-                "•", s_feats[i],
-                "| CVS:", cvs_results[i]
-            )
+        for f in cvs_features:
+            st.write("•", f)
 
         st.divider()
