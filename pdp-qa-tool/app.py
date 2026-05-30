@@ -222,8 +222,10 @@ def match_features(s_features, r_features, r_description):
         matches = sum(1 for w in words if w in r_all)
         pct = int(100 * matches / len(words))
 
-        if pct >= 40:
-            results.append((s, "✅ Found", pct))
+        
+if pct >= 40:
+    results.append((s, s, pct))  # ✅ show actual matched text
+
         else:
             results.append((s, "❌ Missing", 0))
 
