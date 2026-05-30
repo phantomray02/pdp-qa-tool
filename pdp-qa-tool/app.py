@@ -320,7 +320,7 @@ def get_salsify_text(url):
 if uploaded_file:
 
     df = pd.read_csv(uploaded_file)
-
+    export_rows = []
     for _, row in df.iterrows():
 
         st.subheader(f"SKU: {row['sku']}")
@@ -401,5 +401,56 @@ if uploaded_file:
                     st.image(r_images[i])
                 else:
                     st.error("Missing")
+        st.divider()
+        
+# ✅ Calculate overall feature average
+feature_scores = [sc for _, _, sc in matched]
+avg_feature_score = int(sum(feature_scores) / len(feature_scores)) if feature_scores else 0
 
+# ✅ Overall score
+overall_score = int((title_score + desc_score + avg_feature_score) / 3)
+
+# ✅ Store row for export
+export_rows.append({
+    "SKU": row["sku"],
+    "Salsify Title": s_title,
+    "CVS Title": r_title,
+    "Title Match %": title_score,
+
+    "Salsify Description": s_text["description"],
+    "CVS Description": r_text["description"],
+    "Description Match %": desc_score,
+
+    "Feature 1": matched[0][1],
+    "Feature 1 %": matched[0][2],
+
+    "Feature 2": matched[1][1],
+    "Feature 2 %": matched[1][2],
+
+    "Feature 3": matched[2][1],
+    "Feature 3 %": matched[2][2],
+
+    "Feature 4": matched[3][1],
+    "Feature 4 %": matched[3][2],
+
+    "Feature 5": matched[4][1],
+    "Feature 5 %": matched[4][2],
+
+    "Avg Feature %": avg_feature_score,
+    "Overall Score %": overall_score
+})
+# ✅ EXPORT TO EXCEL
+if export_rows:
+    export_df = pd.DataFrame(export_rows)
+
+    file_name = "pdp_qa_results.xlsx"
+    export_df.to_excel(file_name, index=False)
+
+    with open(file_name, "rb") as f:
+        st.download_button(
+            label="📥 Download Excel Report",
+            data=f,
+            file_name=file_name,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
         st.divider()
