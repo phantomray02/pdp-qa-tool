@@ -237,6 +237,7 @@ if uploaded_file:
         st.write(f"✅ Description Match: {score(s_text['description'], r_text['description'])}%")
 
     
+
 # =========================================
 # ✅ FEATURES
 # =========================================
@@ -248,7 +249,7 @@ matched = match_features(
     r_text["description"]
 )
 
-match_count = 0  # ✅ correctly aligned OUTSIDE loop
+match_count = 0
 
 for s, r, sc in matched:
     c1, c2, c3 = st.columns([3, 3, 1])
@@ -261,17 +262,43 @@ for s, r, sc in matched:
             st.error("Missing")
         else:
             st.write(r)
-            match_count += 1  # ✅ only increment when found
+            match_count += 1
 
     with c3:
         if sc:
             st.write(f"{sc}%")
 
-# ✅ calculate AFTER loop
 total = len(matched)
 feature_score = int(100 * match_count / total) if total else 0
 
 st.write(f"✅ Features Match: {feature_score}%")
+
+
+# =========================================
+# ✅ IMAGE COMPARISON
+# =========================================
+st.markdown("## Image Comparison")
+
+max_len = max(len(s_images), len(r_images))
+
+for i in range(max_len):
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.write(f"Salsify {i+1}")
+        if i < len(s_images):
+            st.image(s_images[i])
+        else:
+            st.error("Missing")
+
+    with col2:
+        st.write(f"CVS {i+1}")
+        if i < len(r_images):
+            st.image(r_images[i])
+        else:
+            st.error("Missing")
+
+st.divider()
 
         # =========================================
         # ✅ IMAGE COMPARISON
