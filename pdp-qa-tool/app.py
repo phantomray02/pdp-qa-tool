@@ -101,34 +101,54 @@ def extract_text_block(html):
 def get_cvs_text(url):
     soup = get_soup(url)
 
-    # ✅ get ALL visible text safely
-    full_text = soup.get_text(" ", strip=True)
+    details_text = ""
 
-    # ✅ find the REAL product feature area
-    start = full_text.lower().find("get up to 100%")
-    end = full_text.lower().find("rating & reviews")
+    # ✅ Find the "Details" section
+    for div in soup.find_all("div"):
+        text = div.get_text(" ", strip=True)
 
-    if start != -1 and end != -1:
-        desc = full_text[start:end]
-    else:
-        desc = full_text  # fallback
+        if "Get up to 100%" in text and "fashion trends" in text:
+            details_text = text
+            break
 
-    desc = clean_text(desc)
+    details_text = clean_text(details_text)
 
+    description = ""
     features = []
 
-    # ✅ split into features cleanly
-    for s in re.split(r'\.\s+', desc):
-        s = s.strip()
+    if details_text:
 
-        if len(s) > 25:
-            features.append(s)
+        # ✅ Split bullets vs description
+        parts = re.split(r'(\d+\s+\w+\s+tampons)', details_text)
+
+        # ✅ First part = full description
+        description = parts[0].strip()
+
+        # ✅ Rebuild features cleanly
+        for part in parts[1:]:
+            p = part.strip()
+
+            if len(p) > 10:
+                features.append(p)
+
+        # ✅ ALSO capture other bullet lines
+        extra = re.findall(
+            r'(Get up to .*?|U by Kotex Click tampons .*?|Compact to fit .*?|Individually wrapped .*?)($|(?=\d+\s+\w+))',
+            details_text
+        )
+
+        for e in extra:
+            txt = e[0].strip()
+            if txt not in features:
+                features.append(txt)
+
+    # ✅ dedupe + limit
+    features = list(dict.fromkeys(features))[:5]
 
     return {
-        "description": desc,
-        "features": features[:6]
+        "description": description,
+        "features": features
     }
-
 
 def get_salsify_text(url):
     html = get_html(url)
