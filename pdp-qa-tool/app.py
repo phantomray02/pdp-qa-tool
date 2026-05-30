@@ -95,6 +95,7 @@ def extract_text_block(html):
         re.DOTALL
     )
     return clean_text(match.group(0)) if match else ""
+```python
 def get_cvs_text(url):
     html = get_html(url)
 
@@ -102,13 +103,30 @@ def get_cvs_text(url):
 
     features = []
 
-    # ✅ THIS IS THE WORKING METHOD YOU HAD
-    if desc:
+    # ✅ FIND FEATURES BLOCK AFTER DESCRIPTION
+    # CVS features appear as repeated phrases near the end
+    matches = re.findall(
+        r'(\d+\s*\w*\s*(?:tampons|count|ct)|Get up to .*?|U by Kotex Click tampons.*?|Compact to fit.*?|Individually wrapped.*?)($|\.)',
+        html,
+        re.IGNORECASE
+    )
+
+    for m in matches:
+        text = m[0].strip()
+
+        # ✅ filter real features (ignore junk)
+        if 20 < len(text) < 200:
+            features.append(text)
+
+    # ✅ fallback if regex fails
+    if not features:
         for s in re.split(r'\.\s+', desc):
             s = s.strip()
-
-            if 20 < len(s) < 140:
+            if len(s) > 25:
                 features.append(s)
+
+    # ✅ remove duplicates
+    features = list(dict.fromkeys(features))
 
     return {
         "description": desc,
