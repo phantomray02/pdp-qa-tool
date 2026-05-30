@@ -112,11 +112,24 @@ def get_salsify_text(url):
     desc = extract_text_block(html)
 
     features = []
+
+    # ✅ -------- FORCE GENERAL FEATURE 1 --------
+    # extract "45 Count" and convert to your format
+    count_match = re.search(r'(\d+)\s*(Count|Ct)', html, re.IGNORECASE)
+
+    if count_match:
+        num = count_match.group(1)
+        features.append(f"{num} regular tampons")  # ✅ FORCE THIS EXACT FORMAT
+
+    # ✅ NORMAL FEATURES FROM DESCRIPTION
     for s in re.split(r'\.\s+', desc):
         if 20 < len(s) < 140:
             features.append(s.strip())
 
-    return {"description": desc, "features": features[:6]}
+    return {
+        "description": desc,
+        "features": features[:6]
+    }
 
 # =========================================
 # ✅ SCORING
