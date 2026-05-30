@@ -330,23 +330,24 @@ def compare_images_visually(s_url, r_url):
         s_img_data = requests.get(s_url, timeout=10).content
         r_img_data = requests.get(r_url, timeout=10).content
 
-        s_img = Image.open(BytesIO(s_img_data))
-        r_img = Image.open(BytesIO(r_img_data))
+        s_img = Image.open(BytesIO(s_img_data)).convert("RGB").resize((256, 256))
+        r_img = Image.open(BytesIO(r_img_data)).convert("RGB").resize((256, 256))
 
-        # ✅ perceptual hash
-        s_hash = imagehash.phash(s_img)
-        r_hash = imagehash.phash(r_img)
+        # ✅ combine multiple hashes
+        phash_diff = abs(imagehash.phash(s_img) - imagehash.phash(r_img))
+        ahash_diff = abs(imagehash.average_hash(s_img) - imagehash.average_hash(r_img))
+        dhash_diff = abs(imagehash.dhash(s_img) - imagehash.dhash(r_img))
 
-        diff = abs(s_hash - r_hash)
+        # ✅ average difference
+        diff = (phash_diff + ahash_diff + dhash_diff) / 3
 
-        # ✅ convert difference → percentage
-        score = max(0, 100 - diff * 3)
+        # ✅ convert to % (tuned scale)
+        score = max(0, 100 - diff * 2)
 
-        return min(score, 100)
+        return int(min(score, 100))
 
     except:
         return 0
-
 
 def match_images_visual(s_images, r_images):
     results = []
