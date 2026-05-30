@@ -196,23 +196,23 @@ def match_features(s_features, r_features, r_description):
     for s in s_features:
         s_clean = re.sub(r'[^a-z0-9 ]', '', s.lower())
 
-        # ✅ -------- NUMERIC FEATURE HANDLING --------
+        # ✅ ---- NUMERIC FEATURE HANDLING ----
         numbers = re.findall(r'\d+', s_clean)
 
         if numbers:
             num_match = any(n in r_all for n in numbers)
-
             keywords = ["tampon", "count", "ct", "pack"]
+
             keyword_match = any(k in r_all for k in keywords)
 
             if num_match and keyword_match:
-                results.append((s, "✅ Found (quantity)", 100))
+                results.append((s, f"{numbers[0]} Count", 100))
             else:
                 results.append((s, "❌ Missing", 0))
 
-            continue  # ✅ IMPORTANT: exit early
+            continue  # ✅ important
 
-        # ✅ -------- NORMAL FEATURE MATCHING --------
+        # ✅ ---- NORMAL MATCH ----
         words = [w for w in s_clean.split() if w not in stopwords]
 
         if not words:
@@ -222,15 +222,12 @@ def match_features(s_features, r_features, r_description):
         matches = sum(1 for w in words if w in r_all)
         pct = int(100 * matches / len(words))
 
-        
-if pct >= 40:
-    results.append((s, s, pct))  # ✅ show actual matched text
-
+        if pct >= 40:
+            results.append((s, s, pct))   # ✅ show CVS text
         else:
             results.append((s, "❌ Missing", 0))
 
     return results
-
 
 # =========================================
 # ✅ MAIN
