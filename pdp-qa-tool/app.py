@@ -101,21 +101,40 @@ def get_cvs_images(url):
 # =========================================
 # ✅ ORDER SALSIFY IMAGES (KEY LOGIC ✅)
 # =========================================
-def order_salsify(images):
+def get_salsify_images(url):
+    soup = get_soup(url)
 
-    ordered = {k: None for k in IMAGE_ORDER}
+    images = []
 
-    for img in images:
-        t = img["type"]
-        if t in ordered and ordered[t] is None:
-            ordered[t] = img["url"]
+    # ✅ find ALL images
+    img_tags = soup.find_all("img")
 
-    # ✅ fallback logic
-    if not ordered["ATF I/O-Generic"]:
-        ordered["ATF I/O-Generic"] = ordered.get("ATF 6-Generic")
+    for img in img_tags:
+        src = img.get("src") or ""
 
-    return ordered
+        if not src.startswith("http"):
+            continue
 
+        # ✅ try to get label BELOW image
+        label = ""
+
+        parent = img.find_parent()
+
+        if parent:
+            text = parent.get_text(" ", strip=True)
+
+            # ✅ match known labels
+            for t in IMAGE_ORDER:
+                if t.lower() in text.lower():
+                    label = t
+                    break
+
+        images.append({
+            "url": src,
+            "type": label
+        })
+
+    return images
 # =========================================
 # ✅ CLEAN TEXT
 # =========================================
