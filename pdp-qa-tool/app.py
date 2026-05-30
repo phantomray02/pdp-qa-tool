@@ -175,54 +175,50 @@ def clean_text(raw):
 def get_cvs_text(url):
     html = get_html(url)
 
+    description = ""
+    features = []
+
     match = re.search(
         r'Get up to .*?latest fashion trends',
         html,
         re.DOTALL | re.IGNORECASE
     )
 
-    if not match:
+    if match:
+        description = clean_text(match.group(0))
+    else:
         return {"description": "", "features": []}
 
-    block = clean_text(match.group(0))
+    # ✅ SAFE FEATURE EXTRACTION
+    parts = re.split(r'[.,]\s+', description)
 
-    description = block   # ✅ THIS EXISTS HERE
+    for p in parts:
+        p = p.strip()
 
-    # ✅ FIXED FEATURE EXTRACTION
-    # ✅ FINAL STABLE FEATURE EXTRACTION
-# ✅ FINAL STABLE FEATURE EXTRACTION
-features = []
+        if len(p) < 25:
+            continue
 
-# ✅ split on BOTH periods and commas (CRITICAL FIX)
-parts = re.split(r'[.,]\s+', description)
+        if any(k in p.lower() for k in [
+            "tampon",
+            "leak",
+            "compact",
+            "wrapped",
+            "comfort"
+        ]):
+            features.append(p)
 
-for p in parts:
-    p = p.strip()
-
-    if len(p) < 25:
-        continue
-
-    if any(k in p.lower() for k in [
-        "tampon",
-        "leak",
-        "compact",
-        "wrapped",
-        "comfort"
-    ]):
-        features.append(p)
-    # ✅ count feature
+    # ✅ ensure count feature
     count_match = re.search(r'(\d+)\s+regular\s+tampons', html, re.IGNORECASE)
-
     if count_match:
-        count_feature = count_match.group(0)
-        if count_feature not in features:
-            features.insert(0, count_feature)
+        count = count_match.group(0)
+        if count not in features:
+            features.insert(0, count)
 
     return {
         "description": description,
         "features": features
     }
-
+ 
 
 # =========================================
 # ✅ SALSIFY TEXT
