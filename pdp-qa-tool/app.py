@@ -165,7 +165,6 @@ def clean_text(raw):
     raw = raw.rstrip(' ,')
 
     # normalize spaces
-    
     raw = raw.lstrip(' ,.')
     raw = raw.rstrip(' ,')
     raw = re.sub(r'\s+', ' ', raw)
@@ -195,22 +194,23 @@ def get_cvs_text(url):
 
     features = []
 
-    # ✅ extract features cleanly from continuous text
-    chunks = re.split(r',\s*(?=[A-Z])', description)
+# ✅ pull individual features out of the long block
 
-    for c in chunks:
-        c = c.strip()
+f1 = re.search(r'Get up to 100% leak-free[^,]+', description, re.IGNORECASE)
+if f1:
+    features.append(f1.group(0).strip())
 
-        if len(c) < 25:
-            continue
+f2 = re.search(r'U by Kotex Click tampons move[^,]+', description, re.IGNORECASE)
+if f2:
+    features.append(f2.group(0).strip())
 
-        if any(k in c.lower() for k in [
-            "leak-free",
-            "move with you",
-            "compact to fit",
-            "individually wrapped"
-        ]):
-            features.append(c)
+f3 = re.search(r'Compact to fit[^,]+', description, re.IGNORECASE)
+if f3:
+    features.append(f3.group(0).strip())
+
+f4 = re.search(r'Individually wrapped[^,]+', description, re.IGNORECASE)
+if f4:
+    features.append(f4.group(0).strip())
 
     # ✅ ensure count always first
     count_match = re.search(r'(\d+)\s+regular\s+tampons', html, re.IGNORECASE)
