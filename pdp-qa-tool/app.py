@@ -165,6 +165,7 @@ def match_features(s_features, r_features):
 # =========================================
 # ✅ MAIN
 # =========================================
+
 if uploaded_file:
 
     df = pd.read_csv(uploaded_file)
@@ -172,6 +173,13 @@ if uploaded_file:
     for _, row in df.iterrows():
 
         st.subheader(f"SKU: {row['sku']}")
+
+        s_images = get_salsify_images(row["salsify_url"])
+        r_images = get_cvs_images(row["retail_url"])
+
+        s_text = get_salsify_text(row["salsify_url"])
+        r_text = get_cvs_text(row["retail_url"])
+
 # =========================================
 # ✅ TITLE (ADD THIS)
 # =========================================
