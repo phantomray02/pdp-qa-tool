@@ -156,16 +156,17 @@ def clean_text(raw):
     raw = raw.replace('"', '')
 
   
-    # remove leading punctuation
-    raw = raw.lstrip(' ,.')
+  # remove leading punctuation
+raw = raw.lstrip(' ,.')
 
-    # ✅ remove trailing comma FIX
-    raw = re.sub(r',[\s]*$', '', raw)
+# ✅ remove trailing comma
+raw = raw.rstrip(' ,')
 
-    # normalize spaces
-    raw = re.sub(r'\s+', ' ', raw)
+# normalize spaces
+raw = re.sub(r'\s+', ' ', raw)
 
-    return raw.strip()
+return raw.strip()
+
 
 
 # =========================================
@@ -175,44 +176,45 @@ def clean_text(raw):
 def get_cvs_text(url):
     html = get_html(url)
 
-    # ✅ BREAK LONG FEATURE BLOCK INTO REAL FEATURES
-features = []
+    # ✅ extract description
+    match = re.search(
+        r'Get up to .*?latest fashion trends',
+        html,
+        re.DOTALL | re.IGNORECASE
+    )
 
-# split using commas BUT rebuild intelligently
-parts = description.split(",")
+    if not match:
+        return {"description": "", "features": []}
 
-buffer = ""
+    description = clean_text(match.group(0))
 
-for part in parts:
-    part = part.strip()
+    # ✅ FIX: build features directly (no splitting guesswork)
+    features = []
 
-    if len(buffer) > 0:
-        candidate = buffer + ", " + part
-    else:
-        candidate = part
+    f1 = re.search(r'Get up to 100% leak-free[^.]+', description, re.IGNORECASE)
+    if f1:
+        features.append(f1.group(0).strip())
 
-    # ✅ detect meaningful stopping points
-    if any(k in candidate.lower() for k in [
-        "leak-free",
-        "move with you",
-        "compact to fit",
-        "individually wrapped"
-    ]):
-        features.append(candidate.strip())
-        buffer = ""
-    else:
-        buffer = candidate
-    # ✅ ensure count feature
+    f2 = re.search(r'U by Kotex Click tampons move[^.]+', description, re.IGNORECASE)
+    if f2:
+        features.append(f2.group(0).strip())
+
+    f3 = re.search(r'Compact to fit[^.]+', description, re.IGNORECASE)
+    if f3:
+        features.append(f3.group(0).strip())
+
+    f4 = re.search(r'Individually wrapped[^.]+', description, re.IGNORECASE)
+    if f4:
+        features.append(f4.group(0).strip())
+
+    # ✅ count feature
     count_match = re.search(r'(\d+)\s+regular\s+tampons', html, re.IGNORECASE)
     if count_match:
         count = count_match.group(0)
-        if count not in features:
-            features.insert(0, count)
+        features.insert(0, count)
 
     return {
-        "description": description,
-        "features": features
-    }
+
  
 
 # =========================================
