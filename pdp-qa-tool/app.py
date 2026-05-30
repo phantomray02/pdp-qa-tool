@@ -411,53 +411,118 @@ if uploaded_file:
         st.divider()
         
 # ✅ STORE FOR EXPORT (END OF LOOP CONTENT)
-    feature_scores = [sc for _, _, sc in matched]
-    avg_feature_score = int(sum(feature_scores) / len(feature_scores)) if feature_scores else 0
 
-    overall_score = int((title_score + desc_score + avg_feature_score) / 3)
+feature_scores = [sc for _, _, sc in matched]
+avg_feature_score = int(sum(feature_scores) / len(feature_scores)) if feature_scores else 0
 
-    export_rows.append({
-        "SKU": row["sku"],
+overall_score = int((title_score + desc_score + avg_feature_score) / 3)
 
-        "Salsify Title": s_title,
-        "CVS Title": r_title,
-        "Title Match %": title_score,
+# ✅ BUILD BASE ROW
+export_row = {
+    "SKU": row["sku"],
 
-        "Salsify Description": s_text["description"],
-        "CVS Description": r_text["description"],
-        "Description Match %": desc_score,
+    "Salsify Title": s_title,
+    "CVS Title": r_title,
+    "Title Match %": title_score,
 
-        "Feature 1": matched[0][1],
-        "Feature 1 %": matched[0][2],
+    "Salsify Description": s_text["description"],
+    "CVS Description": r_text["description"],
+    "Description Match %": desc_score,
 
-        "Feature 2": matched[1][1],
-        "Feature 2 %": matched[1][2],
+    "Feature 1": matched[0][1],
+    "Feature 1 %": matched[0][2],
 
-        "Feature 3": matched[2][1],
-        "Feature 3 %": matched[2][2],
+    "Feature 2": matched[1][1],
+    "Feature 2 %": matched[1][2],
 
-        "Feature 4": matched[3][1],
-        "Feature 4 %": matched[3][2],
+    "Feature 3": matched[2][1],
+    "Feature 3 %": matched[2][2],
 
-        "Feature 5": matched[4][1],
-        "Feature 5 %": matched[4][2],
+    "Feature 4": matched[3][1],
+    "Feature 4 %": matched[3][2],
 
-        "Avg Feature %": avg_feature_score,
-        "Overall Score %": overall_score
-    })
+    "Feature 5": matched[4][1],
+    "Feature 5 %": matched[4][2],
 
-    # ✅ divider BETWEEN SKUs (INSIDE LOOP)
-    st.divider()
+    "Avg Feature %": avg_feature_score,
+    "Overall Score %": overall_score
+}
 
+# ✅ ADD ALL IMAGE URLS (CRITICAL FOR EXCEL STEP)
+for i in range(10):
+    export_row[f"Salsify Image {i+1}"] = (
+        s_images[i]["url"] if i < len(s_images) else ""
+    )
+
+    export_row[f"CVS Image {i+1}"] = (
+        r_images[i] if i < len(r_images) else ""
+    )
+
+# ✅ FINAL APPEND
+export_rows.append(export_row)
+
+# ✅ divider BETWEEN SKUs (INSIDE LOOP)
+st.divider()
+
+
+
+from openpyxl import load_workbook
+from openpyxl.drawing.image import Image as XLImage
+from io import BytesIO
 
 # =========================================
-# ✅ EXPORT TO EXCEL (OUTSIDE LOOP)
+# ✅ EXPORT TO EXCEL (WITH ALL IMAGES)
 # =========================================
 if export_rows:
+
     export_df = pd.DataFrame(export_rows)
 
     file_name = "pdp_qa_results.xlsx"
     export_df.to_excel(file_name, index=False)
+
+    wb = load_workbook(file_name)
+    ws = wb.active
+
+    # ✅ START COLUMN FOR IMAGES
+    start_col = ws.max_column - (20 - 1)  # adjust if you change image count
+
+    for row_idx, row_data in enumerate(export_rows, start=2):
+
+        for i in range(10):
+
+            # -------------------------
+            # ✅ SALSIFY IMAGES
+            # -------------------------
+            s_url = row_data.get(f"Salsify Image {i+1}")
+            if s_url:
+                try:
+                    img_data = requests.get(s_url, timeout=10).content
+                    img = XLImage(BytesIO(img_data))
+                    img.width = 90
+                    img.height = 90
+
+                    col_letter = chr(64 + start_col + i)
+                    ws.add_image(img, f"{col_letter}{row_idx}")
+                except:
+                    pass
+
+            # -------------------------
+            # ✅ CVS IMAGES
+            # -------------------------
+            r_url = row_data.get(f"CVS Image {i+1}")
+            if r_url:
+                try:
+                    img_data = requests.get(r_url, timeout=10).content
+                    img = XLImage(BytesIO(img_data))
+                    img.width = 90
+                    img.height = 90
+
+                    col_letter = chr(64 + start_col + 10 + i)
+                    ws.add_image(img, f"{col_letter}{row_idx}")
+                except:
+                    pass
+
+    wb.save(file_name)
 
     with open(file_name, "rb") as f:
         download_placeholder.download_button(
@@ -466,3 +531,4 @@ if export_rows:
             file_name=file_name,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
+
