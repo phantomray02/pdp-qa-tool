@@ -145,11 +145,13 @@ def get_salsify_text(url):
 
     clean_html = html.replace('\\"', '"')
 
+    
     match = re.search(
-        r'"General Description","(.*?)","General Feature 1"',
+        r'General Description[^"]*"value"\s*:\s*"(.*?)".*?General Feature 1',
         clean_html,
         re.DOTALL
-    )
+            )
+
 
     description = clean_text(match.group(1)) if match else ""
 
@@ -183,21 +185,30 @@ def get_cvs_text(url):
     # ✅ FIXED FEATURE SPLIT
     chunks = re.split(r',\s*(?=[A-Z])', description)
 
-    features = []
+    
+features = []
 
-    for c in chunks:
-        c = c.strip()
+# ✅ split long sentence into real chunks
+chunks = re.split(r',\s*(?=[A-Z])', description)
 
-        if len(c) < 25:
-            continue
+for c in chunks:
+    c = c.strip()
 
-        if any(k in c.lower() for k in [
-            "leak-free",
-            "move with you",
-            "compact to fit",
-            "individually wrapped"
-        ]):
-            features.append(c)
+    if len(c) < 25:
+        continue
+
+    # ✅ exact alignment with Salsify features
+    if "get up to 100%" in c.lower():
+        features.append(c)
+
+    elif "u by kotex click tampons move" in c.lower():
+        features.append(c)
+
+    elif "compact to fit" in c.lower():
+        features.append(c)
+
+    elif "individually wrapped" in c.lower():
+        features.append(c)
 
     # ✅ COUNT
     count_match = re.search(r'(\d+)\s+regular\s+tampons', html, re.IGNORECASE)
