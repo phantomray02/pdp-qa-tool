@@ -176,21 +176,21 @@ return raw.strip()
 def get_cvs_text(url):
     html = get_html(url)
 
-    # ✅ extract description
     match = re.search(
         r'Get up to .*?latest fashion trends',
         html,
         re.DOTALL | re.IGNORECASE
     )
 
+    # ✅ safe fallback
     if not match:
         return {"description": "", "features": []}
 
     description = clean_text(match.group(0))
 
-    # ✅ FIX: build features directly (no splitting guesswork)
     features = []
 
+    # ✅ extract each feature explicitly
     f1 = re.search(r'Get up to 100% leak-free[^.]+', description, re.IGNORECASE)
     if f1:
         features.append(f1.group(0).strip())
@@ -210,12 +210,12 @@ def get_cvs_text(url):
     # ✅ count feature
     count_match = re.search(r'(\d+)\s+regular\s+tampons', html, re.IGNORECASE)
     if count_match:
-        count = count_match.group(0)
-        features.insert(0, count)
+        features.insert(0, count_match.group(0))
 
     return {
-
- 
+        "description": description,
+        "features": features
+    }
 
 # =========================================
 # ✅ SALSIFY TEXT
