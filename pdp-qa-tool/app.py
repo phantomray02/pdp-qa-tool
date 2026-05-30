@@ -483,8 +483,8 @@ if uploaded_file:
         avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
 
         st.write(f"✅ Image Match: {avg_img_score}%")
-
-if not image_matches:
+        
+        if not image_matches:
             st.warning("No images found to compare.")
         else:
             for s, r, sc in image_matches:
@@ -501,6 +501,7 @@ if not image_matches:
                     c2.write("Missing")
 
                 c3.write(f"{sc}%")
+
         # =========================================
         # ✅ STORE FOR EXPORT (END OF LOOP)
         # =========================================
