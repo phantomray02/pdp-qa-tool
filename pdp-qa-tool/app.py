@@ -84,23 +84,45 @@ def get_cvs_images(url):
 # -----------------------------
 # ✅ SALSIFY TEXT (UNCHANGED)
 # -----------------------------
+
+# -----------------------------
+# ✅ SALSIFY TEXT (FIXED ✅ CLEAN)
+# -----------------------------
 def get_salsify_text(url):
     try:
-        soup = get_soup(url)
+        html = get_html(url)
 
         description = ""
         features = []
 
-        for p in soup.find_all("p"):
-            text = p.get_text().strip()
-            if len(text) > 120:
-                description = text
-                break
+        # ✅ TARGET SAME REAL TEXT BLOCK AS CVS
+        d = re.search(
+            r'Get up to .*?latest fashion trends',
+            html,
+            re.DOTALL
+        )
 
-        for li in soup.find_all("li"):
-            txt = li.get_text().strip()
-            if len(txt) > 15:
-                features.append(txt)
+        if d:
+            raw = d.group(0)
+
+            raw = raw.replace('\\"', '')
+            raw = raw.replace('\\n', ' ')
+            raw = raw.replace('","', '. ')
+            raw = raw.replace('"', '')
+
+            raw = re.sub('<.*?>', '', raw)
+            raw = re.sub(r'\s+', ' ', raw).strip()
+
+            description = raw
+
+        # ✅ FEATURES = CLEAN SENTENCES
+        sentences = re.split(r'\.\s+', description)
+
+        for s in sentences:
+            s = s.strip()
+
+            if 20 < len(s) < 140:
+                features.append(s)
 
         return {
             "description": description,
