@@ -146,7 +146,7 @@ def get_cvs_text(url):
     description = ""
     features = []
 
-    # ✅ STEP 1 — limit search area (fast + safe)
+    # ✅ STEP 1 — limit search area
     start_idx = html.lower().find("vendordetailsparagraph")
     if start_idx == -1:
         return {
@@ -156,7 +156,7 @@ def get_cvs_text(url):
 
     html_slice = html[start_idx:start_idx + 4000]
 
-    # ✅ STEP 2 — extract full description
+    # ✅ STEP 2 — extract description
     match = re.search(
         r'Get up to 100% leak-free.*?U\.S\.',
         html_slice,
@@ -172,7 +172,7 @@ def get_cvs_text(url):
     raw = match.group(0)
 
     # ======================================
-    # ✅ STEP 3 — CLEAN + REPAIR TEXT
+    # ✅ STEP 3 — CLEAN + FIX TEXT
     # ======================================
 
     # basic cleanup
@@ -181,11 +181,16 @@ def get_cvs_text(url):
     raw = raw.replace('\\', '')
     raw = raw.replace('u0026', '&')
 
-    # ✅ FIX BROKEN "until"
-    raw = re.sub(r'u\]self\.?\s*you', 'until you', raw)
+    # ✅ ✅ ✅ FIX FULL BROKEN SENTENCE (key change)
+    raw = re.sub(
+        r'To use, pull.*?you hear the click for full-size protection in one easy step\.',
+        'To use, pull until you hear the click for full-size protection in one easy step.',
+        raw,
+        flags=re.IGNORECASE
+    )
 
-    # ✅ remove any leftover __next junk
-    raw = re.sub(r'\]\s*self\.[^ ]+', ' ', raw)
+    # ✅ remove leftover Next.js junk
+    raw = re.sub(r'\]\s*self\.[^ ]*', ' ', raw)
     raw = re.sub(r'__next[^ ]*', ' ', raw)
 
     # normalize spacing
