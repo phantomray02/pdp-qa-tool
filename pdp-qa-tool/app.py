@@ -190,6 +190,11 @@ for p in parts:
     ]):
         features.append(p)
 
+count_match = re.search(r'(\d+)\s+regular\s+tampons', html, re.IGNORECASE)
+
+if count_match:
+    features.insert(0, count_match.group(0))
+
 
     return {
         "description": block,
