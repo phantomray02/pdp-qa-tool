@@ -204,21 +204,17 @@ def get_cvs_text(url):
 def get_salsify_text(url):
     html = get_html(url)
 
-    description = ""
+    # ✅ extract FULL General Description cell
+    match = re.search(
+        r'General Description.*?<td.*?>(.*?)</td>',
+        html,
+        re.DOTALL | re.IGNORECASE
+    )
 
-    # ✅ TARGET EXACT FIELD FROM TABLE
-
-match = re.search(
-    r'General Description.*?<td.*?>(.*?)</td>',
-    html,
-    re.DOTALL | re.IGNORECASE
-)
-
-if match:
-    description = clean_text(match.group(1))
-else:
-    description = ""
-
+    if match:
+        description = clean_text(match.group(1))
+    else:
+        description = ""
 
     features = [
         "45 regular tampons",
@@ -232,6 +228,7 @@ else:
         "description": description,
         "features": features
     }
+
 # =========================================
 # ✅ SCORING
 # =========================================
