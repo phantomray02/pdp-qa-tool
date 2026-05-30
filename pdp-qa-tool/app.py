@@ -333,18 +333,24 @@ def compare_images_visually(s_url, r_url):
         s_img = Image.open(BytesIO(s_img_data)).convert("RGB").resize((256, 256))
         r_img = Image.open(BytesIO(r_img_data)).convert("RGB").resize((256, 256))
 
-        # ✅ combine multiple hashes
-        phash_diff = abs(imagehash.phash(s_img) - imagehash.phash(r_img))
-        ahash_diff = abs(imagehash.average_hash(s_img) - imagehash.average_hash(r_img))
-        dhash_diff = abs(imagehash.dhash(s_img) - imagehash.dhash(r_img))
+        # ✅ multi-hash
+        diff = (
+            abs(imagehash.phash(s_img) - imagehash.phash(r_img)) +
+            abs(imagehash.average_hash(s_img) - imagehash.average_hash(r_img)) +
+            abs(imagehash.dhash(s_img) - imagehash.dhash(r_img))
+        ) / 3
 
-        # ✅ average difference
-        diff = (phash_diff + ahash_diff + dhash_diff) / 3
-
-        # ✅ convert to % (tuned scale)
-        score = max(0, 100 - diff * 2)
-
-        return int(min(score, 100))
+        # ✅ MUCH softer scoring (key fix)
+        if diff < 5:
+            return 100
+        elif diff < 10:
+            return 90
+        elif diff < 15:
+            return 75
+        elif diff < 25:
+            return 60
+        else:
+            return max(10, int(80 - diff * 2))
 
     except:
         return 0
@@ -358,6 +364,7 @@ def match_images_visual(s_images, r_images):
 
         best_score = 0
         best_r_url = ""
+        best_idx = None
 
         for idx, r_url in enumerate(r_images):
 
@@ -371,10 +378,9 @@ def match_images_visual(s_images, r_images):
                 best_r_url = r_url
                 best_idx = idx
 
-        if best_score > 50:
+        # ✅ ALWAYS KEEP BEST MATCH (THIS FIXES YOUR ISSUE)
+        if best_idx is not None:
             used_r.add(best_idx)
-        else:
-            best_r_url = ""
 
         results.append((s_url, best_r_url, best_score))
 
