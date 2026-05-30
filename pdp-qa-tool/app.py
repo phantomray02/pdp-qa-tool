@@ -45,7 +45,7 @@ def get_soup(url):
     return BeautifulSoup(get_html(url), "html.parser")
 
 # =========================================
-# ✅ CLEAN TEXT (FINAL)
+# ✅ CLEAN TEXT
 # =========================================
 def clean_text(raw):
     if not raw:
@@ -54,7 +54,6 @@ def clean_text(raw):
     raw = re.sub(r'<.*?>', '', raw)
     raw = raw.replace('"value":"', '')
     raw = raw.replace('"}', '')
-
     raw = raw.replace('{', '').replace('}', '')
     raw = raw.replace('"', '')
 
@@ -69,7 +68,6 @@ def clean_text(raw):
 # =========================================
 def get_salsify_images(url):
     soup = get_soup(url)
-
     images = []
 
     for img in soup.find_all("img"):
@@ -82,7 +80,6 @@ def get_salsify_images(url):
 
         if parent:
             text = parent.get_text(" ", strip=True)
-
             for t in IMAGE_ORDER:
                 if t.lower() in text.lower():
                     label = t
@@ -95,6 +92,24 @@ def get_salsify_images(url):
 
     return images
 
+# =========================================
+# ✅ ORDER IMAGES
+# =========================================
+def order_salsify(images):
+    ordered = {k: None for k in IMAGE_ORDER}
+
+    for img in images:
+        t = img.get("type")
+        if t in ordered and ordered[t] is None:
+            ordered[t] = img["url"]
+
+    img_list = [img["url"] for img in images]
+
+    for i, key in enumerate(IMAGE_ORDER):
+        if ordered[key] is None and i < len(img_list):
+            ordered[key] = img_list[i]
+
+    return ordered
 
 # =========================================
 # ✅ CVS IMAGES
@@ -149,7 +164,7 @@ def get_salsify_text(url):
     return {"description": description, "features": features}
 
 # =========================================
-# ✅ CVS TEXT (FINAL FIXED VERSION ✅)
+# ✅ CVS TEXT (FIXED ✅)
 # =========================================
 def get_cvs_text(url):
     html = get_html(url)
@@ -165,10 +180,10 @@ def get_cvs_text(url):
 
     description = clean_text(match.group(0))
 
-    features = []
-
-    # ✅ FULL FEATURE EXTRACTION (INSIDE FUNCTION ✅)
+    # ✅ FIXED FEATURE SPLIT
     chunks = re.split(r',\s*(?=[A-Z])', description)
+
+    features = []
 
     for c in chunks:
         c = c.strip()
@@ -184,18 +199,15 @@ def get_cvs_text(url):
         ]):
             features.append(c)
 
-    # ✅ count feature
+    # ✅ COUNT
     count_match = re.search(r'(\d+)\s+regular\s+tampons', html, re.IGNORECASE)
     if count_match:
         features.insert(0, count_match.group(0))
 
-    return {
-        "description": description,
-        "features": features
-    }
+    return {"description": description, "features": features}
 
 # =========================================
-# ✅ FEATURE MATCH
+# ✅ MATCH FEATURES
 # =========================================
 def match_features(s_features, r_features):
     results = []
@@ -234,8 +246,6 @@ if uploaded_file:
         s_text = get_salsify_text(row["salsify_url"])
         r_text = get_cvs_text(row["retail_url"])
 
-        st.write("DEBUG CVS TEXT:", r_text)
-
         # TITLE
         st.markdown("## Title")
 
@@ -268,3 +278,27 @@ if uploaded_file:
             c1.write(s)
             c2.write(r)
             c3.write(f"{sc}%")
+
+        # ✅ IMAGE SECTION RESTORED
+        st.markdown("## Image Comparison (Salsify Driven ✅)")
+
+        s_ordered = order_salsify(s_images)
+
+        valid_slots = [k for k, v in s_ordered.items() if v]
+
+        for i, key in enumerate(valid_slots):
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.write(f"Salsify ({key})")
+                st.image(s_ordered[key])
+
+            with col2:
+                st.write(f"CVS ({key})")
+                if i < len(r_images):
+                    st.image(r_images[i])
+                else:
+                    st.error("Missing")
+
+        st.divider()
