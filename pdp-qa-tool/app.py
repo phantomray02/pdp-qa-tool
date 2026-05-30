@@ -171,17 +171,12 @@ def get_cvs_text(url):
 
     raw = match.group(0)
 
-    # ======================================
-    # ✅ STEP 3 — CLEAN + FIX TEXT
-    # ======================================
-
-    # basic cleanup
+    # ✅ CLEANING (unchanged)
     raw = raw.replace('\\n', ' ')
     raw = raw.replace('\\t', ' ')
     raw = raw.replace('\\', '')
     raw = raw.replace('u0026', '&')
 
-    # ✅ ✅ ✅ FIX FULL BROKEN SENTENCE (key change)
     raw = re.sub(
         r'To use, pull.*?you hear the click for full-size protection in one easy step\.',
         'To use, pull until you hear the click for full-size protection in one easy step.',
@@ -189,18 +184,14 @@ def get_cvs_text(url):
         flags=re.IGNORECASE
     )
 
-    # ✅ remove leftover Next.js junk
-    raw = re.sub(r'\]\s*self\.[^ ]*', ' ', raw)
-    raw = re.sub(r'__next[^ ]*', ' ', raw)
-
-    # normalize spacing
     raw = re.sub(r'\s+', ' ', raw)
 
     description = clean_text(raw)
 
     # ======================================
-    # ✅ FEATURES (UNCHANGED)
+    # ✅ FEATURES (ONLY FEATURE 4 UPDATED)
     # ======================================
+
     m = re.search(r'(\d+)\s+regular\s+tampons', html, re.IGNORECASE)
     if m:
         features.append(m.group(0))
@@ -221,13 +212,24 @@ def get_cvs_text(url):
     if m:
         features.append(m.group(0))
 
+    # ✅ ✅ ✅ FEATURE 4 FIX (this is the only change)
     m = re.search(
-        r'Compact to fit.*?easy step',
+        r'Compact to fit.*?one easy step',
         description,
         re.IGNORECASE
     )
     if m:
-        features.append(m.group(0))
+        clean_f4 = m.group(0)
+
+        # ✅ remove unwanted "on the go. To use..."
+        clean_f4 = re.sub(
+            r'on the go\.\s*To use.*?click\s*for',
+            'and changes to a full-size tampon in',
+            clean_f4,
+            flags=re.IGNORECASE
+        )
+
+        features.append(clean_f4.strip())
 
     m = re.search(
         r'Individually wrapped.*?fashion trends',
@@ -241,6 +243,7 @@ def get_cvs_text(url):
         "description": description,
         "features": features
     }
+
 
 # =========================================
 # ✅ MATCH FEATURES
