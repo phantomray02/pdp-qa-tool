@@ -185,15 +185,50 @@ if uploaded_file:
 
         st.subheader(f"SKU: {row['sku']}")
 
+        # ✅ LOAD DATA
         s_images = get_salsify_images(row["salsify_url"])
         r_images = get_cvs_images(row["retail_url"])
 
         s_text = get_salsify_text(row["salsify_url"])
         r_text = get_cvs_text(row["retail_url"])
 
-        # ✅ FEATURES (INLINE TABLE FIX ✅)
+        # =========================================
+        # ✅ TITLE
+        # =========================================
+        st.markdown("## Title")
+
+        pattern = r'[A-Z][A-Za-z0-9 ,\-]+(?:Count|Ct)'
+
+        s_title = re.search(pattern, get_html(row["salsify_url"]))
+        r_title = re.search(pattern, get_html(row["retail_url"]))
+
+        s_title = s_title.group(0) if s_title else ""
+        r_title = r_title.group(0) if r_title else ""
+
+        c1, c2 = st.columns(2)
+        c1.write(s_title)
+        c2.write(r_title)
+
+        st.write(f"✅ Title Match: {strict_title_score(s_title, r_title)}%")
+
+        # =========================================
+        # ✅ DESCRIPTION
+        # =========================================
+        st.markdown("## Description")
+
+        c1, c2 = st.columns(2)
+
+        c1.write(s_text.get("description") or "")
+        c2.write(r_text.get("description") or "")
+
+        st.write(f"✅ Description Match: {score(s_text['description'], r_text['description'])}%")
+
+        # =========================================
+        # ✅ FEATURES (INLINE TABLE ✅)
+        # =========================================
         st.markdown("## Features")
 
+        # Header row
         h1, h2, h3, h4 = st.columns([2, 4, 4, 1])
         h1.write("**Feature**")
         h2.write("**Salsify**")
@@ -226,7 +261,9 @@ if uploaded_file:
         feature_score = int(100 * match_count / total) if total else 0
         st.write(f"✅ Features Match: {feature_score}%")
 
-        # ✅ IMAGES (aligned correctly)
+        # =========================================
+        # ✅ IMAGE COMPARISON (CLEAN GRID ✅)
+        # =========================================
         st.markdown("## Image Comparison")
 
         max_len = max(len(s_images), len(r_images))
@@ -234,14 +271,18 @@ if uploaded_file:
         for i in range(max_len):
             col1, col2 = st.columns(2)
 
-            if i < len(s_images):
-                col1.image(s_images[i])
-            else:
-                col1.error("Missing")
+            with col1:
+                st.write(f"Salsify {i+1}")
+                if i < len(s_images):
+                    st.image(s_images[i])
+                else:
+                    st.error("Missing")
 
-            if i < len(r_images):
-                col2.image(r_images[i])
-            else:
-                col2.error("Missing")
+            with col2:
+                st.write(f"CVS {i+1}")
+                if i < len(r_images):
+                    st.image(r_images[i])
+                else:
+                    st.error("Missing")
 
         st.divider()
