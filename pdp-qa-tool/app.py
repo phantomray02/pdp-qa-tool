@@ -214,6 +214,7 @@ def match_features(s_features, r_features):
 # ✅ MAIN
 # =========================================
 
+
 if uploaded_file:
 
     df = pd.read_csv(uploaded_file)
@@ -235,97 +236,6 @@ if uploaded_file:
         ...
 
         # ✅ IMAGE COMPARISON (FIXED INDENT ✅)
-        st.markdown("## Image Comparison")
-
-        max_len = max(len(s_images), len(r_images))
-
-        for i in range(max_len):
-            col1, col2 = st.columns(2)
-
-            if i < len(s_images):
-                col1.image(s_images[i])
-            else:
-                col1.error("Missing")
-
-            if i < len(r_images):
-                col2.image(r_images[i])
-            else:
-                col2.error("Missing")
-
-        st.divider()
-
-        # ✅ TITLE
-        st.markdown("## Title")
-
-        col1, col2 = st.columns(2)
-
-        pattern = r'[A-Z][A-Za-z0-9 ,\-]+(?:Count|Ct)'
-
-        s_title = re.search(pattern, get_html(row["salsify_url"]))
-        r_title = re.search(pattern, get_html(row["retail_url"]))
-
-        s_title = s_title.group(0) if s_title else ""
-        r_title = r_title.group(0) if r_title else ""
-
-        col1.write(s_title)
-        col2.write(r_title)
-
-        st.write(f"✅ Title Match: {strict_title_score(s_title, r_title)}%")
-
-        # ✅ DESCRIPTION (FIXED INDENT ✅)
-        st.markdown("## Description")
-
-        c1, c2 = st.columns(2)
-
-        c1.write(s_text.get("description") or "")
-        c2.write(r_text.get("description") or "")
-
-        st.write(f"✅ Description Match: {score(s_text['description'], r_text['description'])}%")
-
-        # ✅ FEATURES
-       
-st.markdown("## Features")
-
-matched = match_features(
-    s_text["features"],
-    r_text["features"]
-)
-
-# ✅ HEADER ROW (optional but nice)
-h1, h2, h3, h4 = st.columns([2, 4, 4, 1])
-
-h1.write("**Feature**")
-h2.write("**Salsify**")
-h3.write("**CVS**")
-h4.write("**%**")
-
-match_count = 0
-
-for i, (s, r, sc) in enumerate(matched, start=1):
-
-    c1, c2, c3, c4 = st.columns([2, 4, 4, 1])
-
-    # ✅ Feature label
-    c1.write(f"GF{i}")
-
-    # ✅ Salsify (LEFT)
-    c2.write(s)
-
-    # ✅ CVS (RIGHT)
-    if "Missing" in r:
-        c3.error("Missing")
-    else:
-        c3.write(r)
-        match_count += 1
-
-    # ✅ Score
-    c4.write(f"{sc}%")
-
-# ✅ overall score
-feature_score = int(100 * match_count / len(matched)) if matched else 0
-st.write(f"✅ Features Match: {feature_score}%")
-
-        # ✅ IMAGES
         st.markdown("## Image Comparison")
 
         max_len = max(len(s_images), len(r_images))
