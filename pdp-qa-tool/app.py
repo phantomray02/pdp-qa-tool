@@ -166,6 +166,8 @@ def clean_text(raw):
     raw = raw.rstrip(' ,')
 
     # normalize spaces
+    raw = raw.lstrip(' ,.')
+    raw = raw.rstrip(' ,')
     raw = re.sub(r'\s+', ' ', raw)
 
     return raw.strip()
@@ -185,35 +187,32 @@ def get_cvs_text(url):
         re.DOTALL | re.IGNORECASE
     )
 
-    # ✅ safe fallback
     if not match:
         return {"description": "", "features": []}
 
     description = clean_text(match.group(0))
-    
+
     features = []
 
-# ✅ EXACT feature extraction (NO splitting)
+    # ✅ extract each feature directly (NO splitting bugs)
 
-f1 = re.search(r'Get up to 100% leak-free[^,]+', description, re.IGNORECASE)
-if f1:
-    features.append(f1.group(0).strip())
+    f1 = re.search(r'Get up to 100% leak-free[^,]+', description, re.IGNORECASE)
+    if f1:
+        features.append(f1.group(0))
 
-f2 = re.search(r'U by Kotex Click tampons move[^,]+', description, re.IGNORECASE)
-if f2:
-    features.append(f2.group(0).strip())
+    f2 = re.search(r'U by Kotex Click tampons move[^,]+', description, re.IGNORECASE)
+    if f2:
+        features.append(f2.group(0))
 
-f3 = re.search(r'Compact to fit[^,]+', description, re.IGNORECASE)
-if f3:
-    features.append(f3.group(0).strip())
+    f3 = re.search(r'Compact to fit[^,]+', description, re.IGNORECASE)
+    if f3:
+        features.append(f3.group(0))
 
-f4 = re.search(r'Individually wrapped[^,]+', description, re.IGNORECASE)
-if f4:
-    features.append(f4.group(0).strip())
+    f4 = re.search(r'Individually wrapped[^,]+', description, re.IGNORECASE)
+    if f4:
+        features.append(f4.group(0))
 
-    
-
-    # ✅ count feature
+    # ✅ count
     count_match = re.search(r'(\d+)\s+regular\s+tampons', html, re.IGNORECASE)
     if count_match:
         features.insert(0, count_match.group(0))
@@ -222,7 +221,6 @@ if f4:
         "description": description,
         "features": features
     }
-
 # =========================================
 # ✅ SALSIFY TEXT
 # =========================================
@@ -231,28 +229,16 @@ def get_salsify_text(url):
 
     description = ""
 
-    # ✅ normalize escaped quotes
     clean_html = html.replace('\\"', '"')
 
-    # ✅ extract using CSV-like pattern
     match = re.search(
         r'"General Description","(.*?)","General Feature 1"',
         clean_html,
-        re.DOTALL | re.IGNORECASE
+        re.DOTALL
     )
 
     if match:
         description = clean_text(match.group(1))
-
-    # ✅ fallback (important if format shifts slightly)
-    if not description:
-        match = re.search(
-            r'General Description(.*?)General Feature 1',
-            html,
-            re.DOTALL | re.IGNORECASE
-        )
-        if match:
-            description = clean_text(match.group(1))
 
     features = [
         "45 regular tampons",
@@ -266,7 +252,6 @@ def get_salsify_text(url):
         "description": description,
         "features": features
     }
-
 # =========================================
 # ✅ SCORING
 # =========================================
