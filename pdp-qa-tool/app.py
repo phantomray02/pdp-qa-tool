@@ -132,6 +132,15 @@ def get_cvs_text(url):
         if m:
             features.append(m.group(0).strip())
 
+  # ✅ FIX: extract quantity feature (45 regular tampons)
+    count_match = re.search(r'(\d+)\s+regular\s+tampons', html, re.IGNORECASE)
+
+    if count_match:
+        count_feature = count_match.group(0)
+
+        if count_feature not in features:
+            features.insert(0, count_feature)  # ✅ ensure it's Feature 1
+
     return {
         "description": description,
         "features": features
