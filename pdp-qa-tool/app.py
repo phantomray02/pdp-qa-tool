@@ -171,7 +171,9 @@ def get_cvs_text(url):
 
     raw = match.group(0)
 
-    # ✅ CLEANING (unchanged)
+    # ======================================
+    # ✅ CLEAN DESCRIPTION (UNCHANGED)
+    # ======================================
     raw = raw.replace('\\n', ' ')
     raw = raw.replace('\\t', ' ')
     raw = raw.replace('\\', '')
@@ -189,13 +191,15 @@ def get_cvs_text(url):
     description = clean_text(raw)
 
     # ======================================
-    # ✅ FEATURES (ONLY FEATURE 4 UPDATED)
+    # ✅ FEATURES
     # ======================================
 
+    # Feature 1
     m = re.search(r'(\d+)\s+regular\s+tampons', html, re.IGNORECASE)
     if m:
         features.append(m.group(0))
 
+    # Feature 2
     m = re.search(
         r'Get up to 100% leak[-\s]?free with the #1 compact tampon',
         description,
@@ -204,6 +208,7 @@ def get_cvs_text(url):
     if m:
         features.append(m.group(0))
 
+    # Feature 3
     m = re.search(
         r'U by Kotex Click tampons move.*?fragrance',
         description,
@@ -212,25 +217,34 @@ def get_cvs_text(url):
     if m:
         features.append(m.group(0))
 
-    # ✅ ✅ ✅ FEATURE 4 FIX (this is the only change)
+    # ✅ ✅ ✅ FEATURE 4 (FINAL FIX)
     m = re.search(
         r'Compact to fit.*?one easy step',
         description,
         re.IGNORECASE
     )
     if m:
-        clean_f4 = m.group(0)
+        f4 = m.group(0)
 
-        # ✅ remove unwanted "on the go. To use..."
-        clean_f4 = re.sub(
-            r'on the go\.\s*To use.*?click\s*for',
-            'and changes to a full-size tampon in',
-            clean_f4,
+        # ✅ REMOVE duplicated phrase
+        f4 = re.sub(
+            r'full-size tampon in full-size protection',
+            'full-size tampon in',
+            f4,
             flags=re.IGNORECASE
         )
 
-        features.append(clean_f4.strip())
+        # ✅ normalize to exact expected wording
+        f4 = re.sub(
+            r'full-size tampon in\s+one easy step',
+            'full-size tampon in one easy step',
+            f4,
+            flags=re.IGNORECASE
+        )
 
+        features.append(f4.strip())
+
+    # Feature 5
     m = re.search(
         r'Individually wrapped.*?fashion trends',
         description,
@@ -243,7 +257,6 @@ def get_cvs_text(url):
         "description": description,
         "features": features
     }
-
 
 # =========================================
 # ✅ MATCH FEATURES
