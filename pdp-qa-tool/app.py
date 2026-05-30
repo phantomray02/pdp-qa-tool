@@ -445,34 +445,45 @@ if uploaded_file:
             c2.write(r)
             c3.write(f"{sc}%")
 
-        # =========================================
-        # ✅ IMAGE COMPARISON (VISUAL ✅)
-        # =========================================
-        st.markdown("## Image Comparison ✅")
 
-        image_matches = match_images_visual(s_images, r_images)
-        st.write(f"Image matches found: {len(image_matches)}")
+# =========================================
+# ✅ IMAGE COMPARISON (VISUAL ✅)
+# =========================================
+st.markdown("## Image Comparison ✅")
 
-        for s, r, sc in image_matches:
-            c1, c2, c3 = st.columns([4, 4, 1])
+image_matches = match_images_visual(s_images, r_images)
 
-            if s:
-                c1.image(s, use_container_width=True)
-            else:
-                c1.write("Missing")
+# ✅ DEBUG (optional)
+st.write(f"Salsify images: {len(s_images)}")
+st.write(f"CVS images: {len(r_images)}")
+st.write(f"Image matches found: {len(image_matches)}")
 
-            if r:
-                c2.image(r, use_container_width=True)
-            else:
-                c2.write("Missing")
+# ✅ SAFE RENDER
+if not image_matches:
+    st.warning("No images found to compare.")
+else:
+    for s, r, sc in image_matches:
 
-            c3.write(f"{sc}%")
+        c1, c2, c3 = st.columns([4, 4, 1])
 
-        # ✅ IMAGE SCORE
-        img_scores = [sc for _, _, sc in image_matches if sc > 0]
-        avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
+        if s:
+            c1.image(s, use_container_width=True)
+        else:
+            c1.write("Missing")
 
-        st.write(f"✅ Image Match: {avg_img_score}%")
+        if r:
+            c2.image(r, use_container_width=True)
+        else:
+            c2.write("Missing")
+
+        c3.write(f"{sc}%")
+
+# ✅ IMAGE SCORE
+img_scores = [sc for _, _, sc in image_matches if sc > 0]
+avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
+
+st.write(f"✅ Image Match: {avg_img_score}%")
+
 
         if not image_matches:
     st.warning("No images found to compare.")
