@@ -165,38 +165,34 @@ def get_cvs_text(url):
 
     description = clean_text(match.group(0))
 
-    # ✅ FIX: split long paragraph correctly
     features = []
 
-# ✅ FIX: split at comma BEFORE capital letter
-chunks = re.split(r',\s*(?=[A-Z])', description)
+    # ✅ FULL FEATURE EXTRACTION (INSIDE FUNCTION ✅)
+    chunks = re.split(r',\s*(?=[A-Z])', description)
 
-for c in chunks:
-    c = c.strip()
+    for c in chunks:
+        c = c.strip()
 
-    if len(c) < 25:
-        continue
+        if len(c) < 25:
+            continue
 
-    # ✅ map correctly to expected feature types
-    if c.lower().startswith("get up to"):
-        features.append(c)
-
-    elif c.lower().startswith("u by kotex"):
-        features.append(c)
-
-    elif c.lower().startswith("compact to fit"):
-        features.append(c)
-
-    elif c.lower().startswith("individually wrapped"):
-        features.append(c)
+        if any(k in c.lower() for k in [
+            "leak-free",
+            "move with you",
+            "compact to fit",
+            "individually wrapped"
+        ]):
+            features.append(c)
 
     # ✅ count feature
     count_match = re.search(r'(\d+)\s+regular\s+tampons', html, re.IGNORECASE)
     if count_match:
-        count = count_match.group(0)
-        features.insert(0, count)
+        features.insert(0, count_match.group(0))
 
-    return {"description": description, "features": features}
+    return {
+        "description": description,
+        "features": features
+    }
 
 # =========================================
 # ✅ FEATURE MATCH
