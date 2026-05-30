@@ -96,6 +96,7 @@ def extract_text_block(html):
     )
     return clean_text(match.group(0)) if match else ""
 
+
 def get_cvs_text(url):
     html = get_html(url)
 
@@ -103,21 +104,28 @@ def get_cvs_text(url):
 
     features = []
 
-    # ✅ SPLIT CLEAN TEXT INTO FEATURES
     if desc:
-        sentences = re.split(r'\.\s+', desc)
+        # ✅ SPLIT BY KEY PHRASES (THIS IS THE FIX)
+        splits = re.split(
+            r'(Get up to .*?|U by Kotex Click tampons .*?|Compact to fit .*?|Individually wrapped .*?)',
+            desc
+        )
 
-        for s in sentences:
+        # re.split returns fragments — rebuild clean features
+        for s in splits:
             s = s.strip()
 
-            # ✅ KEEP ALL REAL FEATURE SENTENCES
             if len(s) > 40:
                 features.append(s)
 
+    # ✅ remove duplicates
+    features = list(dict.fromkeys(features))
+
     return {
         "description": desc,
-        "features": features[:6]
+        "features": features[:5]
     }
+
 
 def get_salsify_text(url):
     html = get_html(url)
