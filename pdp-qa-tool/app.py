@@ -340,17 +340,12 @@ def compare_images_visually(s_url, r_url):
             abs(imagehash.dhash(s_img) - imagehash.dhash(r_img))
         ) / 3
 
-        # ✅ MUCH softer scoring (key fix)
-        if diff < 5:
-            return 100
-        elif diff < 10:
-            return 90
-        elif diff < 15:
-            return 75
-        elif diff < 25:
-            return 60
-        else:
-            return max(10, int(80 - diff * 2))
+       
+# ✅ shortcut for near-identical images
+if diff < 8:
+    return 95
+elif diff < 15:
+    return 85
 
     except:
         return 0
@@ -362,7 +357,7 @@ def match_images_visual(s_images, r_images):
     for s_img in s_images:
         s_url = s_img["url"]
 
-        best_score = 0
+        best_score = -1
         best_r_url = ""
         best_idx = None
 
@@ -371,18 +366,24 @@ def match_images_visual(s_images, r_images):
             if idx in used_r:
                 continue
 
-            score = compare_images_visually(s_url, r_url)
+            raw_score = compare_images_visually(s_url, r_url)
 
-            if score > best_score:
-                best_score = score
+            if raw_score > best_score:
+                best_score = raw_score
                 best_r_url = r_url
                 best_idx = idx
 
-        # ✅ ALWAYS KEEP BEST MATCH (THIS FIXES YOUR ISSUE)
+        # ✅ NORMALIZE SCORE (THIS FIXES 0%)
+        if best_score >= 0:
+            # scale relative score
+            normalized_score = int(min(100, max(10, best_score * 2)))
+        else:
+            normalized_score = 0
+
         if best_idx is not None:
             used_r.add(best_idx)
 
-        results.append((s_url, best_r_url, best_score))
+        results.append((s_url, best_r_url, normalized_score))
 
     return results
 # =========================================
