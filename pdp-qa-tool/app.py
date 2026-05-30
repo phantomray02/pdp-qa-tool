@@ -85,7 +85,7 @@ def clean_text(raw):
     return raw.strip()
 
 # =========================================
-# ✅ TEXT EXTRACTION (WORKING)
+# ✅ TEXT EXTRACTION
 # =========================================
 def extract_text_block(html):
     match = re.search(
@@ -93,17 +93,12 @@ def extract_text_block(html):
         html,
         re.DOTALL
     )
-
-    if match:
-        return clean_text(match.group(0))
-
-    return ""
+    return clean_text(match.group(0)) if match else ""
 
 def get_cvs_text(url):
     html = get_html(url)
     desc = extract_text_block(html)
 
-    # features from sentences
     features = []
     for s in re.split(r'\.\s+', desc):
         if 20 < len(s) < 140:
@@ -123,7 +118,7 @@ def get_salsify_text(url):
     return {"description": desc, "features": features[:6]}
 
 # =========================================
-# ✅ BETTER SCORING (FIXED)
+# ✅ SCORING
 # =========================================
 def score(a, b):
     a_words = set(re.sub(r'[^a-z0-9 ]', '', a.lower()).split())
@@ -137,7 +132,6 @@ def score(a, b):
 # =========================================
 # ✅ FEATURE MATCHING
 # =========================================
-
 def match_features(s_features, r_features):
     results = []
 
@@ -151,12 +145,11 @@ def match_features(s_features, r_features):
             results.append((s, "❌ Missing", 0))
             continue
 
-        # ✅ count how many words appear anywhere in CVS
         matches = sum(1 for w in words if w in r_joined)
-        score = int(100 * matches / len(words))
+        sc = int(100 * matches / len(words))
 
-        if score >= 40:   # ✅ LOWER + MORE FLEXIBLE
-            results.append((s, "✅ Found in description", score))
+        if sc >= 40:
+            results.append((s, "✅ Found", sc))
         else:
             results.append((s, "❌ Missing", 0))
 
@@ -165,18 +158,15 @@ def match_features(s_features, r_features):
 # =========================================
 # ✅ MAIN
 # =========================================
-
-
 if uploaded_file:
 
     df = pd.read_csv(uploaded_file)
 
     for _, row in df.iterrows():
 
-        # ✅ HEADER
         st.subheader(f"SKU: {row['sku']}")
 
-        # ✅ DATA (aligned properly)
+        # DATA
         s_images = get_salsify_images(row["salsify_url"])
         r_images = get_cvs_images(row["retail_url"])
 
@@ -184,19 +174,19 @@ if uploaded_file:
         r_text = get_cvs_text(row["retail_url"])
 
         # =========================================
-        # ✅ TITLE (NEW)
+        # ✅ TITLE
         # =========================================
         st.markdown("## Title")
 
         c1, c2 = st.columns(2)
 
-        title_pattern = r'[A-Z][A-Za-z0-9 ,\-]+(?:Count|Ct)'
+        pattern = r'[A-Z][A-Za-z0-9 ,\-]+(?:Count|Ct)'
 
-        s_title_match = re.search(title_pattern, get_html(row["salsify_url"]))
-        r_title_match = re.search(title_pattern, get_html(row["retail_url"]))
+        s_title = re.search(pattern, get_html(row["salsify_url"]))
+        r_title = re.search(pattern, get_html(row["retail_url"]))
 
-        s_title = s_title_match.group(0) if s_title_match else ""
-        r_title = r_title_match.group(0) if r_title_match else ""
+        s_title = s_title.group(0) if s_title else ""
+        r_title = r_title.group(0) if r_title else ""
 
         with c1:
             st.write("Salsify")
@@ -205,11 +195,8 @@ if uploaded_file:
         with c2:
             st.write("CVS")
             st.write(r_title)
-            
-title_score = score(s_title, r_title)
 
-st.write(f"✅ Title Match: {title_score}%")
-
+        st.write(f"✅ Title Match: {score(s_title, r_title)}%")
 
         # =========================================
         # ✅ DESCRIPTION
@@ -226,17 +213,10 @@ st.write(f"✅ Title Match: {title_score}%")
             st.write("CVS")
             st.write(r_text["description"])
 
-        st.write(
-            "Match:",
-            f"{score(s_text['description'], r_text['description'])}%"
-        )
-
-desc_score = score(s_text["description"], r_text["description"])
-
-st.write(f"✅ Description Match: {desc_score}%")
+        st.write(f"✅ Description Match: {score(s_text['description'], r_text['description'])}%")
 
         # =========================================
-        # ✅ FEATURES (MATCHED)
+        # ✅ FEATURES
         # =========================================
         st.markdown("## Features")
 
@@ -245,6 +225,8 @@ st.write(f"✅ Description Match: {desc_score}%")
             r_text["features"]
         )
 
+        match_count = 0
+
         for s, r, sc in matched:
             c1, c2, c3 = st.columns([3, 3, 1])
 
@@ -252,17 +234,21 @@ st.write(f"✅ Description Match: {desc_score}%")
                 st.write("•", s)
 
             with c2:
-                if r == "❌ Missing":
+                if "Missing" in r:
                     st.error("Missing")
                 else:
-                    st.write("•", r)
+                    st.write(r)
+                    match_count += 1
 
             with c3:
                 if sc:
                     st.write(f"{sc}%")
 
-        st.divider()
-        
+        total = len(matched)
+        feature_score = int(100 * match_count / total) if total else 0
+
+        st.write(f"✅ Features Match: {feature_score}%")
+
         # =========================================
         # ✅ IMAGE COMPARISON
         # =========================================
@@ -287,4 +273,4 @@ st.write(f"✅ Description Match: {desc_score}%")
                 else:
                     st.error("Missing")
 
-
+        st.divider()
