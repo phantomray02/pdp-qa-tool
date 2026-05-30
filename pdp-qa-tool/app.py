@@ -179,6 +179,7 @@ def get_salsify_text(url):
 def get_cvs_text(url):
     html = get_html(url)
 
+    # ✅ STEP 1 — extract main description block
     match = re.search(
         r'Get up to .*?latest fashion trends',
         html,
@@ -186,38 +187,42 @@ def get_cvs_text(url):
     )
 
     if not match:
-        return {"description": "", "features": []}
+        return {
+            "description": "",
+            "features": []
+        }
 
     description = clean_text(match.group(0))
 
-    # ✅ FIX FEATURE SPLITTING
+    # ✅ STEP 2 — extract features directly (NO splitting issues)
     features = []
 
-    chunks = re.split(r',\s*(?=[A-Z])', description)
+    # Feature 2
+    m = re.search(r'Get up to 100% leak[-\s]?free[^,.]+', description, re.IGNORECASE)
+    if m:
+        features.append(m.group(0).strip())
 
-    for c in chunks:
-        c = c.strip()
+    # Feature 3
+    m = re.search(r'U by Kotex Click tampons move[^,.]+', description, re.IGNORECASE)
+    if m:
+        features.append(m.group(0).strip())
 
-        if len(c) < 25:
-            continue
+    # Feature 4
+    m = re.search(r'Compact to fit[^,.]+', description, re.IGNORECASE)
+    if m:
+        features.append(m.group(0).strip())
 
-        if "get up to 100%" in c.lower():
-            features.append(c)
+    # Feature 5
+    m = re.search(r'Individually wrapped[^,.]+', description, re.IGNORECASE)
+    if m:
+        features.append(m.group(0).strip())
 
-        elif "u by kotex click tampons move" in c.lower():
-            features.append(c)
-
-        elif "compact to fit" in c.lower():
-            features.append(c)
-
-        elif "individually wrapped" in c.lower():
-            features.append(c)
-
-    # ✅ COUNT FEATURE
+    # ✅ STEP 3 — always insert count as Feature 1
     count_match = re.search(r'(\d+)\s+regular\s+tampons', html, re.IGNORECASE)
     if count_match:
         features.insert(0, count_match.group(0))
 
+    # ✅ FINAL RETURN (must stay indented!)
     return {
         "description": description,
         "features": features
