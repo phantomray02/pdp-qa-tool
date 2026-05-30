@@ -100,9 +100,7 @@ def extract_text_block(html):
     if match:
         return clean_text(match.group(1))
 
-    return "
-
-
+    return
 
 def get_cvs_text(url):
     html = get_html(url)
