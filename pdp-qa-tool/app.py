@@ -105,27 +105,71 @@ def get_salsify_text(url):
 # -----------------------------
 # ✅ CVS TEXT (YOUR HTML STRUCTURE)
 # -----------------------------
+
+# -----------------------------
+# ✅ CVS TEXT (FIXED — CLEAN EXTRACTION)
+# -----------------------------
 def get_cvs_text(url):
     try:
-        soup = get_soup(url)
+        html = get_html(url)
 
         description = ""
         features = []
 
-        # ✅ FIRST LONG SPAN = DESCRIPTION
-        for span in soup.find_all("span"):
-            txt = span.get_text().strip()
-            if len(txt) > 120:
-                description = txt
-                break
+        # ✅ TARGET REAL DESCRIPTION BLOCK (your earlier working logic)
+        d = re.search(
+            r'Get up to .*?latest fashion trends',
+            html,
+            re.DOTALL
+        )
 
-        # ✅ FIRST UL = BULLETS
-        ul = soup.find("ul")
-        if ul:
-            for li in ul.find_all("li"):
-                txt = li.get_text().strip()
-                if txt:
-                    features.append(txt)
+        if d:
+            raw = d.group(0)
+
+            # ✅ CLEAN JSON/HTML
+            raw = raw.replace('\\"', '')
+            raw = raw.replace('\\n', ' ')
+            raw = raw.replace('","', '. ')
+            raw = raw.replace('"', '')
+
+            # ✅ REMOVE HTML TAGS
+            raw = re.sub('<.*?>', '', raw)
+
+            # ✅ REMOVE UI JUNK (from your screenshot)
+            junk = [
+                "Home", "Shop", "Customer reviews",
+                "Health Benefits", "OTC Eligible",
+                "General content", "SKU", "GTIN",
+                "CVS PDP Deck", "Online Optimized Image",
+                "Same-Day Delivery policies", "Customer reviews for"
+            ]
+
+            for j in junk:
+                raw = raw.replace(j, "")
+
+            # ✅ CLEAN SPACING
+            raw = re.sub(r'\s+', ' ', raw).strip()
+
+            description = raw
+
+        # ✅ FEATURES = split clean sentences
+        sentences = re.split(r'\.\s+', description)
+
+        for s in sentences:
+            s = s.strip()
+
+            if (
+                20 < len(s) < 140 and
+                any(word in s.lower() for word in [
+                    "tampon",
+                    "leak",
+                    "compact",
+                    "wrapped",
+                    "comfort",
+                    "fit"
+                ])
+            ):
+                features.append(s)
 
         return {
             "description": description,
@@ -134,35 +178,6 @@ def get_cvs_text(url):
 
     except:
         return {"description": "", "features": []}
-
-# -----------------------------
-# ✅ MATCH SCORE
-# -----------------------------
-def get_score(a, b):
-    return int(SequenceMatcher(None, a.lower(), b.lower()).ratio() * 100)
-
-# -----------------------------
-# MAIN
-# -----------------------------
-if uploaded_file:
-
-    df = pd.read_csv(uploaded_file)
-
-    for _, row in df.iterrows():
-
-        st.subheader(f"SKU: {row['sku']}")
-
-        # -----------------------------
-        # DATA
-        # -----------------------------
-        s_images = get_salsify_images(row["salsify_url"])
-        r_images = get_cvs_images(row["retail_url"])
-
-        s_text = get_salsify_text(row["salsify_url"])
-        r_text = get_cvs_text(row["retail_url"])
-
-        st.write(f"Salsify Images: {len(s_images)}")
-        st.write(f"CVS Images: {len(r_images)}")
 
         # -----------------------------
         # ✅ IMAGE ALIGNMENT
