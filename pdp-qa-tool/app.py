@@ -146,7 +146,7 @@ def get_cvs_text(url):
     description = ""
     features = []
 
-    # ✅ STEP 1 — shrink search space (CRITICAL FIX)
+    # ✅ STEP 1 — limit search area (fast + accurate)
     start_idx = html.lower().find("vendordetailsparagraph")
     if start_idx == -1:
         return {
@@ -154,10 +154,9 @@ def get_cvs_text(url):
             "features": []
         }
 
-    # ✅ only look at relevant slice
     html_slice = html[start_idx:start_idx + 4000]
 
-    # ✅ STEP 2 — extract description safely
+    # ✅ STEP 2 — extract full description
     match = re.search(
         r'Get up to 100% leak-free.*?U\.S\.',
         html_slice,
@@ -172,12 +171,24 @@ def get_cvs_text(url):
 
     raw = match.group(0)
 
-    # ✅ STEP 3 — clean junk ONLY
+    # ======================================
+    # ✅ STEP 3 — CLEAN ALL JUNK (FINAL)
+    # ======================================
+
+    # remove escape junk
     raw = raw.replace('\\n', ' ')
     raw = raw.replace('\\t', ' ')
     raw = raw.replace('\\', '')
     raw = raw.replace('u0026', '&')
-    raw = raw.replace('u0026amp;', '&')
+
+    # ✅ REMOVE EXACT JS FRAGMENT (your issue)
+    raw = re.sub(r'\)\]self\.__next_f\.push\(\[1,', ' ', raw)
+
+    # ✅ remove any remaining __next fragments safely
+    raw = re.sub(r'__next[^ ]+', ' ', raw)
+
+    # ✅ normalize spacing
+    raw = re.sub(r'\s+', ' ', raw)
 
     description = clean_text(raw)
 
