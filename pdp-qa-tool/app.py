@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import requests
@@ -9,6 +8,21 @@ from difflib import SequenceMatcher
 st.title("PDP QA Tool ✅")
 
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
+
+# =========================================
+# ✅ IMAGE ORDER (YOUR RULE ✅)
+# =========================================
+IMAGE_ORDER = [
+    "Online Optimized Image",
+    "Flat Back_2D",
+    "Flat Left_2D",
+    "ATF I/O-Generic",
+    "ATF 2-Generic",
+    "ATF 3-Generic",
+    "ATF 4-Generic",
+    "ATF 5-Generic",
+    "ATF 6-Generic"
+]
 
 # =========================================
 # ✅ CACHE
@@ -32,20 +46,35 @@ def get_soup(url):
     return BeautifulSoup(get_html(url), "html.parser")
 
 # =========================================
-# ✅ IMAGES
+# ✅ SALSIFY IMAGES (TAGGED ✅)
 # =========================================
 def get_salsify_images(url):
-    try:
-        soup = get_soup(url)
-        imgs = []
-        for img in soup.find_all("img"):
-            src = img.get("src") or ""
-            if src.startswith("http"):
-                imgs.append(src)
-        return list(dict.fromkeys(imgs))[:8]
-    except:
-        return []
+    soup = get_soup(url)
 
+    images = []
+
+    for img in soup.find_all("img"):
+        src = img.get("src") or ""
+        alt = (img.get("alt") or "").lower()
+
+        if src.startswith("http"):
+
+            matched_type = "Other"
+            for t in IMAGE_ORDER:
+                if t.lower() in alt:
+                    matched_type = t
+                    break
+
+            images.append({
+                "url": src,
+                "type": matched_type
+            })
+
+    return images
+
+# =========================================
+# ✅ CVS IMAGES (HIGHEST QUALITY ✅)
+# =========================================
 def get_cvs_images(url):
     html = get_html(url)
 
@@ -58,23 +87,34 @@ def get_cvs_images(url):
 
     for m in matches:
         full = "https://www.cvs.com" + m
-
-        base = full.split("?")[0]  # remove resize params
+        base = full.split("?")[0]
         name = base.split("/")[-1]
 
-        # ✅ extract width from resize param
         size_match = re.search(r'Resize=\((\d+)', m)
         size = int(size_match.group(1)) if size_match else 0
 
-        # ✅ keep ONLY highest resolution
         if name not in image_dict or size > image_dict[name]["size"]:
-            image_dict[name] = {
-                "url": base,
-                "size": size
-            }
+            image_dict[name] = {"url": base, "size": size}
 
-    # ✅ return highest-quality images only
-    return [v["url"] for v in image_dict.values()][:6]
+    return [v["url"] for v in image_dict.values()]
+
+# =========================================
+# ✅ ORDER SALSIFY IMAGES (KEY LOGIC ✅)
+# =========================================
+def order_salsify(images):
+
+    ordered = {k: None for k in IMAGE_ORDER}
+
+    for img in images:
+        t = img["type"]
+        if t in ordered and ordered[t] is None:
+            ordered[t] = img["url"]
+
+    # ✅ fallback logic
+    if not ordered["ATF I/O-Generic"]:
+        ordered["ATF I/O-Generic"] = ordered.get("ATF 6-Generic")
+
+    return ordered
 
 # =========================================
 # ✅ CLEAN TEXT
@@ -82,12 +122,12 @@ def get_cvs_images(url):
 def clean_text(raw):
     if not raw:
         return ""
-    raw = re.sub('<.*?>', '', raw)
+    raw = re.sub(r'<.*?>', '', raw)
     raw = re.sub(r'\s+', ' ', raw)
     return raw.strip()
 
 # =========================================
-# ✅ CVS EXTRACTION (FINAL WORKING ✅)
+# ✅ CVS TEXT
 # =========================================
 def get_cvs_text(url):
     html = get_html(url)
@@ -103,16 +143,14 @@ def get_cvs_text(url):
 
     block = clean_text(match.group(0))
 
-    description = block
-
     features = []
 
     patterns = [
         r'\d+\s+regular\s+tampons',
-        r'Get up to 100% leak-free with the #1 compact tampon',
-        r'U by Kotex Click tampons move with you.*?fragrance',
-        r'Compact to fit in your purse or pocket.*?easy step',
-        r'Individually wrapped in vibrant colors.*?trends',
+        r'Get up to 100% leak-free',
+        r'U by Kotex Click tampons move',
+        r'Compact to fit',
+        r'Individually wrapped',
     ]
 
     for p in patterns:
@@ -120,20 +158,10 @@ def get_cvs_text(url):
         if m:
             features.append(m.group(0).strip())
 
-    # ✅ ensure count feature is included
-    count_match = re.search(r'(\d+)\s+regular\s+tampons', html, re.IGNORECASE)
-    if count_match:
-        count_feature = count_match.group(0)
-        if count_feature not in features:
-            features.insert(0, count_feature)
-
-    return {
-        "description": description,
-        "features": features
-    }
+    return {"description": block, "features": features}
 
 # =========================================
-# ✅ SALSIFY FIXED FEATURES
+# ✅ SALSIFY TEXT
 # =========================================
 def get_salsify_text(url):
     return {
@@ -176,16 +204,13 @@ def match_features(s_features, r_features):
         best_score = 0
 
         for r in r_features:
-            similarity = int(
-                SequenceMatcher(None, s.lower(), r.lower()).ratio() * 100
-            )
-
-            if similarity > best_score:
-                best_score = similarity
+            sim = SequenceMatcher(None, s.lower(), r.lower()).ratio()
+            if sim > best_score:
+                best_score = sim
                 best_match = r
 
-        if best_score >= 70:
-            results.append((s, best_match, best_score))
+        if best_score >= 0.7:
+            results.append((s, best_match, int(best_score * 100)))
         else:
             results.append((s, "❌ Missing", 0))
 
@@ -202,16 +227,15 @@ if uploaded_file:
 
         st.subheader(f"SKU: {row['sku']}")
 
-        # ✅ LOAD DATA
         s_images = get_salsify_images(row["salsify_url"])
         r_images = get_cvs_images(row["retail_url"])
+
+        s_ordered = order_salsify(s_images)
 
         s_text = get_salsify_text(row["salsify_url"])
         r_text = get_cvs_text(row["retail_url"])
 
-        # =========================================
         # ✅ TITLE
-        # =========================================
         st.markdown("## Title")
 
         pattern = r'[A-Z][A-Za-z0-9 ,\-]+(?:Count|Ct)'
@@ -228,73 +252,47 @@ if uploaded_file:
 
         st.write(f"✅ Title Match: {strict_title_score(s_title, r_title)}%")
 
-        # =========================================
         # ✅ DESCRIPTION
-        # =========================================
         st.markdown("## Description")
 
         c1, c2 = st.columns(2)
-
-        c1.write(s_text.get("description") or "")
-        c2.write(r_text.get("description") or "")
+        c1.write(s_text["description"])
+        c2.write(r_text["description"])
 
         st.write(f"✅ Description Match: {score(s_text['description'], r_text['description'])}%")
 
-        # =========================================
-        # ✅ FEATURES (INLINE TABLE ✅)
-        # =========================================
+        # ✅ FEATURES
         st.markdown("## Features")
 
-        # Header row
-        h1, h2, h3, h4 = st.columns([2, 4, 4, 1])
-        h1.write("**Feature**")
-        h2.write("**Salsify**")
-        h3.write("**CVS**")
-        h4.write("**%**")
-
-        matched = match_features(
-            s_text["features"],
-            r_text["features"]
-        )
-
-        match_count = 0
+        matched = match_features(s_text["features"], r_text["features"])
 
         for i, (s, r, sc) in enumerate(matched, start=1):
+            c1, c2, c3 = st.columns([4, 4, 1])
+            c1.write(s)
+            c2.write(r)
+            c3.write(f"{sc}%")
 
-            c1, c2, c3, c4 = st.columns([2, 4, 4, 1])
+        # ✅ IMAGE ORDERED VIEW (FINAL ✅)
+        st.markdown("## Image Comparison (Ordered ✅)")
 
-            c1.write(f"GF{i}")
-            c2.write(s)
+        for i, key in enumerate(IMAGE_ORDER):
 
-            if "Missing" in r:
-                c3.error("Missing")
-            else:
-                c3.write(r)
-                match_count += 1
+            col1, col2 = st.columns(2)
 
-            c4.write(f"{sc}%")
+            # Salsify
+            with col1:
+                st.write(f"Salsify ({key})")
+                if s_ordered[key]:
+                    st.image(s_ordered[key])
+                else:
+                    st.error("Missing")
 
-        total = len(matched)
-        feature_score = int(100 * match_count / total) if total else 0
-        st.write(f"✅ Features Match: {feature_score}%")
-
-        # =========================================
-        # ✅ IMAGE COMPARISON (CLEAN GRID ✅)
-        # =========================================
-        st.markdown("## Image Comparison")
-
-max_len = min(len(s_images), len(r_images))  # ✅ strictly paired
-
-for i in range(max_len):
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.write(f"Salsify {i+1}")
-        st.image(s_images[i])
-
-    with col2:
-        st.write(f"CVS {i+1}")
-        st.image(r_images[i])
-
+            # CVS
+            with col2:
+                st.write(f"CVS ({key})")
+                if i < len(r_images):
+                    st.image(r_images[i])
+                else:
+                    st.error("Missing")
 
         st.divider()
