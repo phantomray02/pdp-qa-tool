@@ -354,14 +354,18 @@ def compare_images_visually(s_url, r_url):
             for a, b in zip(s_img.getdata(), r_img.getdata())
         ) / (128 * 128)
 
-        if diff < 10:
+        if diff < 8:
             return 100
-        elif diff < 20:
-            return 95
-        elif diff < 30:
-            return 85
+        elif diff < 15:
+            return 90
+        elif diff < 25:
+            return 75
+        elif diff < 40:
+            return 50
+        elif diff < 60:
+            return 30
         else:
-            return 70
+            return 10
 
     except:
         return 0
