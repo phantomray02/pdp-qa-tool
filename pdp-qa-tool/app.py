@@ -280,7 +280,13 @@ def match_features(s_features, r_features):
         best_score = 0
 
         for r in r_features:
-            sim = SequenceMatcher(None, s.lower(), r.lower()).ratio()
+            
+            sim = SequenceMatcher(
+                None,
+                normalize_text(s),
+                normalize_text(r)
+            ).ratio()
+
 
             if sim > best_score:
                 best_score = sim
@@ -296,41 +302,56 @@ def match_features(s_features, r_features):
 # ✅ SALSIFY TEXT
 # =========================================
 
-def get_salsify_text(url):
-    soup = get_soup(url)
-
-    description = ""
-    features = []
-
-    rows = soup.find_all("tr")
-
-    # ✅ Find description
-    for row in rows:
-        label = row.get_text(" ", strip=True).lower()
-
-        if "general description" in label:
-            content = row.find("span", {"data-testid": "property-content"})
-            if content:
-                description = clean_text(content.get_text(" ", strip=True))
-                break
-
-    # ✅ Extract features (dynamic, not hardcoded)
-    for row in rows:
-        text = row.get_text(" ", strip=True)
-
-        # Filter: avoid tiny / noisy rows
-        if 20 < len(text) < 200:
-            features.append(text)
-
-    # ✅ fallback (prevents empty issues)
-    if not features and description:
-        features = [description]
-
-    return {
-        "description": description,
-        "features": features
-    }
-
+        def get_salsify_text(url):
+            soup = get_soup(url)
+        
+            description = ""
+            features = []
+        
+            rows = soup.find_all("tr")
+        
+            # ✅ DESCRIPTION
+            for row in rows:
+                label = row.get_text(" ", strip=True).lower()
+        
+                if "general description" in label:
+                    content = row.find("span", {"data-testid": "property-content"})
+                    if content:
+                        description = clean_text(content.get_text(" ", strip=True))
+                        break
+        
+            # ✅ FEATURES (CLEAN FILTERED VERSION)
+            for row in rows:
+                text = row.get_text(" ", strip=True)
+        
+                # ✅ skip junk fields
+                if any(x in text.lower() for x in [
+                    "gtin",
+                    "product title",
+                    "general",
+                    "item number",
+                    "sku",
+                    "id",
+                    "upc"
+                ]):
+                    continue
+        
+                # ✅ clean labels like "General Feature 1"
+                text = re.sub(r'general feature \d+\s*', '', text, flags=re.IGNORECASE)
+                text = re.sub(r'general product title\s*', '', text, flags=re.IGNORECASE)
+        
+                # ✅ keep only meaningful content
+                if 30 < len(text) < 200:
+                    features.append(text.strip())
+        
+            # ✅ fallback if empty
+            if not features and description:
+                features = [description]
+        
+            return {
+                "description": description,
+                "features": features
+            }
 # =========================================
 # ✅ FAST + ALL IMAGES COMPARISON
 # =========================================
@@ -400,6 +421,12 @@ def match_images_visual(s_images, r_images):
         results.append((s_url, r_url, score))
 
     return results
+
+    def normalize_text(text):
+        text = text.lower()
+        text = re.sub(r'[^a-z0-9\s]', '', text)
+        text = re.sub(r'\s+', ' ', text)
+        return text.strip()
 # =========================================
 # ✅ MAIN
 # =========================================
@@ -431,36 +458,39 @@ if uploaded_file:
             s_text = get_salsify_text(row["salsify_url"])
             r_text = get_cvs_text(row["retail_url"])
 
-            # =========================
-            # ✅ TITLE
-            # =========================
+            # =========================================
+            # ✅ TITLE (CLEAN VERSION)
+            # =========================================
             st.markdown("## Title")
-
-            # ✅ Salsify Title
+            
+            # ✅ Salsify title (clean HTML title)
             s_html = get_html(row["salsify_url"])
             s_title_match = re.search(r'<title>(.*?)</title>', s_html)
             s_title = s_title_match.group(1) if s_title_match else ""
             
-            # ✅ CVS Title (cleaner extraction)
+            # ✅ remove branding if present
+            s_title = re.sub(r'\s*-\s*.*$', '', s_title).strip()
+            
+            # ✅ CVS title (use productName JSON instead of <title>)
             r_html = get_html(row["retail_url"])
             
-            r_title_match = re.search(
-                r'"productName":"(.*?)"',
-                r_html
-            )
-            
-            if not r_title_match:
-                r_title_match = re.search(r'<title>(.*?)</title>', r_html)
-            
+            r_title_match = re.search(r'"productName":"(.*?)"', r_html)
             r_title = r_title_match.group(1) if r_title_match else ""
-
-            s_title = s_title_match.group(0) if s_title_match else ""
-            r_title = r_title_match.group(0) if r_title_match else ""
-
+            
+            # ✅ fallback just in case
+            if not r_title:
+                fallback = re.search(r'<title>(.*?)</title>', r_html)
+                r_title = fallback.group(1) if fallback else ""
+            
+            # ✅ remove CVS branding junk
+            r_title = re.sub(r'\s*-\s*CVS.*$', '', r_title).strip()
+            
+            # ✅ display
             c1, c2 = st.columns(2)
             c1.write(s_title)
             c2.write(r_title)
-
+            
+            # ✅ score
             title_score = int(
                 SequenceMatcher(None, s_title.lower(), r_title.lower()).ratio() * 100
             )
