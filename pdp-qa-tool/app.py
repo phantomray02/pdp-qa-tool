@@ -354,12 +354,12 @@ def compare_images_visually(s_url, r_url):
             for a, b in zip(s_img.getdata(), r_img.getdata())
         ) / (128 * 128)
         
-        # ✅ BOOST: reward very similar structure
-        if abs(len(s_img.getdata()) - len(r_img.getdata())) < 100:
+        # ✅ BOOST (only for similar images)
+        if diff < 20:
             diff *= 0.9
-
-
-               if diff < 5:
+        
+        # ✅ SCORING (CORRECT INDENT)
+        if diff < 5:
             return 100
         elif diff < 10:
             return 95
@@ -375,7 +375,6 @@ def compare_images_visually(s_url, r_url):
             return 25
         else:
             return 10
-
 
     except:
         return 0
