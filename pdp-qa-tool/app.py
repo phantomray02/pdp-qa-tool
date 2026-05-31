@@ -399,223 +399,186 @@ if uploaded_file:
 
         st.subheader(f"SKU: {row['sku']}")
 
+        try:
+            # =========================
+            # ✅ SAFE IMAGE LOAD
+            # =========================
+            s_images = get_salsify_images(row["salsify_url"]) or []
+            r_images = get_cvs_images(row["retail_url"]) or []
 
-        s_images = get_salsify_images(row["salsify_url"]) or []
-        r_images = get_cvs_images(row["retail_url"]) or []
-        
-        # ✅ safety fallback
-        if not isinstance(s_images, list):
-            s_images = []
-        
-        if not isinstance(r_images, list):
-            r_images = []
+            if not isinstance(s_images, list):
+                s_images = []
+            if not isinstance(r_images, list):
+                r_images = []
 
+            # =========================
+            # ✅ TEXT
+            # =========================
+            s_text = get_salsify_text(row["salsify_url"])
+            r_text = get_cvs_text(row["retail_url"])
 
-        s_text = get_salsify_text(row["salsify_url"])
-        r_text = get_cvs_text(row["retail_url"])
-            # =========================================
-    # ✅ EXPORT (2 SHEETS)
-    # =========================================
-   
-from openpyxl import load_workbook
-from openpyxl.styles import PatternFill, Font
+            # =========================
+            # ✅ TITLE
+            # =========================
+            st.markdown("## Title")
 
-if summary_rows:
+            pattern = r'[A-Z][A-Za-z0-9 ,\-]+(?:Count|Ct)'
 
-    summary_df = pd.DataFrame(summary_rows)
-    detail_df = pd.DataFrame(export_rows)
+            s_title_match = re.search(pattern, get_html(row["salsify_url"]))
+            r_title_match = re.search(pattern, get_html(row["retail_url"]))
 
-    file_name = "pdp_qa_results.xlsx"
+            s_title = s_title_match.group(0) if s_title_match else ""
+            r_title = r_title_match.group(0) if r_title_match else ""
 
-    with pd.ExcelWriter(file_name, engine="openpyxl") as writer:
-        summary_df.to_excel(writer, index=False, sheet_name="Summary")
-        detail_df.to_excel(writer, index=False, sheet_name="Details")
+            c1, c2 = st.columns(2)
+            c1.write(s_title)
+            c2.write(r_title)
 
-    # ✅ LOAD WORKBOOK FOR FORMATTING
-    wb = load_workbook(file_name)
+            title_score = int(
+                SequenceMatcher(None, s_title.lower(), r_title.lower()).ratio() * 100
+            )
+            st.write(f"✅ Title Match: {title_score}%")
 
-    ws = wb["Summary"]
+            # =========================
+            # ✅ DESCRIPTION
+            # =========================
+            st.markdown("## Description")
 
-    # ✅ COLOR RULES
-    green_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
-    yellow_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
-    red_fill = PatternFill(start_color="F4CCCC", end_color="F4CCCC", fill_type="solid")
+            c1, c2 = st.columns(2)
+            c1.write(s_text.get("description", ""))
+            c2.write(r_text.get("description", ""))
 
-    # ✅ BOLD HEADER
-    for cell in ws[1]:
-        cell.font = Font(bold=True)
-        ws.column_dimensions[cell.column_letter].width = 18
+            desc_score = int(
+                SequenceMatcher(
+                    None,
+                    s_text.get("description", "").lower(),
+                    r_text.get("description", "").lower()
+                ).ratio() * 100
+            )
 
-    # ✅ FREEZE TOP ROW
-    ws.freeze_panes = "A2"
+            st.write(f"✅ Description Match: {desc_score}%")
 
-    # ✅ APPLY COLORS TO % COLUMNS
-    for row in ws.iter_rows(min_row=2):
+            # =========================
+            # ✅ FEATURES
+            # =========================
+            st.markdown("## Features")
 
-        for cell in row:
+            matched = match_features(
+                s_text.get("features", []),
+                r_text.get("features", [])
+            )
 
-            # skip SKU column (col 1)
-            if cell.column == 1:
-                continue
-
-            try:
-                value = float(cell.value)
-            except:
-                continue
-
-            if value >= 90:
-                cell.fill = green_fill
-            elif value >= 80:
-                cell.fill = yellow_fill
-            else:
-                cell.fill = red_fill
-
-    # ✅ SAVE
-    wb.save(file_name)
-
-    # ✅ DOWNLOAD BUTTON
-    with open(file_name, "rb") as f:
-        download_placeholder.download_button(
-            label="📥 Download Excel Report",
-            data=f,
-            file_name=file_name,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-
-
-        # =========================================
-        # ✅ TITLE
-        # =========================================
-        st.markdown("## Title")
-
-        pattern = r'[A-Z][A-Za-z0-9 ,\-]+(?:Count|Ct)'
-
-        s_title = re.search(pattern, get_html(row["salsify_url"]))
-        r_title = re.search(pattern, get_html(row["retail_url"]))
-
-        s_title = s_title.group(0) if s_title else ""
-        r_title = r_title.group(0) if r_title else ""
-
-        c1, c2 = st.columns(2)
-        c1.write(s_title)
-        c2.write(r_title)
-
-        title_score = int(SequenceMatcher(None, s_title.lower(), r_title.lower()).ratio() * 100)
-        st.write(f"✅ Title Match: {title_score}%")
-
-        # =========================================
-        # ✅ DESCRIPTION
-        # =========================================
-        st.markdown("## Description")
-
-        c1, c2 = st.columns(2)
-        c1.write(s_text["description"])
-        c2.write(r_text["description"])
-
-        desc_score = int(SequenceMatcher(
-            None,
-            s_text.get("description", "").lower(),
-            r_text.get("description", "").lower()
-        ).ratio() * 100)
-
-        st.write(f"✅ Description Match: {desc_score}%")
-
-        # =========================================
-        # ✅ FEATURES
-        # =========================================
-        st.markdown("## Features")
-
-        matched = match_features(s_text["features"], r_text["features"])
-
-        for s, r, sc in matched:
-            c1, c2, c3 = st.columns([4, 4, 1])
-            c1.write(s)
-            c2.write(r)
-            c3.write(f"{sc}%")
-
-        # =========================================
-        # ✅ IMAGE COMPARISON
-        # =========================================
-        st.markdown("## Image Comparison ✅")
-        
-        # ✅ SHOW IMAGE COUNTS
-        st.write(f"Salsify Images: {len(s_images)} | CVS Images: {len(r_images)}")
-        
-        image_matches = match_images_visual(s_images, r_images)
-        
-        if not image_matches:
-            st.warning("No images found to compare.")
-        else:
-            for s, r, sc in image_matches:
+            for s, r, sc in matched:
                 c1, c2, c3 = st.columns([4, 4, 1])
-        
-                if s:
-                    c1.image(s, use_container_width=True)
-                else:
-                    c1.write("Missing")
-        
-                if r:
-                    c2.image(r, use_container_width=True)
-                else:
-                    c2.write("Missing")
-        
+                c1.write(s)
+                c2.write(r)
                 c3.write(f"{sc}%")
 
-        # ✅ IMAGE SCORE
-        img_scores = [sc for _, _, sc in image_matches if sc > 0]
-        avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
+            # =========================
+            # ✅ IMAGE COMPARISON
+            # =========================
+            st.markdown("## Image Comparison ✅")
 
-        st.write(f"✅ Image Match: {avg_img_score}%")
+            # ✅ DEBUG COUNT (helps QA)
+            st.write(f"Salsify Images: {len(s_images)} | CVS Images: {len(r_images)}")
 
-        # =========================================
-        # ✅ FEATURE + OVERALL SCORE
-        # =========================================
-        feature_scores = [sc for _, _, sc in matched]
-        avg_feature_score = int(sum(feature_scores) / len(feature_scores)) if feature_scores else 0
+            image_matches = match_images_visual(s_images, r_images)
 
-        overall_score = int(
-            (title_score + desc_score + avg_feature_score + avg_img_score) / 4
-        )
+            if not image_matches:
+                st.warning("No images found to compare.")
+            else:
+                for s, r, sc in image_matches:
+                    c1, c2, c3 = st.columns([4, 4, 1])
 
-        # =========================================
-        # ✅ SHEET 1 (SUMMARY)
-        # =========================================
-        summary_row = {
-            "SKU": row["sku"],
-            "Title %": title_score,
-            "Description %": desc_score,
-            "Feature %": avg_feature_score,
-        }
+                    if s:
+                        c1.image(s, use_container_width=True)
+                    else:
+                        c1.write("Missing")
 
-        # ✅ ADD IMAGE % PER IMAGE
-        for i, (_, _, sc) in enumerate(image_matches):
-            summary_row[f"Image {i+1} %"] = sc
+                    if r:
+                        c2.image(r, use_container_width=True)
+                    else:
+                        c2.write("Missing")
 
-        summary_row["Image Match %"] = avg_img_score
-        summary_row["Overall %"] = overall_score
+                    c3.write(f"{sc}%")
 
-        summary_rows.append(summary_row)
+            # =========================
+            # ✅ IMAGE SCORE
+            # =========================
+            img_scores = [sc for _, _, sc in image_matches if sc > 0]
+            avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
 
-        # =========================================
-        # ✅ SHEET 2 (DETAIL)
-        # =========================================
-        export_row = {
-            "SKU": row["sku"],
+            st.write(f"✅ Image Match: {avg_img_score}%")
 
-            "Salsify Title": s_title,
-            "CVS Title": r_title,
+            # =========================
+            # ✅ OVERALL SCORE
+            # =========================
+            feature_scores = [sc for _, _, sc in matched]
+            avg_feature_score = int(sum(feature_scores) / len(feature_scores)) if feature_scores else 0
 
-            "Salsify Description": s_text["description"],
-            "CVS Description": r_text["description"],
+            overall_score = int(
+                (title_score + desc_score + avg_feature_score + avg_img_score) / 4
+            )
 
-            "Feature 1": matched[0][1],
-            "Feature 2": matched[1][1],
-            "Feature 3": matched[2][1],
-            "Feature 4": matched[3][1],
-            "Feature 5": matched[4][1],
-        }
+            # =========================
+            # ✅ SUMMARY SHEET
+            # =========================
+            summary_row = {
+                "SKU": row["sku"],
+                "Title %": title_score,
+                "Description %": desc_score,
+                "Feature %": avg_feature_score,
+                "Image Match %": avg_img_score,
+                "Overall %": overall_score
+            }
 
-        export_rows.append(export_row)
+            # ✅ IMAGE SCORES PER IMAGE
+            for i, (_, _, sc) in enumerate(image_matches):
+                summary_row[f"Image {i+1} %"] = sc
 
-        st.divider()
-        
+            summary_rows.append(summary_row)
+
+            # =========================
+            # ✅ DETAIL SHEET
+            # =========================
+            export_row = {
+                "SKU": row["sku"],
+                "Salsify Title": s_title,
+                "CVS Title": r_title,
+                "Salsify Description": s_text.get("description", ""),
+                "CVS Description": r_text.get("description", "")
+            }
+
+            # ✅ SAFELY ADD FEATURES
+            for i in range(min(len(matched), 5)):
+                export_row[f"Feature {i+1}"] = matched[i][1]
+
+            export_rows.append(export_row)
+
+            st.divider()
+
+        except Exception as e:
+            st.error(f"❌ Error on SKU {row['sku']}: {e}")
+            continue
+
+    # =========================================
+    # ✅ EXPORT
+    # =========================================
+    if summary_rows:
+
+        summary_df = pd.DataFrame(summary_rows)
+        detail_df = pd.DataFrame(export_rows)
+
+        file_name = "pdp_qa_results.xlsx"
+
+        with pd.ExcelWriter(file_name, engine="openpyxl") as writer:
+            summary_df.to_excel(writer, index=False, sheet_name="Summary")
+            detail_df.to_excel(writer, index=False, sheet_name="Details")
+
+        with open(file_name, "rb") as f:
+            download_placeholder.download_button(
+                label="📥 Download Excel Report",
+                data=f,
+                file_name=file_name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
