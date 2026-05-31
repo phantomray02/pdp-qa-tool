@@ -313,13 +313,18 @@ def get_salsify_text(url):
                 description = clean_text(content.get_text(" ", strip=True))
                 break
 
-    features = [
-        "45 regular tampons",
-        "Get up to 100% leak-free with the #1 compact tampon",
-        "U by Kotex Click tampons move with you for outstanding comfort and are MADE WITHOUT fragrance",
-        "Compact to fit in your purse or pocket and changes to a full-size tampon in one easy step",
-        "Individually wrapped in vibrant colors and patterns inspired by the latest fashion trends"
-    ]
+           features = []
+        
+        # ✅ extract bullet-like rows from table
+        for row in rows:
+            text = row.get_text(" ", strip=True)
+        
+            if len(text) > 20 and len(text) < 200:
+                features.append(text)
+        
+        # ✅ fallback (if nothing found)
+        if not features:
+            features = [description]
 
     return {
         "description": description,
@@ -431,10 +436,23 @@ if uploaded_file:
             # =========================
             st.markdown("## Title")
 
-            pattern = r'[A-Z][A-Za-z0-9 ,\-]+(?:Count|Ct)'
-
-            s_title_match = re.search(pattern, get_html(row["salsify_url"]))
-            r_title_match = re.search(pattern, get_html(row["retail_url"]))
+            # ✅ Salsify Title
+            s_html = get_html(row["salsify_url"])
+            s_title_match = re.search(r'<title>(.*?)</title>', s_html)
+            s_title = s_title_match.group(1) if s_title_match else ""
+            
+            # ✅ CVS Title (cleaner extraction)
+            r_html = get_html(row["retail_url"])
+            
+            r_title_match = re.search(
+                r'"productName":"(.*?)"',
+                r_html
+            )
+            
+            if not r_title_match:
+                r_title_match = re.search(r'<title>(.*?)</title>', r_html)
+            
+            r_title = r_title_match.group(1) if r_title_match else ""
 
             s_title = s_title_match.group(0) if s_title_match else ""
             r_title = r_title_match.group(0) if r_title_match else ""
