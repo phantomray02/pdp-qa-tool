@@ -156,7 +156,7 @@ def get_cvs_url_from_sku(sku):
                 continue
 
             # ✅ ensure correct SKU match
-            if f"skuId={sku}" in m or "prodid" in m:
+            if f"skuId={sku}" in m:
                 return "https://www.cvs.com" + m
 
         return ""
