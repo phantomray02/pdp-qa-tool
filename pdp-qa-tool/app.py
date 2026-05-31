@@ -1,11 +1,13 @@
 
+
 import streamlit as st
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 import re
 from difflib import SequenceMatcher
-from PIL import ImageFilter
+from PIL import Image
+from io import BytesIO
 
 st.title("PDP QA Tool ✅")
 
@@ -323,38 +325,32 @@ def get_salsify_text(url):
         "description": description,
         "features": features
     }
-    import imagehash
-from PIL import Image
-from io import BytesIO
 
 def compare_images_visually(s_url, r_url):
     try:
-            if s_url in image_cache:
-        s_img_data = image_cache[s_url]
-    else:
-        s_img_data = requests.get(s_url, timeout=5).content
-        image_cache[s_url] = s_img_data
-    
-    if r_url in image_cache:
-        r_img_data = image_cache[r_url]
-    else:
-        r_img_data = requests.get(r_url, timeout=5).content
-        image_cache[r_url] = r_img_data
+        # ✅ CACHE IMAGE DOWNLOADS
+        if s_url in image_cache:
+            s_img_data = image_cache[s_url]
+        else:
+            s_img_data = requests.get(s_url, timeout=5).content
+            image_cache[s_url] = s_img_data
 
+        if r_url in image_cache:
+            r_img_data = image_cache[r_url]
+        else:
+            r_img_data = requests.get(r_url, timeout=5).content
+            image_cache[r_url] = r_img_data
+
+        # ✅ RESIZE SMALLER (FASTER)
         s_img = Image.open(BytesIO(s_img_data)).convert("L").resize((128, 128))
         r_img = Image.open(BytesIO(r_img_data)).convert("L").resize((128, 128))
 
-        from PIL import ImageFilter
-        s_img = s_img.filter(ImageFilter.BLUR)
-        r_img = r_img.filter(ImageFilter.BLUR)
-
-        # ✅ pixel difference
+        # ✅ FAST PIXEL DIFF
         diff = sum(
             abs(a - b)
             for a, b in zip(s_img.getdata(), r_img.getdata())
-        ) / (256 * 256)
+        ) / (128 * 128)
 
-        # ✅ THIS MUST ALIGN WITH diff (NOT DEEPER)
         if diff < 10:
             return 100
         elif diff < 20:
@@ -369,18 +365,20 @@ def compare_images_visually(s_url, r_url):
 def match_images_visual(s_images, r_images):
     results = []
 
-    if not s_images:
-        return []
-
-    for i, s_img in enumerate(s_images):
+for i, s_img in enumerate(s_images):
         s_url = s_img["url"]
 
-        if i < len(r_images):
-            r_url = r_images[i]
-            score = compare_images_visually(s_url, r_url)
-        else:
-            r_url = ""
-            score = 0
+def match_images_visual(s_images, r_images):
+    results = []
+
+    max_len = max(len(s_images), len(r_images))
+
+    for i in range(max_len):
+
+        s_url = s_images[i]["url"] if i < len(s_images) else ""
+        r_url = r_images[i] if i < len(r_images) else ""
+
+        score = compare_images_visually(s_url, r_url) if s_url and r_url else 0
 
         results.append((s_url, r_url, score))
 
