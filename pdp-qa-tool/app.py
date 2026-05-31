@@ -326,9 +326,12 @@ def get_salsify_text(url):
         "features": features
     }
 
+# =========================================
+# ✅ FAST + ALL IMAGES COMPARISON
+# =========================================
 def compare_images_visually(s_url, r_url):
     try:
-        # ✅ CACHE IMAGE DOWNLOADS
+        # ✅ CACHE DOWNLOAD
         if s_url in image_cache:
             s_img_data = image_cache[s_url]
         else:
@@ -345,7 +348,7 @@ def compare_images_visually(s_url, r_url):
         s_img = Image.open(BytesIO(s_img_data)).convert("L").resize((128, 128))
         r_img = Image.open(BytesIO(r_img_data)).convert("L").resize((128, 128))
 
-        # ✅ FAST PIXEL DIFF
+        # ✅ SIMPLE PIXEL DIFF
         diff = sum(
             abs(a - b)
             for a, b in zip(s_img.getdata(), r_img.getdata())
@@ -362,19 +365,15 @@ def compare_images_visually(s_url, r_url):
 
     except:
         return 0
-def match_images_visual(s_images, r_images):
-    results = []
 
-for i, s_img in enumerate(s_images):
-        s_url = s_img["url"]
 
 def match_images_visual(s_images, r_images):
     results = []
 
+    # ✅ HANDLE ALL IMAGES (no limit)
     max_len = max(len(s_images), len(r_images))
 
     for i in range(max_len):
-
         s_url = s_images[i]["url"] if i < len(s_images) else ""
         r_url = r_images[i] if i < len(r_images) else ""
 
@@ -396,8 +395,17 @@ if uploaded_file:
 
         st.subheader(f"SKU: {row['sku']}")
 
-        s_images = get_salsify_images(row["salsify_url"])
-        r_images = get_cvs_images(row["retail_url"])
+
+        s_images = get_salsify_images(row["salsify_url"]) or []
+        r_images = get_cvs_images(row["retail_url"]) or []
+        
+        # ✅ safety fallback
+        if not isinstance(s_images, list):
+            s_images = []
+        
+        if not isinstance(r_images, list):
+            r_images = []
+
 
         s_text = get_salsify_text(row["salsify_url"])
         r_text = get_cvs_text(row["retail_url"])
@@ -456,25 +464,28 @@ if uploaded_file:
         # ✅ IMAGE COMPARISON
         # =========================================
         st.markdown("## Image Comparison ✅")
-
+        
+        # ✅ SHOW IMAGE COUNTS
+        st.write(f"Salsify Images: {len(s_images)} | CVS Images: {len(r_images)}")
+        
         image_matches = match_images_visual(s_images, r_images)
-
+        
         if not image_matches:
             st.warning("No images found to compare.")
         else:
             for s, r, sc in image_matches:
                 c1, c2, c3 = st.columns([4, 4, 1])
-
+        
                 if s:
                     c1.image(s, use_container_width=True)
                 else:
                     c1.write("Missing")
-
+        
                 if r:
                     c2.image(r, use_container_width=True)
                 else:
                     c2.write("Missing")
-
+        
                 c3.write(f"{sc}%")
 
         # ✅ IMAGE SCORE
