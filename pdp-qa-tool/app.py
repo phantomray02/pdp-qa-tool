@@ -141,21 +141,24 @@ def build_salsify_url_from_sku7(sku7):
 
 def get_cvs_url_from_sku(sku):
     try:
+        # ✅ use search page
         search_url = f"https://www.cvs.com/search?searchTerm={sku}"
         html = get_html(search_url)
 
+        # ✅ extract ALL possible product links
         matches = re.findall(r'href="(/shop/[^"]+)"', html)
 
         for m in matches:
 
-            # ✅ must be real product page
+            # ✅ must be a real PDP
             if "prodid" not in m:
                 continue
 
+            # ✅ skip junk
             if "seasonal" in m or "promo" in m:
                 continue
 
-            # ✅ ensure correct SKU match
+            # ✅ THIS IS THE KEY → exact SKU match
             if f"skuId={sku}" in m:
                 return "https://www.cvs.com" + m
 
