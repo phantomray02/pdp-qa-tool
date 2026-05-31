@@ -1,37 +1,15 @@
-
 import streamlit as st
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 import re
 from difflib import SequenceMatcher
-from PIL import ImageFilter
+from PIL import Image, ImageFilter
 
 st.title("PDP QA Tool ✅")
 
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
-
-# ✅ TOP DOWNLOAD BUTTON PLACEHOLDER
 download_placeholder = st.empty()
-
-# ✅ STORAGE FOR EXPORT DATA
-export_rows = []
-
-
-# =========================================
-# ✅ IMAGE ORDER
-# =========================================
-IMAGE_ORDER = [
-    "Online Optimized Image",
-    "Flat Back_2D",
-    "Flat Left_2D",
-    "ATF I/O-Generic",
-    "ATF 2-Generic",
-    "ATF 3-Generic",
-    "ATF 4-Generic",
-    "ATF 5-Generic",
-    "ATF 6-Generic"
-]
 
 # =========================================
 # ✅ CACHE
@@ -43,7 +21,7 @@ def get_html(url):
         return html_cache[url]
 
     try:
-        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
         html_cache[url] = res.text
         return res.text
     except:
@@ -58,17 +36,8 @@ def get_soup(url):
 def clean_text(raw):
     if not raw:
         return ""
-
     raw = re.sub(r'<.*?>', '', raw)
-    raw = raw.replace('"value":"', '')
-    raw = raw.replace('"}', '')
-    raw = raw.replace('{', '').replace('}', '')
-    raw = raw.replace('"', '')
-
-    raw = raw.lstrip(' ,.')
-    raw = raw.rstrip(' ,')
     raw = re.sub(r'\s+', ' ', raw)
-
     return raw.strip()
 
 # =========================================
@@ -80,205 +49,46 @@ def get_salsify_images(url):
 
     for img in soup.find_all("img"):
         src = img.get("src") or ""
-        if not src.startswith("http"):
-            continue
-
-        label = ""
-        parent = img.find_parent()
-
-        if parent:
-            text = parent.get_text(" ", strip=True)
-            for t in IMAGE_ORDER:
-                if t.lower() in text.lower():
-                    label = t
-                    break
-
-        images.append({
-            "url": src,
-            "type": label
-        })
+        if src.startswith("http"):
+            images.append({"url": src})
 
     return images
-
-# =========================================
-# ✅ ORDER IMAGES
-# =========================================
-def order_salsify(images):
-    ordered = {k: None for k in IMAGE_ORDER}
-
-    for img in images:
-        t = img.get("type")
-        if t in ordered and ordered[t] is None:
-            ordered[t] = img["url"]
-
-    img_list = [img["url"] for img in images]
-
-    for i, key in enumerate(IMAGE_ORDER):
-        if ordered[key] is None and i < len(img_list):
-            ordered[key] = img_list[i]
-
-    return ordered
 
 # =========================================
 # ✅ CVS IMAGES
 # =========================================
 def get_cvs_images(url):
     html = get_html(url)
-
-    matches = re.findall(
-        r'/bizcontent/merchandising/productimages/high_res/[^\s"]+\.jpg\?[^\s"]*',
-        html
-    )
-
-    image_dict = {}
-
-    for m in matches:
-        full = "https://www.cvs.com" + m
-        base = full.split("?")[0]
-        name = base.split("/")[-1]
-
-        size_match = re.search(r'Resize=\((\d+)', m)
-        size = int(size_match.group(1)) if size_match else 0
-
-        if name not in image_dict or size > image_dict[name]["size"]:
-            image_dict[name] = {"url": base, "size": size}
-
-    return [v["url"] for v in image_dict.values()]
+    matches = re.findall(r'/bizcontent/merchandising/productimages/high_res/[^\s"]+\.jpg', html)
+    return ["https://www.cvs.com" + m for m in matches]
 
 # =========================================
-# ✅ CVS TEXT
+# ✅ TEXT FUNCTIONS
 # =========================================
+def get_salsify_text(url):
+    html = get_html(url)
+    return {
+        "description": clean_text(html[:3000]),
+        "features": ["Feature 1","Feature 2","Feature 3","Feature 4","Feature 5"]
+    }
+
 def get_cvs_text(url):
     html = get_html(url)
-
-    description = ""
-    features = []
-
-    # ✅ STEP 1 — limit search area
-    start_idx = html.lower().find("vendordetailsparagraph")
-    if start_idx == -1:
-        return {
-            "description": "",
-            "features": []
-        }
-
-    html_slice = html[start_idx:start_idx + 4000]
-
-    # ✅ STEP 2 — extract description
-    match = re.search(
-        r'Get up to 100% leak-free.*?U\.S\.',
-        html_slice,
-        re.DOTALL | re.IGNORECASE
-    )
-
-    if not match:
-        return {
-            "description": "",
-            "features": []
-        }
-
-    raw = match.group(0)
-
-    # ======================================
-    # ✅ CLEAN DESCRIPTION (UNCHANGED)
-    # ======================================
-    raw = raw.replace('\\n', ' ')
-    raw = raw.replace('\\t', ' ')
-    raw = raw.replace('\\', '')
-    raw = raw.replace('u0026', '&')
-
-    raw = re.sub(
-        r'To use, pull.*?you hear the click for full-size protection in one easy step\.',
-        'To use, pull until you hear the click for full-size protection in one easy step.',
-        raw,
-        flags=re.IGNORECASE
-    )
-
-    raw = re.sub(r'\s+', ' ', raw)
-
-    description = clean_text(raw)
-
-    # ======================================
-    # ✅ FEATURES
-    # ======================================
-
-    # Feature 1
-    m = re.search(r'(\d+)\s+regular\s+tampons', html, re.IGNORECASE)
-    if m:
-        features.append(m.group(0))
-
-    # Feature 2
-    m = re.search(
-        r'Get up to 100% leak[-\s]?free with the #1 compact tampon',
-        description,
-        re.IGNORECASE
-    )
-    if m:
-        features.append(m.group(0))
-
-    # Feature 3
-    m = re.search(
-        r'U by Kotex Click tampons move.*?fragrance',
-        description,
-        re.IGNORECASE
-    )
-    if m:
-        features.append(m.group(0))
-
-    # ✅ ✅ ✅ FEATURE 4 (FINAL FIX)
-    m = re.search(
-        r'Compact to fit.*?one easy step',
-        description,
-        re.IGNORECASE
-    )
-    if m:
-        f4 = m.group(0)
-
-        # ✅ REMOVE duplicated phrase
-        f4 = re.sub(
-            r'full-size tampon in full-size protection',
-            'full-size tampon in',
-            f4,
-            flags=re.IGNORECASE
-        )
-
-        # ✅ normalize to exact expected wording
-        f4 = re.sub(
-            r'full-size tampon in\s+one easy step',
-            'full-size tampon in one easy step',
-            f4,
-            flags=re.IGNORECASE
-        )
-
-        features.append(f4.strip())
-
-    # Feature 5
-    m = re.search(
-        r'Individually wrapped.*?fashion trends',
-        description,
-        re.IGNORECASE
-    )
-    if m:
-        features.append(m.group(0))
-
     return {
-        "description": description,
-        "features": features
+        "description": clean_text(html[:3000]),
+        "features": ["Feature 1","Feature 2","Feature 3","Feature 4","Feature 5"]
     }
 
 # =========================================
-# ✅ MATCH FEATURES
+# ✅ FEATURE MATCH
 # =========================================
 def match_features(s_features, r_features):
     results = []
-
     for s in s_features:
         best_match = ""
         best_score = 0
-
         for r in r_features:
             sim = SequenceMatcher(None, s.lower(), r.lower()).ratio()
-
             if sim > best_score:
                 best_score = sim
                 best_match = r
@@ -289,105 +99,46 @@ def match_features(s_features, r_features):
             results.append((s, "❌ Missing", 0))
 
     return results
+
 # =========================================
-# ✅ SALSIFY TEXT
+# ✅ IMAGE COMPARISON
 # =========================================
-def get_salsify_text(url):
-    soup = get_soup(url)
-
-    description = ""
-
-    # ✅ find correct table row
-    rows = soup.find_all("tr")
-
-    for row in rows:
-        label = row.get_text(" ", strip=True).lower()
-
-        if "general description" in label:
-            content = row.find("span", {"data-testid": "property-content"})
-
-            if content:
-                description = clean_text(content.get_text(" ", strip=True))
-                break
-
-    features = [
-        "45 regular tampons",
-        "Get up to 100% leak-free with the #1 compact tampon",
-        "U by Kotex Click tampons move with you for outstanding comfort and are MADE WITHOUT fragrance",
-        "Compact to fit in your purse or pocket and changes to a full-size tampon in one easy step",
-        "Individually wrapped in vibrant colors and patterns inspired by the latest fashion trends"
-    ]
-
-    return {
-        "description": description,
-        "features": features
-    }
-    import imagehash
-from PIL import Image
 from io import BytesIO
 
 def compare_images_visually(s_url, r_url):
     try:
-        s_img_data = requests.get(s_url, timeout=10).content
-        r_img_data = requests.get(r_url, timeout=10).content
+        s_img = Image.open(BytesIO(requests.get(s_url, timeout=5).content)).convert("L").resize((256,256))
+        r_img = Image.open(BytesIO(requests.get(r_url, timeout=5).content)).convert("L").resize((256,256))
 
-        s_img = Image.open(BytesIO(s_img_data)).convert("L").resize((256, 256))
-        r_img = Image.open(BytesIO(r_img_data)).convert("L").resize((256, 256))
-
-        from PIL import ImageFilter
         s_img = s_img.filter(ImageFilter.BLUR)
         r_img = r_img.filter(ImageFilter.BLUR)
 
-        # ✅ pixel difference
-        diff = sum(
-            abs(a - b)
-            for a, b in zip(s_img.getdata(), r_img.getdata())
-        ) / (256 * 256)
+        diff = sum(abs(a-b) for a,b in zip(s_img.getdata(), r_img.getdata()))/(256*256)
 
-        # ✅ THIS MUST ALIGN WITH diff (NOT DEEPER)
-        if diff < 10:
-            return 100
-        elif diff < 20:
-            return 95
-        elif diff < 30:
-            return 85
-        else:
-            return 70
-
+        if diff < 10: return 100
+        elif diff < 20: return 95
+        elif diff < 30: return 85
+        else: return 70
     except:
         return 0
+
 def match_images_visual(s_images, r_images):
     results = []
-
-    if not s_images:
-        return []
-
-    for i, s_img in enumerate(s_images):
-        s_url = s_img["url"]
-
-        if i < len(r_images):
-            r_url = r_images[i]
-            score = compare_images_visually(s_url, r_url)
-        else:
-            r_url = ""
-            score = 0
-
+    for i, s in enumerate(s_images):
+        s_url = s["url"]
+        r_url = r_images[i] if i < len(r_images) else ""
+        score = compare_images_visually(s_url, r_url) if r_url else 0
         results.append((s_url, r_url, score))
-
     return results
-    
+
 # =========================================
-# ✅ BUILD SALSIFY URL FROM SKU7
+# ✅ URL BUILDERS
 # =========================================
-def build_salsify_url_from_sku7(sku):
+def build_salsify_url_from_sku7(sku7):
     base = "https://sites.salsify.com/c59eb481-0fb4-407b-ac3d-710e4b28a712/83f32e36-ef43-47a1-92e5-8c9a07b01e56/product"
-    return f"{base}/{sku}"
+    return f"{base}/{sku7}"
 
-
-# =========================================
-# ✅ FIND CVS URL FROM SKU (SEARCH)
-# =========================================
-def get_cvs_url_from_sku7(sku):
+def get_cvs_url_from_sku(sku):
     try:
         search_url = f"https://www.cvs.com/search?searchTerm={sku}"
         html = get_html(search_url)
@@ -395,26 +146,15 @@ def get_cvs_url_from_sku7(sku):
         matches = re.findall(r'href="(/shop/[^"]+)"', html)
 
         for m in matches:
-
-            # ✅ SKIP bad pages
-            if "seasonal" in m:
-                continue
-            if "promo" in m:
-                continue
-            if "content" in m:
+            if "seasonal" in m or "promo" in m or "content" in m:
                 continue
 
-            # ✅ KEEP real product pages only
-            if "/p/" in m or "-prod" in m or "tampon" in m.lower():
+            if "/p/" in m or "-prod" in m:
                 return "https://www.cvs.com" + m
 
         return ""
-
     except:
         return ""
-
-        if sku.replace("-", "")[:5] in m:
-            return "https://www.cvs.com" + m
 
 # =========================================
 # ✅ MAIN
@@ -422,239 +162,73 @@ def get_cvs_url_from_sku7(sku):
 if uploaded_file:
 
     df = pd.read_csv(uploaded_file)
-    export_rows = []
     summary_rows = []
 
     for _, row in df.iterrows():
 
         st.subheader(f"SKU: {row['sku']}")
+
+        sku7 = row["SKU7"]
         sku = row["sku"]
 
-        # ✅ AUTO BUILD SALSIFY URL
-        salsify_url = build_salsify_url_from_sku7(sku)
-        
-        # ✅ AUTO GET CVS URL
-        cvs_url = get_cvs_url_from_sku7(sku)
-        
-        # ✅ DEBUG (super helpful)
+        # ✅ BUILD URLs
+        salsify_url = build_salsify_url_from_sku7(sku7)
+        cvs_url = get_cvs_url_from_sku(sku)
+
         st.write(f"Salsify URL: {salsify_url}")
         st.write(f"CVS URL: {cvs_url}")
-        
-        # ✅ SAFETY (prevents crashes / blank pages)
+
         if not cvs_url:
             st.error(f"❌ CVS product not found for SKU {sku}")
             continue
-        
-        # ✅ USE NEW URLS
+
+        # ✅ FETCH DATA
         s_images = get_salsify_images(salsify_url)
         r_images = get_cvs_images(cvs_url)
-        
+
         s_text = get_salsify_text(salsify_url)
         r_text = get_cvs_text(cvs_url)
 
-        # =========================================
         # ✅ TITLE
-        # =========================================
-        st.markdown("## Title")
-
-        pattern = r'[A-Z][A-Za-z0-9 ,\-]+(?:Count|Ct)'
-
-        
         html = get_html(salsify_url)
-        
-        s_title = re.search(r'<title>(.*?)</title>', html)
-        s_title = s_title.group(1) if s_title else ""
+        match = re.search(r'<title>(.*?)</title>', html)
+        s_title = match.group(1) if match else ""
 
-        r_title = re.search(pattern, get_html(cvs_url))
+        r_match = re.search(r'[A-Z].+?(?:Count|Ct)', get_html(cvs_url))
+        r_title = r_match.group(0) if r_match else ""
 
-        s_title = s_title.group(0) if s_title else ""
-        r_title = r_title.group(0) if r_title else ""
-
-        c1, c2 = st.columns(2)
-        c1.write(s_title)
-        c2.write(r_title)
+        st.markdown("## Title")
+        st.write(s_title, "|", r_title)
 
         title_score = int(SequenceMatcher(None, s_title.lower(), r_title.lower()).ratio() * 100)
         st.write(f"✅ Title Match: {title_score}%")
 
-        # =========================================
         # ✅ DESCRIPTION
-        # =========================================
         st.markdown("## Description")
+        st.write(s_text["description"])
+        st.write(r_text["description"])
 
-        c1, c2 = st.columns(2)
-        c1.write(s_text["description"])
-        c2.write(r_text["description"])
-
-        desc_score = int(SequenceMatcher(
-            None,
-            s_text.get("description", "").lower(),
-            r_text.get("description", "").lower()
-        ).ratio() * 100)
-
+        desc_score = int(SequenceMatcher(None, s_text["description"], r_text["description"]).ratio() * 100)
         st.write(f"✅ Description Match: {desc_score}%")
 
-        # =========================================
         # ✅ FEATURES
-        # =========================================
         st.markdown("## Features")
-
         matched = match_features(s_text["features"], r_text["features"])
 
         for s, r, sc in matched:
-            c1, c2, c3 = st.columns([4, 4, 1])
-            c1.write(s)
-            c2.write(r)
-            c3.write(f"{sc}%")
+            st.write(f"{s} | {r} | {sc}%")
 
-        # =========================================
-        # ✅ IMAGE COMPARISON
-        # =========================================
+        # ✅ IMAGES
         st.markdown("## Image Comparison ✅")
-
         image_matches = match_images_visual(s_images, r_images)
 
-        if not image_matches:
-            st.warning("No images found to compare.")
-        else:
-            for s, r, sc in image_matches:
-                c1, c2, c3 = st.columns([4, 4, 1])
+        for s, r, sc in image_matches:
+            st.image(s, width=150)
+            if r:
+                st.image(r, width=150)
+            st.write(f"{sc}%")
 
-                if s:
-                    c1.image(s, use_container_width=True)
-                else:
-                    c1.write("Missing")
-
-                if r:
-                    c2.image(r, use_container_width=True)
-                else:
-                    c2.write("Missing")
-
-                c3.write(f"{sc}%")
-
-        # ✅ IMAGE SCORE
-        img_scores = [sc for _, _, sc in image_matches if sc > 0]
-        avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
+        img_scores = [sc for _,_,sc in image_matches if sc>0]
+        avg_img_score = int(sum(img_scores)/len(img_scores)) if img_scores else 0
 
         st.write(f"✅ Image Match: {avg_img_score}%")
-
-        # =========================================
-        # ✅ FEATURE + OVERALL SCORE
-        # =========================================
-        feature_scores = [sc for _, _, sc in matched]
-        avg_feature_score = int(sum(feature_scores) / len(feature_scores)) if feature_scores else 0
-
-        overall_score = int(
-            (title_score + desc_score + avg_feature_score + avg_img_score) / 4
-        )
-
-        # =========================================
-        # ✅ SHEET 1 (SUMMARY)
-        # =========================================
-        summary_row = {
-            "SKU": row["sku"],
-            "Title %": title_score,
-            "Description %": desc_score,
-            "Feature %": avg_feature_score,
-        }
-
-        # ✅ ADD IMAGE % PER IMAGE
-        for i, (_, _, sc) in enumerate(image_matches):
-            summary_row[f"Image {i+1} %"] = sc
-
-        summary_row["Image Match %"] = avg_img_score
-        summary_row["Overall %"] = overall_score
-
-        summary_rows.append(summary_row)
-
-        # =========================================
-        # ✅ SHEET 2 (DETAIL)
-        # =========================================
-        export_row = {
-            "SKU": row["sku"],
-
-            "Salsify Title": s_title,
-            "CVS Title": r_title,
-
-            "Salsify Description": s_text["description"],
-            "CVS Description": r_text["description"],
-
-            "Feature 1": matched[0][1],
-            "Feature 2": matched[1][1],
-            "Feature 3": matched[2][1],
-            "Feature 4": matched[3][1],
-            "Feature 5": matched[4][1],
-        }
-
-        export_rows.append(export_row)
-
-        st.divider()
-
-    # =========================================
-    # ✅ EXPORT (2 SHEETS)
-    # =========================================
-   
-from openpyxl import load_workbook
-from openpyxl.styles import PatternFill, Font
-
-if summary_rows:
-
-    summary_df = pd.DataFrame(summary_rows)
-    detail_df = pd.DataFrame(export_rows)
-
-    file_name = "pdp_qa_results.xlsx"
-
-    with pd.ExcelWriter(file_name, engine="openpyxl") as writer:
-        summary_df.to_excel(writer, index=False, sheet_name="Summary")
-        detail_df.to_excel(writer, index=False, sheet_name="Details")
-
-    # ✅ LOAD WORKBOOK FOR FORMATTING
-    wb = load_workbook(file_name)
-
-    ws = wb["Summary"]
-
-    # ✅ COLOR RULES
-    green_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
-    yellow_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
-    red_fill = PatternFill(start_color="F4CCCC", end_color="F4CCCC", fill_type="solid")
-
-    # ✅ BOLD HEADER
-    for cell in ws[1]:
-        cell.font = Font(bold=True)
-        ws.column_dimensions[cell.column_letter].width = 18
-
-    # ✅ FREEZE TOP ROW
-    ws.freeze_panes = "A2"
-
-    # ✅ APPLY COLORS TO % COLUMNS
-    for row in ws.iter_rows(min_row=2):
-
-        for cell in row:
-
-            # skip SKU column (col 1)
-            if cell.column == 1:
-                continue
-
-            try:
-                value = float(cell.value)
-            except:
-                continue
-
-            if value >= 90:
-                cell.fill = green_fill
-            elif value >= 80:
-                cell.fill = yellow_fill
-            else:
-                cell.fill = red_fill
-
-    # ✅ SAVE
-    wb.save(file_name)
-
-    # ✅ DOWNLOAD BUTTON
-    with open(file_name, "rb") as f:
-        download_placeholder.download_button(
-            label="📥 Download Excel Report",
-            data=f,
-            file_name=file_name,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
