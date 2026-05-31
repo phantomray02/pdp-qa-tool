@@ -268,6 +268,14 @@ def get_cvs_text(url):
         "description": description,
         "features": features
     }
+# =========================================
+# ✅ TEXT NORMALIZATION (FOR MATCHING)
+# =========================================
+def normalize_text(text):
+    text = text.lower()
+    text = re.sub(r'[^a-z0-9\s]', '', text)
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
 
 # =========================================
 # ✅ MATCH FEATURES
@@ -281,12 +289,12 @@ def match_features(s_features, r_features):
 
         for r in r_features:
             
-            sim = SequenceMatcher(
-                None,
-                normalize_text(s),
-                normalize_text(r)
-            ).ratio()
 
+sim = SequenceMatcher(
+    None,
+    normalize_text(s),
+    normalize_text(r)
+).ratio()
 
             if sim > best_score:
                 best_score = sim
