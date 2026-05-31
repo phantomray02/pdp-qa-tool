@@ -139,22 +139,14 @@ def build_salsify_url_from_sku7(sku7):
     return f"{base}/{sku7}"
 
 def get_cvs_url_from_sku(sku):
-    try:
-        search_url = f"https://www.cvs.com/search?searchTerm={sku}"
-        html = get_html(search_url)
+    direct = f"https://www.cvs.com/shop?skuId={sku}"
+    html = get_html(direct)
 
-        matches = re.findall(r'href="(/shop/[^"]+)"', html)
+    if "product" in html.lower():
+        return direct
 
-        for m in matches:
-            if "seasonal" in m or "promo" in m or "content" in m:
-                continue
-
-            if "/p/" in m or "-prod" in m:
-                return "https://www.cvs.com" + m
-
-        return ""
-    except:
-        return ""
+    # fallback
+    return f"https://www.cvs.com/search?searchTerm={sku}"
 
 # =========================================
 # ✅ MAIN
