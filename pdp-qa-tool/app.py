@@ -392,14 +392,29 @@ def get_cvs_url_from_sku7(sku):
         search_url = f"https://www.cvs.com/search?searchTerm={sku}"
         html = get_html(search_url)
 
-        match = re.search(r'href="(/shop/[^"]+)"', html)
+        matches = re.findall(r'href="(/shop/[^"]+)"', html)
 
-        if match:
-            return "https://www.cvs.com" + match.group(1)
+        for m in matches:
+
+            # ✅ SKIP bad pages
+            if "seasonal" in m:
+                continue
+            if "promo" in m:
+                continue
+            if "content" in m:
+                continue
+
+            # ✅ KEEP real product pages only
+            if "/p/" in m or "-prod" in m or "tampon" in m.lower():
+                return "https://www.cvs.com" + m
 
         return ""
+
     except:
         return ""
+
+        if sku.replace("-", "")[:5] in m:
+            return "https://www.cvs.com" + m
 
 # =========================================
 # ✅ MAIN
@@ -444,7 +459,12 @@ if uploaded_file:
 
         pattern = r'[A-Z][A-Za-z0-9 ,\-]+(?:Count|Ct)'
 
-        s_title = re.search(pattern, get_html(salsify_url))
+        
+        html = get_html(salsify_url)
+        
+        s_title = re.search(r'<title>(.*?)</title>', html)
+        s_title = s_title.group(1) if s_title else ""
+
         r_title = re.search(pattern, get_html(cvs_url))
 
         s_title = s_title.group(0) if s_title else ""
