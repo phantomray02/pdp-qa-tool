@@ -375,6 +375,32 @@ def match_images_visual(s_images, r_images):
         results.append((s_url, r_url, score))
 
     return results
+    
+# =========================================
+# ✅ BUILD SALSIFY URL FROM SKU7
+# =========================================
+def build_salsify_url_from_sku7(sku):
+    base = "https://sites.salsify.com/c59eb481-0fb4-407b-ac3d-710e4b28a712/83f32e36-ef43-47a1-92e5-8c9a07b01e56/product"
+    return f"{base}/{sku}"
+
+
+# =========================================
+# ✅ FIND CVS URL FROM SKU (SEARCH)
+# =========================================
+def get_cvs_url_from_sku7(sku):
+    try:
+        search_url = f"https://www.cvs.com/search?searchTerm={sku}"
+        html = get_html(search_url)
+
+        match = re.search(r'href="(/shop/[^"]+)"', html)
+
+        if match:
+            return "https://www.cvs.com" + match.group(1)
+
+        return ""
+    except:
+        return ""
+
 # =========================================
 # ✅ MAIN
 # =========================================
@@ -387,12 +413,29 @@ if uploaded_file:
     for _, row in df.iterrows():
 
         st.subheader(f"SKU: {row['sku']}")
+        sku = row["sku"]
 
-        s_images = get_salsify_images(row["salsify_url"])
-        r_images = get_cvs_images(row["retail_url"])
-
-        s_text = get_salsify_text(row["salsify_url"])
-        r_text = get_cvs_text(row["retail_url"])
+        # ✅ AUTO BUILD SALSIFY URL
+        salsify_url = build_salsify_url_from_sku7(sku)
+        
+        # ✅ AUTO GET CVS URL
+        cvs_url = get_cvs_url_from_sku7(sku)
+        
+        # ✅ DEBUG (super helpful)
+        st.write(f"Salsify URL: {salsify_url}")
+        st.write(f"CVS URL: {cvs_url}")
+        
+        # ✅ SAFETY (prevents crashes / blank pages)
+        if not cvs_url:
+            st.error(f"❌ CVS product not found for SKU {sku}")
+            continue
+        
+        # ✅ USE NEW URLS
+        s_images = get_salsify_images(salsify_url)
+        r_images = get_cvs_images(cvs_url)
+        
+        s_text = get_salsify_text(salsify_url)
+        r_text = get_cvs_text(cvs_url)
 
         # =========================================
         # ✅ TITLE
@@ -401,8 +444,8 @@ if uploaded_file:
 
         pattern = r'[A-Z][A-Za-z0-9 ,\-]+(?:Count|Ct)'
 
-        s_title = re.search(pattern, get_html(row["salsify_url"]))
-        r_title = re.search(pattern, get_html(row["retail_url"]))
+        s_title = re.search(pattern, get_html(salsify_url))
+        r_title = re.search(pattern, get_html(cvs_url))
 
         s_title = s_title.group(0) if s_title else ""
         r_title = r_title.group(0) if r_title else ""
