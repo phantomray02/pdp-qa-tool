@@ -353,19 +353,29 @@ def compare_images_visually(s_url, r_url):
             abs(a - b)
             for a, b in zip(s_img.getdata(), r_img.getdata())
         ) / (128 * 128)
+        
+        # ✅ BOOST: reward very similar structure
+        if abs(len(s_img.getdata()) - len(r_img.getdata())) < 100:
+            diff *= 0.9
 
-        if diff < 8:
+
+               if diff < 5:
             return 100
+        elif diff < 10:
+            return 95
         elif diff < 15:
             return 90
         elif diff < 25:
-            return 75
-        elif diff < 40:
-            return 50
-        elif diff < 60:
-            return 30
+            return 80
+        elif diff < 35:
+            return 65
+        elif diff < 50:
+            return 45
+        elif diff < 70:
+            return 25
         else:
             return 10
+
 
     except:
         return 0
