@@ -138,15 +138,32 @@ def build_salsify_url_from_sku7(sku7):
     base = "https://sites.salsify.com/c59eb481-0fb4-407b-ac3d-710e4b28a712/83f32e36-ef43-47a1-92e5-8c9a07b01e56/product"
     return f"{base}/{sku7}"
 
+
 def get_cvs_url_from_sku(sku):
-    direct = f"https://www.cvs.com/shop?skuId={sku}"
-    html = get_html(direct)
+    try:
+        search_url = f"https://www.cvs.com/search?searchTerm={sku}"
+        html = get_html(search_url)
 
-    if "product" in html.lower():
-        return direct
+        matches = re.findall(r'href="(/shop/[^"]+)"', html)
 
-    # fallback
-    return f"https://www.cvs.com/search?searchTerm={sku}"
+        for m in matches:
+
+            # ✅ must be real product page
+            if "prodid" not in m:
+                continue
+
+            if "seasonal" in m or "promo" in m:
+                continue
+
+            # ✅ ensure correct SKU match
+            if f"skuId={sku}" in m or "prodid" in m:
+                return "https://www.cvs.com" + m
+
+        return ""
+
+    except:
+        return ""
+
 
 # =========================================
 # ✅ MAIN
