@@ -413,6 +413,75 @@ if uploaded_file:
 
         s_text = get_salsify_text(row["salsify_url"])
         r_text = get_cvs_text(row["retail_url"])
+            # =========================================
+    # ✅ EXPORT (2 SHEETS)
+    # =========================================
+   
+from openpyxl import load_workbook
+from openpyxl.styles import PatternFill, Font
+
+if summary_rows:
+
+    summary_df = pd.DataFrame(summary_rows)
+    detail_df = pd.DataFrame(export_rows)
+
+    file_name = "pdp_qa_results.xlsx"
+
+    with pd.ExcelWriter(file_name, engine="openpyxl") as writer:
+        summary_df.to_excel(writer, index=False, sheet_name="Summary")
+        detail_df.to_excel(writer, index=False, sheet_name="Details")
+
+    # ✅ LOAD WORKBOOK FOR FORMATTING
+    wb = load_workbook(file_name)
+
+    ws = wb["Summary"]
+
+    # ✅ COLOR RULES
+    green_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+    yellow_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
+    red_fill = PatternFill(start_color="F4CCCC", end_color="F4CCCC", fill_type="solid")
+
+    # ✅ BOLD HEADER
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+        ws.column_dimensions[cell.column_letter].width = 18
+
+    # ✅ FREEZE TOP ROW
+    ws.freeze_panes = "A2"
+
+    # ✅ APPLY COLORS TO % COLUMNS
+    for row in ws.iter_rows(min_row=2):
+
+        for cell in row:
+
+            # skip SKU column (col 1)
+            if cell.column == 1:
+                continue
+
+            try:
+                value = float(cell.value)
+            except:
+                continue
+
+            if value >= 90:
+                cell.fill = green_fill
+            elif value >= 80:
+                cell.fill = yellow_fill
+            else:
+                cell.fill = red_fill
+
+    # ✅ SAVE
+    wb.save(file_name)
+
+    # ✅ DOWNLOAD BUTTON
+    with open(file_name, "rb") as f:
+        download_placeholder.download_button(
+            label="📥 Download Excel Report",
+            data=f,
+            file_name=file_name,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
 
         # =========================================
         # ✅ TITLE
@@ -549,72 +618,4 @@ if uploaded_file:
         export_rows.append(export_row)
 
         st.divider()
-
-    # =========================================
-    # ✅ EXPORT (2 SHEETS)
-    # =========================================
-   
-from openpyxl import load_workbook
-from openpyxl.styles import PatternFill, Font
-
-if summary_rows:
-
-    summary_df = pd.DataFrame(summary_rows)
-    detail_df = pd.DataFrame(export_rows)
-
-    file_name = "pdp_qa_results.xlsx"
-
-    with pd.ExcelWriter(file_name, engine="openpyxl") as writer:
-        summary_df.to_excel(writer, index=False, sheet_name="Summary")
-        detail_df.to_excel(writer, index=False, sheet_name="Details")
-
-    # ✅ LOAD WORKBOOK FOR FORMATTING
-    wb = load_workbook(file_name)
-
-    ws = wb["Summary"]
-
-    # ✅ COLOR RULES
-    green_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
-    yellow_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
-    red_fill = PatternFill(start_color="F4CCCC", end_color="F4CCCC", fill_type="solid")
-
-    # ✅ BOLD HEADER
-    for cell in ws[1]:
-        cell.font = Font(bold=True)
-        ws.column_dimensions[cell.column_letter].width = 18
-
-    # ✅ FREEZE TOP ROW
-    ws.freeze_panes = "A2"
-
-    # ✅ APPLY COLORS TO % COLUMNS
-    for row in ws.iter_rows(min_row=2):
-
-        for cell in row:
-
-            # skip SKU column (col 1)
-            if cell.column == 1:
-                continue
-
-            try:
-                value = float(cell.value)
-            except:
-                continue
-
-            if value >= 90:
-                cell.fill = green_fill
-            elif value >= 80:
-                cell.fill = yellow_fill
-            else:
-                cell.fill = red_fill
-
-    # ✅ SAVE
-    wb.save(file_name)
-
-    # ✅ DOWNLOAD BUTTON
-    with open(file_name, "rb") as f:
-        download_placeholder.download_button(
-            label="📥 Download Excel Report",
-            data=f,
-            file_name=file_name,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+        
