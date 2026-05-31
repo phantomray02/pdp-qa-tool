@@ -295,36 +295,36 @@ def match_features(s_features, r_features):
 # =========================================
 # ✅ SALSIFY TEXT
 # =========================================
+
 def get_salsify_text(url):
     soup = get_soup(url)
 
     description = ""
+    features = []
 
-    # ✅ find correct table row
     rows = soup.find_all("tr")
 
+    # ✅ Find description
     for row in rows:
         label = row.get_text(" ", strip=True).lower()
 
         if "general description" in label:
             content = row.find("span", {"data-testid": "property-content"})
-
             if content:
                 description = clean_text(content.get_text(" ", strip=True))
                 break
 
-           features = []
-        
-        # ✅ extract bullet-like rows from table
-        for row in rows:
-            text = row.get_text(" ", strip=True)
-        
-            if len(text) > 20 and len(text) < 200:
-                features.append(text)
-        
-        # ✅ fallback (if nothing found)
-        if not features:
-            features = [description]
+    # ✅ Extract features (dynamic, not hardcoded)
+    for row in rows:
+        text = row.get_text(" ", strip=True)
+
+        # Filter: avoid tiny / noisy rows
+        if 20 < len(text) < 200:
+            features.append(text)
+
+    # ✅ fallback (prevents empty issues)
+    if not features and description:
+        features = [description]
 
     return {
         "description": description,
