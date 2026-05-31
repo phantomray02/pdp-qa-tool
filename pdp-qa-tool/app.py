@@ -37,6 +37,7 @@ IMAGE_ORDER = [
 # ✅ CACHE
 # =========================================
 html_cache = {}
+image_cache = {}
 
 def get_html(url):
     if url in html_cache:
@@ -328,11 +329,20 @@ from io import BytesIO
 
 def compare_images_visually(s_url, r_url):
     try:
-        s_img_data = requests.get(s_url, timeout=10).content
-        r_img_data = requests.get(r_url, timeout=10).content
+            if s_url in image_cache:
+        s_img_data = image_cache[s_url]
+    else:
+        s_img_data = requests.get(s_url, timeout=5).content
+        image_cache[s_url] = s_img_data
+    
+    if r_url in image_cache:
+        r_img_data = image_cache[r_url]
+    else:
+        r_img_data = requests.get(r_url, timeout=5).content
+        image_cache[r_url] = r_img_data
 
-        s_img = Image.open(BytesIO(s_img_data)).convert("L").resize((256, 256))
-        r_img = Image.open(BytesIO(r_img_data)).convert("L").resize((256, 256))
+        s_img = Image.open(BytesIO(s_img_data)).convert("L").resize((128, 128))
+        r_img = Image.open(BytesIO(r_img_data)).convert("L").resize((128, 128))
 
         from PIL import ImageFilter
         s_img = s_img.filter(ImageFilter.BLUR)
