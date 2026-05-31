@@ -299,59 +299,54 @@ def match_features(s_features, r_features):
 
     return results
 # =========================================
-# ✅ SALSIFY TEXT
+# ✅ SALSIFY TEXT CLEAN VERSION
 # =========================================
+def get_salsify_text(url):
+    soup = get_soup(url)
 
-        def get_salsify_text(url):
-            soup = get_soup(url)
-        
-            description = ""
-            features = []
-        
-            rows = soup.find_all("tr")
-        
-            # ✅ DESCRIPTION
-            for row in rows:
-                label = row.get_text(" ", strip=True).lower()
-        
-                if "general description" in label:
-                    content = row.find("span", {"data-testid": "property-content"})
-                    if content:
-                        description = clean_text(content.get_text(" ", strip=True))
-                        break
-        
-            # ✅ FEATURES (CLEAN FILTERED VERSION)
-            for row in rows:
-                text = row.get_text(" ", strip=True)
-        
-                # ✅ skip junk fields
-                if any(x in text.lower() for x in [
-                    "gtin",
-                    "product title",
-                    "general",
-                    "item number",
-                    "sku",
-                    "id",
-                    "upc"
-                ]):
-                    continue
-        
-                # ✅ clean labels like "General Feature 1"
-                text = re.sub(r'general feature \d+\s*', '', text, flags=re.IGNORECASE)
-                text = re.sub(r'general product title\s*', '', text, flags=re.IGNORECASE)
-        
-                # ✅ keep only meaningful content
-                if 30 < len(text) < 200:
-                    features.append(text.strip())
-        
-            # ✅ fallback if empty
-            if not features and description:
-                features = [description]
-        
-            return {
-                "description": description,
-                "features": features
-            }
+    description = ""
+    features = []
+
+    rows = soup.find_all("tr")
+
+    # ✅ DESCRIPTION
+    for row in rows:
+        label = row.get_text(" ", strip=True).lower()
+
+        if "general description" in label:
+            content = row.find("span", {"data-testid": "property-content"})
+            if content:
+                description = clean_text(content.get_text(" ", strip=True))
+                break
+
+    # ✅ FEATURES (FILTERED)
+    for row in rows:
+        text = row.get_text(" ", strip=True)
+
+        if any(x in text.lower() for x in [
+            "gtin",
+            "product title",
+            "general",
+            "item number",
+            "sku",
+            "id",
+            "upc"
+        ]):
+            continue
+
+        text = re.sub(r'general feature \d+\s*', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'general product title\s*', '', text, flags=re.IGNORECASE)
+
+        if 30 < len(text) < 200:
+            features.append(text.strip())
+
+    if not features and description:
+        features = [description]
+
+    return {
+        "description": description,
+        "features": features
+    }
 # =========================================
 # ✅ FAST + ALL IMAGES COMPARISON
 # =========================================
