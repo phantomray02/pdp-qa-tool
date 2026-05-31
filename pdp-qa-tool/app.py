@@ -288,13 +288,12 @@ def match_features(s_features, r_features):
         best_score = 0
 
         for r in r_features:
-            
-
-sim = SequenceMatcher(
-    None,
-    normalize_text(s),
-    normalize_text(r)
-).ratio()
+            # ✅ FIXED INDENTATION HERE
+            sim = SequenceMatcher(
+                None,
+                normalize_text(s),
+                normalize_text(r)
+            ).ratio()
 
             if sim > best_score:
                 best_score = sim
