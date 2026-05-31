@@ -43,7 +43,7 @@ def get_html(url):
         return html_cache[url]
 
     try:
-        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
         html_cache[url] = res.text
         return res.text
     except:
@@ -388,7 +388,11 @@ if uploaded_file:
 
         st.subheader(f"SKU: {row['sku']}")
 
-        s_images = get_salsify_images(row["salsify_url"])
+        
+        salsify_url = build_salsify_url_from_sku7(row["sku"])
+        s_images = get_salsify_images(salsify_url)
+        s_text = get_salsify_text(salsify_url)
+
         r_images = get_cvs_images(row["retail_url"])
 
         s_text = get_salsify_text(row["salsify_url"])
