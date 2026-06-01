@@ -79,39 +79,42 @@ def clean_text(raw):
 # =========================================
 def get_salsify_images(url):
     soup = get_soup(url)
-    images = []
 
-    # ✅ Track ONLY the types we want to limit
-    used_slots = {
-        "Flat Back_2D": False,
-        "Flat Left_2D": False
-    }
+    images = []
+    seen_hashes = set()
 
     for img in soup.find_all("img"):
         src = img.get("src") or ""
         if not src.startswith("http"):
             continue
 
-        label = ""
-        parent = img.find_parent()
+        # ✅ download image (small version)
+        try:
+            if src in image_cache:
+                img_data = image_cache[src]
+            else:
+                img_data = requests.get(src, timeout=5).content
+                image_cache[src] = img_data
 
-        if parent:
-            text = parent.get_text(" ", strip=True)
-            for t in IMAGE_ORDER:
-                if t.lower() in text.lower():
-                    label = t
-                    break
+            # ✅ convert to small grayscale (fast compare)
+            img_obj = Image.open(BytesIO(img_data)).convert("L").resize((32, 32))
 
-        # ✅ KEY LOGIC: only limit these two
-        if label in used_slots:
-            if used_slots[label]:
-                continue  # skip duplicate
-            used_slots[label] = True  # mark as used
+            # ✅ create simple hash
+            img_hash = tuple(img_obj.getdata())
 
-        # ✅ everything else stays untouched
+        except:
+            continue
+
+        # ✅ SKIP visually duplicate images
+        if img_hash in seen_hashes:
+            continue
+
+        seen_hashes.add(img_hash)
+
+        # ✅ keep image
         images.append({
             "url": src,
-            "type": label
+            "type": ""  # keep your structure
         })
 
     return images
