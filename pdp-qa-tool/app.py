@@ -81,27 +81,36 @@ def get_salsify_images(url):
     soup = get_soup(url)
 
     images = []
-    seen_urls = set()
 
-    # ✅ ONLY target actual product gallery images
-    for img in soup.select('img[data-testid="salsify-image"]'):
+    # ✅ each section = table row
+    rows = soup.find_all("tr")
+
+    for row in rows:
+        row_text = row.get_text(" ", strip=True).lower()
+
+        # ✅ match only known sections
+        label = None
+        for t in IMAGE_ORDER:
+            if t.lower() in row_text:
+                label = t
+                break
+
+        if not label:
+            continue
+
+        # ✅ get ONLY first image in this section
+        img = row.select_one('img[data-testid="salsify-image"]')
+
+        if not img:
+            continue
+
         src = img.get("src") or ""
-
         if not src.startswith("http"):
             continue
 
-        # ✅ normalize URL (remove params)
-        clean = src.split("?")[0]
-
-        # ✅ dedupe exact sources
-        if clean in seen_urls:
-            continue
-
-        seen_urls.add(clean)
-
         images.append({
-            "url": clean,
-            "type": ""
+            "url": src.split("?")[0],
+            "type": label
         })
 
     return images
