@@ -83,7 +83,9 @@ def get_salsify_images(url):
     raw_urls = []
     final_images = []
 
-    # ✅ STEP 1: extract all images
+    # =========================
+    # ✅ STEP 1: EXTRACT IMAGES (STABLE)
+    # =========================
     for img in soup.select('img[data-testid="salsify-image"]'):
         src = img.get("src") or ""
 
@@ -93,14 +95,34 @@ def get_salsify_images(url):
     if not raw_urls:
         return []
 
-    for curr in raw_urls:
+    # =========================
+    # ✅ STEP 2: REMOVE EXACT DUPES
+    # =========================
+    seen = set()
+    unique = []
+
+    for u in raw_urls:
+        if u not in seen:
+            seen.add(u)
+            unique.append(u)
+
+    # =========================
+    # ✅ STEP 3: SMART DEDUPE
+    # =========================
+    for curr in unique:
         is_duplicate = False
 
-        for existing in final_images:
+        for idx, existing in enumerate(final_images):
             score = compare_images_visually(existing["url"], curr)
 
-            # ✅ KEY: only collapse VERY similar images (pack shots only)
-            if score > 85:
+            # ✅ FRONT/BACK → STRONG MATCH
+            if idx < 2 and score > 80:
+                is_duplicate = True
+                break
+
+            # ✅ SIDE (Flat Left) → LOOSER MATCH
+            # catches zoom / crop / icon variations
+            if idx >= 2 and score > 65:
                 is_duplicate = True
                 break
 
