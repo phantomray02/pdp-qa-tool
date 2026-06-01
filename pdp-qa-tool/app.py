@@ -108,31 +108,45 @@ def get_salsify_images(url):
     # =========================
     # ✅ STEP 3: SMART DEDUPE (FINAL LOGIC)
     # =========================
-    final_images = []
-
-    for curr in unique_urls:
-        is_duplicate = False
-
-        for idx, existing in enumerate(final_images):
-            score = compare_images_visually(existing["url"], curr)
-
-            # ✅ FRONT / BACK (very strict)
-            if idx < 2 and score > 80:
-                is_duplicate = True
-                break
-
-            # ✅ SIDE / PACK VARIANTS (slightly looser)
-            elif idx >= 2 and score > 78:
-                is_duplicate = True
-                break
-
-        if is_duplicate:
-            continue
-
-        final_images.append({
-            "url": curr,
-            "type": ""
-        })
+        final_images = []
+        pack_count = 0  # ✅ track how many pack-style images we kept
+        
+        for curr in unique_urls:
+            is_duplicate = False
+        
+            for idx, existing in enumerate(final_images):
+                score = compare_images_visually(existing["url"], curr)
+        
+                # ✅ FRONT / BACK
+                if idx < 2 and score > 80:
+                    is_duplicate = True
+                    break
+        
+                # ✅ PACKAGING (side variants)
+                if idx >= 2 and score > 78:
+                    is_duplicate = True
+                    break
+        
+            if is_duplicate:
+                continue
+        
+            # ✅ DETECT PACKAGING (product shots)
+            is_pack = False
+            if final_images:
+                score_pack = compare_images_visually(final_images[0]["url"], curr)
+                if score_pack > 50:
+                    is_pack = True
+        
+            # ✅ LIMIT PACKAGING TO 3 TOTAL
+            if is_pack:
+                if pack_count >= 3:
+                    continue
+                pack_count += 1
+        
+            final_images.append({
+                "url": curr,
+                "type": ""
+            })
 
     return final_images
 
