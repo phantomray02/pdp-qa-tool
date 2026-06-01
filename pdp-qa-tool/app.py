@@ -112,7 +112,7 @@ def get_salsify_images(url):
         score = compare_images_visually(prev, curr)
 
         # ✅ KEY RULE:
-        if i < 5 and score > 80:
+        if i < 5 and score > 60:
             continue  # collapse pack duplicates ONLY
 
         final_images.append({
