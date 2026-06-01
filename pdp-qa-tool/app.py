@@ -78,25 +78,36 @@ def clean_text(raw):
 # ✅ SALSIFY IMAGES
 # =========================================
 def get_salsify_images(url):
-    html = get_html(url)
-
-    # ✅ match all image URLs directly from raw HTML
-    matches = re.findall(r'https://[^"]+\.jpg', html)
-
-    seen = set()
+    soup = get_soup(url)
     images = []
 
-    for m in matches:
-        clean = m.split("?")[0]
+    sections = soup.find_all("tr")
 
-        if clean in seen:
+    for section in sections:
+        text = section.get_text(" ", strip=True)
+
+        label = None
+        for t in IMAGE_ORDER:
+            if t.lower() in text.lower():
+                label = t
+                break
+
+        if not label:
             continue
 
-        seen.add(clean)
+        # ✅ ONLY grab FIRST large image (main display)
+        img = section.find("img")
+
+        if not img:
+            continue
+
+        src = img.get("src") or ""
+        if not src.startswith("http"):
+            continue
 
         images.append({
-            "url": clean,
-            "type": ""
+            "url": src.split("?")[0],
+            "type": label
         })
 
     return images
