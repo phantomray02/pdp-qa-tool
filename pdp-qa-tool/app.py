@@ -80,75 +80,35 @@ def clean_text(raw):
 def get_salsify_images(url):
     soup = get_soup(url)
 
-    raw_urls = []
+    images = []
 
-    # =========================
-    # ✅ STEP 1: EXTRACT ALL IMAGES (STABLE)
-    # =========================
-    for img in soup.select('img[data-testid="salsify-image"]'):
+    # ✅ STEP 1: find each asset group (slot)
+    groups = soup.find_all("div", {"role": "group"})
+
+    for group in groups:
+        label = group.get("aria-label", "").strip()
+
+        if not label:
+            continue
+
+        # ✅ STEP 2: find first image in this group
+        img = group.select_one('img[data-testid="salsify-image"]')
+
+        if not img:
+            continue
+
         src = img.get("src") or ""
+        if not src.startswith("http"):
+            continue
 
-        if src.startswith("http"):
-            raw_urls.append(src.split("?")[0])
+        clean = src.split("?")[0]
 
-    if not raw_urls:
-        return []
+        images.append({
+            "url": clean,
+            "type": label
+        })
 
-    # =========================
-    # ✅ STEP 2: REMOVE EXACT DUPLICATES
-    # =========================
-    seen = set()
-    unique_urls = []
-
-    for url in raw_urls:
-        if url not in seen:
-            seen.add(url)
-            unique_urls.append(url)
-
-    # =========================
-    # ✅ STEP 3: SMART DEDUPE (FINAL LOGIC)
-    # =========================
-        final_images = []
-        pack_count = 0  # ✅ track how many pack-style images we kept
-        
-        for curr in unique_urls:
-            is_duplicate = False
-        
-            for idx, existing in enumerate(final_images):
-                score = compare_images_visually(existing["url"], curr)
-        
-                # ✅ FRONT / BACK
-                if idx < 2 and score > 80:
-                    is_duplicate = True
-                    break
-        
-                # ✅ PACKAGING (side variants)
-                if idx >= 2 and score > 78:
-                    is_duplicate = True
-                    break
-        
-            if is_duplicate:
-                continue
-        
-            # ✅ DETECT PACKAGING (product shots)
-            is_pack = False
-            if final_images:
-                score_pack = compare_images_visually(final_images[0]["url"], curr)
-                if score_pack > 50:
-                    is_pack = True
-        
-            # ✅ LIMIT PACKAGING TO 3 TOTAL
-            if is_pack:
-                if pack_count >= 3:
-                    continue
-                pack_count += 1
-        
-            final_images.append({
-                "url": curr,
-                "type": ""
-            })
-
-    return final_images
+    return images
 
 # =========================================
 # ✅ ORDER IMAGES
