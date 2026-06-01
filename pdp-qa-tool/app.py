@@ -80,46 +80,48 @@ def clean_text(raw):
 def get_salsify_images(url):
     soup = get_soup(url)
 
+    raw_urls = []
     final_images = []
 
-    # ✅ STEP 1: get all image elements in order
-    img_elements = soup.select('img[data-testid="salsify-image"]')
-
-    raw_urls = []
-
-    for img in img_elements:
+    # ✅ STEP 1: GET ALL IMAGES
+    for img in soup.select('img[data-testid="salsify-image"]'):
         src = img.get("src") or ""
 
-        if not src.startswith("http"):
-            continue
-
-        raw_urls.append(src.split("?")[0])
+        if src.startswith("http"):
+            raw_urls.append(src.split("?")[0])
 
     if not raw_urls:
         return []
 
-    # ✅ STEP 2: collapse clusters (THIS IS THE REAL FIX)
-    final_images.append({
-        "url": raw_urls[0],
-        "type": ""
-    })
+    # ✅ STEP 2: REMOVE EXACT DUPES
+    seen = set()
+    unique = []
 
-    for i in range(1, len(raw_urls)):
-        prev_url = final_images[-1]["url"]
-        curr_url = raw_urls[i]
+    for u in raw_urls:
+        if u not in seen:
+            seen.add(u)
+            unique.append(u)
 
-        score = compare_images_visually(prev_url, curr_url)
+    # ✅ STEP 3: ONLY CLEAN FIRST FEW (PACK SHOTS)
+    final_images.append({"url": unique[0], "type": ""})
 
-        # ✅ KEY LOGIC: skip if same cluster
-        if score > 50:
-            continue
+    for i in range(1, len(unique)):
+        prev = final_images[-1]["url"]
+        curr = unique[i]
+
+        score = compare_images_visually(prev, curr)
+
+        # ✅ KEY RULE:
+        if i < 5 and score > 80:
+            continue  # collapse pack duplicates ONLY
 
         final_images.append({
-            "url": curr_url,
+            "url": curr,
             "type": ""
         })
 
     return final_images
+
 # =========================================
 # ✅ ORDER IMAGES
 # =========================================
