@@ -86,7 +86,14 @@ def get_salsify_images(url):
     all_imgs = soup.select('img[data-testid="salsify-image"]')
 
     for img in all_imgs:
-        src = img.get("src") or ""
+        srcset = img.get("srcset") or img.get("src") or ""
+
+        # ✅ pick highest resolution image
+        if "," in srcset:
+            src = srcset.split(",")[-1].strip().split(" ")[0]
+        else:
+            src = srcset
+
         if not src.startswith("http"):
             continue
 
@@ -97,7 +104,6 @@ def get_salsify_images(url):
         for existing in unique_images:
             score = compare_images_visually(clean, existing["url"])
 
-            # ✅ stricter threshold (important)
             if score > 85:
                 is_duplicate = True
                 break
@@ -105,11 +111,7 @@ def get_salsify_images(url):
         if is_duplicate:
             continue
 
-        new_item = {
-            "url": clean,
-            "type": ""
-        }
-
+        new_item = {"url": clean, "type": ""}
         images.append(new_item)
         unique_images.append(new_item)
 
