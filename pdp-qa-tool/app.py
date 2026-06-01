@@ -459,36 +459,34 @@ if uploaded_file:
         st.subheader(f"SKU: {row['sku']}")
 
         try:
-                # =========================
-                # ✅ SAFE IMAGE LOAD
-                # =========================
-                s_images = get_salsify_images(row["salsify_url"]) or []
-                
-                # ✅ ✅ CLEAN DUPLICATES (SAFE + SIMPLE)
-                if len(s_images) > 1:
-                    cleaned = [s_images[0]]
-                
-                    for i in range(1, len(s_images)):
-                        prev = cleaned[-1]["url"]
-                        curr = s_images[i]["url"]
-                
-                        # ✅ use your existing comparison function
-                        score = compare_images_visually(prev, curr)
-                
-                        # ✅ if very similar → skip (remove duplicate)
-                        if score > 90:
-                            continue
-                
-                        cleaned.append(s_images[i])
-                
-                    s_images = cleaned
-                
-                r_images = get_cvs_images(row["retail_url"]) or []
-                
-                if not isinstance(s_images, list):
-                    s_images = []
-                if not isinstance(r_images, list):
-                    r_images = []
+            # =========================
+            # ✅ SAFE IMAGE LOAD
+            # =========================
+            s_images = get_salsify_images(row["salsify_url"]) or []
+
+            # ✅ REMOVE DUPLICATES
+            if len(s_images) > 1:
+                cleaned = [s_images[0]]
+
+                for i in range(1, len(s_images)):
+                    prev = cleaned[-1]["url"]
+                    curr = s_images[i]["url"]
+
+                    score = compare_images_visually(prev, curr)
+
+                    if score > 90:
+                        continue
+
+                    cleaned.append(s_images[i])
+
+                s_images = cleaned
+
+            r_images = get_cvs_images(row["retail_url"]) or []
+
+            if not isinstance(s_images, list):
+                s_images = []
+            if not isinstance(r_images, list):
+                r_images = []
             # =========================
             # ✅ TEXT
             # =========================
