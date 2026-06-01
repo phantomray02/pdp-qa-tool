@@ -82,43 +82,44 @@ def get_salsify_images(url):
 
     images = []
 
-    # ✅ STEP 1: GET ALL PRODUCT IMAGES
-    all_imgs = soup.select('img[data-testid="salsify-image"]')
+    # ✅ find all text containers that include labels
+    rows = soup.find_all("div")
 
-    for img in all_imgs:
-        src = img.get("src") or ""
+    for row in rows:
+        text = row.get_text(" ", strip=True)
 
-        if not src:
+        label = None
+
+        # ✅ match ANY known section label
+        for t in IMAGE_ORDER:
+            if t.lower() in text.lower():
+                label = t
+                break
+
+        # ✅ catch ATF sections too (important)
+        if not label and "atf" in text.lower():
+            label = text
+
+        if not label:
             continue
+
+        # ✅ find FIRST image inside this section
+        img = row.find("img", {"data-testid": "salsify-image"})
+
+        if not img:
+            continue
+
+        src = img.get("src") or ""
 
         if not src.startswith("http"):
             continue
 
         images.append({
             "url": src.split("?")[0],
-            "type": ""
+            "type": label
         })
 
-    # ✅ STEP 2: COLLAPSE ONLY FIRST GROUPS (PACK SHOTS)
-    if not images:
-        return images
-
-    result = [images[0]]  # always keep first (front)
-
-    for i in range(1, len(images)):
-        prev = result[-1]["url"]
-        curr = images[i]["url"]
-
-        score = compare_images_visually(prev, curr)
-
-        # ✅ ONLY collapse early clusters (pack/back/side)
-        if i < 6 and score > 40:
-            continue
-
-        result.append(images[i])
-
-    return result
-
+    return images
 # =========================================
 # ✅ ORDER IMAGES
 # =========================================
