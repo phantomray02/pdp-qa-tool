@@ -82,47 +82,42 @@ def get_salsify_images(url):
 
     images = []
 
-    # ✅ find all sections (rows)
-    sections = soup.find_all("tr")
+    # ✅ STEP 1: GET ALL PRODUCT IMAGES
+    all_imgs = soup.select('img[data-testid="salsify-image"]')
 
-    for section in sections:
-        text = section.get_text(" ", strip=True)
-
-        # ✅ match your known labels
-        label = None
-        for t in IMAGE_ORDER:
-            if t.lower() in text.lower():
-                label = t
-                break
-
-        if not label:
-            continue
-
-        # ✅ find ALL images in this section
-        imgs = section.select('img[data-testid="salsify-image"]')
-
-        if not imgs:
-            continue
-
-        # ✅ TAKE ONLY FIRST IMAGE (THIS IS THE KEY)
-        first_img = imgs[0]
-
-        src = first_img.get("src") or ""
+    for img in all_imgs:
+        src = img.get("src") or ""
 
         if not src:
-            srcset = first_img.get("srcset") or ""
-            if "," in srcset:
-                src = srcset.split(",")[0].strip().split(" ")[0]
+            continue
 
         if not src.startswith("http"):
             continue
 
         images.append({
             "url": src.split("?")[0],
-            "type": label
+            "type": ""
         })
 
-    return images
+    # ✅ STEP 2: COLLAPSE ONLY FIRST GROUPS (PACK SHOTS)
+    if not images:
+        return images
+
+    result = [images[0]]  # always keep first (front)
+
+    for i in range(1, len(images)):
+        prev = result[-1]["url"]
+        curr = images[i]["url"]
+
+        score = compare_images_visually(prev, curr)
+
+        # ✅ ONLY collapse early clusters (pack/back/side)
+        if i < 6 and score > 40:
+            continue
+
+        result.append(images[i])
+
+    return result
 
 # =========================================
 # ✅ ORDER IMAGES
