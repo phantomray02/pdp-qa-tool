@@ -81,27 +81,41 @@ def get_salsify_images(url):
     soup = get_soup(url)
 
     images = []
+    seen_labels = set()
 
-    # ✅ STEP 1: find each asset group (slot)
-    groups = soup.find_all("div", {"role": "group"})
+    # ✅ get all valid images
+    all_imgs = soup.select('img[data-testid="salsify-image"]')
 
-    for group in groups:
-        label = group.get("aria-label", "").strip()
-
-        if not label:
-            continue
-
-        # ✅ STEP 2: find first image in this group
-        img = group.select_one('img[data-testid="salsify-image"]')
-
-        if not img:
-            continue
-
+    for img in all_imgs:
         src = img.get("src") or ""
         if not src.startswith("http"):
             continue
 
         clean = src.split("?")[0]
+
+        # ✅ try to find nearby label text
+        label = ""
+
+        parent = img.find_parent()
+
+        if parent:
+            text = parent.get_text(" ", strip=True)
+
+            # ✅ match known labels
+            for t in IMAGE_ORDER:
+                if t.lower() in text.lower():
+                    label = t
+                    break
+
+            # ✅ fallback for ATF labels
+            if not label and "atf" in text.lower():
+                label = text
+
+        # ✅ ensure only one per label
+        if label:
+            if label in seen_labels:
+                continue
+            seen_labels.add(label)
 
         images.append({
             "url": clean,
