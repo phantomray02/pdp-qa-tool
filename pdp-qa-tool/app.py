@@ -81,36 +81,37 @@ def get_salsify_images(url):
     soup = get_soup(url)
 
     images = []
+    seen_groups = []
 
-    # ✅ each section = table row
-    rows = soup.find_all("tr")
+    # ✅ grab ONLY product images
+    all_imgs = soup.select('img[data-testid="salsify-image"]')
 
-    for row in rows:
-        row_text = row.get_text(" ", strip=True).lower()
-
-        # ✅ match only known sections
-        label = None
-        for t in IMAGE_ORDER:
-            if t.lower() in row_text:
-                label = t
-                break
-
-        if not label:
-            continue
-
-        # ✅ get ONLY first image in this section
-        img = row.select_one('img[data-testid="salsify-image"]')
-
-        if not img:
-            continue
-
+    for img in all_imgs:
         src = img.get("src") or ""
+
         if not src.startswith("http"):
             continue
 
+        clean = src.split("?")[0]
+
+        # ✅ GROUP BY VISUAL SIMILARITY
+        is_duplicate = False
+
+        for existing in seen_groups:
+            score = compare_images_visually(clean, existing)
+
+            if score > 90:
+                is_duplicate = True
+                break
+
+        if is_duplicate:
+            continue
+
+        seen_groups.append(clean)
+
         images.append({
-            "url": src.split("?")[0],
-            "type": label
+            "url": clean,
+            "type": ""
         })
 
     return images
