@@ -80,52 +80,46 @@ def clean_text(raw):
 def get_salsify_images(url):
     soup = get_soup(url)
 
-    raw_images = []
-    cleaned_images = []
+    final_images = []
 
-    # ✅ STEP 1: GET ALL REAL GALLERY IMAGES
-    for img in soup.select('img[data-testid="salsify-image"]'):
+    # ✅ STEP 1: get all image elements in order
+    img_elements = soup.select('img[data-testid="salsify-image"]')
+
+    raw_urls = []
+
+    for img in img_elements:
         src = img.get("src") or ""
 
         if not src.startswith("http"):
             continue
 
-        clean = src.split("?")[0]
+        raw_urls.append(src.split("?")[0])
 
-        raw_images.append(clean)
-
-    # ✅ SAFETY: if nothing found, return empty
-    if not raw_images:
+    if not raw_urls:
         return []
 
-    # ✅ STEP 2: REMOVE EXACT DUPLICATES
-    seen = set()
-    unique = []
+    # ✅ STEP 2: collapse clusters (THIS IS THE REAL FIX)
+    final_images.append({
+        "url": raw_urls[0],
+        "type": ""
+    })
 
-    for url in raw_images:
-        if url not in seen:
-            seen.add(url)
-            unique.append(url)
+    for i in range(1, len(raw_urls)):
+        prev_url = final_images[-1]["url"]
+        curr_url = raw_urls[i]
 
-    # ✅ STEP 3: COLLAPSE ONLY ADJACENT DUPLICATES
-    cleaned_images = [{"url": unique[0], "type": ""}]
+        score = compare_images_visually(prev_url, curr_url)
 
-    for i in range(1, len(unique)):
-        prev = cleaned_images[-1]["url"]
-        curr = unique[i]
-
-        score = compare_images_visually(prev, curr)
-
-        # ✅ IMPORTANT: only collapse VERY similar adjacent images
-        if score > 85:
+        # ✅ KEY LOGIC: skip if same cluster
+        if score > 50:
             continue
 
-        cleaned_images.append({
-            "url": curr,
+        final_images.append({
+            "url": curr_url,
             "type": ""
         })
 
-    return cleaned_images
+    return final_images
 # =========================================
 # ✅ ORDER IMAGES
 # =========================================
