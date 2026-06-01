@@ -79,10 +79,13 @@ def clean_text(raw):
 # =========================================
 def get_salsify_images(url):
     soup = get_soup(url)
+    images = []
 
-    # ✅ Store only FIRST image per type
-    typed_images = {k: None for k in IMAGE_ORDER}
-    fallback_images = []
+    # ✅ Track ONLY the types we want to limit
+    used_slots = {
+        "Flat Back_2D": False,
+        "Flat Left_2D": False
+    }
 
     for img in soup.find_all("img"):
         src = img.get("src") or ""
@@ -94,38 +97,24 @@ def get_salsify_images(url):
 
         if parent:
             text = parent.get_text(" ", strip=True)
-
             for t in IMAGE_ORDER:
                 if t.lower() in text.lower():
                     label = t
                     break
 
-        # ✅ If image has a recognized type → keep ONLY first
-        if label in typed_images and typed_images[label] is None:
-            typed_images[label] = src
+        # ✅ KEY LOGIC: only limit these two
+        if label in used_slots:
+            if used_slots[label]:
+                continue  # skip duplicate
+            used_slots[label] = True  # mark as used
 
-        # ✅ Fallback list (for missing types)
-        fallback_images.append(src)
+        # ✅ everything else stays untouched
+        images.append({
+            "url": src,
+            "type": label
+        })
 
-    # ✅ Build final list (only one per type)
-    final_images = []
-
-    fallback_index = 0
-
-    for key in IMAGE_ORDER:
-        if typed_images[key]:
-            final_images.append({
-                "url": typed_images[key],
-                "type": key
-            })
-        elif fallback_index < len(fallback_images):
-            final_images.append({
-                "url": fallback_images[fallback_index],
-                "type": key
-            })
-            fallback_index += 1
-
-    return final_images
+    return images
 
 # =========================================
 # ✅ ORDER IMAGES
@@ -471,6 +460,7 @@ if uploaded_file:
             # ✅ SAFE IMAGE LOAD
             # =========================
             s_images = get_salsify_images(row["salsify_url"]) or []
+            
             r_images = get_cvs_images(row["retail_url"]) or []
 
             if not isinstance(s_images, list):
