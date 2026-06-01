@@ -81,44 +81,30 @@ def get_salsify_images(url):
     soup = get_soup(url)
 
     images = []
-    seen_hashes = set()
+    seen_urls = set()
 
-    for img in soup.find_all("img"):
+    # ✅ ONLY target actual product gallery images
+    for img in soup.select('img[data-testid="salsify-image"]'):
         src = img.get("src") or ""
+
         if not src.startswith("http"):
             continue
 
-        # ✅ download image (small version)
-        try:
-            if src in image_cache:
-                img_data = image_cache[src]
-            else:
-                img_data = requests.get(src, timeout=5).content
-                image_cache[src] = img_data
+        # ✅ normalize URL (remove params)
+        clean = src.split("?")[0]
 
-            # ✅ convert to small grayscale (fast compare)
-            img_obj = Image.open(BytesIO(img_data)).convert("L").resize((32, 32))
-
-            # ✅ create simple hash
-            img_hash = tuple(img_obj.getdata())
-
-        except:
+        # ✅ dedupe exact sources
+        if clean in seen_urls:
             continue
 
-        # ✅ SKIP visually duplicate images
-        if img_hash in seen_hashes:
-            continue
+        seen_urls.add(clean)
 
-        seen_hashes.add(img_hash)
-
-        # ✅ keep image
         images.append({
-            "url": src,
-            "type": ""  # keep your structure
+            "url": clean,
+            "type": ""
         })
 
     return images
-
 # =========================================
 # ✅ ORDER IMAGES
 # =========================================
