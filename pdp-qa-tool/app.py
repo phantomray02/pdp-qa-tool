@@ -82,11 +82,11 @@ def get_salsify_images(url):
 
     images = []
 
-    # ✅ Track used slots (only for those two)
-    used_slots = {
-        "Flat Back_2D": False,
-        "Flat Left_2D": False
-    }
+    # ✅ Track slot usage (for correct labeled ones)
+    used_slots = {k: False for k in IMAGE_ORDER}
+
+    # ✅ Track visual duplicates per slotless images
+    seen_hashes = set()
 
     for img in soup.find_all("img"):
         src = img.get("src") or ""
@@ -104,16 +104,40 @@ def get_salsify_images(url):
                     label = t
                     break
 
-        # ✅ Only dedupe IF it's one of those slots
-        if label in used_slots:
+        # ✅ CASE 1: HAS LABEL → enforce 1 per slot
+        if label:
             if used_slots[label]:
                 continue
             used_slots[label] = True
 
-        # ✅ IMPORTANT: keep ALL other images
+            images.append({
+                "url": src,
+                "type": label
+            })
+            continue
+
+        # ✅ CASE 2: NO LABEL → dedupe visually
+        try:
+            if src in image_cache:
+                img_data = image_cache[src]
+            else:
+                img_data = requests.get(src, timeout=5).content
+                image_cache[src] = img_data
+
+            im = Image.open(BytesIO(img_data)).convert("L").resize((32, 32))
+            img_hash = tuple(im.getdata())
+
+        except:
+            continue
+
+        if img_hash in seen_hashes:
+            continue
+
+        seen_hashes.add(img_hash)
+
         images.append({
             "url": src,
-            "type": label if label else ""
+            "type": ""
         })
 
     return images
