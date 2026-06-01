@@ -115,11 +115,25 @@ def get_salsify_images(url):
         if i < 5 and score > 60:
             continue  # collapse pack duplicates ONLY
 
+        # ✅ detect repeated "vertical pack" images (Flat Left duplicates)
+        is_duplicate_side = False
+        
+        for existing in final_images:
+            score_any = compare_images_visually(existing["url"], curr)
+        
+            # ✅ catch weaker similarity (side variants)
+            if score_any > 60:
+                is_duplicate_side = True
+                break
+        
+        # ✅ only apply this AFTER first few images
+        if i >= 3 and is_duplicate_side:
+            continue
+        
         final_images.append({
             "url": curr,
             "type": ""
         })
-
     return final_images
 
 # =========================================
