@@ -81,30 +81,28 @@ def get_salsify_images(url):
     soup = get_soup(url)
 
     raw_urls = []
+    final_images = []
 
+    # ✅ STEP 1: extract all images
     for img in soup.select('img[data-testid="salsify-image"]'):
         src = img.get("src") or ""
+
         if src.startswith("http"):
             raw_urls.append(src.split("?")[0])
 
     if not raw_urls:
         return []
 
-    final_images = []
-
-    for i, curr in enumerate(raw_urls):
-
+    for curr in raw_urls:
         is_duplicate = False
 
-        # ✅ ONLY dedupe first part (product images)
-        if i < 7:
-            for existing in final_images:
-                score = compare_images_visually(existing["url"], curr)
+        for existing in final_images:
+            score = compare_images_visually(existing["url"], curr)
 
-                # ✅ strong enough to catch back/side repeats
-                if score > 70:
-                    is_duplicate = True
-                    break
+            # ✅ KEY: only collapse VERY similar images (pack shots only)
+            if score > 85:
+                is_duplicate = True
+                break
 
         if is_duplicate:
             continue
