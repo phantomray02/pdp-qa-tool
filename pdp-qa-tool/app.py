@@ -80,49 +80,58 @@ def clean_text(raw):
 def get_salsify_images(url):
     soup = get_soup(url)
 
-    images = []
-    seen_labels = set()
+    raw_urls = []
 
-    # ✅ get all valid images
-    all_imgs = soup.select('img[data-testid="salsify-image"]')
-
-    for img in all_imgs:
+    # ✅ STEP 1
+    for img in soup.select('img[data-testid="salsify-image"]'):
         src = img.get("src") or ""
-        if not src.startswith("http"):
+        if src.startswith("http"):
+            raw_urls.append(src.split("?")[0])
+
+    if not raw_urls:
+        return []
+
+    # ✅ STEP 2
+    seen = set()
+    unique_urls = []
+    for u in raw_urls:
+        if u not in seen:
+            seen.add(u)
+            unique_urls.append(u)
+
+    # ✅ STEP 3 (THE FIX)
+    final_images = []
+    pack_images = []
+
+    for curr in unique_urls:
+        is_duplicate = False
+
+        for existing in final_images:
+            score = compare_images_visually(existing["url"], curr)
+            if score > 85:
+                is_duplicate = True
+                break
+
+        if is_duplicate:
             continue
 
-        clean = src.split("?")[0]
+        is_pack = False
+        if final_images:
+            score_pack = compare_images_visually(final_images[0]["url"], curr)
+            if score_pack > 45:
+                is_pack = True
 
-        # ✅ try to find nearby label text
-        label = ""
-
-        parent = img.find_parent()
-
-        if parent:
-            text = parent.get_text(" ", strip=True)
-
-            # ✅ match known labels
-            for t in IMAGE_ORDER:
-                if t.lower() in text.lower():
-                    label = t
-                    break
-
-            # ✅ fallback for ATF labels
-            if not label and "atf" in text.lower():
-                label = text
-
-        # ✅ ensure only one per label
-        if label:
-            if label in seen_labels:
+        if is_pack:
+            if len(pack_images) >= 3:
                 continue
-            seen_labels.add(label)
+            pack_images.append(curr)
 
-        images.append({
-            "url": clean,
-            "type": label
+        final_images.append({
+            "url": curr,
+            "type": ""
         })
 
-    return images
+    return final_images
 
 # =========================================
 # ✅ ORDER IMAGES
