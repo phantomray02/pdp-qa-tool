@@ -108,6 +108,13 @@ def get_salsify_images(url):
         new_item = {
             "url": clean,
             "type": ""
+        }
+
+        images.append(new_item)
+        unique_images.append(new_item)
+
+    return images
+
 # =========================================
 # ✅ ORDER IMAGES
 # =========================================
