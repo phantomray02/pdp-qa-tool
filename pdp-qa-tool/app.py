@@ -80,15 +80,16 @@ def clean_text(raw):
 def get_salsify_images(url):
     soup = get_soup(url)
 
-    images = []
-    unique_images = []
+    raw_images = []
+    final_images = []
 
+    # ✅ STEP 1: GET ALL REAL GALLERY IMAGES
     all_imgs = soup.select('img[data-testid="salsify-image"]')
 
     for img in all_imgs:
         src = img.get("src") or ""
-        
-        # ✅ fallback to srcset ONLY if src missing
+
+        # ✅ fallback if src missing
         if not src:
             srcset = img.get("srcset") or ""
             if "," in srcset:
@@ -99,23 +100,29 @@ def get_salsify_images(url):
 
         clean = src.split("?")[0]
 
-        is_duplicate = False
+        raw_images.append({
+            "url": clean,
+            "type": ""
+        })
 
-        for existing in unique_images:
-            score = compare_images_visually(clean, existing["url"])
+    # ✅ STEP 2: COLLAPSE VISUAL CLUSTERS (KEY FIX)
+    if raw_images:
+        final_images = [raw_images[0]]
 
-            if score > 70:
-                is_duplicate = True
-                break
+        for i in range(1, len(raw_images)):
+            prev_url = final_images[-1]["url"]
+            curr_url = raw_images[i]["url"]
 
-        if is_duplicate:
-            continue
+            score = compare_images_visually(prev_url, curr_url)
 
-        new_item = {"url": clean, "type": ""}
-        images.append(new_item)
-        unique_images.append(new_item)
+            # ✅ THIS IS THE IMPORTANT PART
+            # Groups "same section" images together
+            if score > 40:
+                continue
 
-    return images
+            final_images.append(raw_images[i])
+
+    return final_images
 
 # =========================================
 # ✅ ORDER IMAGES
