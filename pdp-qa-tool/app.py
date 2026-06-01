@@ -80,46 +80,52 @@ def clean_text(raw):
 def get_salsify_images(url):
     soup = get_soup(url)
 
-    images = []
+    raw_images = []
+    cleaned_images = []
 
-    # ✅ find all text containers that include labels
-    rows = soup.find_all("div")
-
-    for row in rows:
-        text = row.get_text(" ", strip=True)
-
-        label = None
-
-        # ✅ match ANY known section label
-        for t in IMAGE_ORDER:
-            if t.lower() in text.lower():
-                label = t
-                break
-
-        # ✅ catch ATF sections too (important)
-        if not label and "atf" in text.lower():
-            label = text
-
-        if not label:
-            continue
-
-        # ✅ find FIRST image inside this section
-        img = row.find("img", {"data-testid": "salsify-image"})
-
-        if not img:
-            continue
-
+    # ✅ STEP 1: GET ALL REAL GALLERY IMAGES
+    for img in soup.select('img[data-testid="salsify-image"]'):
         src = img.get("src") or ""
 
         if not src.startswith("http"):
             continue
 
-        images.append({
-            "url": src.split("?")[0],
-            "type": label
+        clean = src.split("?")[0]
+
+        raw_images.append(clean)
+
+    # ✅ SAFETY: if nothing found, return empty
+    if not raw_images:
+        return []
+
+    # ✅ STEP 2: REMOVE EXACT DUPLICATES
+    seen = set()
+    unique = []
+
+    for url in raw_images:
+        if url not in seen:
+            seen.add(url)
+            unique.append(url)
+
+    # ✅ STEP 3: COLLAPSE ONLY ADJACENT DUPLICATES
+    cleaned_images = [{"url": unique[0], "type": ""}]
+
+    for i in range(1, len(unique)):
+        prev = cleaned_images[-1]["url"]
+        curr = unique[i]
+
+        score = compare_images_visually(prev, curr)
+
+        # ✅ IMPORTANT: only collapse VERY similar adjacent images
+        if score > 85:
+            continue
+
+        cleaned_images.append({
+            "url": curr,
+            "type": ""
         })
 
-    return images
+    return cleaned_images
 # =========================================
 # ✅ ORDER IMAGES
 # =========================================
