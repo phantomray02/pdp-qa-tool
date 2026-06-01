@@ -79,38 +79,46 @@ def clean_text(raw):
 # =========================================
 def get_salsify_images(url):
     soup = get_soup(url)
+
     images = []
+    seen_hashes = set()
 
-    sections = soup.find_all("tr")
-
-    for section in sections:
-        text = section.get_text(" ", strip=True)
-
-        label = None
-        for t in IMAGE_ORDER:
-            if t.lower() in text.lower():
-                label = t
-                break
-
-        if not label:
-            continue
-
-        # ✅ ONLY grab FIRST large image (main display)
-        img = section.find("img")
-
-        if not img:
-            continue
-
+    for img in soup.find_all("img"):
         src = img.get("src") or ""
         if not src.startswith("http"):
             continue
 
+        # ✅ download image (small version)
+        try:
+            if src in image_cache:
+                img_data = image_cache[src]
+            else:
+                img_data = requests.get(src, timeout=5).content
+                image_cache[src] = img_data
+
+            # ✅ convert to small grayscale (fast compare)
+            img_obj = Image.open(BytesIO(img_data)).convert("L").resize((32, 32))
+
+            # ✅ create simple hash
+            img_hash = tuple(img_obj.getdata())
+
+        except:
+            continue
+
+        # ✅ SKIP visually duplicate images
+        if img_hash in seen_hashes:
+            continue
+
+        seen_hashes.add(img_hash)
+
+        # ✅ keep image
         images.append({
-            "url": src.split("?")[0],
-            "type": label
+            "url": src,
+            "type": ""  # keep your structure
         })
 
     return images
+
 # =========================================
 # ✅ ORDER IMAGES
 # =========================================
@@ -419,9 +427,11 @@ def compare_images_visually(s_url, r_url):
 def match_images_visual(s_images, r_images):
     results = []
 
-    # ✅ only loop Salsify images (correct reference)
-    for i in range(len(s_images)):
-        s_url = s_images[i]["url"]
+    # ✅ HANDLE ALL IMAGES (no limit)
+    max_len = max(len(s_images), len(r_images))
+
+    for i in range(max_len):
+        s_url = s_images[i]["url"] if i < len(s_images) else ""
         r_url = r_images[i] if i < len(r_images) else ""
 
         score = compare_images_visually(s_url, r_url) if s_url and r_url else 0
@@ -429,6 +439,12 @@ def match_images_visual(s_images, r_images):
         results.append((s_url, r_url, score))
 
     return results
+
+    def normalize_text(text):
+        text = text.lower()
+        text = re.sub(r'[^a-z0-9\s]', '', text)
+        text = re.sub(r'\s+', ' ', text)
+        return text.strip()
 # =========================================
 # ✅ MAIN
 # =========================================
@@ -446,46 +462,14 @@ if uploaded_file:
             # =========================
             # ✅ SAFE IMAGE LOAD
             # =========================
-            
             s_images = get_salsify_images(row["salsify_url"]) or []
             
-            # ✅ fallback if scraping fails
-            if len(s_images) == 0:
-                html = get_html(row["salsify_url"])
-                matches = re.findall(r'https://[^"]+\.jpg', html)
-            
-                seen = set()
-                s_images = []
-            
-                for m in matches:
-                    clean = m.split("?")[0]
-                    if clean not in seen:
-                        seen.add(clean)
-                        s_images.append({
-                            "url": clean,
-                            "type": ""
-                        })
-            
-            # ✅ REMOVE CONSECUTIVE DUPLICATES (MAIN + THUMBNAIL FIX)
-            if s_images:
-                cleaned = [s_images[0]]
-            
-                for i in range(1, len(s_images)):
-                    prev_url = cleaned[-1]["url"]
-                    curr_url = s_images[i]["url"]
-            
-                    score = compare_images_visually(prev_url, curr_url)
-            
-                    # ✅ adjust threshold if needed (90–95)
-                    if score > 95:
-                        continue
-            
-                    cleaned.append(s_images[i])
-            
-                s_images = cleaned
-            
-            # ✅ GET CVS IMAGES
             r_images = get_cvs_images(row["retail_url"]) or []
+
+            if not isinstance(s_images, list):
+                s_images = []
+            if not isinstance(r_images, list):
+                r_images = []
 
             # =========================
             # ✅ TEXT
