@@ -446,8 +446,9 @@ if uploaded_file:
             # =========================
             # ✅ SAFE IMAGE LOAD
             # =========================
+            
             s_images = get_salsify_images(row["salsify_url"]) or []
-
+            
             # ✅ fallback if scraping fails
             if len(s_images) == 0:
                 html = get_html(row["salsify_url"])
@@ -465,12 +466,26 @@ if uploaded_file:
                             "type": ""
                         })
             
+            # ✅ REMOVE CONSECUTIVE DUPLICATES (MAIN + THUMBNAIL FIX)
+            if s_images:
+                cleaned = [s_images[0]]
+            
+                for i in range(1, len(s_images)):
+                    prev_url = cleaned[-1]["url"]
+                    curr_url = s_images[i]["url"]
+            
+                    score = compare_images_visually(prev_url, curr_url)
+            
+                    # ✅ adjust threshold if needed (90–95)
+                    if score > 95:
+                        continue
+            
+                    cleaned.append(s_images[i])
+            
+                s_images = cleaned
+            
+            # ✅ GET CVS IMAGES
             r_images = get_cvs_images(row["retail_url"]) or []
-
-            if not isinstance(s_images, list):
-                s_images = []
-            if not isinstance(r_images, list):
-                r_images = []
 
             # =========================
             # ✅ TEXT
