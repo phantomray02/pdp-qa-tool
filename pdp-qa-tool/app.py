@@ -81,40 +81,33 @@ def get_salsify_images(url):
     soup = get_soup(url)
 
     images = []
-    seen_groups = []
+    unique_images = []
 
-    # ✅ grab ONLY product images
     all_imgs = soup.select('img[data-testid="salsify-image"]')
 
     for img in all_imgs:
         src = img.get("src") or ""
-
         if not src.startswith("http"):
             continue
 
         clean = src.split("?")[0]
 
-        # ✅ GROUP BY VISUAL SIMILARITY
         is_duplicate = False
 
-        for existing in seen_groups:
-            score = compare_images_visually(clean, existing)
+        for existing in unique_images:
+            score = compare_images_visually(clean, existing["url"])
 
-            if score > 90:
+            # ✅ stricter threshold (important)
+            if score > 85:
                 is_duplicate = True
                 break
 
         if is_duplicate:
             continue
 
-        seen_groups.append(clean)
-
-        images.append({
+        new_item = {
             "url": clean,
             "type": ""
-        })
-
-    return images
 # =========================================
 # ✅ ORDER IMAGES
 # =========================================
