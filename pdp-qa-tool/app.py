@@ -80,49 +80,49 @@ def clean_text(raw):
 def get_salsify_images(url):
     soup = get_soup(url)
 
-    raw_images = []
-    final_images = []
+    images = []
 
-    # ✅ STEP 1: GET ALL REAL GALLERY IMAGES
-    all_imgs = soup.select('img[data-testid="salsify-image"]')
+    # ✅ find all sections (rows)
+    sections = soup.find_all("tr")
 
-    for img in all_imgs:
-        src = img.get("src") or ""
+    for section in sections:
+        text = section.get_text(" ", strip=True)
 
-        # ✅ fallback if src missing
+        # ✅ match your known labels
+        label = None
+        for t in IMAGE_ORDER:
+            if t.lower() in text.lower():
+                label = t
+                break
+
+        if not label:
+            continue
+
+        # ✅ find ALL images in this section
+        imgs = section.select('img[data-testid="salsify-image"]')
+
+        if not imgs:
+            continue
+
+        # ✅ TAKE ONLY FIRST IMAGE (THIS IS THE KEY)
+        first_img = imgs[0]
+
+        src = first_img.get("src") or ""
+
         if not src:
-            srcset = img.get("srcset") or ""
+            srcset = first_img.get("srcset") or ""
             if "," in srcset:
                 src = srcset.split(",")[0].strip().split(" ")[0]
 
         if not src.startswith("http"):
             continue
 
-        clean = src.split("?")[0]
-
-        raw_images.append({
-            "url": clean,
-            "type": ""
+        images.append({
+            "url": src.split("?")[0],
+            "type": label
         })
 
-    # ✅ STEP 2: COLLAPSE VISUAL CLUSTERS (KEY FIX)
-    if raw_images:
-        final_images = [raw_images[0]]
-
-        for i in range(1, len(raw_images)):
-            prev_url = final_images[-1]["url"]
-            curr_url = raw_images[i]["url"]
-
-            score = compare_images_visually(prev_url, curr_url)
-
-            # ✅ THIS IS THE IMPORTANT PART
-            # Groups "same section" images together
-            if score > 40:
-                continue
-
-            final_images.append(raw_images[i])
-
-    return final_images
+    return images
 
 # =========================================
 # ✅ ORDER IMAGES
