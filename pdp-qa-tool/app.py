@@ -81,63 +81,39 @@ def get_salsify_images(url):
     soup = get_soup(url)
 
     images = []
-
-    # ✅ Track slot usage (for correct labeled ones)
-    used_slots = {k: False for k in IMAGE_ORDER}
-
-    # ✅ Track visual duplicates per slotless images
-    seen_hashes = set()
+    seen_files = set()  # ✅ track unique images by filename
 
     for img in soup.find_all("img"):
         src = img.get("src") or ""
         if not src.startswith("http"):
             continue
 
+        # ✅ normalize URL → remove params
+        clean_src = src.split("?")[0]
+
+        # ✅ extract filename (THIS IS THE KEY)
+        filename = clean_src.split("/")[-1]
+
+        # ✅ skip duplicates by filename
+        if filename in seen_files:
+            continue
+
+        seen_files.add(filename)
+
+        # ✅ detect label if available (optional, keep your structure)
         label = None
         parent = img.find_parent()
 
         if parent:
             text = parent.get_text(" ", strip=True)
-
             for t in IMAGE_ORDER:
                 if t.lower() in text.lower():
                     label = t
                     break
 
-        # ✅ CASE 1: HAS LABEL → enforce 1 per slot
-        if label:
-            if used_slots[label]:
-                continue
-            used_slots[label] = True
-
-            images.append({
-                "url": src,
-                "type": label
-            })
-            continue
-
-        # ✅ CASE 2: NO LABEL → dedupe visually
-        try:
-            if src in image_cache:
-                img_data = image_cache[src]
-            else:
-                img_data = requests.get(src, timeout=5).content
-                image_cache[src] = img_data
-
-            im = Image.open(BytesIO(img_data)).convert("L").resize((32, 32))
-            img_hash = tuple(im.getdata())
-
-        except:
-            continue
-
-        if img_hash in seen_hashes:
-            continue
-
-        seen_hashes.add(img_hash)
-
         images.append({
-            "url": src,
-            "type": ""
+            "url": clean_src,
+            "type": label if label else ""
         })
 
     return images
