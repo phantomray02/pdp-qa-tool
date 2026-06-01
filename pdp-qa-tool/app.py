@@ -104,7 +104,7 @@ def get_salsify_images(url):
         for existing in unique_images:
             score = compare_images_visually(clean, existing["url"])
 
-            if score > 75:
+            if score > 70:
                 is_duplicate = True
                 break
 
