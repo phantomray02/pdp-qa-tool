@@ -448,27 +448,29 @@ if uploaded_file:
             # =========================
             # ✅ SAFE IMAGE LOAD
             # =========================
+            # =========================
+            # ✅ SAFE IMAGE LOAD
+            # =========================
             s_images = get_salsify_images(row["salsify_url"]) or []
-
-            # ✅ REMOVE DUPLICATES
+            
+            # ✅ LIGHT DEDUPE (SAFE)
             if len(s_images) > 1:
-                cleaned = [s_images[0]]
-
-                for i in range(1, len(s_images)):
-                    prev = cleaned[-1]["url"]
-                    curr = s_images[i]["url"]
-
-                    score = compare_images_visually(prev, curr)
-
-                    if score > 90:
+                unique = []
+                seen = set()
+            
+                for img in s_images:
+                    url = img["url"]
+            
+                    if url in seen:
                         continue
-
-                    cleaned.append(s_images[i])
-
-                s_images = cleaned
-
+            
+                    seen.add(url)
+                    unique.append(img)
+            
+                s_images = unique
+            
             r_images = get_cvs_images(row["retail_url"]) or []
-
+            
             if not isinstance(s_images, list):
                 s_images = []
             if not isinstance(r_images, list):
