@@ -78,42 +78,26 @@ def clean_text(raw):
 # ✅ SALSIFY IMAGES
 # =========================================
 def get_salsify_images(url):
-    soup = get_soup(url)
+    html = get_html(url)
 
+    # ✅ match all image URLs directly from raw HTML
+    matches = re.findall(r'https://[^"]+\.jpg', html)
+
+    seen = set()
     images = []
 
-    # ✅ find ALL sections (each slot block)
-    sections = soup.find_all("tr")
+    for m in matches:
+        clean = m.split("?")[0]
 
-    for section in sections:
-        text = section.get_text(" ", strip=True)
-
-        label = None
-        for t in IMAGE_ORDER:
-            if t.lower() in text.lower():
-                label = t
-                break
-
-        if not label:
+        if clean in seen:
             continue
 
-        # ✅ find images inside THIS section only
-        imgs = section.find_all("img")
+        seen.add(clean)
 
-        chosen = None
-
-        # ✅ pick ONLY ONE image per section
-        for img in imgs:
-            src = img.get("src") or ""
-            if src.startswith("http"):
-                chosen = src
-                break  # ✅ take FIRST image only
-
-        if chosen:
-            images.append({
-                "url": chosen,
-                "type": label
-            })
+        images.append({
+            "url": clean,
+            "type": ""
+        })
 
     return images
 # =========================================
@@ -452,6 +436,23 @@ if uploaded_file:
             # ✅ SAFE IMAGE LOAD
             # =========================
             s_images = get_salsify_images(row["salsify_url"]) or []
+
+            # ✅ fallback if scraping fails
+            if len(s_images) == 0:
+                html = get_html(row["salsify_url"])
+                matches = re.findall(r'https://[^"]+\.jpg', html)
+            
+                seen = set()
+                s_images = []
+            
+                for m in matches:
+                    clean = m.split("?")[0]
+                    if clean not in seen:
+                        seen.add(clean)
+                        s_images.append({
+                            "url": clean,
+                            "type": ""
+                        })
             
             r_images = get_cvs_images(row["retail_url"]) or []
 
