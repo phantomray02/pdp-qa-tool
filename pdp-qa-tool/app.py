@@ -81,40 +81,39 @@ def get_salsify_images(url):
     soup = get_soup(url)
 
     images = []
-    seen_files = set()  # ✅ track unique images by filename
 
-    for img in soup.find_all("img"):
-        src = img.get("src") or ""
-        if not src.startswith("http"):
-            continue
+    # ✅ find ALL sections (each slot block)
+    sections = soup.find_all("tr")
 
-        # ✅ normalize URL → remove params
-        clean_src = src.split("?")[0]
+    for section in sections:
+        text = section.get_text(" ", strip=True)
 
-        # ✅ extract filename (THIS IS THE KEY)
-        filename = clean_src.split("/")[-1]
-
-        # ✅ skip duplicates by filename
-        if filename in seen_files:
-            continue
-
-        seen_files.add(filename)
-
-        # ✅ detect label if available (optional, keep your structure)
         label = None
-        parent = img.find_parent()
+        for t in IMAGE_ORDER:
+            if t.lower() in text.lower():
+                label = t
+                break
 
-        if parent:
-            text = parent.get_text(" ", strip=True)
-            for t in IMAGE_ORDER:
-                if t.lower() in text.lower():
-                    label = t
-                    break
+        if not label:
+            continue
 
-        images.append({
-            "url": clean_src,
-            "type": label if label else ""
-        })
+        # ✅ find images inside THIS section only
+        imgs = section.find_all("img")
+
+        chosen = None
+
+        # ✅ pick ONLY ONE image per section
+        for img in imgs:
+            src = img.get("src") or ""
+            if src.startswith("http"):
+                chosen = src
+                break  # ✅ take FIRST image only
+
+        if chosen:
+            images.append({
+                "url": chosen,
+                "type": label
+            })
 
     return images
 # =========================================
