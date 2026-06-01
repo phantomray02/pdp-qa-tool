@@ -80,8 +80,13 @@ def clean_text(raw):
 def get_salsify_images(url):
     soup = get_soup(url)
 
-    # ✅ one slot per label
-    slots = {k: None for k in IMAGE_ORDER}
+    images = []
+
+    # ✅ Track used slots (only for those two)
+    used_slots = {
+        "Flat Back_2D": False,
+        "Flat Left_2D": False
+    }
 
     for img in soup.find_all("img"):
         src = img.get("src") or ""
@@ -99,22 +104,19 @@ def get_salsify_images(url):
                     label = t
                     break
 
-        # ✅ ONLY allow known slot labels
-        if label is None:
-            continue
+        # ✅ Only dedupe IF it's one of those slots
+        if label in used_slots:
+            if used_slots[label]:
+                continue
+            used_slots[label] = True
 
-        # ✅ only fill slot ONCE
-        if slots[label] is None:
-            slots[label] = src
+        # ✅ IMPORTANT: keep ALL other images
+        images.append({
+            "url": src,
+            "type": label if label else ""
+        })
 
-    # ✅ convert to your expected format
-    final_images = [
-        {"url": slots[k], "type": k}
-        for k in IMAGE_ORDER
-        if slots[k] is not None
-    ]
-
-    return final_images
+    return images
 # =========================================
 # ✅ ORDER IMAGES
 # =========================================
