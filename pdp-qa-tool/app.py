@@ -81,19 +81,17 @@ def get_salsify_images(url):
     soup = get_soup(url)
 
     raw_urls = []
-    final_images = []
 
-    # ✅ STEP 1: GET ALL IMAGES
+    # ✅ STEP 1 — extract all images (stable)
     for img in soup.select('img[data-testid="salsify-image"]'):
         src = img.get("src") or ""
-
         if src.startswith("http"):
             raw_urls.append(src.split("?")[0])
 
     if not raw_urls:
         return []
 
-    # ✅ STEP 2: REMOVE EXACT DUPES
+    # ✅ STEP 2 — remove exact duplicates
     seen = set()
     unique = []
 
@@ -102,38 +100,29 @@ def get_salsify_images(url):
             seen.add(u)
             unique.append(u)
 
-    # ✅ STEP 3: ONLY CLEAN FIRST FEW (PACK SHOTS)
+    final_images = []
+
+    # ✅ STEP 3 — KEEP FIRST IMAGE (front)
     final_images.append({"url": unique[0], "type": ""})
 
+    # ✅ STEP 4 — HANDLE ONLY FIRST 3 (pack images)
     for i in range(1, len(unique)):
-        prev = final_images[-1]["url"]
         curr = unique[i]
 
-        score = compare_images_visually(prev, curr)
+        if i < 3:
+            prev = final_images[-1]["url"]
+            score = compare_images_visually(prev, curr)
 
-        # ✅ KEY RULE:
-        if i < 5 and score > 60:
-            continue  # collapse pack duplicates ONLY
+            # ✅ only remove VERY obvious pack duplicates
+            if score > 85:
+                continue
 
-        # ✅ detect repeated "vertical pack" images (Flat Left duplicates)
-        is_duplicate_side = False
-        
-        for existing in final_images:
-            score_any = compare_images_visually(existing["url"], curr)
-        
-            # ✅ catch weaker similarity (side variants)
-            if score_any > 60:
-                is_duplicate_side = True
-                break
-        
-        # ✅ only apply this AFTER first few images
-        if i >= 3 and is_duplicate_side:
-            continue
-        
+        # ✅ EVERYTHING AFTER = DO NOT TOUCH
         final_images.append({
             "url": curr,
             "type": ""
         })
+
     return final_images
 
 # =========================================
