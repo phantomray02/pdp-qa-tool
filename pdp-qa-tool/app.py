@@ -489,8 +489,6 @@ if uploaded_file:
                     s_images = []
                 if not isinstance(r_images, list):
                     r_images = []
-                ``
-
             # =========================
             # ✅ TEXT
             # =========================
