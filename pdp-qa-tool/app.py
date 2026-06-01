@@ -424,11 +424,9 @@ def compare_images_visually(s_url, r_url):
 def match_images_visual(s_images, r_images):
     results = []
 
-    # ✅ HANDLE ALL IMAGES (no limit)
-    max_len = max(len(s_images), len(r_images))
-
-    for i in range(max_len):
-        s_url = s_images[i]["url"] if i < len(s_images) else ""
+    # ✅ only loop Salsify images (correct reference)
+    for i in range(len(s_images)):
+        s_url = s_images[i]["url"]
         r_url = r_images[i] if i < len(r_images) else ""
 
         score = compare_images_visually(s_url, r_url) if s_url and r_url else 0
@@ -436,12 +434,6 @@ def match_images_visual(s_images, r_images):
         results.append((s_url, r_url, score))
 
     return results
-
-    def normalize_text(text):
-        text = text.lower()
-        text = re.sub(r'[^a-z0-9\s]', '', text)
-        text = re.sub(r'\s+', ' ', text)
-        return text.strip()
 # =========================================
 # ✅ MAIN
 # =========================================
