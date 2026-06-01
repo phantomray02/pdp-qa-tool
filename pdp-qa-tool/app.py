@@ -86,13 +86,13 @@ def get_salsify_images(url):
     all_imgs = soup.select('img[data-testid="salsify-image"]')
 
     for img in all_imgs:
-        srcset = img.get("srcset") or img.get("src") or ""
-
-        # ✅ pick highest resolution image
-        if "," in srcset:
-            src = srcset.split(",")[-1].strip().split(" ")[0]
-        else:
-            src = srcset
+        src = img.get("src") or ""
+        
+        # ✅ fallback to srcset ONLY if src missing
+        if not src:
+            srcset = img.get("srcset") or ""
+            if "," in srcset:
+                src = srcset.split(",")[0].strip().split(" ")[0]
 
         if not src.startswith("http"):
             continue
