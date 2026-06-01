@@ -80,45 +80,41 @@ def clean_text(raw):
 def get_salsify_images(url):
     soup = get_soup(url)
 
-    images = []
-    seen_hashes = set()
+    # ✅ one slot per label
+    slots = {k: None for k in IMAGE_ORDER}
 
     for img in soup.find_all("img"):
         src = img.get("src") or ""
         if not src.startswith("http"):
             continue
 
-        # ✅ download image (small version)
-        try:
-            if src in image_cache:
-                img_data = image_cache[src]
-            else:
-                img_data = requests.get(src, timeout=5).content
-                image_cache[src] = img_data
+        label = None
+        parent = img.find_parent()
 
-            # ✅ convert to small grayscale (fast compare)
-            img_obj = Image.open(BytesIO(img_data)).convert("L").resize((32, 32))
+        if parent:
+            text = parent.get_text(" ", strip=True)
 
-            # ✅ create simple hash
-            img_hash = tuple(img_obj.getdata())
+            for t in IMAGE_ORDER:
+                if t.lower() in text.lower():
+                    label = t
+                    break
 
-        except:
+        # ✅ ONLY allow known slot labels
+        if label is None:
             continue
 
-        # ✅ SKIP visually duplicate images
-        if img_hash in seen_hashes:
-            continue
+        # ✅ only fill slot ONCE
+        if slots[label] is None:
+            slots[label] = src
 
-        seen_hashes.add(img_hash)
+    # ✅ convert to your expected format
+    final_images = [
+        {"url": slots[k], "type": k}
+        for k in IMAGE_ORDER
+        if slots[k] is not None
+    ]
 
-        # ✅ keep image
-        images.append({
-            "url": src,
-            "type": ""  # keep your structure
-        })
-
-    return images
-
+    return final_images
 # =========================================
 # ✅ ORDER IMAGES
 # =========================================
