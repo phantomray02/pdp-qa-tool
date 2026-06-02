@@ -210,22 +210,10 @@ def get_cvs_text(url):
     raw = raw.replace('\\n', ' ')
     raw = raw.replace('\\t', ' ')
     raw = raw.replace('\\', '')
-    raw = re.sub(r'<.*?>', '', raw)  # remove HTML tags
+    raw = re.sub(r'<.*?>', '', raw)
     raw = re.sub(r'\s+', ' ', raw)
 
     description = clean_text(raw)
-
-        html_slice,
-        re.DOTALL | re.IGNORECASE
-    )
-
-    if not match:
-        return {
-            "description": "",
-            "features": []
-        }
-
-    raw = match.group(0)
 
     # ======================================
     # ✅ CLEAN DESCRIPTION (UNCHANGED)
