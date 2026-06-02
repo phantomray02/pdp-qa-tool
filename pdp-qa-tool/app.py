@@ -190,26 +190,75 @@ def get_cvs_text(url):
     soup = BeautifulSoup(html, "html.parser")
 
     # =========================
-    # ✅ DESCRIPTION
+    # ✅ DESCRIPTION (HTML FIRST)
     # =========================
     desc_tag = soup.select_one("p.text-gray")
 
-    if not desc_tag:
-        desc_tag = soup.find("p")
+    if desc_tag:
+        description = clean_text(desc_tag.get_text(" ", strip=True))
+    else:
+        # ✅ fallback to JSON
+        json_match = re.search(
+            r'window\.__INITIAL_STATE__\s*=\s*(\{.*?\});',
+            html,
+            re.DOTALL
+        )
 
-    raw = desc_tag.get_text(" ", strip=True) if desc_tag else ""
+        if json_match:
+            json_text = json_match.group(1)
 
-    description = clean_text(raw)
+            desc_match = re.search(
+                r'"longDescription":"(.*?)"',
+                json_text,
+                re.DOTALL
+            )
+
+            if desc_match:
+                raw = desc_match.group(1)
+                raw = re.sub(r'<.*?>', '', raw)
+                description = clean_text(raw)
 
     # =========================
-    # ✅ FEATURES (DETAILS SECTION)
+    # ✅ FEATURES (HTML FIRST)
     # =========================
-    for li in soup.select("li[id^=vendorDetailsBullet]"):
-        text = li.get_text(" ", strip=True)
-        clean_f = clean_text(text)
+    html_features = soup.select("li[id^=vendorDetailsBullet]")
 
-        if len(clean_f) > 20:
-            features.append(clean_f)
+    if html_features:
+        for li in html_features:
+            text = li.get_text(" ", strip=True)
+            clean_f = clean_text(text)
+
+            if len(clean_f) > 20:
+                features.append(clean_f)
+
+    else:
+        # ✅ fallback to JSON
+        json_match = re.search(
+            r'window\.__INITIAL_STATE__\s*=\s*(\{.*?\});',
+            html,
+            re.DOTALL
+        )
+
+        if json_match:
+            json_text = json_match.group(1)
+
+            feature_matches = re.findall(
+                r'"name":"(.*?)"',
+                json_text
+            )
+
+            for f in feature_matches:
+                clean_f = clean_text(f)
+                lower = clean_f.lower()
+
+                if (
+                    len(clean_f) > 30 and
+                    any(word in lower for word in [
+                        "absorb", "odor", "leak", "liner",
+                        "comfort", "protection", "wetness"
+                    ])
+                ):
+                    features.append(clean_f)
 
     return {
         "description": description,
@@ -448,6 +497,11 @@ if uploaded_file:
             # =========================
             s_text = get_salsify_text(row["salsify_url"])
             r_text = get_cvs_text(row["retail_url"])
+            
+            # ✅ DEBUG — PUT IT RIGHT HERE
+            st.write("DEBUG CVS FEATURES:", r_text.get("features", []))
+            st.write("DEBUG CVS DESCRIPTION:", r_text.get("description", ""))
+
 
            # =========================================
             # ✅ TITLE
