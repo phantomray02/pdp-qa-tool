@@ -241,30 +241,55 @@ def extract_features_from_description(desc):
             final.append(text)
 
     return final[:5]
+
+# =========================================
+# ✅ FEATURE EXTRACTION (CVS LABEL PATTERN)
+# =========================================
+def extract_features_from_description(desc):
+
+    if not desc:
+        return []
+
+    features = []
+
+    # ✅ match ALL CAPS label + colon pattern
+    matches = re.findall(r'([A-Z][A-Z\s\-]+:\s[^.]+)', desc)
+
+    for m in matches:
+        clean_f = clean_text(m)
+
+        if len(clean_f) > 20:
+            features.append(clean_f)
+
+    # ✅ fallback if no labels found
+    if not features:
+        sentences = re.split(r'(?<=[.!?])\s+', desc)
+
+        for s in sentences:
+            clean_s = clean_text(s)
+            words = clean_s.split()
+
+            if 8 <= len(words) <= 25:
+                features.append(clean_s)
+
+    # ✅ remove duplicates
+    seen = set()
+    unique = []
+
+    for f in features:
+        if f not in seen:
+            seen.add(f)
+            unique.append(f)
+
+    return unique[:5]
 # =========================================
 # ✅ CVS TEXT (STABLE FINAL VERSION)
 # =========================================
 # =========================================
-# ✅ CVS TEXT (FINAL RELIABLE VERSION)
+# ✅ CVS TEXT (FINAL WORKING VERSION)
 # =========================================
 def get_cvs_text(url):
     html = get_html(url)
-    # =========================================
-    # ✅ DEBUG — PRINT HTML AROUND "vendorDetails"
-    # =========================================
-    
-    search_term = "Details"
-    
-    idx = html.find(search_term)
-    
-    if idx != -1:
-        snippet = html[idx:idx + 3000]  # grab chunk after
-    
-        st.write("DEBUG HTML CHUNK:")
-        st.code(snippet)
-    else:
-        st.write("DEBUG: 'Details' not found in raw HTML")
-
 
     description = ""
     features = []
@@ -272,7 +297,7 @@ def get_cvs_text(url):
     soup = BeautifulSoup(html, "html.parser")
 
     # =========================
-    # ✅ GET BEST DESCRIPTION
+    # ✅ DESCRIPTION (FIXED)
     # =========================
     paragraphs = soup.find_all("p")
 
@@ -290,7 +315,7 @@ def get_cvs_text(url):
     description = best_desc
 
     # =========================
-    # ✅ BUILD FEATURES FROM DESCRIPTION
+    # ✅ FEATURES (DERIVED CLEANLY)
     # =========================
     features = extract_features_from_description(description)
 
@@ -298,6 +323,7 @@ def get_cvs_text(url):
         "description": description,
         "features": features
     }
+
 # =========================================
 # ✅ SALSIFY TEXT CLEAN VERSION
 # =========================================
