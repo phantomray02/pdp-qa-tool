@@ -524,8 +524,10 @@ if uploaded_file:
             r_text = get_cvs_text(row["retail_url"])
             
             # ✅ DEBUG — PUT IT RIGHT HERE
-            st.write("DEBUG CVS FEATURES:", r_text.get("features", []))
-            st.write("DEBUG CVS DESCRIPTION:", r_text.get("description", ""))
+
+            st.write("DEBUG DESCRIPTION:", r_text.get("description", ""))
+            st.write("DEBUG FEATURES:", r_text.get("features", []))
+
 
 
            # =========================================
