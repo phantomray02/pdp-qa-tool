@@ -4,6 +4,7 @@ full_html = get_html(row["retail_url"])
 st.markdown("### ✅ HTML CHECK")
 st.write("HTML LENGTH:", len(full_html))
 st.write("HTML TYPE:", type(full_html))
+st.write("Contains 'bladder':", "bladder" in full_html.lower())
 
 
 import streamlit as st
