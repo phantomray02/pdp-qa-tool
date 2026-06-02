@@ -320,19 +320,26 @@ def match_features(s_features, r_features):
         best_match = ""
         best_score = 0
 
+        s_norm = normalize_text(s)
+
         for r in r_features:
-            # ✅ FIXED INDENTATION HERE
-            sim = SequenceMatcher(
-                None,
-                normalize_text(s),
-                normalize_text(r)
-            ).ratio()
+            r_norm = normalize_text(r)
+
+            # ✅ NEW: partial match logic
+            if r_norm in s_norm or s_norm in r_norm:
+                best_match = r
+                best_score = 0.9  # strong match
+                break
+
+            # ✅ fallback to similarity
+            sim = SequenceMatcher(None, s_norm, r_norm).ratio()
 
             if sim > best_score:
                 best_score = sim
                 best_match = r
 
-        if best_score >= 0.4:
+        # ✅ LOWER threshold (important)
+        if best_score >= 0.35:
             results.append((s, best_match, int(best_score * 100)))
         else:
             results.append((s, "❌ Missing", 0))
