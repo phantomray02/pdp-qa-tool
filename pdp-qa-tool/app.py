@@ -184,7 +184,7 @@ def get_cvs_images(url):
 # =========================================
 # ✅ CVS TEXT (STABLE FINAL VERSION)
 # =========================================
-from bs4 import BeautifulSoup
+import json
 
 def get_cvs_text(url):
     html = get_html(url)
@@ -192,31 +192,56 @@ def get_cvs_text(url):
     description = ""
     features = []
 
-    soup = BeautifulSoup(html, "html.parser")
+    try:
+        # =========================
+        # ✅ STEP 1: GET FULL JSON STATE
+        # =========================
+        match = re.search(
+            r'window\.__INITIAL_STATE__\s*=\s*(\{.*?\})\s*;',
+            html,
+            re.DOTALL
+        )
 
-    # =========================
-    # ✅ DESCRIPTION (already works)
-    # =========================
-    desc_tag = soup.select_one("p")
+        if not match:
+            return {"description": "", "features": []}
 
-    if desc_tag:
-        description = clean_text(desc_tag.get_text(" ", strip=True))
+        json_text = match.group(1)
 
-    # =========================
-    # ✅ FEATURES (REAL FIX)
-    # =========================
-    bullets = soup.find_all("li", id=re.compile("vendorDetailsBullet"))
+        # =========================
+        # ✅ STEP 2: LOAD JSON
+        # =========================
+        data = json.loads(json_text)
 
-    for li in bullets:
-        span = li.find("span")
-        if span:
-            text = clean_text(span.get_text(" ", strip=True))
-            if len(text) > 20:
-                features.append(text)
+        # =========================
+        # ✅ STEP 3: FIND vendorDetails RECURSIVELY
+        # =========================
+        def find_vendor(obj):
+            if isinstance(obj, dict):
+                if "vendorDetailsBullets" in obj:
+                    return obj
+                for v in obj.values():
+                    res = find_vendor(v)
+                    if res:
+                        return res
+            elif isinstance(obj, list):
+                for item in obj:
+                    res = find_vendor(item)
+                    if res:
+                        return res
+            return None
+
+        vendor = find_vendor(data)
+
+        if vendor:
+            features = vendor.get("vendorDetailsBullets", [])
+            description = vendor.get("vendorDetailsParagraph", "")
+
+    except Exception as e:
+        print("CVS parsing error:", e)
 
     return {
-        "description": description,
-        "features": features
+        "description": clean_text(description),
+        "features": [clean_text(f) for f in features if len(f) > 20]
     }
 # =========================================
 # ✅ SALSIFY TEXT CLEAN VERSION
