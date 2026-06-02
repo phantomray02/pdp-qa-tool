@@ -188,48 +188,52 @@ def get_cvs_text(url):
     features = []
 
     try:
-        soup = BeautifulSoup(html, "html.parser")
-
         # =========================
-        # ✅ DESCRIPTION (HTML FIRST)
+        # ✅ FIND vendorDetails JSON
         # =========================
-        desc_tag = soup.select_one("p.text-gray")
-
-        if not desc_tag:
-            desc_tag = soup.find("p")
-
-        if desc_tag:
-            description = clean_text(desc_tag.get_text(" ", strip=True))
-
-        # =========================
-        # ✅ FEATURES (SOURCE STRING - MOST RELIABLE)
-        # =========================
-        feature_block_match = re.search(
-            r'\[\s*".*?ABSORBENT.*?"\s*\]',
+        match = re.search(
+            r'"vendorDetails":\{.*?\}',
             html,
             re.DOTALL
         )
 
-        if feature_block_match:
-            raw_block = feature_block_match.group(0)
+        if match:
+            block = match.group(0)
 
-            items = re.findall(r'"(.*?)"', raw_block)
+            # =========================
+            # ✅ DESCRIPTION
+            # =========================
+            desc_match = re.search(
+                r'"vendorDetailsParagraph":"(.*?)"',
+                block,
+                re.DOTALL
+            )
 
-            for item in items:
-                clean_f = clean_text(item)
+            if desc_match:
+                raw = desc_match.group(1)
 
-                if len(clean_f) > 20:
-                    features.append(clean_f)
+                raw = raw.replace('\\n', ' ')
+                raw = raw.replace('\\', '')
+                raw = re.sub(r'<.*?>', '', raw)
 
-        # =========================
-        # ✅ FALLBACK (HTML LI IF JSON FAILS)
-        # =========================
-        if not features:
-            for li in soup.select("li[id^=vendorDetailsBullet]"):
-                span = li.find("span")
-                if span:
-                    text = span.get_text(" ", strip=True)
-                    clean_f = clean_text(text)
+                description = clean_text(raw)
+
+            # =========================
+            # ✅ FEATURES (BULLETS)
+            # =========================
+            bullet_match = re.search(
+                r'"vendorDetailsBullets":\[(.*?)\]',
+                block,
+                re.DOTALL
+            )
+
+            if bullet_match:
+                raw_list = bullet_match.group(1)
+
+                items = re.findall(r'"(.*?)"', raw_list)
+
+                for item in items:
+                    clean_f = clean_text(item)
 
                     if len(clean_f) > 20:
                         features.append(clean_f)
@@ -237,11 +241,12 @@ def get_cvs_text(url):
     except Exception as e:
         print("CVS parsing error:", e)
 
-    # ✅ ALWAYS RETURN (PREVENTS YOUR CRASH)
+    # ✅ ALWAYS RETURN SAFE DATA
     return {
         "description": description if description else "",
         "features": features if features else []
     }
+
 # =========================================
 # ✅ SALSIFY TEXT CLEAN VERSION
 # =========================================
