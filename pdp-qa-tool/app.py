@@ -189,64 +189,50 @@ def get_cvs_text(url):
 
     try:
         # =========================
-        # ✅ FIND vendorDetails JSON
+        # ✅ DESCRIPTION (DIRECT MATCH)
         # =========================
-        match = re.search(
-            r'"vendorDetails":\{.*?\}',
+        desc_match = re.search(
+            r'"vendorDetailsParagraph":"(.*?)"',
             html,
             re.DOTALL
         )
 
-        if match:
-            block = match.group(0)
+        if desc_match:
+            raw = desc_match.group(1)
 
-            # =========================
-            # ✅ DESCRIPTION
-            # =========================
-            desc_match = re.search(
-                r'"vendorDetailsParagraph":"(.*?)"',
-                block,
-                re.DOTALL
-            )
+            raw = raw.replace('\\n', ' ')
+            raw = raw.replace('\\', '')
+            raw = re.sub(r'<.*?>', '', raw)
 
-            if desc_match:
-                raw = desc_match.group(1)
+            description = clean_text(raw)
 
-                raw = raw.replace('\\n', ' ')
-                raw = raw.replace('\\', '')
-                raw = re.sub(r'<.*?>', '', raw)
+        # =========================
+        # ✅ FEATURES (DIRECT MATCH)
+        # =========================
+        bullet_match = re.search(
+            r'"vendorDetailsBullets":\[(.*?)\]',
+            html,
+            re.DOTALL
+        )
 
-                description = clean_text(raw)
+        if bullet_match:
+            raw_list = bullet_match.group(1)
 
-            # =========================
-            # ✅ FEATURES (BULLETS)
-            # =========================
-            bullet_match = re.search(
-                r'"vendorDetailsBullets":\[(.*?)\]',
-                block,
-                re.DOTALL
-            )
+            items = re.findall(r'"(.*?)"', raw_list)
 
-            if bullet_match:
-                raw_list = bullet_match.group(1)
+            for item in items:
+                clean_f = clean_text(item)
 
-                items = re.findall(r'"(.*?)"', raw_list)
-
-                for item in items:
-                    clean_f = clean_text(item)
-
-                    if len(clean_f) > 20:
-                        features.append(clean_f)
+                if len(clean_f) > 20:
+                    features.append(clean_f)
 
     except Exception as e:
         print("CVS parsing error:", e)
 
-    # ✅ ALWAYS RETURN SAFE DATA
     return {
         "description": description if description else "",
         "features": features if features else []
     }
-
 # =========================================
 # ✅ SALSIFY TEXT CLEAN VERSION
 # =========================================
