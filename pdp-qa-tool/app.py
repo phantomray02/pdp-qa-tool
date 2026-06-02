@@ -535,12 +535,19 @@ if uploaded_file:
         with st.expander("🔍 HTML DEBUG", expanded=True):
             st.write("HTML LENGTH:", len(full_html))
             st.write("Contains bladder:", "bladder" in full_html.lower())
+            st.write("HAS vendorDetailsParagraph:", "vendorDetailsParagraph" in full_html)
+            st.write("HAS ULTRA-ABSORBENT:", "ULTRA-ABSORBENT" in full_html)
             st.text(full_html[:500])
 
         try:
             # =========================
             # ✅ TEXT EXTRACTION
             # =========================
+            # =========================
+            # ✅ TEXT EXTRACTION
+            # =========================
+            s_text = get_salsify_text(row["salsify_url"])
+            r_text = get_cvs_text(full_html)
 
             # AFTER parsing
             r_text = get_cvs_text(full_html)
