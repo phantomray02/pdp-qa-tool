@@ -117,38 +117,45 @@ def clean_text(raw):
 # =========================================
 # ✅ SALSIFY IMAGES
 # =========================================
+import json
+import re
+
 def get_salsify_images(url):
-    soup = get_soup(url)
+
+    html = get_html(url)
 
     images = []
 
-    # ✅ find all labels
-    labels = soup.select('[data-testid="property-name"]')
+    try:
+        # ✅ find the JSON block containing images
+        match = re.search(r'\{"label":null,"property":.*?\]\}\]', html, re.DOTALL)
 
-    for label_el in labels:
+        if not match:
+            return []
 
-        label = label_el.get_text(strip=True)
+        json_text = match.group(0)
 
-        # ✅ find NEXT <a> tag (this holds the real image)
-        link = label_el.find_next("a")
+        data = json.loads(json_text)
 
-        if not link:
-            continue
+        for item in data:
 
-        href = link.get("href")
+            prop = item.get("property", "").replace("-", "").strip()
 
-        if not href:
-            continue
+            values = item.get("values", [])
 
-        if "images.salsify.com" not in href:
-            continue
+            if not values:
+                continue
 
-        clean_url = href.split("?")[0]
+            img_url = values[0].get("value", "")
 
-        images.append({
-            "url": clean_url,
-            "type": label
-        })
+            if img_url.startswith("http"):
+                images.append({
+                    "url": img_url,
+                    "type": prop
+                })
+
+    except Exception as e:
+        print("Salsify JSON parse error:", e)
 
     return images
 # =========================================
