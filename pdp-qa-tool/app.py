@@ -190,11 +190,11 @@ def get_cvs_text(url):
     features = []
 
     try:
-        # =========================
-        # ✅ EXTRACT JSON STATE
-        # =========================
+        # =====================================
+        # ✅ STEP 1: FIND ESCAPED PRODUCT JSON
+        # =====================================
         match = re.search(
-            r'window\.__INITIAL_STATE__\s*=\s*(\{.*?\});',
+            r'(\{\\\"vendorContent\\\":.*?\\\"rating\\\")',
             html,
             re.DOTALL
         )
@@ -202,42 +202,37 @@ def get_cvs_text(url):
         if not match:
             return {"description": "", "features": []}
 
-        json_text = match.group(1)
+        raw_block = match.group(1)
 
-        # ✅ Load JSON
-        data = json.loads(json_text)
+        # =====================================
+        # ✅ STEP 2: CLEAN ESCAPING
+        # =====================================
+        clean_json = raw_block.replace('\\"', '"')
 
-        # =========================
-        # ✅ NAVIGATE STRUCTURE SAFELY
-        # =========================
-        def find_vendor_details(obj):
-            if isinstance(obj, dict):
-                if "vendorDetailsBullets" in obj:
-                    return obj
-                for v in obj.values():
-                    result = find_vendor_details(v)
-                    if result:
-                        return result
-            elif isinstance(obj, list):
-                for item in obj:
-                    result = find_vendor_details(item)
-                    if result:
-                        return result
-            return None
+        # remove trailing junk after JSON
+        clean_json = re.sub(r'"rating".*', '"rating":0}', clean_json)
 
-        vendor = find_vendor_details(data)
+        # =====================================
+        # ✅ STEP 3: LOAD JSON
+        # =====================================
+        data = json.loads(clean_json)
 
-        if vendor:
-            features = vendor.get("vendorDetailsBullets", [])
-            description = vendor.get("vendorDetailsParagraph", "")
+        # =====================================
+        # ✅ STEP 4: NAVIGATE STRUCTURE
+        # =====================================
+        vendor = data.get("vendorContent", {}).get("vendorDetails", {})
+
+        features = vendor.get("vendorDetailsBullets", [])
+        description = vendor.get("vendorDetailsParagraph", "")
 
     except Exception as e:
-        print("CVS parsing error:", e)
+        print("CVS parse error:", e)
 
     return {
         "description": clean_text(description),
         "features": [clean_text(f) for f in features if len(f) > 20]
     }
+
 # =========================================
 # ✅ SALSIFY TEXT CLEAN VERSION
 # =========================================
