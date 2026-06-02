@@ -187,7 +187,9 @@ def get_cvs_text(url):
     description = ""
     features = []
 
-    # ✅ DESCRIPTION
+    # =========================
+    # ✅ DESCRIPTION (ROBUST)
+    # =========================
     match = re.search(
         r'"shortDescription":"(.*?)"',
         html,
@@ -201,22 +203,43 @@ def get_cvs_text(url):
             re.DOTALL | re.IGNORECASE
         )
 
+    # ✅ FINAL FALLBACK (HTML paragraph)
+    if not match:
+        match = re.search(
+            r'<p>(.*?)</p>',
+            html,
+            re.DOTALL | re.IGNORECASE
+        )
+
     raw = match.group(1) if match else ""
 
+    # ✅ CLEAN DESCRIPTION
     raw = raw.replace('\\n', ' ')
     raw = raw.replace('\\t', ' ')
     raw = raw.replace('\\', '')
-    raw = re.sub(r'<.*?>', '', raw)
+    raw = re.sub(r'<.*?>', '', raw)  # strip HTML
     raw = re.sub(r'\s+', ' ', raw)
 
     description = clean_text(raw)
 
-    # ✅ FEATURES (GENERIC)
+    # =========================
+    # ✅ FEATURES (ROBUST)
+    # =========================
+
+    # ✅ Try structured features first
     feature_matches = re.findall(
         r'"feature\d*":"(.*?)"',
         html,
         re.IGNORECASE
     )
+
+    # ✅ Fallback: HTML bullet list
+    if not feature_matches:
+        feature_matches = re.findall(
+            r'<li>(.*?)</li>',
+            html,
+            re.DOTALL | re.IGNORECASE
+        )
 
     for f in feature_matches:
         clean_f = re.sub(r'<.*?>', '', f)
@@ -543,7 +566,7 @@ if uploaded_file:
             s_text = get_salsify_text(row["salsify_url"])
             r_text = get_cvs_text(row["retail_url"])
 
-            # =========================================
+           # =========================================
             # ✅ TITLE
             # =========================================
             st.markdown("## Title")
@@ -561,7 +584,6 @@ if uploaded_file:
                         s_title = span.get_text(strip=True)
                         break
 
-            # ✅ CVS title
             r_html = get_html(row["retail_url"])
 
             r_title_match = re.search(r'"productName":"(.*?)"', r_html)
@@ -573,7 +595,6 @@ if uploaded_file:
 
             r_title = re.sub(r'\s*-\s*CVS.*$', '', r_title).strip()
 
-            # ✅ display
             c1, c2 = st.columns(2)
             c1.write(s_title)
             c2.write(r_title)
