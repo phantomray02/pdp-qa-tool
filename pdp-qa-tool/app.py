@@ -41,23 +41,23 @@ IMAGE_ORDER = [
 html_cache = {}
 image_cache = {}
 
-
-from playwright.sync_api import sync_playwright
-
 def get_html(url):
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
 
         page.goto(url)
+
+        # ✅ SCROLL TO LOAD ALL IMAGES
+        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        page.wait_for_timeout(2000)
+
         page.wait_for_load_state("networkidle")
 
         html = page.content()
         browser.close()
 
     return html
-
-
     # =========================================
     # ✅ STEP 1: TRY API USING PRODUCT ID
     # =========================================
@@ -156,8 +156,17 @@ def get_salsify_images(url):
                 "type": ""
             })
 
+        # ✅ REMOVE ICONS / VERY SMALL IMAGES
+        filtered = []
+        
+        for img in final_images:
+            if len(img["url"]) > 50:  # simple noise filter
+                filtered.append(img)
+        
+        return filtered
+
     # ✅ STEP 4 — LIMIT (important)
-    return final_images[:9]
+    return final_images
 # =========================================
 # ✅ ORDER IMAGES
 # =========================================
@@ -557,6 +566,12 @@ if uploaded_file:
             st.write("HAS vendorDetailsParagraph:", "vendorDetailsParagraph" in full_html)
             st.write("HAS ULTRA-ABSORBENT:", "ULTRA-ABSORBENT" in full_html)
             st.text(full_html[:500])
+            s_images = get_salsify_images(row["salsify_url"])
+            
+            st.write("Salsify image count:", len(s_images))
+            
+            for i, img in enumerate(s_images):
+                st.image(img["url"], caption=f"Salsify Image {i}")
 
         try:
             # =========================
