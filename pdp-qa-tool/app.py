@@ -185,41 +185,66 @@ def get_cvs_images(url):
 # ✅ CVS TEXT (STABLE FINAL VERSION)
 # =========================================
 import json
+import html as html_lib
 
 def get_cvs_text(url):
+    html = get_html(url)
+
     description = ""
     features = []
 
     try:
-        sku_match = re.search(r'prodid-(\d+)', url)
-        if not sku_match:
-            return {"description": "", "features": []}
+        # =====================================
+        # ✅ STEP 1: FIND ANY JSON-LIKE BLOCK WITH vendorDetails
+        # =====================================
+        matches = re.findall(
+            r'\{.*?vendorDetailsBullets.*?\}',
+            html,
+            re.DOTALL
+        )
 
-        product_id = sku_match.group(1)
+        for block in matches:
+            try:
+                # ✅ clean escaped quotes
+                cleaned = html_lib.unescape(block)
+                cleaned = cleaned.replace('\\"', '"')
 
-        api_url = f"https://www.cvs.com/api/product/{product_id}"
+                # ✅ attempt JSON load
+                data = json.loads(cleaned)
 
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "application/json"
-        }
+                # ✅ deeply search for vendorDetails
+                def find_details(obj):
+                    if isinstance(obj, dict):
+                        if "vendorDetailsBullets" in obj:
+                            return obj
+                        for v in obj.values():
+                            res = find_details(v)
+                            if res:
+                                return res
+                    elif isinstance(obj, list):
+                        for item in obj:
+                            res = find_details(item)
+                            if res:
+                                return res
+                    return None
 
-        res = requests.get(api_url, headers=headers, timeout=10)
-        data = res.json()
+                vendor = find_details(data)
 
-        details = data.get("vendorContent", {}).get("vendorDetails", {})
+                if vendor:
+                    features = vendor.get("vendorDetailsBullets", [])
+                    description = vendor.get("vendorDetailsParagraph", "")
+                    break
 
-        features = details.get("vendorDetailsBullets", [])
-        description = details.get("vendorDetailsParagraph", "")
+            except:
+                continue
 
     except Exception as e:
-        print("API error:", e)
+        print("CVS parsing error:", e)
 
     return {
         "description": clean_text(description),
         "features": [clean_text(f) for f in features if len(f) > 20]
     }
-
 # =========================================
 # ✅ SALSIFY TEXT CLEAN VERSION
 # =========================================
