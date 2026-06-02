@@ -76,6 +76,53 @@ def clean_text(raw):
     raw = re.sub(r'\s+', ' ', raw)
 
     return raw.strip()
+    # =========================================
+    # ✅ EXTRACT FEATURES FROM dataPayload (FINAL)
+    # =========================================
+    import html as html_lib
+    import re
+    
+    def extract_features_from_payload(raw_html):
+    
+        features = []
+    
+        try:
+            # ✅ STEP 1 — UNESCAPE HTML
+            html = html_lib.unescape(raw_html)
+    
+            # ✅ STEP 2 — CHECK IF PAYLOAD EXISTS
+            if "dataPayload" not in html:
+                return []
+    
+            # ✅ STEP 3 — EXTRACT dataPayload BLOCK
+            match = re.search(
+                r'dataPayload"\s*:\s*\[(.*?)\]',
+                html,
+                re.DOTALL
+            )
+    
+            if not match:
+                return []
+    
+            block = match.group(1)
+    
+            # ✅ STEP 4 — PARSE EACH STRING ITEM
+            items = re.findall(r'"(.*?)"', block)
+    
+            for item in items:
+                clean_f = clean_text(item)
+    
+                # ✅ FILTER REAL FEATURES ONLY
+                if ":" in clean_f and len(clean_f) > 20:
+                    features.append(clean_f)
+    
+        except Exception as e:
+            print("Payload parse error:", e)
+    
+        # ✅ REMOVE DUPLICATES
+        features = list(dict.fromkeys(features))
+    
+        return features[:5]
 
 # =========================================
 # ✅ SALSIFY IMAGES
@@ -285,51 +332,51 @@ def extract_features_from_description(desc):
 # =========================================
 # ✅ CVS TEXT (STABLE FINAL VERSION)
 # =========================================
-import html as html_lib
-
 def get_cvs_text(url):
-    raw_html = get_html(url)
     
-    st.write("HAS ULTRA:", "ULTRA-ABSORBENT" in html)
-    st.write("HTML LENGTH:", len(html))
+    st.write("HAS dataPayload:", "dataPayload" in html)
+    st.write("DEBUG CVS FEATURES:", features)
 
+    html = get_html(url)
 
     description = ""
     features = []
 
+    soup = BeautifulSoup(html, "html.parser")
+
     try:
-        # ✅ STEP 1 — UNESCAPE (CRITICAL)
-        html = html_lib.unescape(raw_html)
+        # =========================
+        # ✅ DESCRIPTION (KEEP THIS)
+        # =========================
+        paragraphs = soup.find_all("p")
 
-        # ✅ STEP 2 — MATCH ESCAPED FEATURE STRINGS
-        matches = re.findall(r'\\"([A-Z][A-Z\s\-]+:\s.*?)\\"', html)
+        best_desc = ""
+        best_len = 0
 
-        for m in matches:
-            clean_f = clean_text(m)
+        for p in paragraphs:
+            text = clean_text(p.get_text(" ", strip=True))
 
-            if 20 < len(clean_f) < 300:
-                features.append(clean_f)
+            if len(text) > best_len and len(text) > 120:
+                best_desc = text
+                best_len = len(text)
 
-        # ✅ STEP 3 — REMOVE DUPES
-        features = list(dict.fromkeys(features))
+        description = best_desc
 
-        # ✅ STEP 4 — DESCRIPTION (YOU ALREADY HAVE THIS)
-        desc_match = re.search(
-            r'vendorDetailsParagraph":"(.*?)"',
-            html,
-            re.DOTALL
-        )
+        # =========================
+        # ✅ FEATURES (NEW LOGIC)
+        # =========================
+        features = extract_features_from_payload(html)
 
-        if desc_match:
-            raw = desc_match.group(1)
-            description = clean_text(raw.replace('\\', ''))
+        # ✅ FALLBACK IF EMPTY
+        if not features:
+            features = extract_features_from_description(description)
 
     except Exception as e:
-        print("CVS parse error:", e)
+        print("CVS parsing error:", e)
 
     return {
         "description": description,
-        "features": features[:5]
+        "features": features
     }
 # =========================================
 # ✅ SALSIFY TEXT CLEAN VERSION
