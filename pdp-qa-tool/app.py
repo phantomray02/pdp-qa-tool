@@ -294,23 +294,22 @@ def get_cvs_text(url):
     features = []
 
     try:
-        # ✅ STEP 1 — UNESCAPE
+        # ✅ STEP 1 — UNESCAPE (CRITICAL)
         html = html_lib.unescape(raw_html)
 
-        # ✅ STEP 2 — EXTRACT ALL QUOTED STRINGS WITH COLON PATTERN
-        matches = re.findall(r'"([A-Z][A-Z\s\-]+:\s[^"]+)"', html)
+        # ✅ STEP 2 — MATCH ESCAPED FEATURE STRINGS
+        matches = re.findall(r'\\"([A-Z][A-Z\s\-]+:\s.*?)\\"', html)
 
         for m in matches:
             clean_f = clean_text(m)
 
-            # ✅ strong filter
             if 20 < len(clean_f) < 300:
                 features.append(clean_f)
 
-        # ✅ STEP 3 — REMOVE DUPLICATES
+        # ✅ STEP 3 — REMOVE DUPES
         features = list(dict.fromkeys(features))
 
-        # ✅ STEP 4 — DESCRIPTION (THIS PART WAS OK)
+        # ✅ STEP 4 — DESCRIPTION (YOU ALREADY HAVE THIS)
         desc_match = re.search(
             r'vendorDetailsParagraph":"(.*?)"',
             html,
