@@ -181,49 +181,40 @@ def get_cvs_images(url):
 # =========================================
 # ✅ CVS TEXT (STABLE FINAL VERSION)
 # =========================================
-import html  # add this at top of file
-
 def get_cvs_text(url):
-    raw_html = get_html(url)
-
-    # ✅ STEP 1 — UNESCAPE EVERYTHING (THIS IS THE FIX)
-    html_text = html.unescape(raw_html)
+    html = get_html(url)
 
     description = ""
     features = []
 
     try:
         # =========================
-        # ✅ DESCRIPTION
+        # ✅ EXTRACT vendorContent BLOCK
         # =========================
-        desc_match = re.search(
-            r'"vendorDetailsParagraph":"(.*?)"',
-            html_text,
+        vc_match = re.search(
+            r'"vendorContent":\{(.*?)\}\,"vendorDirection"',
+            html,
             re.DOTALL
         )
 
-        if desc_match:
-            raw = desc_match.group(1)
+        if not vc_match:
+            return {"description": "", "features": []}
 
-            raw = raw.replace('\\n', ' ')
-            raw = raw.replace('\\', '')
-            raw = re.sub(r'<.*?>', '', raw)
-
-            description = clean_text(raw)
+        vc_block = vc_match.group(1)
 
         # =========================
-        # ✅ FEATURES
+        # ✅ FEATURES (vendorDetailsBullets)
         # =========================
-        bullet_match = re.search(
+        bullets_match = re.search(
             r'"vendorDetailsBullets":\[(.*?)\]',
-            html_text,
+            vc_block,
             re.DOTALL
         )
 
-        if bullet_match:
-            raw_list = bullet_match.group(1)
+        if bullets_match:
+            bullets_raw = bullets_match.group(1)
 
-            items = re.findall(r'"(.*?)"', raw_list)
+            items = re.findall(r'"(.*?)"', bullets_raw)
 
             for item in items:
                 clean_f = clean_text(item)
@@ -231,14 +222,34 @@ def get_cvs_text(url):
                 if len(clean_f) > 20:
                     features.append(clean_f)
 
+        # =========================
+        # ✅ DESCRIPTION (vendorDetailsParagraph)
+        # =========================
+        desc_match = re.search(
+            r'"vendorDetailsParagraph":"(.*?)"',
+            vc_block,
+            re.DOTALL
+        )
+
+        if desc_match:
+            raw = desc_match.group(1)
+
+            raw = raw.replace('\\n', ' ')
+            raw = raw.replace('\\t', ' ')
+            raw = raw.replace('\\', '')
+
+            raw = re.sub(r'<.*?>', '', raw)
+            raw = re.sub(r'\s+', ' ', raw)
+
+            description = clean_text(raw)
+
     except Exception as e:
         print("CVS parsing error:", e)
 
     return {
-        "description": description if description else "",
-        "features": features if features else []
+        "description": description,
+        "features": features
     }
-
 # =========================================
 # ✅ SALSIFY TEXT CLEAN VERSION
 # =========================================
