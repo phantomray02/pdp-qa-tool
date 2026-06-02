@@ -198,8 +198,22 @@ def get_cvs_text(url):
     html_slice = html[start_idx:start_idx + 4000]
 
     # ✅ STEP 2 — extract description
-    match = re.search(
-        r'Get up to 100% leak-free.*?U\.S\.',
+        match = re.search(
+            r'"longDescription":"(.*?)"',
+            html,
+            re.DOTALL | re.IGNORECASE
+        )
+        
+        raw = match.group(1) if match else ""
+        
+        raw = raw.replace('\\n', ' ')
+        raw = raw.replace('\\t', ' ')
+        raw = raw.replace('\\', '')
+        raw = re.sub(r'<.*?>', '', raw)  # remove HTML
+        raw = re.sub(r'\s+', ' ', raw)
+        
+        description = clean_text(raw)
+
         html_slice,
         re.DOTALL | re.IGNORECASE
     )
@@ -329,7 +343,7 @@ def match_features(s_features, r_features):
                 best_score = sim
                 best_match = r
 
-        if best_score >= 0.7:
+        if best_score >= 0.5:
             results.append((s, best_match, int(best_score * 100)))
         else:
             results.append((s, "❌ Missing", 0))
@@ -578,8 +592,8 @@ if uploaded_file:
             desc_score = int(
                 SequenceMatcher(
                     None,
-                    s_text.get("description", "").lower(),
-                    r_text.get("description", "").lower()
+                    normalize_text(s_text.get("description", "")),
+                    normalize_text(r_text.get("description", ""))
                 ).ratio() * 100
             )
 
