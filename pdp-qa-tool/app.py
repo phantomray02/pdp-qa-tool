@@ -184,8 +184,7 @@ def get_cvs_images(url):
 # =========================================
 # ✅ CVS TEXT (STABLE FINAL VERSION)
 # =========================================
-import json
-import html as html_lib
+from bs4 import BeautifulSoup
 
 def get_cvs_text(url):
     html = get_html(url)
@@ -193,57 +192,31 @@ def get_cvs_text(url):
     description = ""
     features = []
 
-    try:
-        # =====================================
-        # ✅ STEP 1: FIND ANY JSON-LIKE BLOCK WITH vendorDetails
-        # =====================================
-        matches = re.findall(
-            r'\{.*?vendorDetailsBullets.*?\}',
-            html,
-            re.DOTALL
-        )
+    soup = BeautifulSoup(html, "html.parser")
 
-        for block in matches:
-            try:
-                # ✅ clean escaped quotes
-                cleaned = html_lib.unescape(block)
-                cleaned = cleaned.replace('\\"', '"')
+    # =========================
+    # ✅ DESCRIPTION (already works)
+    # =========================
+    desc_tag = soup.select_one("p")
 
-                # ✅ attempt JSON load
-                data = json.loads(cleaned)
+    if desc_tag:
+        description = clean_text(desc_tag.get_text(" ", strip=True))
 
-                # ✅ deeply search for vendorDetails
-                def find_details(obj):
-                    if isinstance(obj, dict):
-                        if "vendorDetailsBullets" in obj:
-                            return obj
-                        for v in obj.values():
-                            res = find_details(v)
-                            if res:
-                                return res
-                    elif isinstance(obj, list):
-                        for item in obj:
-                            res = find_details(item)
-                            if res:
-                                return res
-                    return None
+    # =========================
+    # ✅ FEATURES (REAL FIX)
+    # =========================
+    bullets = soup.find_all("li", id=re.compile("vendorDetailsBullet"))
 
-                vendor = find_details(data)
-
-                if vendor:
-                    features = vendor.get("vendorDetailsBullets", [])
-                    description = vendor.get("vendorDetailsParagraph", "")
-                    break
-
-            except:
-                continue
-
-    except Exception as e:
-        print("CVS parsing error:", e)
+    for li in bullets:
+        span = li.find("span")
+        if span:
+            text = clean_text(span.get_text(" ", strip=True))
+            if len(text) > 20:
+                features.append(text)
 
     return {
-        "description": clean_text(description),
-        "features": [clean_text(f) for f in features if len(f) > 20]
+        "description": description,
+        "features": features
     }
 # =========================================
 # ✅ SALSIFY TEXT CLEAN VERSION
