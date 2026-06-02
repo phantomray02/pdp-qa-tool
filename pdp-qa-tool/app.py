@@ -270,26 +270,24 @@ def match_features(s_features, r_features):
         best_match = ""
         best_score = 0
 
-        s_norm = normalize_text(s)
+        s_words = set(normalize_text(s).split())
 
         for r in r_features:
-            r_norm = normalize_text(r)
+            r_words = set(normalize_text(r).split())
 
-            # ✅ NEW: partial match logic
-            if r_norm in s_norm or s_norm in r_norm:
+            if not s_words or not r_words:
+                continue
+
+            overlap = len(s_words & r_words)
+            total = len(s_words | r_words)
+
+            score = overlap / total
+
+            if score > best_score:
+                best_score = score
                 best_match = r
-                best_score = 0.9  # strong match
-                break
 
-            # ✅ fallback to similarity
-            sim = SequenceMatcher(None, s_norm, r_norm).ratio()
-
-            if sim > best_score:
-                best_score = sim
-                best_match = r
-
-        # ✅ LOWER threshold (important)
-        if best_score >= 0.35:
+        if best_score >= 0.3:
             results.append((s, best_match, int(best_score * 100)))
         else:
             results.append((s, "❌ Missing", 0))
@@ -525,14 +523,24 @@ if uploaded_file:
             c1, c2 = st.columns(2)
             c1.write(s_text.get("description", ""))
             c2.write(r_text.get("description", ""))
-
-            desc_score = int(
-                SequenceMatcher(
-                    None,
-                    normalize_text(s_text.get("description", "")),
-                    normalize_text(r_text.get("description", ""))
-                ).ratio() * 100
-            )
+        
+        def keyword_score(a, b):
+            a_words = set(normalize_text(a).split())
+            b_words = set(normalize_text(b).split())
+        
+            if not a_words or not b_words:
+                return 0
+        
+            overlap = len(a_words & b_words)
+            total = len(a_words | b_words)
+        
+            return int((overlap / total) * 100)
+        
+        
+        desc_score = keyword_score(
+            s_text.get("description", ""),
+            r_text.get("description", "")
+        )
 
             st.write(f"✅ Description Match: {desc_score}%")
 
