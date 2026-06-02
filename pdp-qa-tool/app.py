@@ -188,152 +188,64 @@ def get_cvs_text(url):
     features = []
 
     # =========================
-    # ✅ DESCRIPTION (ROBUST)
+    # ✅ STEP 1: FIND JSON DATA
     # =========================
-    match = re.search(
-        r'"shortDescription":"(.*?)"',
+    json_match = re.search(
+        r'window\.__INITIAL_STATE__\s*=\s*(\{.*?\});',
         html,
-        re.DOTALL | re.IGNORECASE
+        re.DOTALL
     )
 
-    if not match:
-        match = re.search(
-            r'"longDescription":"(.*?)"',
-            html,
-            re.DOTALL | re.IGNORECASE
+    if not json_match:
+        return {
+            "description": "",
+            "features": []
+        }
+
+    json_text = json_match.group(1)
+
+    # =========================
+    # ✅ STEP 2: DESCRIPTION
+    # =========================
+    desc_match = re.search(
+        r'"longDescription":"(.*?)"',
+        json_text,
+        re.DOTALL
+    )
+
+    if not desc_match:
+        desc_match = re.search(
+            r'"shortDescription":"(.*?)"',
+            json_text,
+            re.DOTALL
         )
 
-    # ✅ FINAL FALLBACK (HTML paragraph)
-    if not match:
-        match = re.search(
-            r'<p>(.*?)</p>',
-            html,
-            re.DOTALL | re.IGNORECASE
-        )
+    raw = desc_match.group(1) if desc_match else ""
 
-    raw = match.group(1) if match else ""
-
-    # ✅ CLEAN DESCRIPTION
     raw = raw.replace('\\n', ' ')
     raw = raw.replace('\\t', ' ')
     raw = raw.replace('\\', '')
-    raw = re.sub(r'<.*?>', '', raw)  # strip HTML
+    raw = re.sub(r'<.*?>', '', raw)
     raw = re.sub(r'\s+', ' ', raw)
 
     description = clean_text(raw)
 
     # =========================
-    # ✅ FEATURES (ROBUST)
+    # ✅ STEP 3: FEATURES
     # =========================
-
-    # ✅ Try structured features first
     feature_matches = re.findall(
-        r'"feature\d*":"(.*?)"',
-        html,
+        r'"name":"(.*?)"',
+        json_text,
         re.IGNORECASE
     )
-
-    # ✅ Fallback: HTML bullet list
-    if not feature_matches:
-        feature_matches = re.findall(
-            r'<li>(.*?)</li>',
-            html,
-            re.DOTALL | re.IGNORECASE
-        )
 
     for f in feature_matches:
-        clean_f = re.sub(r'<.*?>', '', f)
-        clean_f = clean_text(clean_f)
+        clean_f = clean_text(f)
 
-        if len(clean_f) > 20:
+        if len(clean_f) > 20 and not any(x in clean_f.lower() for x in [
+            "price", "sku", "id", "brand"
+        ]):
             features.append(clean_f)
-
-    return {
-        "description": description,
-        "features": features
-    }
-
-    # ======================================
-    # ✅ CLEAN DESCRIPTION (UNCHANGED)
-    # ======================================
-    raw = raw.replace('\\n', ' ')
-    raw = raw.replace('\\t', ' ')
-    raw = raw.replace('\\', '')
-    raw = raw.replace('u0026', '&')
-
-    raw = re.sub(
-        r'To use, pull.*?you hear the click for full-size protection in one easy step\.',
-        'To use, pull until you hear the click for full-size protection in one easy step.',
-        raw,
-        flags=re.IGNORECASE
-    )
-
-    raw = re.sub(r'\s+', ' ', raw)
-
-    description = clean_text(raw)
-
-    # ======================================
-    # ✅ FEATURES
-    # ======================================
-
-    # Feature 1
-    m = re.search(r'(\d+)\s+regular\s+tampons', html, re.IGNORECASE)
-    if m:
-        features.append(m.group(0))
-
-    # Feature 2
-    m = re.search(
-        r'Get up to 100% leak[-\s]?free with the #1 compact tampon',
-        description,
-        re.IGNORECASE
-    )
-    if m:
-        features.append(m.group(0))
-
-    # Feature 3
-    m = re.search(
-        r'U by Kotex Click tampons move.*?fragrance',
-        description,
-        re.IGNORECASE
-    )
-    if m:
-        features.append(m.group(0))
-
-    # ✅ ✅ ✅ FEATURE 4 (FINAL FIX)
-    m = re.search(
-        r'Compact to fit.*?one easy step',
-        description,
-        re.IGNORECASE
-    )
-    if m:
-        f4 = m.group(0)
-
-        # ✅ REMOVE duplicated phrase
-        f4 = re.sub(
-            r'full-size tampon in full-size protection',
-            'full-size tampon in',
-            f4,
-            flags=re.IGNORECASE
-        )
-
-        # ✅ normalize to exact expected wording
-        f4 = re.sub(
-            r'full-size tampon in\s+one easy step',
-            'full-size tampon in one easy step',
-            f4,
-            flags=re.IGNORECASE
-        )
-
-        features.append(f4.strip())
-
-    # Feature 5
-    m = re.search(
-        r'Individually wrapped.*?fashion trends',
-        description,
-        re.IGNORECASE
-    )
-    if m:
-        features.append(m.group(0))
 
     return {
         "description": description,
