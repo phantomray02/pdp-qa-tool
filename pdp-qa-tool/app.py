@@ -199,21 +199,43 @@ def get_cvs_text(url):
 
 # ✅ STEP 2 — extract description (FIXED)
     match = re.search(
-        r'"longDescription":"(.*?)"',
+        r'"shortDescription":"(.*?)"',
         html,
         re.DOTALL | re.IGNORECASE
     )
-
+    
+    if not match:
+        match = re.search(
+            r'"longDescription":"(.*?)"',
+            html,
+            re.DOTALL | re.IGNORECASE
+        )
+    
     raw = match.group(1) if match else ""
-
-    # ✅ CLEAN DESCRIPTION
+    
+    # ✅ CLEAN
     raw = raw.replace('\\n', ' ')
     raw = raw.replace('\\t', ' ')
     raw = raw.replace('\\', '')
     raw = re.sub(r'<.*?>', '', raw)
     raw = re.sub(r'\s+', ' ', raw)
-
+    
     description = clean_text(raw)
+# ✅ GENERIC FEATURE EXTRACTION
+feature_matches = re.findall(
+    r'"feature\d*":"(.*?)"',
+    html,
+    re.IGNORECASE
+)
+
+for f in feature_matches:
+    clean_f = re.sub(r'<.*?>', '', f)
+    clean_f = clean_text(clean_f)
+
+    if len(clean_f) > 20:
+        features.append(clean_f)
+
+
 
     # ======================================
     # ✅ CLEAN DESCRIPTION (UNCHANGED)
@@ -534,12 +556,19 @@ if uploaded_file:
             st.markdown("## Title")
             
             # ✅ Salsify title (clean HTML title)
-            s_html = get_html(row["salsify_url"])
-            s_title_match = re.search(r'<title>(.*?)</title>', s_html)
-            s_title = s_title_match.group(1) if s_title_match else ""
-            
-            # ✅ remove branding if present
-            s_title = re.sub(r'\s*-\s*.*$', '', s_title).strip()
+        soup = get_soup(row["salsify_url"])
+        
+        s_title = ""
+        
+        # ✅ Find product title row directly
+        for row_html in soup.find_all("tr"):
+            label = row_html.get_text(" ", strip=True).lower()
+        
+            if "product title" in label:
+                span = row_html.find("span", {"data-testid": "property-content"})
+                if span:
+                    s_title = span.get_text(strip=True)
+                    break
             
             # ✅ CVS title (use productName JSON instead of <title>)
             r_html = get_html(row["retail_url"])
