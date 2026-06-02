@@ -289,6 +289,10 @@ import html as html_lib
 
 def get_cvs_text(url):
     raw_html = get_html(url)
+    
+    st.write("HAS ULTRA:", "ULTRA-ABSORBENT" in html)
+    st.write("HTML LENGTH:", len(html))
+
 
     description = ""
     features = []
