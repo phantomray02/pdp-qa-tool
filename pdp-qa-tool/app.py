@@ -41,21 +41,48 @@ IMAGE_ORDER = [
 html_cache = {}
 image_cache = {}
 
+import requests
+import re
+
 def get_html(url):
-    api_key = "fa3152d646631c760109185d87231916"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/json, text/html, */*",
+        "Referer": "https://www.cvs.com/",
+    }
 
-    proxy_url = (
-        f"http://api.scraperapi.com?"
-        f"api_key={api_key}"
-        f"&url={url}"
-        f"&render=true"
-    )
+    # =========================================
+    # ✅ STEP 1: TRY API USING PRODUCT ID
+    # =========================================
+    product_id_match = re.search(r'prodid-(\d+)', url)
 
+    if product_id_match:
+        product_id = product_id_match.group(1)
+
+        api_url = f"https://www.cvs.com/api/product/v2/{product_id}"
+
+        try:
+            res = requests.get(api_url, headers=headers, timeout=15)
+
+            if res.status_code == 200 and res.text.strip():
+                return res.text  # ✅ JSON response
+
+        except:
+            pass
+
+    # =========================================
+    # ✅ STEP 2: FALLBACK TO NORMAL PAGE
+    # =========================================
     try:
-        res = requests.get(proxy_url, timeout=25)
+        res = requests.get(url, headers=headers, timeout=15)
         return res.text
     except:
         return ""
+        
 def get_soup(url):
     return BeautifulSoup(get_html(url), "html.parser")
 
@@ -221,51 +248,110 @@ def extract_features_from_description(desc):
 # =========================================
 # ✅ CVS TEXT (FINAL WORKING VERSION)
 # =========================================
-def get_cvs_text(url):
+from bs4 import BeautifulSoup
+import json
+import re
 
-    html = get_html(url)
+def get_cvs_text(html):
 
     description = ""
     features = []
 
-    soup = BeautifulSoup(html, "html.parser")
+    if not html:
+        return {"description": "", "features": []}
 
+    # =========================================
+    # ✅ CASE 1: API JSON RESPONSE
+    # =========================================
     try:
-        # ✅ DESCRIPTION (ROBUST + TARGETED)
+        data = json.loads(html)
 
-        description = ""
-        
-        paragraphs = soup.find_all("p")
-        
-        for p in paragraphs:
-            text = clean_text(p.get_text(" ", strip=True))
-        
-            # ✅ look for known product-style text
-            if "poise" in text.lower() and "liner" in text.lower():
-                description = text
-                break
-        
-        # ✅ fallback if nothing matched
-        if not description:
-            all_text = []
-            for p in paragraphs:
-                text = clean_text(p.get_text(" ", strip=True))
-                if len(text) > 40:
-                    all_text.append(text)
-        
-            description = " ".join(all_text)[:2000]
+        # ✅ attempt common structures
+        product = data.get("product") or data
 
-        # ✅ FEATURES FROM DESCRIPTION ONLY (FINAL)
-        features = extract_features_from_description(description)
+        description = (
+            product.get("longDescription")
+            or product.get("description")
+            or ""
+        )
 
-    except Exception as e:
-        print("CVS parsing error:", e)
+        bullets = product.get("features") or product.get("bulletPoints") or []
+
+        if isinstance(bullets, list):
+            features = [b.strip() for b in bullets if isinstance(b, str)]
+
+        if description or features:
+            return {
+                "description": description.strip(),
+                "features": features
+            }
+
+    except:
+        pass
+
+    # =========================================
+    # ✅ CASE 2: PARSE __NEXT_DATA__
+    # =========================================
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+
+        script = soup.find("script", id="__NEXT_DATA__")
+
+        if script:
+            data = json.loads(script.string)
+
+            # ✅ navigate safely
+            props = data.get("props", {})
+            page_props = props.get("pageProps", {})
+            product_data = page_props.get("product") or {}
+
+            description = (
+                product_data.get("longDescription")
+                or product_data.get("description")
+                or ""
+            )
+
+            bullets = product_data.get("features") or product_data.get("bulletPoints") or []
+
+            if isinstance(bullets, list):
+                features = [b.strip() for b in bullets if isinstance(b, str)]
+
+            if description or features:
+                return {
+                    "description": description.strip(),
+                    "features": features
+                }
+
+    except:
+        pass
+
+    # =========================================
+    # ✅ CASE 3: REGEX FALLBACK (LAST RESORT)
+    # =========================================
+    try:
+        # ✅ description
+        desc_match = re.search(r'"description":"(.*?)"', html)
+        if desc_match:
+            description = desc_match.group(1)
+
+        # ✅ bullet-style extraction
+        feature_matches = re.findall(r'"(.*?)"', html)
+
+        # very loose filtering
+        for f in feature_matches:
+            if 20 < len(f) < 200 and any(x in f.lower() for x in ["absorb", "odor", "leak", "comfort"]):
+                features.append(f)
+
+        # dedupe
+        features = list(dict.fromkeys(features))[:5]
+
+    except:
+        pass
 
     return {
-        "description": description,
+        "description": description.strip(),
         "features": features
     }
-
 # =========================================
 # ✅ SALSIFY TEXT CLEAN VERSION
 # =========================================
