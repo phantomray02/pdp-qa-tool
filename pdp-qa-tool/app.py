@@ -116,57 +116,48 @@ def get_salsify_images(url):
 
     raw_urls = []
 
-    # ✅ STEP 1
-    for img in soup.select('img[data-testid="salsify-image"]'):
+    # ✅ STEP 1 — GET ONLY VALID IMAGES
+    for img in soup.select('img'):
         src = img.get("src") or ""
-        if src.startswith("http"):
-            raw_urls.append(src.split("?")[0])
 
-    if not raw_urls:
-        return []
+        if (
+            "salsify.com" in src or "cloudinary" in src
+        ) and src.startswith("http"):
+            clean_src = src.split("?")[0]
 
-    # ✅ STEP 2
-    seen = set()
-    unique_urls = []
-    for u in raw_urls:
-        if u not in seen:
-            seen.add(u)
-            unique_urls.append(u)
+            # ✅ ignore tiny / placeholder images
+            if "blank" in clean_src.lower():
+                continue
 
-    # ✅ STEP 3 (THE FIX)
+            raw_urls.append(clean_src)
+
+    # ✅ STEP 2 — DEDUPE
+    unique_urls = list(dict.fromkeys(raw_urls))
+
+
+    # ✅ STEP 3 — STRONG DEDUPE USING VISUAL SIMILARITY
     final_images = []
-    pack_images = []
 
     for curr in unique_urls:
+
         is_duplicate = False
 
         for existing in final_images:
             score = compare_images_visually(existing["url"], curr)
-            if score > 85:
+
+            # ✅ stronger duplicate threshold
+            if score > 92:
                 is_duplicate = True
                 break
 
-        if is_duplicate:
-            continue
+        if not is_duplicate:
+            final_images.append({
+                "url": curr,
+                "type": ""
+            })
 
-        is_pack = False
-        if final_images:
-            score_pack = compare_images_visually(final_images[0]["url"], curr)
-            if score_pack > 45:
-                is_pack = True
-
-        if is_pack:
-            if len(pack_images) >= 3:
-                continue
-            pack_images.append(curr)
-
-        final_images.append({
-            "url": curr,
-            "type": ""
-        })
-
-    return final_images
-
+    # ✅ STEP 4 — LIMIT (important)
+    return final_images[:9]
 # =========================================
 # ✅ ORDER IMAGES
 # =========================================
