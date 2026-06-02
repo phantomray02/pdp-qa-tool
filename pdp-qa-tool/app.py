@@ -1,11 +1,4 @@
 
-full_html = get_html(row["retail_url"])
-
-st.markdown("### ✅ HTML CHECK")
-st.write("HTML LENGTH:", len(full_html))
-st.write("HTML TYPE:", type(full_html))
-st.write("Contains 'bladder':", "bladder" in full_html.lower())
-
 
 import streamlit as st
 import pandas as pd
@@ -519,16 +512,16 @@ if uploaded_file:
             s_text = get_salsify_text(row["salsify_url"])
             r_text = get_cvs_text(row["retail_url"])
             
-            # ✅ MOVE THIS HERE
+            # ✅ HTML DEBUG (CORRECT LOCATION)
             full_html = get_html(row["retail_url"])
             
-            # ✅ DEBUG
-            st.markdown("### 🔍 RAW HTML SAMPLE")
-            st.write(full_html[:1000])
+            st.markdown("### ✅ HTML CHECK")
+            st.write("HTML LENGTH:", len(full_html))
+            st.write("HTML TYPE:", type(full_html))
+            st.write("Contains 'bladder':", "bladder" in full_html.lower())
             
-            st.write("FULL CVS TEXT OBJECT:", r_text)
-            st.write("DEBUG DESCRIPTION:", r_text.get("description", ""))
-            st.write("DEBUG FEATURES:", r_text.get("features", []))
+            st.markdown("### 🔍 RAW HTML SAMPLE")
+            st.text(full_html[:500])
 
            # =========================================
             # ✅ TITLE
