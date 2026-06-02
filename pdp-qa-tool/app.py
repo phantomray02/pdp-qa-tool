@@ -201,26 +201,24 @@ def get_cvs_text(url):
     description = clean_text(raw)
 
     # =========================
-    # ✅ FEATURES (from <li><span>)
+    # ✅ FEATURES (FROM RAW JSON STRING)
     # =========================
-    for li in soup.select("li[id^=vendorDetailsBullet]"):
-        span = li.find("span")
-
-        if not span:
-            continue
-
-        text = span.get_text(" ", strip=True)
-        clean_f = clean_text(text)
-
-        if len(clean_f) > 20:
-            features.append(clean_f)
-
-    return {
-        "description": description,
-        "features": features
-    }
-
-
+    feature_block_match = re.search(
+        r'\[\s*"POISE DAILY LINERS.*?\]',
+        html,
+        re.DOTALL
+    )
+    
+    if feature_block_match:
+        raw_block = feature_block_match.group(0)
+    
+        items = re.findall(r'"(.*?)"', raw_block)
+    
+        for item in items:
+            clean_f = clean_text(item)
+    
+            if len(clean_f) > 20:
+                features.append(clean_f)
 # =========================================
 # ✅ TEXT NORMALIZATION
 # =========================================
