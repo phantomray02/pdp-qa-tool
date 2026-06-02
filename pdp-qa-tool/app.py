@@ -332,7 +332,7 @@ def match_features(s_features, r_features):
                 best_score = sim
                 best_match = r
 
-        if best_score >= 0.5:
+        if best_score >= 0.4:
             results.append((s, best_match, int(best_score * 100)))
         else:
             results.append((s, "❌ Missing", 0))
