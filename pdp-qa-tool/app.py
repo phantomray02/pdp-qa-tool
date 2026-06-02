@@ -179,7 +179,7 @@ def get_cvs_images(url):
     return [v["url"] for v in image_dict.values()]
 
 # =========================================
-# ✅ CVS TEXT (FINAL CLEAN VERSION)
+# ✅ CVS TEXT (FINAL — HTML BASED)
 # =========================================
 def get_cvs_text(url):
     html = get_html(url)
@@ -187,137 +187,34 @@ def get_cvs_text(url):
     description = ""
     features = []
 
-    # =========================
-    # ✅ STEP 1: FIND JSON DATA
-    # =========================
-    json_match = re.search(
-        r'window\.__INITIAL_STATE__\s*=\s*(\{.*?\});',
-        html,
-        re.DOTALL
-    )
-
-    if not json_match:
-        return {
-            "description": "",
-            "features": []
-        }
-
-    json_text = json_match.group(1)
+    soup = BeautifulSoup(html, "html.parser")
 
     # =========================
-    # ✅ STEP 2: DESCRIPTION
+    # ✅ DESCRIPTION
     # =========================
-    desc_match = re.search(
-        r'"longDescription":"(.*?)"',
-        json_text,
-        re.DOTALL
-    )
+    desc_tag = soup.select_one("p.text-gray")
 
-    if not desc_match:
-        desc_match = re.search(
-            r'"shortDescription":"(.*?)"',
-            json_text,
-            re.DOTALL
-        )
+    if not desc_tag:
+        desc_tag = soup.find("p")
 
-    raw = desc_match.group(1) if desc_match else ""
-
-    raw = raw.replace('\\n', ' ')
-    raw = raw.replace('\\t', ' ')
-    raw = raw.replace('\\', '')
-    raw = re.sub(r'<.*?>', '', raw)
-    raw = re.sub(r'\s+', ' ', raw)
+    raw = desc_tag.get_text(" ", strip=True) if desc_tag else ""
 
     description = clean_text(raw)
 
     # =========================
-    # ✅ STEP 3: FEATURES (SMART FILTER)
+    # ✅ FEATURES (DETAILS SECTION)
     # =========================
-    feature_matches = re.findall(
-        r'"name":"(.*?)"',
-        json_text,
-        re.IGNORECASE
-    )
+    for li in soup.select("li[id^=vendorDetailsBullet]"):
+        text = li.get_text(" ", strip=True)
+        clean_f = clean_text(text)
 
-    for f in feature_matches:
-        clean_f = clean_text(f)
-        lower = clean_f.lower()
-
-        # ✅ only keep real product features
-        if (
-            len(clean_f) > 30 and
-            any(word in lower for word in [
-                "absorb", "odor", "leak", "liner",
-                "comfort", "protection", "wetness", "technology"
-            ])
-        ):
+        if len(clean_f) > 20:
             features.append(clean_f)
 
     return {
         "description": description,
         "features": features
     }
-
-
-# =========================================
-# ✅ TEXT NORMALIZATION
-# =========================================
-def normalize_text(text):
-    text = text.lower()
-    text = re.sub(r'[^a-z0-9\s]', '', text)
-    text = re.sub(r'\s+', ' ', text)
-    return text.strip()
-
-
-# =========================================
-# ✅ DESCRIPTION SCORING (FIXES 0%)
-# =========================================
-def keyword_score(a, b):
-    a_words = set(normalize_text(a).split())
-    b_words = set(normalize_text(b).split())
-
-    if not a_words or not b_words:
-        return 0
-
-    overlap = len(a_words & b_words)
-    total = len(a_words | b_words)
-
-    return int((overlap / total) * 100)
-
-
-# =========================================
-# ✅ FEATURE MATCHING (FINAL)
-# =========================================
-def match_features(s_features, r_features):
-    results = []
-
-    for s in s_features:
-        best_match = ""
-        best_score = 0
-
-        s_words = set(normalize_text(s).split())
-
-        for r in r_features:
-            r_words = set(normalize_text(r).split())
-
-            if not s_words or not r_words:
-                continue
-
-            overlap = len(s_words & r_words)
-            total = len(s_words | r_words)
-
-            score = overlap / total
-
-            if score > best_score:
-                best_score = score
-                best_match = r
-
-        if best_score >= 0.3:
-            results.append((s, best_match, int(best_score * 100)))
-        else:
-            results.append((s, "❌ Missing", 0))
-
-    return results
 # =========================================
 # ✅ SALSIFY TEXT CLEAN VERSION
 # =========================================
@@ -445,12 +342,66 @@ def match_images_visual(s_images, r_images):
         results.append((s_url, r_url, score))
 
     return results
+# =========================================
+# ✅ TEXT NORMALIZATION
+# =========================================
+def normalize_text(text):
+    text = text.lower()
+    text = re.sub(r'[^a-z0-9\s]', '', text)
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
 
-    def normalize_text(text):
-        text = text.lower()
-        text = re.sub(r'[^a-z0-9\s]', '', text)
-        text = re.sub(r'\s+', ' ', text)
-        return text.strip()
+
+# =========================================
+# ✅ DESCRIPTION SCORING
+# =========================================
+def keyword_score(a, b):
+    a_words = set(normalize_text(a).split())
+    b_words = set(normalize_text(b).split())
+
+    if not a_words or not b_words:
+        return 0
+
+    overlap = len(a_words & b_words)
+    total = len(a_words | b_words)
+
+    return int((overlap / total) * 100)
+
+
+# =========================================
+# ✅ FEATURE MATCHING
+# =========================================
+def match_features(s_features, r_features):
+    results = []
+
+    for s in s_features:
+        best_match = ""
+        best_score = 0
+
+        s_words = set(normalize_text(s).split())
+
+        for r in r_features:
+            r_words = set(normalize_text(r).split())
+
+            if not s_words or not r_words:
+                continue
+
+            overlap = len(s_words & r_words)
+            total = len(s_words | r_words)
+
+            score = overlap / total
+
+            if score > best_score:
+                best_score = score
+                best_match = r
+
+        if best_score >= 0.3:
+            results.append((s, best_match, int(best_score * 100)))
+        else:
+            results.append((s, "❌ Missing", 0))
+
+    return results
+
 # =========================================
 # ✅ MAIN
 # =========================================
