@@ -474,9 +474,19 @@ if uploaded_file:
     export_rows = []
     summary_rows = []
 
-    for _, row in df.iterrows():
 
-        st.subheader(f"SKU: {row['sku']}")
+        for _, row in df.iterrows():
+        
+            st.subheader(f"SKU: {row['sku']}")
+        
+            # ✅ FORCE DEBUG HERE (OUTSIDE TRY)
+            full_html = get_html(row["retail_url"])
+        
+            st.markdown("### ✅ HTML CHECK (OUTSIDE TRY)")
+            st.write("HTML LENGTH:", len(full_html))
+            st.write("Contains bladder:", "bladder" in full_html.lower())
+            st.text(full_html[:300])
+
 
         try:
             # =========================
