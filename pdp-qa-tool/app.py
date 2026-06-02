@@ -465,6 +465,7 @@ def match_features(s_features, r_features):
             results.append((s, "❌ Missing", int(best_score * 100)))
 
     return results
+
 # =========================================
 # ✅ MAIN
 # =========================================
@@ -477,80 +478,45 @@ if uploaded_file:
     for _, row in df.iterrows():
 
         st.subheader(f"SKU: {row['sku']}")
-    
-        # ✅ DEBUG FIRST
+
+        # ✅ DEBUG FIRST (ALWAYS RUNS)
         full_html = get_html(row["retail_url"])
-    
+
         st.markdown("### ✅ HTML CHECK")
         st.write("HTML LENGTH:", len(full_html))
         st.write("Contains bladder:", "bladder" in full_html.lower())
         st.text(full_html[:300])
 
-    try:
-        # ✅ EVERYTHING ELSE INSIDE LOOP
-        s_images = get_salsify_images(row["salsify_url"]) or []
-        r_images = get_cvs_images(row["retail_url"]) or []
-
-        s_text = get_salsify_text(row["salsify_url"])
-        r_text = get_cvs_text(row["retail_url"])
-        
         try:
             # =========================
-            # ✅ SAFE IMAGE LOAD
+            # ✅ IMAGE LOAD
             # =========================
             s_images = get_salsify_images(row["salsify_url"]) or []
-            
-            # ✅ LIGHT DEDUPE (SAFE)
-            if len(s_images) > 1:
-                unique = []
-                seen = set()
-            
-                for img in s_images:
-                    url = img["url"]
-            
-                    if url in seen:
-                        continue
-            
-                    seen.add(url)
-                    unique.append(img)
-            
-                s_images = unique
-            
             r_images = get_cvs_images(row["retail_url"]) or []
-            
-            if not isinstance(s_images, list):
-                s_images = []
-            if not isinstance(r_images, list):
-                r_images = []
-            # =========================
+
             # ✅ TEXT
-            # =========================
             s_text = get_salsify_text(row["salsify_url"])
             r_text = get_cvs_text(row["retail_url"])
-            
-            # ✅ HTML DEBUG (CORRECT LOCATION)
-            full_html = get_html(row["retail_url"])
-            
-            st.markdown("### ✅ HTML CHECK")
-            st.write("HTML LENGTH:", len(full_html))
-            st.write("HTML TYPE:", type(full_html))
-            st.write("Contains 'bladder':", "bladder" in full_html.lower())
-            
+
+            # =========================
+            # ✅ EXTRA DEBUG (OPTIONAL)
+            # =========================
             st.markdown("### 🔍 RAW HTML SAMPLE")
             st.text(full_html[:500])
 
-           # =========================================
+            st.write("DEBUG CVS DESCRIPTION:", r_text.get("description", ""))
+            st.write("DEBUG CVS FEATURES:", r_text.get("features", []))
+
+            # =========================
             # ✅ TITLE
-            # =========================================
+            # =========================
             st.markdown("## Title")
 
             soup = get_soup(row["salsify_url"])
 
             s_title = ""
-
             for row_html in soup.find_all("tr"):
                 label = row_html.get_text(" ", strip=True).lower()
-
                 if "product title" in label:
                     span = row_html.find("span", {"data-testid": "property-content"})
                     if span:
@@ -582,69 +548,21 @@ if uploaded_file:
             # ✅ DESCRIPTION
             # =========================
             st.markdown("## Description")
-            
+
             c1, c2 = st.columns(2)
             c1.write(s_text.get("description", ""))
             c2.write(r_text.get("description", ""))
-            
-            
-
-
 
             desc_score = keyword_score(
                 str(s_text.get("description", "")),
                 str(r_text.get("description", ""))
             )
 
-            st.write("DEBUG FEATURES:", r_text.get("features", []))
-
-
-            
             st.write(f"✅ Description Match: {desc_score}%")
-            # =========================
-            # ✅ FEATURES
-            # =========================
-            st.markdown("## Features")
-            
-            matched = match_features(
-                s_text.get("features", []),
-                r_text.get("features", [])
-            )
-            
-            for s, r, sc in matched:
-                c1, c2, c3 = st.columns([4, 4, 1])
-                c1.write(s)
-                c2.write(r)
-                c3.write(f"{sc}%")
 
-            # =========================
-            # ✅ IMAGE COMPARISON
-            # =========================
-            st.markdown("## Image Comparison ✅")
-
-            # ✅ DEBUG COUNT (helps QA)
-            st.write(f"Salsify Images: {len(s_images)} | CVS Images: {len(r_images)}")
-
-            image_matches = match_images_visual(s_images, r_images)
-
-            if not image_matches:
-                st.warning("No images found to compare.")
-            else:
-                for s, r, sc in image_matches:
-                    c1, c2, c3 = st.columns([4, 4, 1])
-
-                    if s:
-                        c1.image(s, use_container_width=True)
-                    else:
-                        c1.write("Missing")
-
-                    if r:
-                        c2.image(r, use_container_width=True)
-                    else:
-                        c2.write("Missing")
-
-                    c3.write(f"{sc}%")
-
+        except Exception as e:
+            st.error(f"❌ Error on SKU {row['sku']}: {e}")
+            continue
             # =========================
             # ✅ IMAGE SCORE
             # =========================
