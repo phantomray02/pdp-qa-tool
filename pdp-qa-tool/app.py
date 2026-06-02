@@ -187,55 +187,48 @@ def get_cvs_text(url):
     description = ""
     features = []
 
-    # ✅ STEP 1 — limit search area
-    start_idx = html.lower().find("vendordetailsparagraph")
-    if start_idx == -1:
-        return {
-            "description": "",
-            "features": []
-        }
-
-    html_slice = html[start_idx:start_idx + 4000]
-
-# ✅ STEP 2 — extract description (FIXED)
+    # ✅ DESCRIPTION
     match = re.search(
         r'"shortDescription":"(.*?)"',
         html,
         re.DOTALL | re.IGNORECASE
     )
-    
+
     if not match:
         match = re.search(
             r'"longDescription":"(.*?)"',
             html,
             re.DOTALL | re.IGNORECASE
         )
-    
+
     raw = match.group(1) if match else ""
-    
-    # ✅ CLEAN
+
     raw = raw.replace('\\n', ' ')
     raw = raw.replace('\\t', ' ')
     raw = raw.replace('\\', '')
     raw = re.sub(r'<.*?>', '', raw)
     raw = re.sub(r'\s+', ' ', raw)
-    
+
     description = clean_text(raw)
-# ✅ GENERIC FEATURE EXTRACTION
-feature_matches = re.findall(
-    r'"feature\d*":"(.*?)"',
-    html,
-    re.IGNORECASE
-)
 
-for f in feature_matches:
-    clean_f = re.sub(r'<.*?>', '', f)
-    clean_f = clean_text(clean_f)
+    # ✅ FEATURES (GENERIC)
+    feature_matches = re.findall(
+        r'"feature\d*":"(.*?)"',
+        html,
+        re.IGNORECASE
+    )
 
-    if len(clean_f) > 20:
-        features.append(clean_f)
+    for f in feature_matches:
+        clean_f = re.sub(r'<.*?>', '', f)
+        clean_f = clean_text(clean_f)
 
+        if len(clean_f) > 20:
+            features.append(clean_f)
 
+    return {
+        "description": description,
+        "features": features
+    }
 
     # ======================================
     # ✅ CLEAN DESCRIPTION (UNCHANGED)
@@ -551,48 +544,44 @@ if uploaded_file:
             r_text = get_cvs_text(row["retail_url"])
 
             # =========================================
-            # ✅ TITLE (CLEAN VERSION)
+            # ✅ TITLE
             # =========================================
             st.markdown("## Title")
-            
-            # ✅ Salsify title (clean HTML title)
-        soup = get_soup(row["salsify_url"])
-        
-        s_title = ""
-        
-        # ✅ Find product title row directly
-        for row_html in soup.find_all("tr"):
-            label = row_html.get_text(" ", strip=True).lower()
-        
-            if "product title" in label:
-                span = row_html.find("span", {"data-testid": "property-content"})
-                if span:
-                    s_title = span.get_text(strip=True)
-                    break
-            
-            # ✅ CVS title (use productName JSON instead of <title>)
+
+            soup = get_soup(row["salsify_url"])
+
+            s_title = ""
+
+            for row_html in soup.find_all("tr"):
+                label = row_html.get_text(" ", strip=True).lower()
+
+                if "product title" in label:
+                    span = row_html.find("span", {"data-testid": "property-content"})
+                    if span:
+                        s_title = span.get_text(strip=True)
+                        break
+
+            # ✅ CVS title
             r_html = get_html(row["retail_url"])
-            
+
             r_title_match = re.search(r'"productName":"(.*?)"', r_html)
             r_title = r_title_match.group(1) if r_title_match else ""
-            
-            # ✅ fallback just in case
+
             if not r_title:
                 fallback = re.search(r'<title>(.*?)</title>', r_html)
                 r_title = fallback.group(1) if fallback else ""
-            
-            # ✅ remove CVS branding junk
+
             r_title = re.sub(r'\s*-\s*CVS.*$', '', r_title).strip()
-            
+
             # ✅ display
             c1, c2 = st.columns(2)
             c1.write(s_title)
             c2.write(r_title)
-            
-            # ✅ score
+
             title_score = int(
                 SequenceMatcher(None, s_title.lower(), r_title.lower()).ratio() * 100
             )
+
             st.write(f"✅ Title Match: {title_score}%")
 
             # =========================
