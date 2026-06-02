@@ -402,41 +402,35 @@ def compare_images_visually(s_url, r_url):
             r_img_data = requests.get(r_url, timeout=5).content
             image_cache[r_url] = r_img_data
 
-        # ✅ RESIZE SMALLER (FASTER)
-        s_img = Image.open(BytesIO(s_img_data)).convert("L").resize((128, 128))
-        r_img = Image.open(BytesIO(r_img_data)).convert("L").resize((128, 128))
+        # ✅ RESIZE SMALLER (less sensitive to layout)
+        size = (64, 64)
+        s_img = Image.open(BytesIO(s_img_data)).convert("L").resize(size)
+        r_img = Image.open(BytesIO(r_img_data)).convert("L").resize(size)
 
-        # ✅ SIMPLE PIXEL DIFF
-        diff = sum(
-            abs(a - b)
-            for a, b in zip(s_img.getdata(), r_img.getdata())
-        ) / (128 * 128)
-        
-        # ✅ BOOST (only for similar images)
-        if diff < 20:
-            diff *= 0.9
-        
-        # ✅ SCORING (CORRECT INDENT)
+        # ✅ NORMALIZE (center weights less harsh)
+        s_pixels = list(s_img.getdata())
+        r_pixels = list(r_img.getdata())
+
+        diff = sum(abs(a - b) for a, b in zip(s_pixels, r_pixels)) / (64 * 64)
+
+        # ✅ NEW SMOOTH SCORING
         if diff < 5:
             return 100
-        elif diff < 10:
-            return 95
         elif diff < 15:
             return 90
-        elif diff < 25:
-            return 80
-        elif diff < 35:
-            return 65
-        elif diff < 50:
+        elif diff < 30:
+            return 75
+        elif diff < 45:
+            return 60
+        elif diff < 60:
             return 45
-        elif diff < 70:
-            return 25
+        elif diff < 80:
+            return 30
         else:
-            return 10
+            return 15
 
     except:
         return 0
-
 
 def match_images_visual(s_images, r_images):
     results = []
