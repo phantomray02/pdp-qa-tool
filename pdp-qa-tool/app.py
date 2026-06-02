@@ -117,9 +117,6 @@ def clean_text(raw):
 # =========================================
 # ✅ SALSIFY IMAGES
 # =========================================
-import json
-import re
-
 def get_salsify_images(url):
 
     html = get_html(url)
@@ -127,35 +124,24 @@ def get_salsify_images(url):
     images = []
 
     try:
-        # ✅ find the JSON block containing images
-        match = re.search(r'\{"label":null,"property":.*?\]\}\]', html, re.DOTALL)
+        # ✅ grab ALL property blocks (global search)
+        matches = re.findall(
+            r'\{"label":null,"property":"(.*?)".*?"value":"(https://images\.salsify\.com.*?)"',
+            html,
+            re.DOTALL
+        )
 
-        if not match:
-            return []
+        for prop, img_url in matches:
 
-        json_text = match.group(0)
+            clean_prop = prop.replace("-", "").strip()
 
-        data = json.loads(json_text)
-
-        for item in data:
-
-            prop = item.get("property", "").replace("-", "").strip()
-
-            values = item.get("values", [])
-
-            if not values:
-                continue
-
-            img_url = values[0].get("value", "")
-
-            if img_url.startswith("http"):
-                images.append({
-                    "url": img_url,
-                    "type": prop
-                })
+            images.append({
+                "url": img_url,
+                "type": clean_prop
+            })
 
     except Exception as e:
-        print("Salsify JSON parse error:", e)
+        print("Salsify parse error:", e)
 
     return images
 # =========================================
