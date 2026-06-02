@@ -230,20 +230,29 @@ def get_cvs_text(url):
     soup = BeautifulSoup(html, "html.parser")
 
     try:
-        # ✅ DESCRIPTION (STRONG VERSION)
-        paragraphs = soup.find_all("p")
+        # ✅ DESCRIPTION (ROBUST + TARGETED)
+
+        description = ""
         
-        all_text = []
+        paragraphs = soup.find_all("p")
         
         for p in paragraphs:
             text = clean_text(p.get_text(" ", strip=True))
         
-            # ✅ collect meaningful text (not too short)
-            if len(text) > 60:
-                all_text.append(text)
+            # ✅ look for known product-style text
+            if "poise" in text.lower() and "liner" in text.lower():
+                description = text
+                break
         
-        # ✅ join everything into one description
-        description = " ".join(all_text)[:2000]
+        # ✅ fallback if nothing matched
+        if not description:
+            all_text = []
+            for p in paragraphs:
+                text = clean_text(p.get_text(" ", strip=True))
+                if len(text) > 40:
+                    all_text.append(text)
+        
+            description = " ".join(all_text)[:2000]
 
         # ✅ FEATURES FROM DESCRIPTION ONLY (FINAL)
         features = extract_features_from_description(description)
