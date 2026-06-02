@@ -188,52 +188,65 @@ def get_cvs_text(url):
     features = []
 
     try:
-        # =========================
-        # ✅ FEATURES — DIRECT MATCH
-        # =========================
-        bullets_match = re.search(
-            r'"vendorDetailsBullets"\s*:\s*\[(.*?)\]',
-            html,
-            re.DOTALL
-        )
-
-        if bullets_match:
-            bullet_block = bullets_match.group(1)
-
+        # =====================================
+        # ✅ FEATURES — CORRECT PARSING (FIXED)
+        # =====================================
+        start_key = '"vendorDetailsBullets":['
+        start = html.find(start_key)
+        
+        if start != -1:
+            start += len(start_key)
+        
+            # ✅ find REAL closing bracket (handles nested / quotes safely)
+            count = 1
+            i = start
+        
+            while i < len(html) and count > 0:
+                if html[i] == '[':
+                    count += 1
+                elif html[i] == ']':
+                    count -= 1
+                i += 1
+        
+            end = i - 1
+        
+            bullet_block = html[start:end]
+        
             items = re.findall(r'"(.*?)"', bullet_block)
-
+        
             for item in items:
                 clean_f = clean_text(item)
+        
                 if len(clean_f) > 20:
                     features.append(clean_f)
 
-        # =========================
-        # ✅ DESCRIPTION — DIRECT MATCH
-        # =========================
-        desc_match = re.search(
-            r'"vendorDetailsParagraph"\s*:\s*"(.*?)"',
-            html,
-            re.DOTALL
-        )
+        # =====================================
+        # ✅ DESCRIPTION — START/END SPLIT
+        # =====================================
+        desc_key = '"vendorDetailsParagraph":"'
+        start = html.find(desc_key)
 
-        if desc_match:
-            raw = desc_match.group(1)
+        if start != -1:
+            start += len(desc_key)
 
-            raw = raw.replace('\\n', ' ')
-            raw = raw.replace('\\t', ' ')
-            raw = raw.replace('\\', '')
+            # stop at next field
+            end = html.find('","vendor', start)
 
-            raw = re.sub(r'<.*?>', '', raw)
-            raw = re.sub(r'\s+', ' ', raw)
+            if end != -1:
+                raw = html[start:end]
 
-            description = clean_text(raw)
+                raw = raw.replace('\\n', ' ')
+                raw = raw.replace('\\t', ' ')
+                raw = raw.replace('\\', '')
+
+                description = clean_text(raw)
 
     except Exception as e:
-        print("CVS parse error:", e)
+        print("CVS parsing error:", e)
 
     return {
-        "description": description,
-        "features": features
+        "description": description if description else "",
+        "features": features if features else []
     }
 # =========================================
 # ✅ SALSIFY TEXT CLEAN VERSION
@@ -521,10 +534,12 @@ if uploaded_file:
             c1.write(s_text.get("description", ""))
             c2.write(r_text.get("description", ""))
             
+            
             desc_score = keyword_score(
-                s_text.get("description", ""),
-                r_text.get("description", "")
+                str(s_text.get("description", "")),
+                str(r_text.get("description", ""))
             )
+
             
             st.write(f"✅ Description Match: {desc_score}%")
             # =========================
