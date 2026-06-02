@@ -120,53 +120,38 @@ def clean_text(raw):
 def get_salsify_images(url):
     soup = get_soup(url)
 
-    raw_urls = []
+    images = []
 
-    # ✅ STEP 1 — GET VALID IMAGES
-    for img in soup.select('img'):
+    # ✅ TARGET ONLY Salsify asset blocks
+    asset_blocks = soup.select('section[aria-label="Digital assets"] div[role="group"]')
+
+    for block in asset_blocks:
+
+        label = block.get("aria-label", "")
+
+        # ✅ find first image inside this block
+        img = block.find("img")
+
+        if not img:
+            continue
+
         src = img.get("src") or ""
 
-        if ("salsify.com" in src or "cloudinary" in src) and src.startswith("http"):
-            clean_src = src.split("?")[0]
+        if not src.startswith("http"):
+            continue
 
-            if "blank" in clean_src.lower():
-                continue
+        clean_src = src.split("?")[0]
 
-            raw_urls.append(clean_src)
+        # ✅ skip placeholders
+        if "blank" in clean_src.lower():
+            continue
 
-    # ✅ STEP 2 — DEDUPE URLs
-    unique_urls = list(dict.fromkeys(raw_urls))
+        images.append({
+            "url": clean_src,
+            "type": label
+        })
 
-    # ✅ STEP 3 — REMOVE VISUAL DUPLICATES
-    final_images = []
-
-    for curr in unique_urls:
-
-        is_duplicate = False
-
-        for existing in final_images:
-            score = compare_images_visually(existing["url"], curr)
-
-            if score > 95:  # slightly stricter
-                is_duplicate = True
-                break
-
-        if not is_duplicate:
-            final_images.append({
-                "url": curr,
-                "type": ""
-            })
-
-    # ✅ STEP 4 — FILTER AFTER LOOP (FIXED)
-    filtered = []
-
-    for img in final_images:
-        if len(img["url"]) > 50:
-            filtered.append(img)
-
-    return filtered
-
-        st.write("✅ FINAL Salsify images:", len(s_images))
+    return images
 # =========================================
 # ✅ ORDER IMAGES
 # =========================================
