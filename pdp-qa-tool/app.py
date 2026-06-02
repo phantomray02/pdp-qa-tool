@@ -189,28 +189,29 @@ def get_cvs_text(url):
 
     try:
         # =========================
-        # ✅ FEATURES (DIRECT MATCH)
+        # ✅ FEATURES — DIRECT MATCH
         # =========================
         bullets_match = re.search(
-            r'"vendorDetailsBullets":\[(.*?)\]',
+            r'"vendorDetailsBullets"\s*:\s*\[(.*?)\]',
             html,
             re.DOTALL
         )
 
         if bullets_match:
-            items = re.findall(r'"(.*?)"', bullets_match.group(1))
+            bullet_block = bullets_match.group(1)
+
+            items = re.findall(r'"(.*?)"', bullet_block)
 
             for item in items:
                 clean_f = clean_text(item)
-
                 if len(clean_f) > 20:
                     features.append(clean_f)
 
         # =========================
-        # ✅ DESCRIPTION (DIRECT MATCH)
+        # ✅ DESCRIPTION — DIRECT MATCH
         # =========================
         desc_match = re.search(
-            r'"vendorDetailsParagraph":"(.*?)"',
+            r'"vendorDetailsParagraph"\s*:\s*"(.*?)"',
             html,
             re.DOTALL
         )
@@ -228,7 +229,7 @@ def get_cvs_text(url):
             description = clean_text(raw)
 
     except Exception as e:
-        print("CVS parsing error:", e)
+        print("CVS parse error:", e)
 
     return {
         "description": description,
