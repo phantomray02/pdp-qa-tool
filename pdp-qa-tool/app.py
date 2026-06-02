@@ -180,9 +180,72 @@ def get_cvs_images(url):
             image_dict[name] = {"url": base, "size": size}
 
     return [v["url"] for v in image_dict.values()]
+# =========================================
+# ✅ SMART FEATURE EXTRACTION (STRUCTURE-BASED)
+# =========================================
+def extract_features_from_description(desc):
 
+    if not desc:
+        return []
+
+    # ✅ split sentences cleanly
+    sentences = re.split(r'(?<=[.!?])\s+', desc)
+
+    scored = []
+
+    for s in sentences:
+        clean_s = clean_text(s)
+        words = clean_s.split()
+
+        wc = len(words)
+
+        # ✅ BASIC FILTER (GENERAL)
+        if wc < 7 or wc > 30:
+            continue
+
+        score = 0
+
+        # ✅ scoring rules (general, no product keywords)
+        if clean_s[0].isupper():
+            score += 2
+
+        if wc >= 10:
+            score += 2
+
+        if len(clean_s) > 80:
+            score += 2
+
+        if clean_s.count(",") >= 1:
+            score += 1
+
+        if ":" in clean_s:
+            score += 2
+
+        # ✅ penalize bad sentences
+        if "shop" in clean_s.lower():
+            score -= 2
+        if "check with your provider" in clean_s.lower():
+            score -= 2
+
+        scored.append((score, clean_s))
+
+    # ✅ sort best → worst
+    scored.sort(reverse=True, key=lambda x: x[0])
+
+    final = []
+    seen = set()
+
+    for score, text in scored:
+        if text not in seen:
+            seen.add(text)
+            final.append(text)
+
+    return final[:5]
 # =========================================
 # ✅ CVS TEXT (STABLE FINAL VERSION)
+# =========================================
+# =========================================
+# ✅ CVS TEXT (FINAL RELIABLE VERSION)
 # =========================================
 def get_cvs_text(url):
     html = get_html(url)
@@ -193,38 +256,31 @@ def get_cvs_text(url):
     soup = BeautifulSoup(html, "html.parser")
 
     # =========================
-    # ✅ DESCRIPTION (WORKING)
+    # ✅ GET BEST DESCRIPTION
     # =========================
     paragraphs = soup.find_all("p")
+
+    best_desc = ""
+    best_len = 0
 
     for p in paragraphs:
         text = clean_text(p.get_text(" ", strip=True))
 
-        if len(text) > 150:
-            description = text
-            break
+        # ✅ skip junk like "4.7"
+        if len(text) > best_len and len(text) > 120:
+            best_desc = text
+            best_len = len(text)
+
+    description = best_desc
 
     # =========================
-    # ✅ FEATURES (REAL TARGET)
+    # ✅ BUILD FEATURES FROM DESCRIPTION
     # =========================
-    bullets = soup.select("ul li")
-
-    for li in bullets:
-        text = clean_text(li.get_text(" ", strip=True))
-
-        # ✅ GENERAL FILTER (NO PRODUCT KEYWORDS)
-        if (
-            len(text) > 40
-            and ":" in text   # bullets usually have label format
-        ):
-            features.append(text)
-
-    # ✅ remove duplicates
-    features = list(dict.fromkeys(features))
+    features = extract_features_from_description(description)
 
     return {
         "description": description,
-        "features": features[:5]
+        "features": features
     }
 # =========================================
 # ✅ SALSIFY TEXT CLEAN VERSION
@@ -547,11 +603,13 @@ if uploaded_file:
             
 
 
+
             desc_score = keyword_score(
                 str(s_text.get("description", "")),
                 str(r_text.get("description", ""))
             )
 
+            st.write("DEBUG FEATURES:", r_text.get("features", []))
 
 
             
