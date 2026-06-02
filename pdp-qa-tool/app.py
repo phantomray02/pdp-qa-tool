@@ -181,19 +181,24 @@ def get_cvs_images(url):
 # =========================================
 # ✅ CVS TEXT (STABLE FINAL VERSION)
 # =========================================
+import html  # add this at top of file
+
 def get_cvs_text(url):
-    html = get_html(url)
+    raw_html = get_html(url)
+
+    # ✅ STEP 1 — UNESCAPE EVERYTHING (THIS IS THE FIX)
+    html_text = html.unescape(raw_html)
 
     description = ""
     features = []
 
     try:
         # =========================
-        # ✅ DESCRIPTION (DIRECT MATCH)
+        # ✅ DESCRIPTION
         # =========================
         desc_match = re.search(
             r'"vendorDetailsParagraph":"(.*?)"',
-            html,
+            html_text,
             re.DOTALL
         )
 
@@ -207,11 +212,11 @@ def get_cvs_text(url):
             description = clean_text(raw)
 
         # =========================
-        # ✅ FEATURES (DIRECT MATCH)
+        # ✅ FEATURES
         # =========================
         bullet_match = re.search(
             r'"vendorDetailsBullets":\[(.*?)\]',
-            html,
+            html_text,
             re.DOTALL
         )
 
@@ -233,6 +238,7 @@ def get_cvs_text(url):
         "description": description if description else "",
         "features": features if features else []
     }
+
 # =========================================
 # ✅ SALSIFY TEXT CLEAN VERSION
 # =========================================
