@@ -124,44 +124,42 @@ def get_salsify_images(url):
     image_map = {}
 
     try:
-        # ✅ extract ALL property/value pairs
+        # ✅ extract all property → image pairs
         matches = re.findall(
-            r'"property":"(.*?)".*?"value":"(https://images\.salsify\.com[^"]+)"',
+            r'"property":"([^"]+)".*?"value":"(https://images\.salsify\.com[^"]+)"',
             html,
             re.DOTALL
         )
 
         for prop, img_url in matches:
-            image_map[prop.strip()] = img_url
+            clean_prop = prop.strip()
+            image_map[clean_prop] = img_url
 
     except Exception as e:
         print("Parse error:", e)
 
-    # ✅ NOW FORCE EXACT ORDER
-    images = []
-
-    TARGET_ORDER = [
+    # ✅ ONLY pull EXACT properties you care about
+    TARGET_PROPERTIES = [
         "Online Optimized Image-",
         "Flat Back_2D-",
         "Flat Left_2D-",
         "ATF 2-Generic",
         "ATF 3-Generic",
-        "ATF 4-Generic",   # 👈 YOUR PROBLEM IMAGE
+        "ATF 4-Generic",
         "ATF 5-Generic",
         "ATF 6-Generic"
     ]
 
-    for key in TARGET_ORDER:
-        if key in image_map:
-            images.append({
-                "url": image_map[key],
-                "type": key
-            })
-        else:
-            images.append({
-                "url": "",
-                "type": key
-            })
+    images = []
+
+    for prop in TARGET_PROPERTIES:
+
+        url = image_map.get(prop, "")
+
+        images.append({
+            "type": prop,
+            "url": url
+        })
 
     return images
 # =========================================
