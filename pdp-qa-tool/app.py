@@ -197,22 +197,23 @@ def get_cvs_text(url):
 
     html_slice = html[start_idx:start_idx + 4000]
 
-    # ✅ STEP 2 — extract description
-        match = re.search(
-            r'"longDescription":"(.*?)"',
-            html,
-            re.DOTALL | re.IGNORECASE
-        )
-        
-        raw = match.group(1) if match else ""
-        
-        raw = raw.replace('\\n', ' ')
-        raw = raw.replace('\\t', ' ')
-        raw = raw.replace('\\', '')
-        raw = re.sub(r'<.*?>', '', raw)  # remove HTML
-        raw = re.sub(r'\s+', ' ', raw)
-        
-        description = clean_text(raw)
+# ✅ STEP 2 — extract description (FIXED)
+    match = re.search(
+        r'"longDescription":"(.*?)"',
+        html,
+        re.DOTALL | re.IGNORECASE
+    )
+
+    raw = match.group(1) if match else ""
+
+    # ✅ CLEAN DESCRIPTION
+    raw = raw.replace('\\n', ' ')
+    raw = raw.replace('\\t', ' ')
+    raw = raw.replace('\\', '')
+    raw = re.sub(r'<.*?>', '', raw)  # remove HTML tags
+    raw = re.sub(r'\s+', ' ', raw)
+
+    description = clean_text(raw)
 
         html_slice,
         re.DOTALL | re.IGNORECASE
