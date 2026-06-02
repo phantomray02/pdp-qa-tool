@@ -294,20 +294,23 @@ def get_cvs_text(url):
     features = []
 
     try:
-        # ✅ STEP 1 — UNESCAPE HTML
+        # ✅ STEP 1 — UNESCAPE
         html = html_lib.unescape(raw_html)
 
-        # ✅ STEP 2 — FIND ALL STRINGS WITH FEATURE PATTERN
-        matches = re.findall(r'"([A-Z][A-Z\s\-]+:.*?)"', html)
+        # ✅ STEP 2 — EXTRACT ALL QUOTED STRINGS WITH COLON PATTERN
+        matches = re.findall(r'"([A-Z][A-Z\s\-]+:\s[^"]+)"', html)
 
         for m in matches:
             clean_f = clean_text(m)
 
-            # ✅ filter out very long junk blobs
-            if len(clean_f) > 20 and len(clean_f) < 300:
+            # ✅ strong filter
+            if 20 < len(clean_f) < 300:
                 features.append(clean_f)
 
-        # ✅ STEP 3 — DESCRIPTION
+        # ✅ STEP 3 — REMOVE DUPLICATES
+        features = list(dict.fromkeys(features))
+
+        # ✅ STEP 4 — DESCRIPTION (THIS PART WAS OK)
         desc_match = re.search(
             r'vendorDetailsParagraph":"(.*?)"',
             html,
@@ -321,14 +324,10 @@ def get_cvs_text(url):
     except Exception as e:
         print("CVS parse error:", e)
 
-    # ✅ remove duplicates
-    features = list(dict.fromkeys(features))
-
     return {
         "description": description,
         "features": features[:5]
     }
-
 # =========================================
 # ✅ SALSIFY TEXT CLEAN VERSION
 # =========================================
