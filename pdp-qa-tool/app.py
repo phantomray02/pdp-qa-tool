@@ -264,7 +264,11 @@ def get_cvs_text(html):
     # =========================================
     try:
         # Grab all JS blocks that contain text
-        matches = re.findall(r'self\.__next_f\.push\(\[.*?\]\)', html)
+        matches = re.findall(
+            r'self\.__next_f\.push\((.*?)\);',
+            html,
+            re.DOTALL
+        )
 
         full_text = " ".join(matches)
 
@@ -537,12 +541,13 @@ if uploaded_file:
             # =========================
             # ✅ TEXT EXTRACTION
             # =========================
-            s_text = get_salsify_text(row["salsify_url"])
-            r_text = get_cvs_text(row["retail_url"])
 
-            # ✅ EXTRA DEBUG (critical)
-            st.write("CVS DESCRIPTION:", r_text.get("description", ""))
-            st.write("CVS FEATURES:", r_text.get("features", []))
+            # AFTER parsing
+            r_text = get_cvs_text(full_html)
+            
+            st.write("✅ CVS DESCRIPTION:", r_text.get("description", ""))
+            st.write("✅ CVS FEATURES:", r_text.get("features", []))
+
 
             # =========================
             # ✅ TITLE
