@@ -508,6 +508,14 @@ if uploaded_file:
             st.write("DEBUG DESCRIPTION:", r_text.get("description", ""))
             st.write("DEBUG FEATURES:", r_text.get("features", []))
             st.write("payload exists:", "dataPayload" in get_html(row["retail_url"]))
+            # ✅ FULL RAW HTML (TRIMMED FOR UI SAFETY)
+            full_html = get_html(row["retail_url"])
+            
+            st.markdown("### 🔍 RAW HTML (first 3000 chars)")
+            st.code(full_html[:3000])
+            
+            st.markdown("### 🔍 RAW HTML LENGTH")
+            st.write(len(full_html))
 
 
 
