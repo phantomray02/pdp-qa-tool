@@ -124,7 +124,6 @@ def get_salsify_images(url):
     image_map = {}
 
     try:
-        # ✅ extract all property → image pairs
         matches = re.findall(
             r'"property":"([^"]+)".*?"value":"(https://images\.salsify\.com[^"]+)"',
             html,
@@ -132,22 +131,21 @@ def get_salsify_images(url):
         )
 
         for prop, img_url in matches:
-            clean_prop = prop.strip()
+            clean_prop = prop.strip().replace("-", "").replace("–", "").replace("—", "").strip()
             image_map[clean_prop] = img_url
 
     except Exception as e:
         print("Parse error:", e)
 
-    # ✅ ONLY pull EXACT properties you care about
     TARGET_PROPERTIES = [
-        "Online Optimized Image-",
-        "Flat Back_2D-",
-        "Flat Left_2D-",
-        "ATF 2-Generic",
-        "ATF 3-Generic",
-        "ATF 4-Generic",
-        "ATF 5-Generic",
-        "ATF 6-Generic"
+        "Online Optimized Image",
+        "Flat Back_2D",
+        "Flat Left_2D",
+        "ATF 2 Generic",
+        "ATF 3 Generic",
+        "ATF 4 Generic",
+        "ATF 5 Generic",
+        "ATF 6 Generic"
     ]
 
     images = []
@@ -562,6 +560,7 @@ if uploaded_file:
             st.write("HAS ULTRA-ABSORBENT:", "ULTRA-ABSORBENT" in full_html)
             st.text(full_html[:500])
             s_images = get_salsify_images(row["salsify_url"])
+            s_images = [img for img in s_images if img["url"]]
             
             st.write("Salsify image count:", len(s_images))
             
