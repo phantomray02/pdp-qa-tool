@@ -179,7 +179,7 @@ def get_cvs_images(url):
     return [v["url"] for v in image_dict.values()]
 
 # =========================================
-# ✅ CVS TEXT (HTML-BASED FINAL)
+# ✅ CVS TEXT (STABLE FINAL VERSION)
 # =========================================
 def get_cvs_text(url):
     html = get_html(url)
@@ -187,98 +187,61 @@ def get_cvs_text(url):
     description = ""
     features = []
 
-    soup = BeautifulSoup(html, "html.parser")
+    try:
+        soup = BeautifulSoup(html, "html.parser")
 
-    # =========================
-    # ✅ DESCRIPTION (from <p>)
-    # =========================
-    desc_tag = soup.select_one("p.text-gray")
+        # =========================
+        # ✅ DESCRIPTION (HTML FIRST)
+        # =========================
+        desc_tag = soup.select_one("p.text-gray")
 
-    if not desc_tag:
-        desc_tag = soup.find("p")
+        if not desc_tag:
+            desc_tag = soup.find("p")
 
-    raw = desc_tag.get_text(" ", strip=True) if desc_tag else ""
-    description = clean_text(raw)
+        if desc_tag:
+            description = clean_text(desc_tag.get_text(" ", strip=True))
 
-    # =========================
-    # ✅ FEATURES (FROM RAW JSON STRING)
-    # =========================
-    feature_block_match = re.search(
-        r'\[\s*"POISE DAILY LINERS.*?\]',
-        html,
-        re.DOTALL
-    )
-    
-    if feature_block_match:
-        raw_block = feature_block_match.group(0)
-    
-        items = re.findall(r'"(.*?)"', raw_block)
-    
-        for item in items:
-            clean_f = clean_text(item)
-    
-            if len(clean_f) > 20:
-                features.append(clean_f)
-# =========================================
-# ✅ TEXT NORMALIZATION
-# =========================================
-def normalize_text(text):
-    text = text.lower()
-    text = re.sub(r'[^a-z0-9\s]', '', text)
-    text = re.sub(r'\s+', ' ', text)
-    return text.strip()
+        # =========================
+        # ✅ FEATURES (SOURCE STRING - MOST RELIABLE)
+        # =========================
+        feature_block_match = re.search(
+            r'\[\s*".*?ABSORBENT.*?"\s*\]',
+            html,
+            re.DOTALL
+        )
 
+        if feature_block_match:
+            raw_block = feature_block_match.group(0)
 
-# =========================================
-# ✅ DESCRIPTION MATCHING
-# =========================================
-def keyword_score(a, b):
-    a_words = set(normalize_text(a).split())
-    b_words = set(normalize_text(b).split())
+            items = re.findall(r'"(.*?)"', raw_block)
 
-    if not a_words or not b_words:
-        return 0
+            for item in items:
+                clean_f = clean_text(item)
 
-    overlap = len(a_words & b_words)
-    total = len(a_words | b_words)
+                if len(clean_f) > 20:
+                    features.append(clean_f)
 
-    return int((overlap / total) * 100)
+        # =========================
+        # ✅ FALLBACK (HTML LI IF JSON FAILS)
+        # =========================
+        if not features:
+            for li in soup.select("li[id^=vendorDetailsBullet]"):
+                span = li.find("span")
+                if span:
+                    text = span.get_text(" ", strip=True)
+                    clean_f = clean_text(text)
 
+                    if len(clean_f) > 20:
+                        features.append(clean_f)
 
-# =========================================
-# ✅ FEATURE MATCHING (ROBUST)
-# =========================================
-def match_features(s_features, r_features):
-    results = []
+    except Exception as e:
+        print("CVS parsing error:", e)
 
-    for s in s_features:
-        best_match = ""
-        best_score = 0
-
-        s_words = set(normalize_text(s).split())
-
-        for r in r_features:
-            r_words = set(normalize_text(r).split())
-
-            if not s_words or not r_words:
-                continue
-
-            overlap = len(s_words & r_words)
-            total = len(s_words | r_words)
-
-            score = overlap / total
-
-            if score > best_score:
-                best_score = score
-                best_match = r
-
-        if best_score >= 0.3:
-            results.append((s, best_match, int(best_score * 100)))
-        else:
-            results.append((s, "❌ Missing", 0))
-
-    return results
-
+    # ✅ ALWAYS RETURN (PREVENTS YOUR CRASH)
+    return {
+        "description": description if description else "",
+        "features": features if features else []
+    }
 # =========================================
 # ✅ SALSIFY TEXT CLEAN VERSION
 # =========================================
@@ -410,14 +373,14 @@ def match_images_visual(s_images, r_images):
 # ✅ TEXT NORMALIZATION
 # =========================================
 def normalize_text(text):
-    text = text.lower()
+    text = str(text).lower()
     text = re.sub(r'[^a-z0-9\s]', '', text)
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
 
 
 # =========================================
-# ✅ DESCRIPTION SCORING
+# ✅ DESCRIPTION MATCHING (FIXES 0%)
 # =========================================
 def keyword_score(a, b):
     a_words = set(normalize_text(a).split())
@@ -465,7 +428,6 @@ def match_features(s_features, r_features):
             results.append((s, "❌ Missing", 0))
 
     return results
-
 # =========================================
 # ✅ MAIN
 # =========================================
