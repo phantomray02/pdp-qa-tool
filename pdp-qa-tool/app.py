@@ -43,10 +43,10 @@ image_cache = {}
 
 def get_html(url):
     headers = {
-        "User-Agent": "Mozilla/5.0",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115 Safari/537.36",
         "Accept-Language": "en-US,en;q=0.9",
         "Accept": "text/html,application/xhtml+xml",
-        "Connection": "keep-alive",
+        "Referer": "https://www.google.com/",
     }
 
     try:
