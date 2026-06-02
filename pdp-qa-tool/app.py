@@ -48,16 +48,22 @@ def get_html(url):
 
         page.goto(url)
 
-        # ✅ SCROLL TO LOAD ALL IMAGES
-        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        page.wait_for_timeout(2000)
+        # ✅ STEP 1 — SCROLL MULTIPLE TIMES
+        for _ in range(5):
+            page.evaluate("window.scrollBy(0, document.body.scrollHeight)")
+            page.wait_for_timeout(1000)
 
-        page.wait_for_load_state("networkidle")
+        # ✅ STEP 2 — WAIT FOR IMAGES TO LOAD
+        page.wait_for_selector("img", timeout=10000)
+
+        # ✅ EXTRA BUFFER
+        page.wait_for_timeout(2000)
 
         html = page.content()
         browser.close()
 
     return html
+
     # =========================================
     # ✅ STEP 1: TRY API USING PRODUCT ID
     # =========================================
