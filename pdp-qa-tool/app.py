@@ -396,19 +396,37 @@ def normalize_text(text):
 # =========================================
 # ✅ DESCRIPTION MATCHING (FIXES 0%)
 # =========================================
-def keyword_score(a, b):
-    a_words = set(normalize_text(a).split())
-    b_words = set(normalize_text(b).split())
+from difflib import SequenceMatcher
 
-    if not a_words or not b_words:
+def keyword_score(a, b):
+
+    a = normalize_text(a)
+    b = normalize_text(b)
+
+    if not a or not b:
         return 0
+
+    # ✅ overall similarity
+    
+    ratio = max(
+        SequenceMatcher(None, a, b).ratio(),
+        SequenceMatcher(None, a[:200], b[:200]).ratio()
+    )
+
+
+    # ✅ word overlap bonus
+    a_words = set(a.split())
+    b_words = set(b.split())
 
     overlap = len(a_words & b_words)
     total = len(a_words | b_words)
 
-    return int((overlap / total) * 100)
+    word_score = (overlap / total) if total else 0
 
+    # ✅ combine both
+    final = (ratio * 0.6) + (word_score * 0.4)
 
+    return int(final * 100)
 # =========================================
 # ✅ FEATURE MATCHING
 # =========================================
@@ -419,30 +437,25 @@ def match_features(s_features, r_features):
         best_match = ""
         best_score = 0
 
-        s_words = set(normalize_text(s).split())
-
         for r in r_features:
-            r_words = set(normalize_text(r).split())
-
-            if not s_words or not r_words:
-                continue
-
-            overlap = len(s_words & r_words)
-            total = len(s_words | r_words)
-
-            score = overlap / total
+            # ✅ use fuzzy match instead of word overlap
+            score = SequenceMatcher(
+                None,
+                normalize_text(s),
+                normalize_text(r)
+            ).ratio()
 
             if score > best_score:
                 best_score = score
                 best_match = r
 
-        if best_score >= 0.3:
+        # ✅ lower threshold (CRITICAL CHANGE)
+        if best_score >= 0.25:
             results.append((s, best_match, int(best_score * 100)))
         else:
-            results.append((s, "❌ Missing", 0))
+            results.append((s, "❌ Missing", int(best_score * 100)))
 
     return results
-
 # =========================================
 # ✅ MAIN
 # =========================================
@@ -491,7 +504,7 @@ if uploaded_file:
             r_text = get_cvs_text(row["retail_url"])
             
             # ✅ DEBUG — PUT IT RIGHT HERE
-
+            st.write("FULL CVS TEXT OBJECT:", r_text)
             st.write("DEBUG DESCRIPTION:", r_text.get("description", ""))
             st.write("DEBUG FEATURES:", r_text.get("features", []))
             st.write("payload exists:", "dataPayload" in get_html(row["retail_url"]))
