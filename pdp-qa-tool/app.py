@@ -42,12 +42,15 @@ html_cache = {}
 image_cache = {}
 
 def get_html(url):
-    if url in html_cache:
-        return html_cache[url]
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "text/html,application/xhtml+xml",
+        "Connection": "keep-alive",
+    }
 
     try:
-        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
-        html_cache[url] = res.text
+        res = requests.get(url, headers=headers, timeout=15)
         return res.text
     except:
         return ""
@@ -184,49 +187,33 @@ def get_cvs_images(url):
 import json
 
 def get_cvs_text(url):
-    html = get_html(url)
-
     description = ""
     features = []
 
     try:
-        # =====================================
-        # ✅ STEP 1: FIND ESCAPED PRODUCT JSON
-        # =====================================
-        match = re.search(
-            r'(\{\\\"vendorContent\\\":.*?\\\"rating\\\")',
-            html,
-            re.DOTALL
-        )
-
-        if not match:
+        sku_match = re.search(r'prodid-(\d+)', url)
+        if not sku_match:
             return {"description": "", "features": []}
 
-        raw_block = match.group(1)
+        product_id = sku_match.group(1)
 
-        # =====================================
-        # ✅ STEP 2: CLEAN ESCAPING
-        # =====================================
-        clean_json = raw_block.replace('\\"', '"')
+        api_url = f"https://www.cvs.com/api/product/{product_id}"
 
-        # remove trailing junk after JSON
-        clean_json = re.sub(r'"rating".*', '"rating":0}', clean_json)
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json"
+        }
 
-        # =====================================
-        # ✅ STEP 3: LOAD JSON
-        # =====================================
-        data = json.loads(clean_json)
+        res = requests.get(api_url, headers=headers, timeout=10)
+        data = res.json()
 
-        # =====================================
-        # ✅ STEP 4: NAVIGATE STRUCTURE
-        # =====================================
-        vendor = data.get("vendorContent", {}).get("vendorDetails", {})
+        details = data.get("vendorContent", {}).get("vendorDetails", {})
 
-        features = vendor.get("vendorDetailsBullets", [])
-        description = vendor.get("vendorDetailsParagraph", "")
+        features = details.get("vendorDetailsBullets", [])
+        description = details.get("vendorDetailsParagraph", "")
 
     except Exception as e:
-        print("CVS parse error:", e)
+        print("API error:", e)
 
     return {
         "description": clean_text(description),
