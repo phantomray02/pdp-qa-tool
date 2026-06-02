@@ -360,25 +360,15 @@ def get_salsify_text(url):
                 break
 
     # ✅ FEATURES (FILTERED)
+
     for row in rows:
         text = row.get_text(" ", strip=True)
+    
+        # ✅ ONLY grab actual "General Feature" rows
+        if re.search(r'general feature \d+', text, re.IGNORECASE):
+            clean = re.sub(r'general feature \d+\s*', '', text, flags=re.IGNORECASE)
+            features.append(clean.strip())
 
-        if any(x in text.lower() for x in [
-            "gtin",
-            "product title",
-            "general",
-            "item number",
-            "sku",
-            "id",
-            "upc"
-        ]):
-            continue
-
-        text = re.sub(r'general feature \d+\s*', '', text, flags=re.IGNORECASE)
-        text = re.sub(r'general product title\s*', '', text, flags=re.IGNORECASE)
-
-        if 30 < len(text) < 200:
-            features.append(text.strip())
 
     if not features and description:
         features = [description]
