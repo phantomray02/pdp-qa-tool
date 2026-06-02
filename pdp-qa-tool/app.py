@@ -421,20 +421,45 @@ def compare_images_visually(s_url, r_url):
         return 0
 
 def match_images_visual(s_images, r_images):
+
     results = []
+    used_r = set()
 
-    # ✅ HANDLE ALL IMAGES (no limit)
-    max_len = max(len(s_images), len(r_images))
+    for s in s_images:
 
-    for i in range(max_len):
-        s_url = s_images[i]["url"] if i < len(s_images) else ""
-        r_url = r_images[i] if i < len(r_images) else ""
+        best_score = 0
+        best_r = None
+        best_idx = None
 
-        score = compare_images_visually(s_url, r_url) if s_url and r_url else 0
+        for i, r in enumerate(r_images):
 
-        results.append((s_url, r_url, score))
+            if i in used_r:
+                continue
+
+            score = compare_images_visually(s["url"], r)
+
+            if score > best_score:
+                best_score = score
+                best_r = r
+                best_idx = i
+
+        # ✅ LOWER THRESHOLD (IMPORTANT)
+        if best_score >= 40:
+            results.append((s["url"], best_r, best_score))
+            used_r.add(best_idx)
+        else:
+            results.append((s["url"], "", best_score))
 
     return results
+    # ✅ find unmatched CVS images
+        unmatched_r = [
+            r for i, r in enumerate(r_images)
+            if all(r != match[1] for match in image_matches)
+        ]
+        
+        for r in unmatched_r:
+            st.error("🚨 Image exists on CVS but not matched to Salsify")
+            st.image(r)
 # =========================================
 # ✅ TEXT NORMALIZATION
 # =========================================
