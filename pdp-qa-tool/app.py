@@ -254,12 +254,18 @@ def get_cvs_text(url):
 # =========================================
 # ✅ TEXT NORMALIZATION (FOR MATCHING)
 # =========================================
+# =========================================
+# ✅ TEXT NORMALIZATION (FOR MATCHING)
+# =========================================
 def normalize_text(text):
     text = text.lower()
     text = re.sub(r'[^a-z0-9\s]', '', text)
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
-    def keyword_score(a, b):
+
+
+# ✅ DESCRIPTION MATCHING
+def keyword_score(a, b):
     a_words = set(normalize_text(a).split())
     b_words = set(normalize_text(b).split())
 
@@ -272,41 +278,7 @@ def normalize_text(text):
     return int((overlap / total) * 100)
 
 
-def match_features(s_features, r_features):
-    results = []
-
-    for s in s_features:
-        best_match = ""
-        best_score = 0
-
-        s_words = set(normalize_text(s).split())
-
-        for r in r_features:
-            r_words = set(normalize_text(r).split())
-
-            if not s_words or not r_words:
-                continue
-
-            overlap = len(s_words & r_words)
-            total = len(s_words | r_words)
-
-            score = overlap / total
-
-            if score > best_score:
-                best_score = score
-                best_match = r
-
-        if best_score >= 0.3:
-            results.append((s, best_match, int(best_score * 100)))
-        else:
-            results.append((s, "❌ Missing", 0))
-
-    return results
-
-
-# =========================================
-# ✅ MATCH FEATURES
-# =========================================
+# ✅ FEATURE MATCHING
 def match_features(s_features, r_features):
     results = []
 
@@ -568,41 +540,27 @@ if uploaded_file:
             c1.write(s_text.get("description", ""))
             c2.write(r_text.get("description", ""))
         
-        def keyword_score(a, b):
-            a_words = set(normalize_text(a).split())
-            b_words = set(normalize_text(b).split())
-        
-            if not a_words or not b_words:
-                return 0
-        
-            overlap = len(a_words & b_words)
-            total = len(a_words | b_words)
-        
-            return int((overlap / total) * 100)
-        
-        
-        desc_score = keyword_score(
-            s_text.get("description", ""),
-            r_text.get("description", "")
-        )
-
+            desc_score = keyword_score(
+                s_text.get("description", ""),
+                r_text.get("description", "")
+            )
+            
             st.write(f"✅ Description Match: {desc_score}%")
-
-        # =========================
-        # ✅ FEATURES
-        # =========================
-        st.markdown("## Features")
-        
-        matched = match_features(
-            s_text.get("features", []),
-            r_text.get("features", [])
-        )
-        
-        for s, r, sc in matched:
-            c1, c2, c3 = st.columns([4, 4, 1])
-            c1.write(s)
-            c2.write(r)
-            c3.write(f"{sc}%")
+            # =========================
+            # ✅ FEATURES
+            # =========================
+            st.markdown("## Features")
+            
+            matched = match_features(
+                s_text.get("features", []),
+                r_text.get("features", [])
+            )
+            
+            for s, r, sc in matched:
+                c1, c2, c3 = st.columns([4, 4, 1])
+                c1.write(s)
+                c2.write(r)
+                c3.write(f"{sc}%")
 
             # =========================
             # ✅ IMAGE COMPARISON
