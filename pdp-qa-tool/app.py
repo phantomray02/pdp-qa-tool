@@ -122,26 +122,22 @@ def get_salsify_images(url):
 
     raw_urls = []
 
-    # ✅ STEP 1 — GET ONLY VALID IMAGES
+    # ✅ STEP 1 — GET VALID IMAGES
     for img in soup.select('img'):
         src = img.get("src") or ""
 
-        if (
-            "salsify.com" in src or "cloudinary" in src
-        ) and src.startswith("http"):
+        if ("salsify.com" in src or "cloudinary" in src) and src.startswith("http"):
             clean_src = src.split("?")[0]
 
-            # ✅ ignore tiny / placeholder images
             if "blank" in clean_src.lower():
                 continue
 
             raw_urls.append(clean_src)
 
-    # ✅ STEP 2 — DEDUPE
+    # ✅ STEP 2 — DEDUPE URLs
     unique_urls = list(dict.fromkeys(raw_urls))
 
-
-    # ✅ STEP 3 — STRONG DEDUPE USING VISUAL SIMILARITY
+    # ✅ STEP 3 — REMOVE VISUAL DUPLICATES
     final_images = []
 
     for curr in unique_urls:
@@ -151,8 +147,7 @@ def get_salsify_images(url):
         for existing in final_images:
             score = compare_images_visually(existing["url"], curr)
 
-            # ✅ stronger duplicate threshold
-            if score > 92:
+            if score > 95:  # slightly stricter
                 is_duplicate = True
                 break
 
@@ -162,17 +157,16 @@ def get_salsify_images(url):
                 "type": ""
             })
 
-        # ✅ REMOVE ICONS / VERY SMALL IMAGES
-        filtered = []
-        
-        for img in final_images:
-            if len(img["url"]) > 50:  # simple noise filter
-                filtered.append(img)
-        
-        return filtered
+    # ✅ STEP 4 — FILTER AFTER LOOP (FIXED)
+    filtered = []
 
-    # ✅ STEP 4 — LIMIT (important)
-    return final_images
+    for img in final_images:
+        if len(img["url"]) > 50:
+            filtered.append(img)
+
+    return filtered
+
+        st.write("✅ FINAL Salsify images:", len(s_images))
 # =========================================
 # ✅ ORDER IMAGES
 # =========================================
