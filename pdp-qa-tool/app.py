@@ -179,7 +179,7 @@ def get_cvs_images(url):
     return [v["url"] for v in image_dict.values()]
 
 # =========================================
-# ✅ CVS TEXT
+# ✅ CVS TEXT (FINAL CLEAN VERSION)
 # =========================================
 def get_cvs_text(url):
     html = get_html(url)
@@ -231,7 +231,7 @@ def get_cvs_text(url):
     description = clean_text(raw)
 
     # =========================
-    # ✅ STEP 3: FEATURES
+    # ✅ STEP 3: FEATURES (SMART FILTER)
     # =========================
     feature_matches = re.findall(
         r'"name":"(.*?)"',
@@ -241,21 +241,26 @@ def get_cvs_text(url):
 
     for f in feature_matches:
         clean_f = clean_text(f)
+        lower = clean_f.lower()
 
-        if len(clean_f) > 20 and not any(x in clean_f.lower() for x in [
-            "price", "sku", "id", "brand"
-        ]):
+        # ✅ only keep real product features
+        if (
+            len(clean_f) > 30 and
+            any(word in lower for word in [
+                "absorb", "odor", "leak", "liner",
+                "comfort", "protection", "wetness", "technology"
+            ])
+        ):
             features.append(clean_f)
 
     return {
         "description": description,
         "features": features
     }
+
+
 # =========================================
-# ✅ TEXT NORMALIZATION (FOR MATCHING)
-# =========================================
-# =========================================
-# ✅ TEXT NORMALIZATION (FOR MATCHING)
+# ✅ TEXT NORMALIZATION
 # =========================================
 def normalize_text(text):
     text = text.lower()
@@ -264,7 +269,9 @@ def normalize_text(text):
     return text.strip()
 
 
-# ✅ DESCRIPTION MATCHING
+# =========================================
+# ✅ DESCRIPTION SCORING (FIXES 0%)
+# =========================================
 def keyword_score(a, b):
     a_words = set(normalize_text(a).split())
     b_words = set(normalize_text(b).split())
@@ -278,7 +285,9 @@ def keyword_score(a, b):
     return int((overlap / total) * 100)
 
 
-# ✅ FEATURE MATCHING
+# =========================================
+# ✅ FEATURE MATCHING (FINAL)
+# =========================================
 def match_features(s_features, r_features):
     results = []
 
@@ -459,9 +468,6 @@ if uploaded_file:
             # =========================
             # ✅ SAFE IMAGE LOAD
             # =========================
-            # =========================
-            # ✅ SAFE IMAGE LOAD
-            # =========================
             s_images = get_salsify_images(row["salsify_url"]) or []
             
             # ✅ LIGHT DEDUPE (SAFE)
@@ -535,11 +541,11 @@ if uploaded_file:
             # ✅ DESCRIPTION
             # =========================
             st.markdown("## Description")
-
+            
             c1, c2 = st.columns(2)
             c1.write(s_text.get("description", ""))
             c2.write(r_text.get("description", ""))
-        
+            
             desc_score = keyword_score(
                 s_text.get("description", ""),
                 r_text.get("description", "")
