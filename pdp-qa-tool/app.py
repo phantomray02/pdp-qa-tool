@@ -501,11 +501,13 @@ if uploaded_file:
             # =========================
             # ✅ EXTRA DEBUG (OPTIONAL)
             # =========================
-            st.markdown("### 🔍 RAW HTML SAMPLE")
-            st.text(full_html[:500])
-
-            st.write("DEBUG CVS DESCRIPTION:", r_text.get("description", ""))
-            st.write("DEBUG CVS FEATURES:", r_text.get("features", []))
+        
+        with st.expander("🔍 HTML DEBUG (CLICK TO OPEN)", expanded=True):
+            full_html = get_html(row["retail_url"])
+        
+            st.write("HTML LENGTH:", len(full_html))
+            st.write("Contains bladder:", "bladder" in full_html.lower())
+            st.text(full_html[:300])
 
             # =========================
             # ✅ TITLE
