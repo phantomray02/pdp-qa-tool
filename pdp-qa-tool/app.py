@@ -181,60 +181,62 @@ def get_cvs_images(url):
 # =========================================
 # ✅ CVS TEXT (STABLE FINAL VERSION)
 # =========================================
-import html  # add at top of file
+import json
 
 def get_cvs_text(url):
-    raw_html = get_html(url)
-
-    # ✅ THIS IS THE FIX
-    html_text = html.unescape(raw_html)
+    html = get_html(url)
 
     description = ""
     features = []
 
     try:
         # =========================
-        # ✅ FEATURES (NOW WILL MATCH)
+        # ✅ EXTRACT JSON STATE
         # =========================
-        bullets_match = re.search(
-            r'"vendorDetailsBullets"\s*:\s*\[(.*?)\]',
-            html_text,
+        match = re.search(
+            r'window\.__INITIAL_STATE__\s*=\s*(\{.*?\});',
+            html,
             re.DOTALL
         )
 
-        if bullets_match:
-            items = re.findall(r'"(.*?)"', bullets_match.group(1))
+        if not match:
+            return {"description": "", "features": []}
 
-            for item in items:
-                clean_f = clean_text(item)
+        json_text = match.group(1)
 
-                if len(clean_f) > 20:
-                    features.append(clean_f)
+        # ✅ Load JSON
+        data = json.loads(json_text)
 
         # =========================
-        # ✅ DESCRIPTION
+        # ✅ NAVIGATE STRUCTURE SAFELY
         # =========================
-        desc_match = re.search(
-            r'"vendorDetailsParagraph"\s*:\s*"(.*?)"',
-            html_text,
-            re.DOTALL
-        )
+        def find_vendor_details(obj):
+            if isinstance(obj, dict):
+                if "vendorDetailsBullets" in obj:
+                    return obj
+                for v in obj.values():
+                    result = find_vendor_details(v)
+                    if result:
+                        return result
+            elif isinstance(obj, list):
+                for item in obj:
+                    result = find_vendor_details(item)
+                    if result:
+                        return result
+            return None
 
-        if desc_match:
-            raw = desc_match.group(1)
+        vendor = find_vendor_details(data)
 
-            raw = raw.replace('\\n', ' ')
-            raw = raw.replace('\\t', ' ')
-            raw = raw.replace('\\', '')
-
-            description = clean_text(raw)
+        if vendor:
+            features = vendor.get("vendorDetailsBullets", [])
+            description = vendor.get("vendorDetailsParagraph", "")
 
     except Exception as e:
-        print("CVS parse error:", e)
+        print("CVS parsing error:", e)
 
     return {
-        "description": description,
-        "features": features
+        "description": clean_text(description),
+        "features": [clean_text(f) for f in features if len(f) > 20]
     }
 # =========================================
 # ✅ SALSIFY TEXT CLEAN VERSION
