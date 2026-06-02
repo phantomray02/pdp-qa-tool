@@ -249,6 +249,22 @@ def extract_features_from_description(desc):
 # =========================================
 def get_cvs_text(url):
     html = get_html(url)
+    # =========================================
+    # ✅ DEBUG — PRINT HTML AROUND "vendorDetails"
+    # =========================================
+    
+    search_term = "Details"
+    
+    idx = html.find(search_term)
+    
+    if idx != -1:
+        snippet = html[idx:idx + 3000]  # grab chunk after
+    
+        st.write("DEBUG HTML CHUNK:")
+        st.code(snippet)
+    else:
+        st.write("DEBUG: 'Details' not found in raw HTML")
+
 
     description = ""
     features = []
