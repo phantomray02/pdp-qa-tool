@@ -184,64 +184,78 @@ def get_cvs_images(url):
 # =========================================
 # ✅ CVS TEXT (STABLE FINAL VERSION)
 # =========================================
-import json
+# =========================================
+# ✅ UNIVERSAL SENTENCE → FEATURE EXTRACTION
+# =========================================
+def extract_features_from_description(desc):
+    sentences = re.split(r'(?<=[.!?])\s+', desc)
 
+    features = []
+
+    for s in sentences:
+        clean_s = clean_text(s)
+        words = clean_s.split()
+
+        word_count = len(words)
+
+        # ✅ GENERAL RULES ONLY — NO PRODUCT KEYWORDS
+        if (
+            8 <= word_count <= 28         # normal sentence length
+            and not clean_s.endswith(":")  # avoid labels
+            and clean_s.count(",") < 5     # avoid overly long lists
+        ):
+            features.append(clean_s)
+
+    # ✅ remove duplicates (important)
+    seen = set()
+    unique = []
+
+    for f in features:
+        if f not in seen:
+            seen.add(f)
+            unique.append(f)
+
+    return unique[:5]  # limit to 5 like bullets
+
+
+# =========================================
+# ✅ CVS TEXT (FINAL STABLE VERSION)
+# =========================================
 def get_cvs_text(url):
     html = get_html(url)
 
     description = ""
     features = []
 
-    try:
-        # =========================
-        # ✅ STEP 1: GET FULL JSON STATE
-        # =========================
-        match = re.search(
-            r'window\.__INITIAL_STATE__\s*=\s*(\{.*?\})\s*;',
-            html,
-            re.DOTALL
-        )
+    soup = BeautifulSoup(html, "html.parser")
 
-        if not match:
-            return {"description": "", "features": []}
+    # =========================
+    # ✅ DESCRIPTION (ROBUST)
+    # =========================
+    paragraphs = soup.find_all("p")
 
-        json_text = match.group(1)
+    best_desc = ""
+    best_len = 0
 
-        # =========================
-        # ✅ STEP 2: LOAD JSON
-        # =========================
-        data = json.loads(json_text)
+    for p in paragraphs:
+        text = clean_text(p.get_text(" ", strip=True))
 
-        # =========================
-        # ✅ STEP 3: FIND vendorDetails RECURSIVELY
-        # =========================
-        def find_vendor(obj):
-            if isinstance(obj, dict):
-                if "vendorDetailsBullets" in obj:
-                    return obj
-                for v in obj.values():
-                    res = find_vendor(v)
-                    if res:
-                        return res
-            elif isinstance(obj, list):
-                for item in obj:
-                    res = find_vendor(item)
-                    if res:
-                        return res
-            return None
+        # ✅ ignore short garbage (like "4.7")
+        if len(text) > best_len and len(text) > 120:
+            best_desc = text
+            best_len = len(text)
 
-        vendor = find_vendor(data)
+    description = best_desc
 
-        if vendor:
-            features = vendor.get("vendorDetailsBullets", [])
-            description = vendor.get("vendorDetailsParagraph", "")
-
-    except Exception as e:
-        print("CVS parsing error:", e)
+    # =========================
+    # ✅ FEATURES (DERIVED FROM DESCRIPTION)
+    # =========================
+    if description:
+        features = extract_features_from_description(description)
 
     return {
-        "description": clean_text(description),
-        "features": [clean_text(f) for f in features if len(f) > 20]
+        "description": description,
+        "features": features
     }
 # =========================================
 # ✅ SALSIFY TEXT CLEAN VERSION
