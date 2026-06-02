@@ -518,25 +518,16 @@ if uploaded_file:
             s_text = get_salsify_text(row["salsify_url"])
             r_text = get_cvs_text(row["retail_url"])
             
-            # ✅ DEBUG — PUT IT RIGHT HERE
+            # ✅ MOVE THIS HERE
+            full_html = get_html(row["retail_url"])
             
-            st.markdown("### 🔍 RAW HTML SAMPLE (first 1000)")
-            st.write(full_html[:3000])
-
+            # ✅ DEBUG
+            st.markdown("### 🔍 RAW HTML SAMPLE")
+            st.write(full_html[:1000])
+            
             st.write("FULL CVS TEXT OBJECT:", r_text)
             st.write("DEBUG DESCRIPTION:", r_text.get("description", ""))
             st.write("DEBUG FEATURES:", r_text.get("features", []))
-            st.write("payload exists:", "dataPayload" in get_html(row["retail_url"]))
-            # ✅ FULL RAW HTML (TRIMMED FOR UI SAFETY)
-            full_html = get_html(row["retail_url"])
-            
-            st.markdown("### 🔍 RAW HTML (first 3000 chars)")
-            st.code(full_html[:3000])
-            
-            st.markdown("### 🔍 RAW HTML LENGTH")
-            st.write(len(full_html))
-
-
 
            # =========================================
             # ✅ TITLE
