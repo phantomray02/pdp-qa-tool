@@ -421,8 +421,12 @@ def compare_images_visually(s_url, r_url):
         # =========================
         # ✅ FIX: NORMALIZE BACKGROUND
         # =========================
-        s_img = load_image_with_white_bg(s_img_data).resize((64, 64))
-        r_img = load_image_with_white_bg(r_img_data).resize((64, 64))
+
+        from PIL import ImageFilter
+        
+        # ✅ normalize + blur to ignore alignment issues
+        s_img = load_image_with_white_bg(s_img_data).resize((64, 64)).filter(ImageFilter.GaussianBlur(2))
+        r_img = load_image_with_white_bg(r_img_data).resize((64, 64)).filter(ImageFilter.GaussianBlur(2))
 
         # =========================
         # ✅ PIXEL DIFFERENCE
