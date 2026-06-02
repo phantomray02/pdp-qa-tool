@@ -71,58 +71,11 @@ def clean_text(raw):
     raw = raw.replace('{', '').replace('}', '')
     raw = raw.replace('"', '')
 
-    raw = raw.lstrip(' ,.')
+    raw = raw.lstrip(' ,.') 
     raw = raw.rstrip(' ,')
     raw = re.sub(r'\s+', ' ', raw)
 
     return raw.strip()
-    # =========================================
-    # ✅ EXTRACT FEATURES FROM dataPayload (FINAL)
-    # =========================================
-    import html as html_lib
-    import re
-    
-    def extract_features_from_payload(raw_html):
-    
-        features = []
-    
-        try:
-            # ✅ STEP 1 — UNESCAPE HTML
-            html = html_lib.unescape(raw_html)
-    
-            # ✅ STEP 2 — CHECK IF PAYLOAD EXISTS
-            if "dataPayload" not in html:
-                return []
-    
-            # ✅ STEP 3 — EXTRACT dataPayload BLOCK
-            match = re.search(
-                r'dataPayload"\s*:\s*\[(.*?)\]',
-                html,
-                re.DOTALL
-            )
-    
-            if not match:
-                return []
-    
-            block = match.group(1)
-    
-            # ✅ STEP 4 — PARSE EACH STRING ITEM
-            items = re.findall(r'"(.*?)"', block)
-    
-            for item in items:
-                clean_f = clean_text(item)
-    
-                # ✅ FILTER REAL FEATURES ONLY
-                if ":" in clean_f and len(clean_f) > 20:
-                    features.append(clean_f)
-    
-        except Exception as e:
-            print("Payload parse error:", e)
-    
-        # ✅ REMOVE DUPLICATES
-        features = list(dict.fromkeys(features))
-    
-        return features[:5]
 
 # =========================================
 # ✅ SALSIFY IMAGES
@@ -228,17 +181,16 @@ def get_cvs_images(url):
 
     return [v["url"] for v in image_dict.values()]
 # =========================================
-# ✅ SMART FEATURE EXTRACTION (STRUCTURE-BASED)
+# ✅ FINAL FEATURE EXTRACTION (STRONG + GENERAL)
 # =========================================
 def extract_features_from_description(desc):
 
     if not desc:
         return []
 
-    # ✅ split sentences cleanly
     sentences = re.split(r'(?<=[.!?])\s+', desc)
 
-    scored = []
+    features = []
 
     for s in sentences:
         clean_s = clean_text(s)
@@ -246,96 +198,29 @@ def extract_features_from_description(desc):
 
         wc = len(words)
 
-        # ✅ BASIC FILTER (GENERAL)
-        if wc < 7 or wc > 30:
-            continue
+        # ✅ general feature-like sentence rules
+        if 8 <= wc <= 28 and clean_s and clean_s[0].isupper():
+            features.append(clean_s)
 
-        score = 0
-
-        # ✅ scoring rules (general, no product keywords)
-        if clean_s[0].isupper():
-            score += 2
-
-        if wc >= 10:
-            score += 2
-
-        if len(clean_s) > 80:
-            score += 2
-
-        if clean_s.count(",") >= 1:
-            score += 1
-
-        if ":" in clean_s:
-            score += 2
-
-        # ✅ penalize bad sentences
-        if "shop" in clean_s.lower():
-            score -= 2
-        if "check with your provider" in clean_s.lower():
-            score -= 2
-
-        scored.append((score, clean_s))
-
-    # ✅ sort best → worst
-    scored.sort(reverse=True, key=lambda x: x[0])
-
-    final = []
-    seen = set()
-
-    for score, text in scored:
-        if text not in seen:
-            seen.add(text)
-            final.append(text)
-
-    return final[:5]
-
-# =========================================
-# ✅ FEATURE EXTRACTION (CVS LABEL PATTERN)
-# =========================================
-def extract_features_from_description(desc):
-
-    if not desc:
-        return []
-
-    features = []
-
-    # ✅ match ALL CAPS label + colon pattern
-    matches = re.findall(r'([A-Z][A-Z\s\-]+:\s[^.]+)', desc)
-
-    for m in matches:
-        clean_f = clean_text(m)
-
-        if len(clean_f) > 20:
-            features.append(clean_f)
-
-    # ✅ fallback if no labels found
-    if not features:
-        sentences = re.split(r'(?<=[.!?])\s+', desc)
-
-        for s in sentences:
-            clean_s = clean_text(s)
-            words = clean_s.split()
-
-            if 8 <= len(words) <= 25:
-                features.append(clean_s)
+        # ✅ CVS-style label extraction inside description
+        label_matches = re.findall(r'([A-Z][A-Z\s\-]+:\s[^.]+)', clean_s)
+        for lm in label_matches:
+            features.append(lm)
 
     # ✅ remove duplicates
     seen = set()
     unique = []
 
     for f in features:
-        if f not in seen:
+        if f not in seen and len(f) > 20:
             seen.add(f)
             unique.append(f)
 
     return unique[:5]
 # =========================================
-# ✅ CVS TEXT (STABLE FINAL VERSION)
+# ✅ CVS TEXT (FINAL WORKING VERSION)
 # =========================================
 def get_cvs_text(url):
-    
-    st.write("HAS dataPayload:", "dataPayload" in html)
-    st.write("DEBUG CVS FEATURES:", features)
 
     html = get_html(url)
 
@@ -345,9 +230,7 @@ def get_cvs_text(url):
     soup = BeautifulSoup(html, "html.parser")
 
     try:
-        # =========================
-        # ✅ DESCRIPTION (KEEP THIS)
-        # =========================
+        # ✅ DESCRIPTION
         paragraphs = soup.find_all("p")
 
         best_desc = ""
@@ -362,14 +245,8 @@ def get_cvs_text(url):
 
         description = best_desc
 
-        # =========================
-        # ✅ FEATURES (NEW LOGIC)
-        # =========================
-        features = extract_features_from_payload(html)
-
-        # ✅ FALLBACK IF EMPTY
-        if not features:
-            features = extract_features_from_description(description)
+        # ✅ FEATURES FROM DESCRIPTION ONLY (FINAL)
+        features = extract_features_from_description(description)
 
     except Exception as e:
         print("CVS parsing error:", e)
@@ -378,6 +255,7 @@ def get_cvs_text(url):
         "description": description,
         "features": features
     }
+
 # =========================================
 # ✅ SALSIFY TEXT CLEAN VERSION
 # =========================================
@@ -564,36 +442,7 @@ def match_features(s_features, r_features):
             results.append((s, "❌ Missing", 0))
 
     return results
-    # =========================================
-    # ✅ GENERIC FEATURE EXTRACTION (NO KEYWORDS)
-    # =========================================
-    def extract_features_from_description(desc):
-        sentences = re.split(r'(?<=[.!?])\s+', desc)
-    
-        features = []
-    
-        for s in sentences:
-            clean_s = clean_text(s)
-            words = clean_s.split()
-    
-            # ✅ PURE STRUCTURE RULES
-            if (
-                8 <= len(words) <= 28      # realistic feature length
-                and clean_s[0].isupper()  # looks like a sentence
-                and not clean_s.endswith(":")
-            ):
-                features.append(clean_s)
-    
-        # ✅ remove duplicates
-        seen = set()
-        unique = []
-    
-        for f in features:
-            if f not in seen:
-                seen.add(f)
-                unique.append(f)
-    
-        return unique[:5]   # max 5 features like retail
+
 # =========================================
 # ✅ MAIN
 # =========================================
@@ -645,6 +494,7 @@ if uploaded_file:
 
             st.write("DEBUG DESCRIPTION:", r_text.get("description", ""))
             st.write("DEBUG FEATURES:", r_text.get("features", []))
+            st.write("payload exists:", "dataPayload" in get_html(row["retail_url"]))
 
 
 
