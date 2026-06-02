@@ -122,29 +122,29 @@ def get_salsify_images(url):
 
     images = []
 
-    # ✅ TARGET ONLY Salsify asset blocks
+    # ✅ only grab the digital assets section
     asset_blocks = soup.select('section[aria-label="Digital assets"] div[role="group"]')
 
     for block in asset_blocks:
 
-        label = block.get("aria-label", "")
+        label = block.get("aria-label", "").strip()
 
-        # ✅ find first image inside this block
-        img = block.find("img")
+        # ✅ THIS IS THE FIX: target correct image only
+        img = block.select_one('img[alt="salsify-image"]')
 
         if not img:
             continue
 
         src = img.get("src") or ""
 
+        # ✅ fallback for lazy-loaded images
+        if not src:
+            src = img.get("data-src") or img.get("srcset", "").split(" ")[0]
+
         if not src.startswith("http"):
             continue
 
         clean_src = src.split("?")[0]
-
-        # ✅ skip placeholders
-        if "blank" in clean_src.lower():
-            continue
 
         images.append({
             "url": clean_src,
