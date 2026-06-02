@@ -513,6 +513,10 @@ if uploaded_file:
             r_text = get_cvs_text(row["retail_url"])
             
             # ✅ DEBUG — PUT IT RIGHT HERE
+            
+            st.markdown("### 🔍 RAW HTML SAMPLE (first 1000)")
+            st.write(full_html[:3000])
+
             st.write("FULL CVS TEXT OBJECT:", r_text)
             st.write("DEBUG DESCRIPTION:", r_text.get("description", ""))
             st.write("DEBUG FEATURES:", r_text.get("features", []))
