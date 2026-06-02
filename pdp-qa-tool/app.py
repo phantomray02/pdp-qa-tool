@@ -42,19 +42,20 @@ html_cache = {}
 image_cache = {}
 
 def get_html(url):
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115 Safari/537.36",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept": "text/html,application/xhtml+xml",
-        "Referer": "https://www.google.com/",
-    }
+    api_key = "fa3152d646631c760109185d87231916"
+
+    proxy_url = (
+        f"http://api.scraperapi.com?"
+        f"api_key={api_key}"
+        f"&url={url}"
+        f"&render=true"
+    )
 
     try:
-        res = requests.get(url, headers=headers, timeout=15)
+        res = requests.get(proxy_url, timeout=25)
         return res.text
     except:
         return ""
-
 def get_soup(url):
     return BeautifulSoup(get_html(url), "html.parser")
 
@@ -479,35 +480,25 @@ if uploaded_file:
 
         st.subheader(f"SKU: {row['sku']}")
 
-        # ✅ DEBUG FIRST (ALWAYS RUNS)
+        # ✅ ALWAYS GET HTML THROUGH SCRAPERAPI
         full_html = get_html(row["retail_url"])
 
-        st.markdown("### ✅ HTML CHECK")
-        st.write("HTML LENGTH:", len(full_html))
-        st.write("Contains bladder:", "bladder" in full_html.lower())
-        st.text(full_html[:300])
+        # ✅ DEBUG BLOCK (ALWAYS VISIBLE)
+        with st.expander("🔍 HTML DEBUG", expanded=True):
+            st.write("HTML LENGTH:", len(full_html))
+            st.write("Contains bladder:", "bladder" in full_html.lower())
+            st.text(full_html[:500])
 
         try:
             # =========================
-            # ✅ IMAGE LOAD
+            # ✅ TEXT EXTRACTION
             # =========================
-            s_images = get_salsify_images(row["salsify_url"]) or []
-            r_images = get_cvs_images(row["retail_url"]) or []
-
-            # ✅ TEXT
             s_text = get_salsify_text(row["salsify_url"])
             r_text = get_cvs_text(row["retail_url"])
 
-            # =========================
-            # ✅ EXTRA DEBUG (OPTIONAL)
-            # =========================
-        
-        with st.expander("🔍 HTML DEBUG (CLICK TO OPEN)", expanded=True):
-            full_html = get_html(row["retail_url"])
-        
-            st.write("HTML LENGTH:", len(full_html))
-            st.write("Contains bladder:", "bladder" in full_html.lower())
-            st.text(full_html[:300])
+            # ✅ EXTRA DEBUG (critical)
+            st.write("CVS DESCRIPTION:", r_text.get("description", ""))
+            st.write("CVS FEATURES:", r_text.get("features", []))
 
             # =========================
             # ✅ TITLE
@@ -525,7 +516,7 @@ if uploaded_file:
                         s_title = span.get_text(strip=True)
                         break
 
-            r_html = get_html(row["retail_url"])
+            r_html = full_html  # ✅ use already-fetched HTML
 
             r_title_match = re.search(r'"productName":"(.*?)"', r_html)
             r_title = r_title_match.group(1) if r_title_match else ""
