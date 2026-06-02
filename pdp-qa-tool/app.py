@@ -124,10 +124,19 @@ def get_salsify_images(url):
     images = []
 
     try:
-        # ✅ grab ALL property blocks (global search)
+        # ✅ find start of JSON block
+        start = html.find('"Digital assets"')
+
+        if start == -1:
+            return []
+
+        # ✅ cut a large safe chunk
+        chunk = html[start:start + 20000]
+
+        # ✅ find all property/value pairs inside chunk
         matches = re.findall(
-            r'\{"label":null,"property":"(.*?)".*?"value":"(https://images\.salsify\.com.*?)"',
-            html,
+            r'"property":"(.*?)".*?"value":"(https://images\.salsify\.com[^"]+)"',
+            chunk,
             re.DOTALL
         )
 
@@ -137,7 +146,7 @@ def get_salsify_images(url):
 
             images.append({
                 "url": img_url,
-                "type": clean_prop
+                "type": prop
             })
 
     except Exception as e:
