@@ -181,72 +181,60 @@ def get_cvs_images(url):
 # =========================================
 # ✅ CVS TEXT (STABLE FINAL VERSION)
 # =========================================
+import html  # add at top of file
+
 def get_cvs_text(url):
-    html = get_html(url)
+    raw_html = get_html(url)
+
+    # ✅ THIS IS THE FIX
+    html_text = html.unescape(raw_html)
 
     description = ""
     features = []
 
     try:
-        # =====================================
-        # ✅ FEATURES — CORRECT PARSING (FIXED)
-        # =====================================
-        start_key = '"vendorDetailsBullets":['
-        start = html.find(start_key)
-        
-        if start != -1:
-            start += len(start_key)
-        
-            # ✅ find REAL closing bracket (handles nested / quotes safely)
-            count = 1
-            i = start
-        
-            while i < len(html) and count > 0:
-                if html[i] == '[':
-                    count += 1
-                elif html[i] == ']':
-                    count -= 1
-                i += 1
-        
-            end = i - 1
-        
-            bullet_block = html[start:end]
-        
-            items = re.findall(r'"(.*?)"', bullet_block)
-        
+        # =========================
+        # ✅ FEATURES (NOW WILL MATCH)
+        # =========================
+        bullets_match = re.search(
+            r'"vendorDetailsBullets"\s*:\s*\[(.*?)\]',
+            html_text,
+            re.DOTALL
+        )
+
+        if bullets_match:
+            items = re.findall(r'"(.*?)"', bullets_match.group(1))
+
             for item in items:
                 clean_f = clean_text(item)
-        
+
                 if len(clean_f) > 20:
                     features.append(clean_f)
 
-        # =====================================
-        # ✅ DESCRIPTION — START/END SPLIT
-        # =====================================
-        desc_key = '"vendorDetailsParagraph":"'
-        start = html.find(desc_key)
+        # =========================
+        # ✅ DESCRIPTION
+        # =========================
+        desc_match = re.search(
+            r'"vendorDetailsParagraph"\s*:\s*"(.*?)"',
+            html_text,
+            re.DOTALL
+        )
 
-        if start != -1:
-            start += len(desc_key)
+        if desc_match:
+            raw = desc_match.group(1)
 
-            # stop at next field
-            end = html.find('","vendor', start)
+            raw = raw.replace('\\n', ' ')
+            raw = raw.replace('\\t', ' ')
+            raw = raw.replace('\\', '')
 
-            if end != -1:
-                raw = html[start:end]
-
-                raw = raw.replace('\\n', ' ')
-                raw = raw.replace('\\t', ' ')
-                raw = raw.replace('\\', '')
-
-                description = clean_text(raw)
+            description = clean_text(raw)
 
     except Exception as e:
-        print("CVS parsing error:", e)
+        print("CVS parse error:", e)
 
     return {
-        "description": description if description else "",
-        "features": features if features else []
+        "description": description,
+        "features": features
     }
 # =========================================
 # ✅ SALSIFY TEXT CLEAN VERSION
