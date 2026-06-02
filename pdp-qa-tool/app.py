@@ -544,10 +544,12 @@ if uploaded_file:
             c2.write(r_text.get("description", ""))
             
             
+
             desc_score = keyword_score(
                 str(s_text.get("description", "")),
                 str(r_text.get("description", ""))
             )
+
 
             
             st.write(f"✅ Description Match: {desc_score}%")
