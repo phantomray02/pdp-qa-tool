@@ -285,43 +285,48 @@ def extract_features_from_description(desc):
 # =========================================
 # ✅ CVS TEXT (STABLE FINAL VERSION)
 # =========================================
-# =========================================
-# ✅ CVS TEXT (FINAL WORKING VERSION)
-# =========================================
+import html as html_lib
+
 def get_cvs_text(url):
-    html = get_html(url)
+    raw_html = get_html(url)
 
     description = ""
     features = []
 
-    soup = BeautifulSoup(html, "html.parser")
+    try:
+        # ✅ STEP 1 — UNESCAPE HTML
+        html = html_lib.unescape(raw_html)
 
-    # =========================
-    # ✅ DESCRIPTION (FIXED)
-    # =========================
-    paragraphs = soup.find_all("p")
+        # ✅ STEP 2 — FIND ALL STRINGS WITH FEATURE PATTERN
+        matches = re.findall(r'"([A-Z][A-Z\s\-]+:.*?)"', html)
 
-    best_desc = ""
-    best_len = 0
+        for m in matches:
+            clean_f = clean_text(m)
 
-    for p in paragraphs:
-        text = clean_text(p.get_text(" ", strip=True))
+            # ✅ filter out very long junk blobs
+            if len(clean_f) > 20 and len(clean_f) < 300:
+                features.append(clean_f)
 
-        # ✅ skip junk like "4.7"
-        if len(text) > best_len and len(text) > 120:
-            best_desc = text
-            best_len = len(text)
+        # ✅ STEP 3 — DESCRIPTION
+        desc_match = re.search(
+            r'vendorDetailsParagraph":"(.*?)"',
+            html,
+            re.DOTALL
+        )
 
-    description = best_desc
+        if desc_match:
+            raw = desc_match.group(1)
+            description = clean_text(raw.replace('\\', ''))
 
-    # =========================
-    # ✅ FEATURES (DERIVED CLEANLY)
-    # =========================
-    features = extract_features_from_description(description)
+    except Exception as e:
+        print("CVS parse error:", e)
+
+    # ✅ remove duplicates
+    features = list(dict.fromkeys(features))
 
     return {
         "description": description,
-        "features": features
+        "features": features[:5]
     }
 
 # =========================================
