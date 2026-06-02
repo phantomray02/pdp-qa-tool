@@ -387,6 +387,22 @@ def get_salsify_text(url):
 # =========================================
 # ✅ FAST + ALL IMAGES COMPARISON
 # =========================================
+def load_image_with_white_bg(img_data):
+    img = Image.open(BytesIO(img_data)).convert("RGBA")
+
+    # ✅ create white background
+    white_bg = Image.new("RGBA", img.size, (255, 255, 255, 255))
+
+    # ✅ paste using alpha channel (this removes transparency issue)
+    if img.mode == "RGBA":
+        white_bg.paste(img, mask=img.split()[3])
+    else:
+        white_bg.paste(img)
+
+    # ✅ convert back to grayscale
+    return white_bg.convert("L")
+
+
 def compare_images_visually(s_url, r_url):
     try:
         # ✅ CACHE DOWNLOAD
@@ -402,18 +418,23 @@ def compare_images_visually(s_url, r_url):
             r_img_data = requests.get(r_url, timeout=5).content
             image_cache[r_url] = r_img_data
 
-        # ✅ RESIZE SMALLER (less sensitive to layout)
-        size = (64, 64)
-        s_img = Image.open(BytesIO(s_img_data)).convert("L").resize(size)
-        r_img = Image.open(BytesIO(r_img_data)).convert("L").resize(size)
+        # =========================
+        # ✅ FIX: NORMALIZE BACKGROUND
+        # =========================
+        s_img = load_image_with_white_bg(s_img_data).resize((64, 64))
+        r_img = load_image_with_white_bg(r_img_data).resize((64, 64))
 
-        # ✅ NORMALIZE (center weights less harsh)
-        s_pixels = list(s_img.getdata())
-        r_pixels = list(r_img.getdata())
+        # =========================
+        # ✅ PIXEL DIFFERENCE
+        # =========================
+        diff = sum(
+            abs(a - b)
+            for a, b in zip(s_img.getdata(), r_img.getdata())
+        ) / (64 * 64)
 
-        diff = sum(abs(a - b) for a, b in zip(s_pixels, r_pixels)) / (64 * 64)
-
-        # ✅ NEW SMOOTH SCORING
+        # =========================
+        # ✅ IMPROVED SCORING
+        # =========================
         if diff < 5:
             return 100
         elif diff < 15:
