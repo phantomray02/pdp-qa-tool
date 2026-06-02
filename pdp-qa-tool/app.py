@@ -248,9 +248,8 @@ def extract_features_from_description(desc):
 # =========================================
 # ✅ CVS TEXT (FINAL WORKING VERSION)
 # =========================================
-from bs4 import BeautifulSoup
-import json
 import re
+import json
 
 def get_cvs_text(html):
 
@@ -261,88 +260,47 @@ def get_cvs_text(html):
         return {"description": "", "features": []}
 
     # =========================================
-    # ✅ CASE 1: API JSON RESPONSE
+    # ✅ STEP 1 — Extract JSON-like text blocks
     # =========================================
     try:
-        data = json.loads(html)
+        # Grab all JS blocks that contain text
+        matches = re.findall(r'self\.__next_f\.push\(\[.*?\]\)', html)
 
-        # ✅ attempt common structures
-        product = data.get("product") or data
+        full_text = " ".join(matches)
 
-        description = (
-            product.get("longDescription")
-            or product.get("description")
-            or ""
+        # =========================================
+        # ✅ DESCRIPTION
+        # =========================================
+        desc_match = re.search(
+            r'vendorDetailsParagraph":"(.*?)"',
+            full_text,
+            re.DOTALL
         )
 
-        bullets = product.get("features") or product.get("bulletPoints") or []
-
-        if isinstance(bullets, list):
-            features = [b.strip() for b in bullets if isinstance(b, str)]
-
-        if description or features:
-            return {
-                "description": description.strip(),
-                "features": features
-            }
-
-    except:
-        pass
-
-    # =========================================
-    # ✅ CASE 2: PARSE __NEXT_DATA__
-    # =========================================
-    try:
-        soup = BeautifulSoup(html, "html.parser")
-
-        script = soup.find("script", id="__NEXT_DATA__")
-
-        if script:
-            data = json.loads(script.string)
-
-            # ✅ navigate safely
-            props = data.get("props", {})
-            page_props = props.get("pageProps", {})
-            product_data = page_props.get("product") or {}
-
-            description = (
-                product_data.get("longDescription")
-                or product_data.get("description")
-                or ""
-            )
-
-            bullets = product_data.get("features") or product_data.get("bulletPoints") or []
-
-            if isinstance(bullets, list):
-                features = [b.strip() for b in bullets if isinstance(b, str)]
-
-            if description or features:
-                return {
-                    "description": description.strip(),
-                    "features": features
-                }
-
-    except:
-        pass
-
-    # =========================================
-    # ✅ CASE 3: REGEX FALLBACK (LAST RESORT)
-    # =========================================
-    try:
-        # ✅ description
-        desc_match = re.search(r'"description":"(.*?)"', html)
         if desc_match:
             description = desc_match.group(1)
 
-        # ✅ bullet-style extraction
-        feature_matches = re.findall(r'"(.*?)"', html)
+            # clean escaped text
+            description = description.replace('\\\"', '"')
+            description = re.sub(r'\\n', ' ', description)
+            description = re.sub(r'\s+', ' ', description)
 
-        # very loose filtering
+        # =========================================
+        # ✅ FEATURES
+        # =========================================
+        feature_matches = re.findall(
+            r'([A-Z][A-Z\s\-]+:\s.*?)(?:\\n|\\")',
+            full_text
+        )
+
         for f in feature_matches:
-            if 20 < len(f) < 200 and any(x in f.lower() for x in ["absorb", "odor", "leak", "comfort"]):
-                features.append(f)
+            clean_f = f.replace('\\\"', '"')
+            clean_f = re.sub(r'\s+', ' ', clean_f).strip()
 
-        # dedupe
+            if len(clean_f) > 20:
+                features.append(clean_f)
+
+        # remove duplicates
         features = list(dict.fromkeys(features))[:5]
 
     except:
