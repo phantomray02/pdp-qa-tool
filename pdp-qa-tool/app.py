@@ -121,36 +121,47 @@ def get_salsify_images(url):
 
     html = get_html(url)
 
-    images = []
+    image_map = {}
 
     try:
-        # ✅ find start of JSON block
-        start = html.find('"Digital assets"')
-
-        if start == -1:
-            return []
-
-        # ✅ cut a large safe chunk
-        chunk = html[start:start + 20000]
-
-        # ✅ find all property/value pairs inside chunk
+        # ✅ extract ALL property/value pairs
         matches = re.findall(
             r'"property":"(.*?)".*?"value":"(https://images\.salsify\.com[^"]+)"',
-            chunk,
+            html,
             re.DOTALL
         )
 
         for prop, img_url in matches:
-
-            clean_prop = prop.replace("-", "").strip()
-
-            images.append({
-                "url": img_url,
-                "type": prop
-            })
+            image_map[prop.strip()] = img_url
 
     except Exception as e:
-        print("Salsify parse error:", e)
+        print("Parse error:", e)
+
+    # ✅ NOW FORCE EXACT ORDER
+    images = []
+
+    TARGET_ORDER = [
+        "Online Optimized Image-",
+        "Flat Back_2D-",
+        "Flat Left_2D-",
+        "ATF 2-Generic",
+        "ATF 3-Generic",
+        "ATF 4-Generic",   # 👈 YOUR PROBLEM IMAGE
+        "ATF 5-Generic",
+        "ATF 6-Generic"
+    ]
+
+    for key in TARGET_ORDER:
+        if key in image_map:
+            images.append({
+                "url": image_map[key],
+                "type": key
+            })
+        else:
+            images.append({
+                "url": "",
+                "type": key
+            })
 
     return images
 # =========================================
