@@ -221,6 +221,9 @@ def extract_features_from_description(desc):
 # =========================================
 # ✅ CVS TEXT (FINAL STABLE VERSION)
 # =========================================
+# =========================================
+# ✅ CVS TEXT (FINAL VERSION)
+# =========================================
 def get_cvs_text(url):
     html = get_html(url)
 
@@ -230,7 +233,7 @@ def get_cvs_text(url):
     soup = BeautifulSoup(html, "html.parser")
 
     # =========================
-    # ✅ DESCRIPTION (ROBUST)
+    # ✅ DESCRIPTION (FIXED)
     # =========================
     paragraphs = soup.find_all("p")
 
@@ -240,15 +243,15 @@ def get_cvs_text(url):
     for p in paragraphs:
         text = clean_text(p.get_text(" ", strip=True))
 
-        # ✅ ignore short garbage (like "4.7")
-        if len(text) > best_len and len(text) > 120:
+        # ✅ ignore short junk like "4.7"
+        if len(text) > best_len and len(text) > 150:
             best_desc = text
             best_len = len(text)
 
     description = best_desc
 
     # =========================
-    # ✅ FEATURES (DERIVED FROM DESCRIPTION)
+    # ✅ FEATURES FROM DESCRIPTION
     # =========================
     if description:
         features = extract_features_from_description(description)
@@ -443,6 +446,36 @@ def match_features(s_features, r_features):
             results.append((s, "❌ Missing", 0))
 
     return results
+    # =========================================
+    # ✅ GENERIC FEATURE EXTRACTION (NO KEYWORDS)
+    # =========================================
+    def extract_features_from_description(desc):
+        sentences = re.split(r'(?<=[.!?])\s+', desc)
+    
+        features = []
+    
+        for s in sentences:
+            clean_s = clean_text(s)
+            words = clean_s.split()
+    
+            # ✅ PURE STRUCTURE RULES
+            if (
+                8 <= len(words) <= 28      # realistic feature length
+                and clean_s[0].isupper()  # looks like a sentence
+                and not clean_s.endswith(":")
+            ):
+                features.append(clean_s)
+    
+        # ✅ remove duplicates
+        seen = set()
+        unique = []
+    
+        for f in features:
+            if f not in seen:
+                seen.add(f)
+                unique.append(f)
+    
+        return unique[:5]   # max 5 features like retail
 # =========================================
 # ✅ MAIN
 # =========================================
@@ -545,10 +578,12 @@ if uploaded_file:
             
             
 
+
             desc_score = keyword_score(
                 str(s_text.get("description", "")),
                 str(r_text.get("description", ""))
             )
+
 
 
             
