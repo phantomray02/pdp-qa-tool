@@ -189,32 +189,16 @@ def get_cvs_text(url):
 
     try:
         # =========================
-        # ✅ EXTRACT vendorContent BLOCK
+        # ✅ FEATURES (DIRECT MATCH)
         # =========================
-        vc_match = re.search(
-            r'"vendorContent":\{(.*?)\}\,"vendorDirection"',
+        bullets_match = re.search(
+            r'"vendorDetailsBullets":\[(.*?)\]',
             html,
             re.DOTALL
         )
 
-        if not vc_match:
-            return {"description": "", "features": []}
-
-        vc_block = vc_match.group(1)
-
-        # =========================
-        # ✅ FEATURES (vendorDetailsBullets)
-        # =========================
-        bullets_match = re.search(
-            r'"vendorDetailsBullets":\[(.*?)\]',
-            vc_block,
-            re.DOTALL
-        )
-
         if bullets_match:
-            bullets_raw = bullets_match.group(1)
-
-            items = re.findall(r'"(.*?)"', bullets_raw)
+            items = re.findall(r'"(.*?)"', bullets_match.group(1))
 
             for item in items:
                 clean_f = clean_text(item)
@@ -223,11 +207,11 @@ def get_cvs_text(url):
                     features.append(clean_f)
 
         # =========================
-        # ✅ DESCRIPTION (vendorDetailsParagraph)
+        # ✅ DESCRIPTION (DIRECT MATCH)
         # =========================
         desc_match = re.search(
             r'"vendorDetailsParagraph":"(.*?)"',
-            vc_block,
+            html,
             re.DOTALL
         )
 
