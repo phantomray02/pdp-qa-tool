@@ -184,46 +184,6 @@ def get_cvs_images(url):
 # =========================================
 # ✅ CVS TEXT (STABLE FINAL VERSION)
 # =========================================
-# =========================================
-# ✅ UNIVERSAL SENTENCE → FEATURE EXTRACTION
-# =========================================
-def extract_features_from_description(desc):
-    sentences = re.split(r'(?<=[.!?])\s+', desc)
-
-    features = []
-
-    for s in sentences:
-        clean_s = clean_text(s)
-        words = clean_s.split()
-
-        word_count = len(words)
-
-        # ✅ GENERAL RULES ONLY — NO PRODUCT KEYWORDS
-        if (
-            8 <= word_count <= 28         # normal sentence length
-            and not clean_s.endswith(":")  # avoid labels
-            and clean_s.count(",") < 5     # avoid overly long lists
-        ):
-            features.append(clean_s)
-
-    # ✅ remove duplicates (important)
-    seen = set()
-    unique = []
-
-    for f in features:
-        if f not in seen:
-            seen.add(f)
-            unique.append(f)
-
-    return unique[:5]  # limit to 5 like bullets
-
-
-# =========================================
-# ✅ CVS TEXT (FINAL STABLE VERSION)
-# =========================================
-# =========================================
-# ✅ CVS TEXT (FINAL VERSION)
-# =========================================
 def get_cvs_text(url):
     html = get_html(url)
 
@@ -233,32 +193,38 @@ def get_cvs_text(url):
     soup = BeautifulSoup(html, "html.parser")
 
     # =========================
-    # ✅ DESCRIPTION (FIXED)
+    # ✅ DESCRIPTION (WORKING)
     # =========================
     paragraphs = soup.find_all("p")
-
-    best_desc = ""
-    best_len = 0
 
     for p in paragraphs:
         text = clean_text(p.get_text(" ", strip=True))
 
-        # ✅ ignore short junk like "4.7"
-        if len(text) > best_len and len(text) > 150:
-            best_desc = text
-            best_len = len(text)
-
-    description = best_desc
+        if len(text) > 150:
+            description = text
+            break
 
     # =========================
-    # ✅ FEATURES FROM DESCRIPTION
+    # ✅ FEATURES (REAL TARGET)
     # =========================
-    if description:
-        features = extract_features_from_description(description)
+    bullets = soup.select("ul li")
+
+    for li in bullets:
+        text = clean_text(li.get_text(" ", strip=True))
+
+        # ✅ GENERAL FILTER (NO PRODUCT KEYWORDS)
+        if (
+            len(text) > 40
+            and ":" in text   # bullets usually have label format
+        ):
+            features.append(text)
+
+    # ✅ remove duplicates
+    features = list(dict.fromkeys(features))
 
     return {
         "description": description,
-        "features": features
+        "features": features[:5]
     }
 # =========================================
 # ✅ SALSIFY TEXT CLEAN VERSION
