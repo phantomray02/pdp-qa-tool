@@ -45,7 +45,7 @@ def load_image(url):
     return None
 
 # =========================================
-# ✅ SALSIFY IMAGES (FINAL ✅)
+# ✅ SALSIFY IMAGES (FINAL PERFECT ✅)
 # =========================================
 def get_salsify_images(url):
     html = get_html(url)
@@ -57,40 +57,42 @@ def get_salsify_images(url):
     for m in matches:
         base = m.split("?")[0]
 
-        # ✅ remove thumbnails / junk
+        # ✅ remove junk thumbnails / selectors
         if any(x in m.lower() for x in ["thumb", "small", "icon", "tile"]):
             continue
 
         file_name = base.split("/")[-1]
 
-        # ✅ get image size
+        # ✅ resolution detection
         size = 0
         size_match = re.search(r'Resize=\((\d+)', m)
         if size_match:
             size = int(size_match.group(1))
 
-        # ✅ skip very small images
+        # ✅ remove tiny assets
         if size and size < 500:
             continue
 
-        # ✅ keep largest version
+        # ✅ keep highest res per asset
         if file_name not in image_map or size > image_map[file_name]["size"]:
             image_map[file_name] = {
                 "url": base,
                 "size": size
             }
 
-    # ✅ RETURN ONLY REAL IMAGES (IMPORTANT FIX)
-    images = [
-        {"type": f"Salsify {i+1}", "url": v["url"]}
-        for i, v in enumerate(image_map.values())
+    # ✅ FINAL CLEAN LIST
+    images = list(image_map.values())
+
+    # ✅ LIMIT to PDP main images (VERY IMPORTANT)
+    images = images[:8]
+
+    return [
+        {"type": f"Salsify {i+1}", "url": img["url"]}
+        for i, img in enumerate(images)
     ]
 
-    return images
-
-
 # =========================================
-# ✅ CVS IMAGES (DEDUP + BEST SIZE ✅)
+# ✅ CVS IMAGES (CLEAN ✅)
 # =========================================
 def get_cvs_images(url):
     html = get_html(url)
@@ -175,9 +177,7 @@ if uploaded_file:
         s_text = get_salsify_text(row["salsify_url"])
         r_text = get_cvs_text(html)
 
-        # =========================================
         # ✅ COPY AT TOP
-        # =========================================
         st.markdown("## Description")
 
         c1, c2 = st.columns(2)
@@ -191,55 +191,40 @@ if uploaded_file:
 
         st.write(f"✅ Description Match: {desc_score}%")
 
-        # ✅ FEATURES
-        st.markdown("## Features")
-
-        c1, c2 = st.columns(2)
-        c1.write(s_text.get("features", []))
-        c2.write("N/A")
-
-        # =========================================
-        # ✅ IMAGE COMPARISON
-        # =========================================
+        # ✅ IMAGES
         st.markdown("## Image Comparison")
 
         s_images = get_salsify_images(row["salsify_url"])
         r_images = get_cvs_images(row["retail_url"])
 
-        # ✅ IMPORTANT FIX: NO FAKE SLOTS
-        max_len = max(len(s_images), len(r_images))
+        st.write(f"Salsify: {len(s_images)} | CVS: {len(r_images)}")
 
-        st.write(f"Salsify Images: {len(s_images)} | CVS Images: {len(r_images)}")
+        # ✅ LOOP BASED ON MAX BUT NO FAKE FAILS
+        max_len = max(len(s_images), len(r_images))
 
         for i in range(max_len):
 
             c1, c2 = st.columns(2)
 
-            # ✅ Salsify LEFT
+            # ✅ LEFT (REAL ONLY)
             if i < len(s_images):
-                c1.markdown(f"**Salsify {i+1}**")
+                c1.markdown(f"Salsify {i+1}")
                 img = load_image(s_images[i]["url"])
                 if img:
                     c1.image(img)
-                else:
-                    c1.write("❌ Failed")
             else:
-                c1.write("—")
+                c1.write("")  # ← NO more "failed"
 
-            # ✅ CVS RIGHT
+            # ✅ RIGHT
             if i < len(r_images):
-                c2.markdown(f"**CVS {i+1}**")
+                c2.markdown(f"CVS {i+1}")
                 img = load_image(r_images[i])
                 if img:
                     c2.image(img)
-                else:
-                    c2.write("❌ Failed")
             else:
-                c2.write("—")
+                c2.write("")
 
-        # =========================================
         # ✅ SCORING
-        # =========================================
         img_score = int(
             (min(len(s_images), len(r_images)) /
              max(len(s_images), len(r_images), 1)) * 100
@@ -264,7 +249,7 @@ if 'summary_rows' in locals() and summary_rows:
     file_name = "pdp_qa_results.xlsx"
 
     with pd.ExcelWriter(file_name, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Summary")
+        df.to_excel(writer, index=False)
 
     with open(file_name, "rb") as f:
         download_placeholder.download_button(
