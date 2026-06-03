@@ -292,61 +292,61 @@ def get_cvs_text(html):
     if not html:
         return {"description": "", "features": []}
 
-    # =========================================
-    # ✅ STEP 1 — Extract JSON-like text blocks
-    # =========================================
     try:
-        # Grab all JS blocks that contain text
-        matches = re.findall(
-            r'self\.__next_f\.push\((.*?)\);',
-            html,
-            re.DOTALL
-        )
-
-        full_text = " ".join(matches)
+        # ✅ 1. CLEAN RAW HTML TEXT
+        text = html.replace('\\"', '"')
+        text = re.sub(r'\\n', ' ', text)
 
         # =========================================
-        # ✅ DESCRIPTION
+        # ✅ DESCRIPTION (MULTIPLE FALLBACKS)
         # =========================================
-        desc_match = re.search(
+
+        desc_patterns = [
             r'vendorDetailsParagraph":"(.*?)"',
-            full_text,
-            re.DOTALL
-        )
+            r'"description":"(.*?)"',
+            r'"longDescription":"(.*?)"'
+        ]
 
-        if desc_match:
-            description = desc_match.group(1)
+        for pattern in desc_patterns:
+            match = re.search(pattern, text, re.DOTALL)
+            if match:
+                description = match.group(1)
+                break
 
-            # clean escaped text
-            description = description.replace('\\\"', '"')
-            description = re.sub(r'\\n', ' ', description)
-            description = re.sub(r'\s+', ' ', description)
+        # ✅ extra cleaning
+        description = re.sub(r'\s+', ' ', description).strip()
 
         # =========================================
-        # ✅ FEATURES
+        # ✅ FEATURES (MUCH STRONGER LOGIC)
         # =========================================
+
+        # ✅ Find ALL CAPS label-style features
         feature_matches = re.findall(
-            r'([A-Z][A-Z\s\-]+:\s.*?)(?:\\n|\\")',
-            full_text
+            r'([A-Z][A-Z\s\-]{5,}:\s[^"]+)',
+            text
         )
 
         for f in feature_matches:
-            clean_f = f.replace('\\\"', '"')
-            clean_f = re.sub(r'\s+', ' ', clean_f).strip()
+            clean_f = re.sub(r'\s+', ' ', f).strip()
 
             if len(clean_f) > 20:
                 features.append(clean_f)
 
-        # remove duplicates
+        # ✅ BONUS: extract from description if features missing
+        if not features and description:
+            features = extract_features_from_description(description)
+
+        # ✅ Deduplicate
         features = list(dict.fromkeys(features))[:5]
 
-    except:
-        pass
+    except Exception as e:
+        print("CVS parse error:", e)
 
     return {
-        "description": description.strip(),
+        "description": description,
         "features": features
     }
+
 # =========================================
 # ✅ SALSIFY TEXT CLEAN VERSION
 # =========================================
