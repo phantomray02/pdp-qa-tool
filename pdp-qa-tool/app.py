@@ -152,52 +152,50 @@ def clean_text(raw):
     return raw.strip()
 
 # =========================================
-# ✅ SALSIFY IMAGES
+# ✅ SALSIFY IMAGE BUCKETS
 # =========================================
 def get_salsify_images(url):
-
     html = get_html(url)
-
-    import json
-    import re
 
     images = []
 
     try:
-        # ✅ extract NEXT.js payload
-        data_match = re.search(
-            r'self\.__next_f\.push\(\[.*?"properties":(\[.*?\])',
-            html,
-            re.DOTALL
-        )
+        import json
+        import re
 
-        if not data_match:
+        # Try to find the product property payload that contains image properties.
+        match = re.search(r'"properties":(\[.*?\])', html, re.DOTALL)
+
+        if not match:
             return []
 
-        raw_json = data_match.group(1)
-
-        # ✅ fix escaped JSON
+        raw_json = match.group(1)
         raw_json = raw_json.replace('\\"', '"')
 
         properties = json.loads(raw_json)
 
         for prop in properties:
-
-            prop_name = prop.get("property", "Unknown")
-
+            prop_name = str(prop.get("property", "")).strip()
             values = prop.get("values", [])
 
-            if values and isinstance(values, list):
-                val = values[0].get("value")
+            if not prop_name or not values:
+                continue
 
-                if val and "images.salsify.com" in val:
-                    images.append({
-                        "type": prop_name,
-                        "url": val
-                    })
+            first_value = values[0]
+
+            if isinstance(first_value, dict):
+                img_url = first_value.get("value", "")
+            else:
+                img_url = ""
+
+            if img_url and "images.salsify.com" in img_url:
+                images.append({
+                    "type": prop_name,
+                    "url": img_url
+                })
 
     except Exception as e:
-        print("Salsify JSON parse error:", e)
+        print("Salsify image parse error:", e)
 
     return images
 # =========================================
@@ -225,6 +223,31 @@ def get_cvs_images(url):
             image_dict[name] = {"url": base, "size": size}
 
     return [v["url"] for v in image_dict.values()]
+# =========================================
+# ✅ RENDER IMAGE COMPARISON BY SALSIFY PROPERTY
+# =========================================
+def render_image_comparison_by_property(s_images, r_images):
+    st.markdown("## Image Comparison ✅")
+    st.write(f"Salsify Images: {len(s_images)} | CVS Images: {len(r_images)}")
+
+    max_len = max(len(s_images), len(r_images))
+
+    for i in range(max_len):
+        col1, col2 = st.columns(2)
+
+        # LEFT = Salsify property bucket.
+        if i < len(s_images):
+            col1.markdown(f"**{s_images[i]['type']}**")
+            col1.image(s_images[i]["url"])
+        else:
+            col1.write("❌ Missing in Salsify")
+
+        # RIGHT = CVS image in order.
+        if i < len(r_images):
+            col2.markdown(f"**CVS Image {i+1}**")
+            col2.image(r_images[i])
+        else:
+            col2.write("❌ Missing in CVS")
 # =========================================
 # ✅ FINAL FEATURE EXTRACTION (STRONG + GENERAL)
 # =========================================
@@ -444,18 +467,15 @@ def compare_images_visually(s_url, r_url):
         return 0
 
 def match_images_visual(s_images, r_images):
-
     results = []
     used_r = set()
 
     for s in s_images:
-
         best_score = 0
         best_r = None
         best_idx = None
 
         for i, r in enumerate(r_images):
-
             if i in used_r:
                 continue
 
@@ -465,27 +485,7 @@ def match_images_visual(s_images, r_images):
                 best_score = score
                 best_r = r
                 best_idx = i
-                st.markdown("## Index Comparison")
-        
-        max_len = max(len(s_images), len(r_images))
-        
-        for i in range(max_len):
-        
-            col1, col2 = st.columns(2)
-        
-            # Salsify
-            if i < len(s_images):
-                col1.image(s_images[i]["url"], caption=f"Salsify {i+1}")
-            else:
-                col1.write("❌ Missing")
-        
-            # CVS
-            if i < len(r_images):
-                col2.image(r_images[i], caption=f"CVS {i+1}")
-            else:
-                col2.write("❌ Missing")
 
-        # ✅ LOWER THRESHOLD (IMPORTANT)
         if best_score >= 40:
             results.append((s["url"], best_r, best_score))
             used_r.add(best_idx)
@@ -595,78 +595,40 @@ if uploaded_file:
             # =========================
             # ✅ IMAGE BUCKETS
             # =========================
-            raw_images = get_salsify_images(row["salsify_url"])
-            raw_images = [img for img in raw_images if img["url"]]
+            s_images = get_salsify_images(row["salsify_url"])
+            s_images = [img for img in s_images if img.get("url")]
 
             r_images = get_cvs_images(row["retail_url"])
-
-            # =========================
-            # ✅ MATCHING
-            # =========================
-            image_matches = match_images_visual(raw_images, r_images)
 
             # =========================
             # ✅ DEBUG VIEW
             # =========================
             with st.expander("🧺 Salsify Images", expanded=True):
-            
-                s_images = get_salsify_images(row["salsify_url"])
-            
-                st.write("Total images:", len(s_images))
-            
+                st.write("Total Salsify images:", len(s_images))
                 cols = st.columns(3)
-            
+
                 for i, img in enumerate(s_images):
                     cols[i % 3].image(img["url"], caption=img["type"])
 
-        
             # =========================
-            # ✅ GROUP SALSIFY
+            # ✅ PROPERTY-BASED COMPARISON VIEW
             # =========================
-            pack = []
-            lifestyle = []
-        
-            for img in raw_images:
-                name = str(img.get("type", "")).lower()
-                url = img["url"].lower()
-        
-                # ✅ PACKAGING RULES
-                if any(x in name for x in ["front", "back", "pack", "primary"]) or "package" in url:
-                    pack.append(img["url"])
-                else:
-                    lifestyle.append(img["url"])
-        
-            # =========================
-            # ✅ RENDER SALSIFY BUCKET
-            # =========================
-            st.markdown("## 🧺 SALSIFY")
-        
-            st.markdown("### 📦 Packaging")
-            cols = st.columns(3)
-            for i, img in enumerate(pack):
-                cols[i % 3].image(img)
-        
-            st.markdown("### 🟣 Lifestyle / ATF")
-            cols = st.columns(3)
-            for i, img in enumerate(lifestyle):
-                cols[i % 3].image(img)
-        
-            # =========================
-            # ✅ RENDER CVS BUCKET
-            # =========================
-            st.markdown("## 🧺 CVS")
-        
-            cols = st.columns(3)
-            for i, img in enumerate(r_images):
-                cols[i % 3].image(img)
+            render_image_comparison_by_property(s_images, r_images)
 
+            # =========================
+            # ✅ OPTIONAL VISUAL MATCH SCORE
+            # =========================
+            image_matches = match_images_visual(s_images, r_images)
+            
             # =========================
             # ✅ IMAGE SCORE
             # =========================
+
             img_scores = [score for _, _, score in image_matches if score > 0]
             avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
 
             st.write(f"✅ Image Match: {avg_img_score}%")
+
 
             # =========================
             # ✅ TEXT EXTRACTION
@@ -768,7 +730,3 @@ if summary_rows:
             file_name=file_name,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-
-# ✅ ✅ CLEANUP GOES HERE (VERY END)
-browser.close()
-p.stop()
