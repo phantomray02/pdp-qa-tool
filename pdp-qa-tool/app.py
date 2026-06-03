@@ -184,7 +184,7 @@ def get_salsify_images(url):
     soup = BeautifulSoup(html, "html.parser")
 
     images = []
-    seen = set()
+    seen_pairs = set()
 
     print("\n🔍 HARDENED EXTRACTION START\n")
 
@@ -306,63 +306,6 @@ def get_salsify_images(url):
     print(f"\n✅ FINAL IMAGE COUNT: {len(images)}\n")
 
     return images
-    
-    # Method 1: Look in noscript tag (lazy loading fallback)
-    noscript = container.find("noscript")
-    if noscript:
-        img_tag = noscript.find("img")
-        if img_tag:
-            srcset = img_tag.get("srcset", "")
-            src = img_tag.get("src", "")
-            
-            if srcset and "salsify" in srcset:
-                urls = [u.strip().split()[0] for u in srcset.split(",") if u.strip()]
-                img_url = urls[-1] if urls else None
-            elif src and "salsify" in src:
-                img_url = src
-    
-    # Method 2: Look for img tag with data-testid="salsify-image"
-    if not img_url:
-        main_img = container.find("img", {"data-testid": "salsify-image"})
-        if main_img:
-            srcset = main_img.get("srcset", "")
-            src = main_img.get("src", "")
-            
-            if srcset and "salsify" in srcset:
-                urls = [u.strip().split()[0] for u in srcset.split(",") if u.strip()]
-                img_url = urls[-1] if urls else None
-            elif src and "salsify" in src:
-                img_url = src
-                
-    if not property_map:
-        print("⚠️ No asset containers found — using gallery fallback")
-    
-        imgs = soup.find_all("img")
-    
-        for img in imgs:
-            src = img.get("src", "")
-            if "salsify" in src and src not in seen_urls:
-                seen_urls.add(src)
-                images.append({
-                    "type": "Fallback Image",
-                    "url": src
-                })
-    # Method 3: Look for any img tag in the container with salsify URL
-    if not img_url:
-        for img_tag in container.find_all("img"):
-            srcset = img_tag.get("srcset", "")
-            src = img_tag.get("src", "")
-            
-            if srcset and "salsify" in srcset:
-                urls = [u.strip().split()[0] for u in srcset.split(",") if u.strip()]
-                img_url = urls[-1] if urls else None
-                break
-            elif src and "salsify" in src:
-                img_url = src
-                break
-    
-    return img_url
-
 # =========================================
 # ✅ CVS IMAGES
 # =========================================
@@ -392,6 +335,22 @@ def get_cvs_images(url):
 # =========================================
 # ✅ RENDER IMAGE COMPARISON
 # =========================================
+def load_image(url):
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "image/*,*/*;q=0.8"
+        }
+        r = requests.get(url, headers=headers, timeout=10)
+
+        if r.status_code == 200:
+            return Image.open(BytesIO(r.content))
+    except:
+        return None
+
+    return None
+
+
 def render_image_comparison_by_property(s_images, r_images):
     st.markdown("## Image Comparison ✅")
     st.write(f"Salsify Images: {len(s_images)} | CVS Images: {len(r_images)}")
@@ -401,42 +360,30 @@ def render_image_comparison_by_property(s_images, r_images):
     for i in range(max_len):
         col1, col2 = st.columns(2)
 
+        # ===== SALSIFY =====
         if i < len(s_images):
             col1.markdown(f"**{s_images[i]['type']}**")
-def load_image(url):
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "image/*,*/*;q=0.8"
-        }
-        response = requests.get(url, headers=headers, timeout=10)
 
-        if response.status_code == 200:
-            return Image.open(BytesIO(response.content))
-        else:
-            print(f"❌ Image failed: {response.status_code} → {url}")
-            return None
-
-    except Exception as e:
-        print(f"❌ Image error: {e}")
-        return None
-
+            img_obj = load_image(s_images[i]["url"])
+            if img_obj:
+                col1.image(img_obj)
+            else:
+                col1.write("❌ Failed to load")
+                col1.write(s_images[i]["url"])
         else:
             col1.write("❌ Missing in Salsify")
 
+        # ===== CVS =====
         if i < len(r_images):
             col2.markdown(f"**CVS Image {i+1}**")
-            
-        img_obj = load_image(r_images[i])
-        
-        if img_obj:
-            col2.image(img_obj)
-        else:
-            col2.write("❌ Failed to load CVS image")
 
+            img_obj = load_image(r_images[i])
+            if img_obj:
+                col2.image(img_obj)
+            else:
+                col2.write("❌ Failed to load CVS image")
         else:
             col2.write("❌ Missing in CVS")
-
 # =========================================
 # ✅ SALSIFY TEXT
 # =========================================
@@ -581,13 +528,14 @@ if uploaded_file:
                 st.write("Total Salsify images:", len(s_images))
                 cols = st.columns(3)
                 
-            print("\n🧠 PROPERTY MAP KEYS:")
-            for k in property_map.keys():
-                print(f"  → {k}")
-
-
                 for i, img in enumerate(s_images):
-                    cols[i % 3].image(img["url"], caption=img["type"], use_container_width=True)
+                    img_obj = load_image(img["url"])
+
+            if img_obj:
+                cols[i % 3].image(img_obj, caption=img["type"], use_container_width=True)
+            else:
+                cols[i % 3].write("❌ Failed")
+                
 
             # Comparison
             render_image_comparison_by_property(s_images, r_images)
