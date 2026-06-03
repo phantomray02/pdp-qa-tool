@@ -328,42 +328,55 @@ def get_cvs_text(html):
 # =========================================
 # ✅ SALSIFY TEXT CLEAN VERSION
 # =========================================
-def get_salsify_text(url):
-    soup = get_soup(url)
-
-    description = ""
-    features = []
-
-    rows = soup.find_all("tr")
-
-    # ✅ DESCRIPTION
-    for row in rows:
-        label = row.get_text(" ", strip=True).lower()
-
-        if "general description" in label:
-            content = row.find("span", {"data-testid": "property-content"})
-            if content:
-                description = clean_text(content.get_text(" ", strip=True))
-                break
-
-    # ✅ FEATURES (FILTERED)
-
-    for row in rows:
-        text = row.get_text(" ", strip=True)
+def get_salsify_images(url):
+    """
+    Extract ALL Salsify product images by finding srcSet URLs in noscript tags.
+    This works because Salsify uses lazy loading with noscript fallbacks.
+    """
+    html = get_html(url)
+    images = []
+    seen_urls = set()
     
-        # ✅ ONLY grab actual "General Feature" rows
-        if re.search(r'general feature \d+', text, re.IGNORECASE):
-            clean = re.sub(r'general feature \d+\s*', '', text, flags=re.IGNORECASE)
-            features.append(clean.strip())
-
-
-    if not features and description:
-        features = [description]
-
-    return {
-        "description": description,
-        "features": features
-    }
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+        
+        # Find all asset containers (each image property has one)
+        asset_containers = soup.find_all("div", {"class": "asset-list_images__2aKCB"})
+        
+        for container in asset_containers:
+            
+            # Get the property name from aria-label
+            # e.g., "Online Optimized Image-" or "Flat Back_2D-"
+            aria_label = container.get("aria-label", "")
+            prop_name = aria_label.replace("-", "").strip()
+            
+            if not prop_name:
+                continue
+            
+            # Look for the actual image URL in srcSet (inside noscript)
+            noscript = container.find("noscript")
+            if noscript:
+                img_tag = noscript.find("img", {"data-testid": "salsify-image"})
+                if img_tag:
+                    srcset = img_tag.get("srcset", "")
+                    
+                    # srcSet format: "url1 1x, url2 2x"
+                    # Extract the highest quality URL (the last one)
+                    if srcset:
+                        urls = [u.strip().split()[0] for u in srcset.split(",")]
+                        img_url = urls[-1]  # Get the 2x version (highest quality)
+                        
+                        if img_url and "salsify" in img_url and img_url not in seen_urls:
+                            seen_urls.add(img_url)
+                            images.append({
+                                "type": prop_name,
+                                "url": img_url
+                            })
+    
+    except Exception as e:
+        print(f"Salsify image extraction error: {e}")
+    
+    return images
 # =========================================
 # ✅ FAST + ALL IMAGES COMPARISON
 # =========================================
