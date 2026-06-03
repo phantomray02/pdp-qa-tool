@@ -16,6 +16,26 @@ download_placeholder = st.empty()
 export_rows = []
 
 # =========================================
+# ✅ IMAGE PROPERTIES TO EXTRACT (IN ORDER)
+# ✅ CONDITIONAL LOGIC:
+# - Always extract: Online Optimized Image, Flat Back_2D, Flat Left_2D
+# - Then: ATF I/O-Generic (if exists) OR ATF 2-Generic (if exists)
+# - Then: ATF 6-Generic (only if ATF I/O-Generic is NOT present)
+# =========================================
+ALWAYS_REQUIRED = [
+    "Online Optimized Image",
+    "Flat Back_2D",
+    "Flat Left_2D"
+]
+
+CONDITIONAL_IO_OR_2 = [
+    "ATF I/O-Generic",  # Try this first
+    "ATF 2-Generic"     # If I/O doesn't exist, use this
+]
+
+FALLBACK_IF_NO_IO = "ATF 6-Generic"  # Only if I/O-Generic is missing
+
+# =========================================
 # ✅ START PLAYWRIGHT ONCE (GLOBAL)
 # =========================================
 from playwright.sync_api import sync_playwright
@@ -92,78 +112,109 @@ def clean_text(raw):
     return raw.strip()
 
 # =========================================
-# ✅ SALSIFY IMAGES - SIMPLE REGEX APPROACH
+# ✅ SALSIFY IMAGES - FORCED EXTRACTION WITH CONDITIONAL LOGIC
 # =========================================
 def get_salsify_images(url):
     """
-    Extract ALL Salsify product images using simple regex.
-    This is the most reliable method - just find all salsify.com image URLs.
+    Force extraction of specific image properties from Salsify.
+    Uses conditional logic:
+    - Always get: Online Optimized Image, Flat Back_2D, Flat Left_2D
+    - Conditional: Get ATF I/O-Generic if exists, otherwise ATF 2-Generic
+    - Fallback: Get ATF 6-Generic only if ATF I/O-Generic does NOT exist
     """
     html = get_html(url)
     images = []
     seen_urls = set()
     
     try:
-        # Method 1: Find all salsify image URLs in srcset attributes
-        # Pattern: https://images.salsify.com/image/upload/...
-        srcset_urls = re.findall(
-            r'srcset="([^"]*https://images\.salsify\.com[^"]*)"',
-            html
-        )
+        soup = BeautifulSoup(html, "html.parser")
         
-        print(f"🔍 Found {len(srcset_urls)} srcset attributes with salsify URLs")
+        print(f"\n🔍 EXTRACTING IMAGES WITH CONDITIONAL LOGIC:\n")
         
-        # Extract individual URLs from srcset (format: "url1 1x, url2 2x")
-        for srcset_str in srcset_urls:
-            urls = [u.strip().split()[0] for u in srcset_str.split(",")]
-            # Take the last (highest quality) URL
-            img_url = urls[-1] if urls else None
+        # Find all asset containers
+        asset_containers = soup.find_all("div", {"class": "asset-list_images__2aKCB"})
+        print(f"Total asset containers found: {len(asset_containers)}\n")
+        
+        # Build a map of property_name -> container
+        property_map = {}
+        for container in asset_containers:
+            aria_label = container.get("aria-label", "").strip()
+            prop_name = aria_label.replace("-", "").strip() if aria_label else ""
+            
+            if prop_name:
+                property_map[prop_name] = container
+                print(f"  📍 Found property: {prop_name}")
+        
+        print(f"\n" + "="*80 + "\n")
+        
+        # ===== STEP 1: Always extract these properties =====
+        print("STEP 1: Always extract these properties\n")
+        for required_prop in ALWAYS_REQUIRED:
+            print(f"🔎 Looking for: {required_prop}")
+            img_url = find_and_extract_image(required_prop, property_map)
             
             if img_url and img_url not in seen_urls:
                 seen_urls.add(img_url)
                 images.append({
-                    "type": f"Image {len(images) + 1}",
+                    "type": required_prop,
                     "url": img_url
                 })
+                print(f"   ✅ FOUND: {img_url[:90]}...\n")
+            else:
+                print(f"   ❌ NOT FOUND\n")
         
-        # Method 2: Find all salsify URLs in src attributes
-        src_urls = re.findall(
-            r'src="(https://images\.salsify\.com/[^"]+)"',
-            html
-        )
+        print(f"="*80 + "\n")
         
-        print(f"🔍 Found {len(src_urls)} src attributes with salsify URLs")
+        # ===== STEP 2: Conditional - Try ATF I/O-Generic first =====
+        print("STEP 2: Conditional extraction\n")
+        print(f"🔎 Looking for: ATF I/O-Generic (or ATF 2-Generic as fallback)")
         
-        for img_url in src_urls:
-            if img_url not in seen_urls:
-                seen_urls.add(img_url)
-                images.append({
-                    "type": f"Image {len(images) + 1}",
-                    "url": img_url
-                })
+        io_found = False
+        io_url = find_and_extract_image("ATF I/O-Generic", property_map)
         
-        # Method 3: Find all salsify URLs anywhere in the HTML (fallback)
-        all_salsify_urls = re.findall(
-            r'https://images\.salsify\.com/image/upload/[^\s"\'<>]+',
-            html
-        )
-        
-        print(f"🔍 Found {len(all_salsify_urls)} total salsify URLs in HTML")
-        
-        for img_url in all_salsify_urls:
-            # Clean up URL (remove any trailing junk)
-            img_url = img_url.rstrip(')}')
+        if io_url and io_url not in seen_urls:
+            seen_urls.add(io_url)
+            images.append({
+                "type": "ATF I/O-Generic",
+                "url": io_url
+            })
+            print(f"   ✅ FOUND ATF I/O-Generic: {io_url[:90]}...\n")
+            io_found = True
+        else:
+            print(f"   ❌ ATF I/O-Generic not found, trying ATF 2-Generic instead\n")
+            atf2_url = find_and_extract_image("ATF 2-Generic", property_map)
             
-            if img_url not in seen_urls and 'salsify.com' in img_url:
-                seen_urls.add(img_url)
+            if atf2_url and atf2_url not in seen_urls:
+                seen_urls.add(atf2_url)
                 images.append({
-                    "type": f"Image {len(images) + 1}",
-                    "url": img_url
+                    "type": "ATF 2-Generic",
+                    "url": atf2_url
                 })
+                print(f"   ✅ FOUND ATF 2-Generic: {atf2_url[:90]}...\n")
         
-        print(f"✅ Extracted {len(images)} unique images total\n")
-        for i, img in enumerate(images):
-            print(f"   {i+1}. {img['url'][:100]}...")
+        print(f"="*80 + "\n")
+        
+        # ===== STEP 3: Fallback - Get ATF 6-Generic ONLY if ATF I/O-Generic was NOT found =====
+        print("STEP 3: Fallback extraction (only if ATF I/O-Generic missing)\n")
+        
+        if not io_found:
+            print(f"🔎 ATF I/O-Generic was missing, checking for: ATF 6-Generic")
+            atf6_url = find_and_extract_image("ATF 6-Generic", property_map)
+            
+            if atf6_url and atf6_url not in seen_urls:
+                seen_urls.add(atf6_url)
+                images.append({
+                    "type": "ATF 6-Generic",
+                    "url": atf6_url
+                })
+                print(f"   ✅ FOUND ATF 6-Generic: {atf6_url[:90]}...\n")
+            else:
+                print(f"   ❌ ATF 6-Generic not found\n")
+        else:
+            print(f"⏭️  Skipping ATF 6-Generic (ATF I/O-Generic was found)\n")
+        
+        print(f"="*80)
+        print(f"\n✅ Total images extracted: {len(images)}\n")
     
     except Exception as e:
         print(f"❌ Error extracting images: {e}")
@@ -171,6 +222,80 @@ def get_salsify_images(url):
         traceback.print_exc()
     
     return images
+
+
+def find_and_extract_image(required_prop, property_map):
+    """
+    Find a property and extract its image.
+    Tries exact match first, then fuzzy match.
+    """
+    # Try exact match first
+    if required_prop in property_map:
+        container = property_map[required_prop]
+        return extract_image_from_container(container)
+    
+    # Try fuzzy match (normalize property names)
+    req_normalized = required_prop.lower().replace(" ", "").replace("_", "")
+    for prop_name, container in property_map.items():
+        prop_normalized = prop_name.lower().replace(" ", "").replace("_", "")
+        if req_normalized == prop_normalized:
+            return extract_image_from_container(container)
+    
+    return None
+
+
+def extract_image_from_container(container):
+    """
+    Extract a single image URL from a container.
+    Tries multiple methods to find the image.
+    """
+    if not container:
+        return None
+    
+    img_url = None
+    
+    # Method 1: Look in noscript tag (lazy loading fallback)
+    noscript = container.find("noscript")
+    if noscript:
+        img_tag = noscript.find("img")
+        if img_tag:
+            srcset = img_tag.get("srcset", "")
+            src = img_tag.get("src", "")
+            
+            if srcset and "salsify" in srcset:
+                urls = [u.strip().split()[0] for u in srcset.split(",") if u.strip()]
+                img_url = urls[-1] if urls else None
+            elif src and "salsify" in src:
+                img_url = src
+    
+    # Method 2: Look for img tag with data-testid="salsify-image"
+    if not img_url:
+        main_img = container.find("img", {"data-testid": "salsify-image"})
+        if main_img:
+            srcset = main_img.get("srcset", "")
+            src = main_img.get("src", "")
+            
+            if srcset and "salsify" in srcset:
+                urls = [u.strip().split()[0] for u in srcset.split(",") if u.strip()]
+                img_url = urls[-1] if urls else None
+            elif src and "salsify" in src:
+                img_url = src
+    
+    # Method 3: Look for any img tag in the container with salsify URL
+    if not img_url:
+        for img_tag in container.find_all("img"):
+            srcset = img_tag.get("srcset", "")
+            src = img_tag.get("src", "")
+            
+            if srcset and "salsify" in srcset:
+                urls = [u.strip().split()[0] for u in srcset.split(",") if u.strip()]
+                img_url = urls[-1] if urls else None
+                break
+            elif src and "salsify" in src:
+                img_url = src
+                break
+    
+    return img_url
 
 # =========================================
 # ✅ CVS IMAGES
