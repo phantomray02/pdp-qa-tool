@@ -26,15 +26,11 @@ export_rows = []
 for pname, container in property_map.items():
     url = extract_from_container(container)
 
-    if url:
-        key = (pname, url)
-
-        if key not in seen_pairs:
-            seen_pairs.add(key)
-            images.append({
-                "type": pname,
-                "url": url
-            })
+if url:
+    images.append({
+        "type": prop,
+        "url": url
+    })
 CONDITIONAL_IO_OR_2 = [
     "ATF I/O-Generic",  # Try this first
     "ATF 2-Generic"     # If I/O doesn't exist, use this
@@ -191,54 +187,52 @@ def get_salsify_images(url):
     soup = BeautifulSoup(html, "html.parser")
 
     images = []
-    seen_pairs = set()
 
     print("\n🔍 HARDENED EXTRACTION START\n")
 
     # ==================================================
     # 🔹 STEP 1: FIND PROPERTY-BASED CONTAINERS
     # ==================================================
-    containers = soup.find_all(
-        lambda tag: tag.name == "div"
-        and tag.get("class")
-        and any("asset-list_images__" in c for c in tag.get("class"))
-    )
 
-    property_map = {}
-
-    for c in containers:
-        aria = c.get("aria-label", "").strip().rstrip("-")
-
-        if aria:
-            property_map[aria] = c
-
-    print(f"✅ Found {len(property_map)} property containers")
-
-    def get_prop_image(target):
-        t_norm = normalize_prop(target)
-
-        for pname, container in property_map.items():
-            if normalize_prop(pname) == t_norm:
-                return extract_from_container(container)
-
-        return None
+    print("🔥 Pulling ALL images (no dedupe mode)")
+    
+    # 1. Try property map (if it exists)
+    for pname, container in property_map.items():
+        url = extract_from_container(container)
+    
+        if url:
+            images.append({
+                "type": pname,
+                "url": url
+            })
+    
+    # 2. ALWAYS also pull raw images
+    for img in soup.find_all("img"):
+        url = extract_best_image_from_tag(img)
+    
+        if url and "salsify" in url:
+            images.append({
+                "type": "Raw Image",
+                "url": url
+            })
+    
+    # 3. JSON backup (also include everything)
+    json_imgs = extract_from_json(html)
+    
+    for url in json_imgs:
+        images.append({
+            "type": "JSON Image",
+            "url": url
+        })
+    
+    print(f"✅ TOTAL RAW IMAGES FOUND: {len(images)}")
 
     # ==================================================
     # 🔹 STEP 2: ALWAYS REQUIRED
     # ==================================================
     for prop in ALWAYS:
         url = get_prop_image(prop)
-    
-        if url:
-            key = (prop, url)
-    
-            if key not in seen_pairs:
-                seen_pairs.add(key)
-                images.append({
-                    "type": prop,
-                    "url": url
-                })
-                print(f"✅ {prop}")
+        
         else:
             print(f"❌ {prop}")
 
