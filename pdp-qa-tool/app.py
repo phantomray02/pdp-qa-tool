@@ -6,49 +6,37 @@ import re
 from difflib import SequenceMatcher
 from PIL import Image
 from io import BytesIO
-from playwright.sync_api import sync_playwright
-import atexit
 
-st.write("🚀 VERSION COALESCE LOGIC")
+# =========================================
+# ✅ HEADER
+# =========================================
+st.write("🚀 VERSION PRODUCTION NO PLAYWRIGHT")
 st.title("PDP QA Tool ✅")
 
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 download_placeholder = st.empty()
 
 # =========================================
-# ✅ START PLAYWRIGHT
-# =========================================
-p = sync_playwright().start()
-browser = p.chromium.launch(headless=True)
-atexit.register(lambda: (browser.close(), p.stop()))
-
-# =========================================
-# ✅ CACHE
+# ✅ HTML CACHE
 # =========================================
 html_cache = {}
 
 def get_html(url):
+    if not url:
+        return ""
+
     if url in html_cache:
         return html_cache[url]
 
     try:
-        page = browser.new_page()
-        page.goto(url, timeout=30000, wait_until="networkidle")
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+        if r.status_code == 200:
+            html_cache[url] = r.text
+            return r.text
+    except Exception as e:
+        print("Request error:", e)
 
-        for _ in range(10):
-            page.evaluate("window.scrollBy(0, document.body.scrollHeight)")
-            page.wait_for_timeout(800)
-
-        page.wait_for_timeout(2000)
-
-        html = page.content()
-        page.close()
-
-        html_cache[url] = html
-        return html
-
-    except:
-        return ""
+    return ""
 
 def get_soup(url):
     return BeautifulSoup(get_html(url), "html.parser")
@@ -66,7 +54,7 @@ def load_image(url):
     return None
 
 # =========================================
-# ✅ BUILD PROPERTY MAP
+# ✅ BUILD PROPERTY MAP (KEY STEP)
 # =========================================
 def build_property_map(soup):
     prop_map = {}
@@ -102,7 +90,7 @@ def get_first_available(prop_map, props):
     return None
 
 # =========================================
-# ✅ YOUR EXACT COALESCE RULES
+# ✅ YOUR COALESCE ORDER (CORE LOGIC)
 # =========================================
 def build_salsify_order(prop_map):
 
@@ -130,7 +118,7 @@ def build_salsify_order(prop_map):
     return ordered
 
 # =========================================
-# ✅ CVS IMAGES
+# ✅ CVS IMAGES (ORDERED BY SITE)
 # =========================================
 def get_cvs_images(url):
     html = get_html(url)
@@ -143,7 +131,7 @@ def get_cvs_images(url):
     return ["https://www.cvs.com" + m for m in matches]
 
 # =========================================
-# ✅ TEXT HELPERS
+# ✅ TEXT NORMALIZATION (KEPT FROM YOUR APP)
 # =========================================
 def normalize_text(text):
     text = str(text).lower()
@@ -171,7 +159,7 @@ def keyword_score(a, b):
     return int(((ratio * 0.6) + (word_score * 0.4)) * 100)
 
 # =========================================
-# ✅ MAIN
+# ✅ MAIN LOOP
 # =========================================
 if uploaded_file:
 
@@ -183,9 +171,8 @@ if uploaded_file:
         st.subheader(f"SKU: {row['sku']}")
 
         try:
+            # ✅ NEW COALESCE FLOW
             soup = get_soup(row["salsify_url"])
-
-            # ✅ NEW LOGIC
             prop_map = build_property_map(soup)
             s_images = build_salsify_order(prop_map)
 
@@ -193,7 +180,7 @@ if uploaded_file:
 
             st.write(f"✅ Salsify images: {len(s_images)}")
 
-            # ✅ ORDERED VIEW
+            # ✅ ORDERED SIDE-BY-SIDE QA
             max_len = max(len(s_images), len(r_images))
 
             for i in range(max_len):
@@ -203,8 +190,12 @@ if uploaded_file:
                 if i < len(s_images):
                     col1.markdown(f"**Salsify #{i+1}**")
                     img_obj = load_image(s_images[i])
+
                     if img_obj:
                         col1.image(img_obj, use_container_width=True)
+                    else:
+                        col1.write("❌ Failed")
+                        col1.write(s_images[i])
                 else:
                     col1.write("❌ Missing Salsify")
 
@@ -212,13 +203,18 @@ if uploaded_file:
                 if i < len(r_images):
                     col2.markdown(f"**CVS #{i+1}**")
                     img_obj = load_image(r_images[i])
+
                     if img_obj:
                         col2.image(img_obj, use_container_width=True)
                 else:
                     col2.write("❌ Missing CVS")
 
             # ✅ SCORE
-            img_score = int((min(len(s_images), len(r_images)) / max(len(s_images), len(r_images), 1)) * 100)
+            img_score = int(
+                (min(len(s_images), len(r_images)) /
+                 max(len(s_images), len(r_images), 1)) * 100
+            )
+
             st.write(f"✅ Image Match: {img_score}%")
 
             summary_rows.append({
