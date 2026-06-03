@@ -162,36 +162,39 @@ def get_salsify_images(url):
         page = browser.new_page()
         page.goto(url, wait_until="networkidle")
 
-        # ✅ Ensure everything loads
-        page.wait_for_timeout(4000)
+        # ✅ CRITICAL: allow React to fully render
+        page.wait_for_timeout(5000)
 
-        # ✅ Force lazy load
-        for _ in range(6):
+        # ✅ scroll slowly to trigger ALL lazy loads
+        for _ in range(10):
             page.evaluate("window.scrollBy(0, document.body.scrollHeight)")
-            page.wait_for_timeout(1000)
+            page.wait_for_timeout(800)
 
-        # ✅ Pull ONLY visible gallery images (THIS FIXES EVERYTHING)
-        img_urls = page.eval_on_selector_all(
-            "section[aria-label='Product image gallery'] img",
-            "els => els.map(e => e.closest('a')?.href).filter(Boolean)"
+        # ✅ THIS IS THE KEY SELECTOR (your missing piece)
+        product_images = page.query_selector_all(
+            "div[data-testid='main-image'] a"
         )
+
+        urls = []
+        for el in product_images:
+            href = el.get_attribute("href")
+            if href and "images.salsify.com" in href:
+                urls.append(href)
 
         page.close()
 
-        # ✅ Deduplicate but KEEP order
+        # ✅ dedupe but preserve order
         seen = set()
         ordered = []
+        for u in urls:
+            if u not in seen:
+                seen.add(u)
+                ordered.append(u)
 
-        for img in img_urls:
-            if img and img not in seen:
-                seen.add(img)
-                ordered.append(img)
-
-        # ✅ label sequentially
         return [{"type": f"Image {i+1}", "url": u} for i, u in enumerate(ordered)]
 
     except Exception as e:
-        print("Salsify extract error:", e)
+        print("Salsify extraction error:", e)
         return []
 # =========================================
 # ✅ CVS IMAGES
