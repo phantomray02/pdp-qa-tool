@@ -190,3 +190,105 @@ for i in range(max(len(working['details']), len(broken['details']))):
 print(f"\n{'='*100}")
 print(f"✅ Analysis complete! Check the HTML files for detailed inspection.")
 print(f"{'='*100}\n")
+
+# Now create the robust function
+print(f"\n\n{'='*100}")
+print(f"🔧 CREATING ROBUST get_salsify_images() FUNCTION")
+print(f"{'='*100}\n")
+
+robust_function = '''
+def get_salsify_images(url):
+    """
+    Extract ALL Salsify product images - handles both page structures.
+    
+    This function is robust and works for:
+    - Standard Salsify product pages
+    - Pages with missing image properties
+    - Pages with alternative structures
+    
+    Returns images in order they appear on the page.
+    """
+    html = get_html(url)
+    images = []
+    seen_urls = set()
+    
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+        
+        # Method 1: Find all asset-list_images containers (primary method)
+        asset_containers = soup.find_all("div", {"class": "asset-list_images__2aKCB"})
+        
+        print(f"🔍 Found {len(asset_containers)} asset containers")
+        
+        for idx, container in enumerate(asset_containers):
+            # Get property name from aria-label
+            aria_label = container.get("aria-label", "").strip()
+            prop_name = aria_label.replace("-", "").strip() if aria_label else f"Image {idx + 1}"
+            
+            if not prop_name or prop_name == "":
+                continue
+            
+            # Try to find image URL in noscript (most reliable)
+            noscript = container.find("noscript")
+            img_url = None
+            
+            if noscript:
+                # Look for img tag with srcset (highest quality)
+                img_tag = noscript.find("img")
+                if img_tag:
+                    srcset = img_tag.get("srcset", "")
+                    src = img_tag.get("src", "")
+                    
+                    # Prefer srcset (has multiple resolutions)
+                    if srcset and "salsify" in srcset:
+                        # srcSet format: "url1 1x, url2 2x, ..."
+                        # Extract all URLs and take the last one (highest quality)
+                        urls = [u.strip().split()[0] for u in srcset.split(",") if u.strip()]
+                        img_url = urls[-1] if urls else None
+                    
+                    # Fallback to src
+                    elif src and "salsify" in src:
+                        img_url = src
+            
+            # If no image found in noscript, check main img tags in container
+            if not img_url:
+                main_img = container.find("img", {"data-testid": "salsify-image"})
+                if main_img:
+                    srcset = main_img.get("srcset", "")
+                    src = main_img.get("src", "")
+                    
+                    if srcset and "salsify" in srcset:
+                        urls = [u.strip().split()[0] for u in srcset.split(",") if u.strip()]
+                        img_url = urls[-1] if urls else None
+                    elif src and "salsify" in src:
+                        img_url = src
+            
+            # Add valid, non-duplicate images
+            if img_url and "salsify" in img_url and img_url not in seen_urls:
+                seen_urls.add(img_url)
+                images.append({
+                    "type": prop_name,
+                    "url": img_url
+                })
+                print(f"  ✅ {prop_name}")
+        
+        print(f"✅ Extracted {len(images)} images total\\n")
+    
+    except Exception as e:
+        print(f"❌ Error extracting images: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    return images
+'''
+
+print("📋 Robust function created:")
+print(robust_function)
+print(f"\n✨ This function will:")
+print(f"   ✅ Find all asset containers on the page")
+print(f"   ✅ Extract property names from aria-label")
+print(f"   ✅ Handle both noscript and main img tags")
+print(f"   ✅ Prefer srcset over src (higher quality)")
+print(f"   ✅ Skip empty/missing images")
+print(f"   ✅ Prevent duplicates")
+print(f"   ✅ Print debug info to console")
