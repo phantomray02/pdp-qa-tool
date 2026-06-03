@@ -639,26 +639,52 @@ if uploaded_file:
             # =========================
             # ✅ DEBUG VIEW
             # =========================
-            with st.expander("🔍 IMAGE DEBUG", expanded=True):
+            with st.expander("🔍 IMAGE BUCKETS", expanded=True):
 
-                st.markdown("### 🧺 Salsify")
-                for i, img in enumerate(raw_images):
-                    st.image(img["url"], caption=f"Salsify {i}")
-
-                st.markdown("### 🧺 CVS")
-                for i, img in enumerate(r_images):
-                    st.image(img, caption=f"CVS {i}")
-
-                st.markdown("### 🔗 Matches")
-
-                for s_url, r_url, score in image_matches:
-                    col1, col2 = st.columns(2)
-                    col1.image(s_url, caption="Salsify")
-
-                    if r_url:
-                        col2.image(r_url, caption=f"{score}%")
-                    else:
-                        col2.write(f"❌ Missing ({score}%)")
+            raw_images = get_salsify_images(row["salsify_url"])
+            raw_images = [img for img in raw_images if img["url"]]
+        
+            r_images = get_cvs_images(row["retail_url"])
+        
+            # =========================
+            # ✅ GROUP SALSIFY
+            # =========================
+            pack = []
+            lifestyle = []
+        
+            for img in raw_images:
+                name = str(img.get("type", "")).lower()
+                url = img["url"].lower()
+        
+                # ✅ PACKAGING RULES
+                if any(x in name for x in ["front", "back", "pack", "primary"]) or "package" in url:
+                    pack.append(img["url"])
+                else:
+                    lifestyle.append(img["url"])
+        
+            # =========================
+            # ✅ RENDER SALSIFY BUCKET
+            # =========================
+            st.markdown("## 🧺 SALSIFY")
+        
+            st.markdown("### 📦 Packaging")
+            cols = st.columns(3)
+            for i, img in enumerate(pack):
+                cols[i % 3].image(img)
+        
+            st.markdown("### 🟣 Lifestyle / ATF")
+            cols = st.columns(3)
+            for i, img in enumerate(lifestyle):
+                cols[i % 3].image(img)
+        
+            # =========================
+            # ✅ RENDER CVS BUCKET
+            # =========================
+            st.markdown("## 🧺 CVS")
+        
+            cols = st.columns(3)
+            for i, img in enumerate(r_images):
+                cols[i % 3].image(img)
 
             # =========================
             # ✅ IMAGE SCORE
