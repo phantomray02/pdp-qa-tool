@@ -22,12 +22,19 @@ export_rows = []
 # - Then: ATF I/O-Generic (if exists) OR ATF 2-Generic (if exists)
 # - Then: ATF 6-Generic (only if ATF I/O-Generic is NOT present)
 # =========================================
-ALWAYS_REQUIRED = [
-    "Online Optimized Image",
-    "Flat Back_2D",
-    "Flat Left_2D"
-]
+# after property_map built
+for pname, container in property_map.items():
+    url = extract_from_container(container)
 
+    if url:
+        key = (pname, url)
+
+        if key not in seen_pairs:
+            seen_pairs.add(key)
+            images.append({
+                "type": pname,
+                "url": url
+            })
 CONDITIONAL_IO_OR_2 = [
     "ATF I/O-Generic",  # Try this first
     "ATF 2-Generic"     # If I/O doesn't exist, use this
@@ -238,6 +245,9 @@ def get_salsify_images(url):
     # ==================================================
     # 🔹 STEP 3: IO / 2 LOGIC
     # ==================================================
+    io_url = get_prop_image("ATF I/O-Generic")
+    io_found = False
+
     if io_url:
         key = ("ATF I/O-Generic", io_url)
     
@@ -542,26 +552,26 @@ if uploaded_file:
 
             r_images = get_cvs_images(row["retail_url"])
 
-            # Debug view
-            with st.expander("🧺 Salsify Images", expanded=True):
-                st.write("Total Salsify images:", len(s_images))
-                cols = st.columns(3)
-                        
-        for i, img in enumerate(s_images):
-            col = cols[i % 3]
-            
-            img_obj = load_image(img["url"])
+        # Debug view
+        with st.expander("🧺 Salsify Images", expanded=True):
+            st.write("Total Salsify images:", len(s_images))
+            cols = st.columns(3)
         
-            if img_obj:
-                col.image(
-                    img_obj,
-                    caption=img["type"],
-                    use_container_width=True
-                )
-            else:
-                col.write(f"❌ Failed: {img['type']}")
-                col.write(img["url"])
+            for i, img in enumerate(s_images):
+                col = cols[i % 3]
                 
+                img_obj = load_image(img["url"])
+        
+                if img_obj:
+                    col.image(
+                        img_obj,
+                        caption=img["type"],
+                        use_container_width=True
+                    )
+                else:
+                    col.write(f"❌ Failed: {img['type']}")
+                    col.write(img["url"])
+                    
             # Comparison
             render_image_comparison_by_property(s_images, r_images)
 
