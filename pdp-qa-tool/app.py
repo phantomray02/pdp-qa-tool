@@ -300,8 +300,7 @@ def get_salsify_images(url):
     # ==================================================
     # 🔹 STEP 5: FALLBACK → GALLERY IMAGES
     # ==================================================
-    if not images:
-        print("⚠️ No structured images → fallback to gallery")
+        print("⚠️ Using hybrid extraction (forced fallback)")
     
         for img in soup.find_all("img"):
             url = extract_best_image_from_tag(img)
@@ -315,23 +314,35 @@ def get_salsify_images(url):
                         "type": "Fallback",
                         "url": url
                     })    
-    # ==================================================
-    # 🔹 STEP 6: FINAL FALLBACK → JSON PARSE
-    # ==================================================
-    if not images:
-        print("⚠️ No gallery images → parsing JSON")
+# ==================================================
+# 🔥 FORCE FALLBACK → GALLERY + JSON + IMG TAGS
+# ==================================================
 
-        json_imgs = extract_from_json(html)
+for img in soup.find_all("img"):
+    url = extract_best_image_from_tag(img)
 
-        for url in json_imgs[:10]:  # limit
+    if url and "salsify" in url:
+        key = ("Fallback", url)
+
+        if key not in seen_pairs:
+            seen_pairs.add(key)
             images.append({
-                "type": "JSON",
+                "type": "Fallback",
                 "url": url
             })
 
-    print(f"\n✅ FINAL IMAGE COUNT: {len(images)}\n")
+# JSON backup (always run)
+json_imgs = extract_from_json(html)
 
-    return images
+for url in json_imgs:
+    key = ("JSON", url)
+
+    if key not in seen_pairs:
+        seen_pairs.add(key)
+        images.append({
+            "type": "JSON",
+            "url": url
+        })
 # =========================================
 # ✅ CVS IMAGES
 # =========================================
