@@ -5,6 +5,7 @@ import re
 from difflib import SequenceMatcher
 from PIL import Image
 from io import BytesIO
+from bs4 import BeautifulSoup
 
 st.title("PDP QA Tool ✅")
 
@@ -45,54 +46,91 @@ def load_image(url):
     return None
 
 # =========================================
-# ✅ SALSIFY IMAGES (FINAL PERFECT ✅)
+# ✅ ✅ SALSIFY IMAGES (PROPERTY-BASED ✅)
 # =========================================
 def get_salsify_images(url):
     html = get_html(url)
+    soup = BeautifulSoup(html, "html.parser")
 
-    matches = re.findall(r'https://images\.salsify\.com[^"]+', html)
+    images = []
+    seen = set()
 
-    image_map = {}
-
-    for m in matches:
-        base = m.split("?")[0]
-
-        # ✅ remove junk thumbnails / selectors
-        if any(x in m.lower() for x in ["thumb", "small", "icon", "tile"]):
-            continue
-
-        file_name = base.split("/")[-1]
-
-        # ✅ resolution detection
-        size = 0
-        size_match = re.search(r'Resize=\((\d+)', m)
-        if size_match:
-            size = int(size_match.group(1))
-
-        # ✅ remove tiny assets
-        if size and size < 500:
-            continue
-
-        # ✅ keep highest res per asset
-        if file_name not in image_map or size > image_map[file_name]["size"]:
-            image_map[file_name] = {
-                "url": base,
-                "size": size
-            }
-
-    # ✅ FINAL CLEAN LIST
-    images = list(image_map.values())
-
-    # ✅ LIMIT to PDP main images (VERY IMPORTANT)
-    images = images[:8]
-
-    return [
-        {"type": f"Salsify {i+1}", "url": img["url"]}
-        for i, img in enumerate(images)
+    # ✅ Correct PDP order
+    TARGET_ORDER = [
+        "Online Optimized Image",
+        "Flat Back_2D",
+        "Flat Left_2D",
+        "ATF I/O-Generic",
+        "ATF 2-Generic",
+        "ATF 3-Generic",
+        "ATF 4-Generic",
+        "ATF 5-Generic",
+        "ATF 6-Generic"
     ]
 
+    # ✅ Find Salsify image containers
+    containers = soup.find_all(
+        lambda tag: tag.name == "div"
+        and tag.get("class")
+        and any("asset-list_images__" in c for c in tag.get("class"))
+    )
+
+    property_map = {}
+
+    for c in containers:
+        prop = c.get("aria-label", "").replace("-", "").strip()
+
+        if not prop:
+            continue
+
+        img = None
+
+        # ✅ BEST: noscript image (full quality, no lazy load)
+        ns = c.find("noscript")
+        if ns:
+            img = ns.find("img")
+
+        # ✅ fallback
+        if not img:
+            img = c.find("img")
+
+        if not img:
+            continue
+
+        src = img.get("src") or ""
+        srcset = img.get("srcset") or ""
+
+        # ✅ get highest quality version
+        if srcset and "salsify" in srcset:
+            urls = [u.strip().split()[0] for u in srcset.split(",")]
+            final_url = urls[-1]
+        else:
+            final_url = src
+
+        if not final_url or "salsify" not in final_url:
+            continue
+
+        clean = final_url.split("?")[0]
+
+        # ✅ avoid duplicates across properties
+        if clean in seen:
+            continue
+
+        seen.add(clean)
+        property_map[prop] = clean
+
+    # ✅ BUILD ORDERED RESULT
+    for prop in TARGET_ORDER:
+        if prop in property_map:
+            images.append({
+                "type": prop,
+                "url": property_map[prop]
+            })
+
+    return images
+
 # =========================================
-# ✅ CVS IMAGES (CLEAN ✅)
+# ✅ CVS IMAGES (DEDUP + BEST ✅)
 # =========================================
 def get_cvs_images(url):
     html = get_html(url)
@@ -143,9 +181,9 @@ def get_salsify_text(url):
 def get_cvs_text(html):
     desc = ""
 
-    text = html.replace('\\"', '"')
+    html = html.replace('\\"', '"')
 
-    m = re.search(r'vendorDetailsParagraph":"(.*?)"', text)
+    m = re.search(r'vendorDetailsParagraph":"(.*?)"', html)
     if m:
         desc = m.group(1)
 
@@ -172,16 +210,19 @@ if uploaded_file:
 
         st.subheader(f"SKU: {row['sku']}")
 
-        html = get_html(row["retail_url"])
+        retail_html = get_html(row["retail_url"])
 
         s_text = get_salsify_text(row["salsify_url"])
-        r_text = get_cvs_text(html)
+        r_text = get_cvs_text(retail_html)
 
-        # ✅ COPY AT TOP
+        # ✅ COPY FIRST
         st.markdown("## Description")
 
         c1, c2 = st.columns(2)
+        c1.markdown("**Salsify**")
         c1.write(s_text.get("description", ""))
+
+        c2.markdown("**CVS**")
         c2.write(r_text.get("description", ""))
 
         desc_score = keyword_score(
@@ -191,7 +232,16 @@ if uploaded_file:
 
         st.write(f"✅ Description Match: {desc_score}%")
 
-        # ✅ IMAGES
+        # ✅ FEATURES
+        st.markdown("## Features")
+
+        c1, c2 = st.columns(2)
+        c1.write(s_text.get("features", []))
+        c2.write("N/A")
+
+        # =========================================
+        # ✅ IMAGE COMPARISON (CLEAN ✅)
+        # =========================================
         st.markdown("## Image Comparison")
 
         s_images = get_salsify_images(row["salsify_url"])
@@ -199,28 +249,27 @@ if uploaded_file:
 
         st.write(f"Salsify: {len(s_images)} | CVS: {len(r_images)}")
 
-        # ✅ LOOP BASED ON MAX BUT NO FAKE FAILS
         max_len = max(len(s_images), len(r_images))
 
         for i in range(max_len):
 
             c1, c2 = st.columns(2)
 
-            # ✅ LEFT (REAL ONLY)
+            # ✅ LEFT = PROPERTY-BASED
             if i < len(s_images):
-                c1.markdown(f"Salsify {i+1}")
+                c1.markdown(f"**{s_images[i]['type']}**")
                 img = load_image(s_images[i]["url"])
                 if img:
-                    c1.image(img)
+                    c1.image(img, use_container_width=True)
             else:
-                c1.write("")  # ← NO more "failed"
+                c1.write("")
 
-            # ✅ RIGHT
+            # ✅ RIGHT = CVS
             if i < len(r_images):
-                c2.markdown(f"CVS {i+1}")
+                c2.markdown(f"**CVS {i+1}**")
                 img = load_image(r_images[i])
                 if img:
-                    c2.image(img)
+                    c2.image(img, use_container_width=True)
             else:
                 c2.write("")
 
@@ -249,7 +298,7 @@ if 'summary_rows' in locals() and summary_rows:
     file_name = "pdp_qa_results.xlsx"
 
     with pd.ExcelWriter(file_name, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False)
+        df.to_excel(writer, index=False, sheet_name="Summary")
 
     with open(file_name, "rb") as f:
         download_placeholder.download_button(
