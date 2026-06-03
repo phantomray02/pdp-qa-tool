@@ -156,46 +156,50 @@ def clean_text(raw):
 # =========================================
 def get_salsify_images(url):
 
+    html = get_html(url)
+
+    import json
+    import re
+
     images = []
 
     try:
-        page = browser.new_page()
-        page.goto(url, wait_until="networkidle")
-
-        # ✅ CRITICAL: allow React to fully render
-        page.wait_for_timeout(5000)
-
-        # ✅ scroll slowly to trigger ALL lazy loads
-        for _ in range(10):
-            page.evaluate("window.scrollBy(0, document.body.scrollHeight)")
-            page.wait_for_timeout(800)
-
-        # ✅ THIS IS THE KEY SELECTOR (your missing piece)
-        product_images = page.query_selector_all(
-            "div[data-testid='main-image'] a"
+        # ✅ extract NEXT.js payload
+        data_match = re.search(
+            r'self\.__next_f\.push\(\[.*?"properties":(\[.*?\])',
+            html,
+            re.DOTALL
         )
 
-        urls = []
-        for el in product_images:
-            href = el.get_attribute("href")
-            if href and "images.salsify.com" in href:
-                urls.append(href)
+        if not data_match:
+            return []
 
-        page.close()
+        raw_json = data_match.group(1)
 
-        # ✅ dedupe but preserve order
-        seen = set()
-        ordered = []
-        for u in urls:
-            if u not in seen:
-                seen.add(u)
-                ordered.append(u)
+        # ✅ fix escaped JSON
+        raw_json = raw_json.replace('\\"', '"')
 
-        return [{"type": f"Image {i+1}", "url": u} for i, u in enumerate(ordered)]
+        properties = json.loads(raw_json)
+
+        for prop in properties:
+
+            prop_name = prop.get("property", "Unknown")
+
+            values = prop.get("values", [])
+
+            if values and isinstance(values, list):
+                val = values[0].get("value")
+
+                if val and "images.salsify.com" in val:
+                    images.append({
+                        "type": prop_name,
+                        "url": val
+                    })
 
     except Exception as e:
-        print("Salsify extraction error:", e)
-        return []
+        print("Salsify JSON parse error:", e)
+
+    return images
 # =========================================
 # ✅ CVS IMAGES
 # =========================================
