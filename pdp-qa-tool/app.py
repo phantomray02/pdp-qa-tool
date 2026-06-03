@@ -121,32 +121,83 @@ def clean_text(raw):
 # =========================================
 def get_salsify_images(url):
     """
-    Extract all salsify image URLs from the page HTML.
-    Simple, reliable, no false positives.
+    Extract Salsify images in the exact order they appear on the page.
+    Uses Playwright to ensure all images are loaded before extracting.
     """
     html = get_html(url)
     images = []
     seen_urls = set()
     
     try:
-        # Find all salsify image URLs in srcSet attributes
-        # Pattern: looks for https://images.salsify.com/... URLs
-        img_urls = re.findall(
-            r'https://images\.salsify\.com/image/upload/[^"\s]+',
-            html
-        )
+        soup = BeautifulSoup(html, "html.parser")
         
-        for img_url in img_urls:
-            # Only add if we haven't seen it before
-            if img_url not in seen_urls:
-                seen_urls.add(img_url)
-                images.append({
-                    "type": f"Image {len(images) + 1}",
-                    "url": img_url
-                })
+        # Find the main digital assets section
+        # This is the container with all the image groups in order
+        asset_heading = soup.find("h2", {"class": "asset-list_label__tcnt3"})
+        
+        if not asset_heading:
+            print("Asset heading not found")
+            return images
+        
+        # Get the parent container
+        parent = asset_heading.find_parent("div", {"class": "asset-list_images__2aKCB"})
+        
+        if not parent:
+            parent = asset_heading.find_parent()
+        
+        # Find ALL asset containers in order
+        asset_containers = []
+        
+        # Go up to find the main wrapper
+        current = asset_heading
+        while current:
+            if "digital-assets" in current.get("class", []):
+                asset_containers = current.find_all("div", {"class": "asset-list_images__2aKCB"})
+                break
+            current = current.parent
+        
+        # Extract images in order
+        for idx, container in enumerate(asset_containers):
+            
+            # Try to get property name from aria-label
+            aria_label = container.get("aria-label", "").strip()
+            prop_name = aria_label.rstrip("-").strip() if aria_label else f"Image {idx + 1}"
+            
+            # Look for noscript with srcSet (the actual image URL)
+            noscript = container.find("noscript")
+            if noscript:
+                img_tag = noscript.find("img")
+                if img_tag:
+                    srcset = img_tag.get("srcset", "")
+                    src = img_tag.get("src", "")
+                    
+                    # Try srcSet first (has multiple resolutions)
+                    img_url = None
+                    if srcset:
+                        # srcSet format: "url1 1x, url2 2x"
+                        urls = [u.strip().split()[0] for u in srcset.split(",") if u.strip()]
+                        img_url = urls[-1] if urls else None
+                    
+                    # Fallback to src
+                    if not img_url:
+                        img_url = src
+                    
+                    # Validate and add
+                    if img_url and "salsify" in img_url and img_url not in seen_urls:
+                        seen_urls.add(img_url)
+                        images.append({
+                            "type": prop_name,
+                            "url": img_url
+                        })
+        
+        print(f"✅ Extracted {len(images)} images in order")
+        for img in images:
+            print(f"   - {img['type']}: {img['url'][:80]}...")
     
     except Exception as e:
         print(f"Error extracting images: {e}")
+        import traceback
+        traceback.print_exc()
     
     return images
 # =========================================
