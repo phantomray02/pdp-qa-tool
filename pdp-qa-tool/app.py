@@ -7,6 +7,7 @@ from difflib import SequenceMatcher
 from PIL import Image
 from io import BytesIO
 import json
+st.write("🚀 VERSION TEST - 123")
 
 st.title("PDP QA Tool ✅")
 
