@@ -45,7 +45,7 @@ def load_image(url):
     return None
 
 # =========================================
-# ✅ ✅ SALSIFY (SMART DEDUPE ONLY TOP ✅)
+# ✅ SALSIFY (FINAL CLEAN LOGIC ✅)
 # =========================================
 def get_salsify_images(url):
     html = get_html(url)
@@ -54,12 +54,11 @@ def get_salsify_images(url):
 
     raw_images = []
 
-    # ✅ STEP 1: collect ALL images in order
+    # ✅ STEP 1: collect all images
     for m in matches:
         base = m.split("?")[0]
         fname = base.split("/")[-1].lower()
 
-        # remove UI junk
         if any(x in fname for x in ["thumb", "icon", "small"]):
             continue
 
@@ -75,34 +74,38 @@ def get_salsify_images(url):
         })
 
     # =========================================
-    # ✅ STEP 2: TOP IMAGES (DEDUP ONLY HERE)
+    # ✅ STEP 2: HERO (TOP 3 ONLY ✅)
     # =========================================
-    hero_candidates = raw_images[:12]  # enough to capture variants
+    hero_candidates = raw_images[:12]
     hero_map = {}
 
     for img in hero_candidates:
-
-        # normalize filename (removes crop variants)
         key = re.sub(r'(_|-)?\d+x\d+', '', img["fname"])
 
-        # keep ONLY highest resolution
         if key not in hero_map or img["size"] > hero_map[key]["size"]:
             hero_map[key] = img
 
-    # ✅ FINAL HERO (ONLY FIRST 3 UNIQUE)
     hero_images = list(hero_map.values())[:3]
 
     # =========================================
-    # ✅ STEP 3: ATF IMAGES (NO DEDUPE ✅)
+    # ✅ STEP 3: LIGHT DEDUPE ONLY ✅
     # =========================================
-    atf_images = raw_images[len(hero_candidates):]
+    seen_names = set(img["fname"] for img in hero_images)
+    remaining = []
+
+    for img in raw_images[12:]:
+
+        # ✅ remove ONLY exact duplicates
+        if img["fname"] in seen_names:
+            continue
+
+        seen_names.add(img["fname"])
+        remaining.append(img)
 
     # =========================================
-    # ✅ STEP 4: COMBINE
+    # ✅ STEP 4: FINAL SET
     # =========================================
-    final_images = hero_images + atf_images
-
-    # ✅ LIMIT TOTAL TO 8
+    final_images = hero_images + remaining
     final_images = final_images[:8]
 
     return [
@@ -163,8 +166,8 @@ def get_cvs_text(html):
     desc = ""
 
     html = html.replace('\\"', '"')
-
     m = re.search(r'vendorDetailsParagraph":"(.*?)"', html)
+
     if m:
         desc = m.group(1)
 
@@ -196,7 +199,7 @@ if uploaded_file:
         s_text = get_salsify_text(row["salsify_url"])
         r_text = get_cvs_text(retail_html)
 
-        # ✅ COPY
+        # ✅ DESCRIPTION
         st.markdown("## Description")
 
         c1, c2 = st.columns(2)
@@ -226,6 +229,7 @@ if uploaded_file:
 
             c1, c2 = st.columns(2)
 
+            # ✅ Salsify LEFT
             if i < len(s_images):
                 c1.markdown(f"**Salsify {i+1}**")
                 img = load_image(s_images[i]["url"])
@@ -234,6 +238,7 @@ if uploaded_file:
             else:
                 c1.write("")
 
+            # ✅ CVS RIGHT
             if i < len(r_images):
                 c2.markdown(f"**CVS {i+1}**")
                 img = load_image(r_images[i])
