@@ -9,7 +9,7 @@ from io import BytesIO
 from playwright.sync_api import sync_playwright
 import atexit
 
-st.write("🚀 VERSION ORDERED QA FIX")
+st.write("🚀 VERSION COALESCE LOGIC")
 st.title("PDP QA Tool ✅")
 
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
@@ -27,13 +27,7 @@ atexit.register(lambda: (browser.close(), p.stop()))
 # =========================================
 html_cache = {}
 
-# =========================================
-# ✅ GET HTML
-# =========================================
 def get_html(url):
-    if not url:
-        return ""
-
     if url in html_cache:
         return html_cache[url]
 
@@ -45,7 +39,7 @@ def get_html(url):
             page.evaluate("window.scrollBy(0, document.body.scrollHeight)")
             page.wait_for_timeout(800)
 
-        page.wait_for_timeout(3000)
+        page.wait_for_timeout(2000)
 
         html = page.content()
         page.close()
@@ -53,15 +47,14 @@ def get_html(url):
         html_cache[url] = html
         return html
 
-    except Exception as e:
-        print("HTML error:", e)
+    except:
         return ""
 
 def get_soup(url):
     return BeautifulSoup(get_html(url), "html.parser")
 
 # =========================================
-# ✅ LOAD IMAGE
+# ✅ IMAGE LOADER
 # =========================================
 def load_image(url):
     try:
@@ -73,57 +66,71 @@ def load_image(url):
     return None
 
 # =========================================
-# ✅ FIXED SALSIFY EXTRACTION + ORDER
+# ✅ BUILD PROPERTY MAP
 # =========================================
-def get_salsify_images(url):
-    html = get_html(url)
-    soup = BeautifulSoup(html, "html.parser")
+def build_property_map(soup):
+    prop_map = {}
 
-    raw_images = []
+    rows = soup.find_all("tr")
 
-    # ✅ JSON (handles escaped URLs)
-    json_matches = re.findall(r'https?:\\\\?/\\\\?/images\\\\?.salsify\\\\?.com[^"]+', html)
-    for m in json_matches:
-        clean = m.replace("\\/", "/").split("?")[0]
-        raw_images.append(clean)
+    for row in rows:
+        label = row.get_text(" ", strip=True)
 
-    # ✅ DOM fallback
-    for img in soup.find_all("img"):
+        span = row.find("span", {"data-testid": "property-content"})
+        if not span:
+            continue
+
+        img = span.find("img")
+        if not img:
+            continue
+
         src = img.get("src", "")
-        srcset = img.get("srcset", "")
 
         if "salsify" in src:
-            raw_images.append(src.split("?")[0])
+            prop_map[label.strip()] = src.split("?")[0]
 
-        if "salsify" in srcset:
-            urls = [u.split()[0] for u in srcset.split(",") if u]
-            if urls:
-                raw_images.append(urls[-1].split("?")[0])
+    return prop_map
 
-    # ✅ dedupe (keep order)
-    seen = set()
-    images = []
-    for url in raw_images:
-        if url not in seen:
-            seen.add(url)
-            images.append(url)
+# =========================================
+# ✅ COALESCE HELPER
+# =========================================
+def get_first_available(prop_map, props):
+    for p in props:
+        for key in prop_map.keys():
+            if p.lower() in key.lower():
+                return prop_map[key]
+    return None
 
-    # ✅ FORCE ORDER (best-effort heuristic)
+# =========================================
+# ✅ YOUR EXACT COALESCE RULES
+# =========================================
+def build_salsify_order(prop_map):
+
+    rules = [
+        ["Online Optimized Image", "Flat Back", "Flat Left", "ATF I/O", "ATF 2", "ATF 3", "ATF 4", "ATF 5", "ATF 6"],
+        ["Flat Back", "Flat Left", "ATF I/O", "ATF 2", "ATF 3", "ATF 4", "ATF 5", "ATF 6"],
+        ["Flat Left", "ATF I/O", "ATF 2", "ATF 3", "ATF 4", "ATF 5", "ATF 6"],
+        ["ATF I/O", "ATF 2", "ATF 3", "ATF 4", "ATF 5", "ATF 6"],
+        ["ATF 2", "ATF 3", "ATF 4", "ATF 5", "ATF 6"],
+        ["ATF 3", "ATF 4", "ATF 5", "ATF 6"],
+        ["ATF 4", "ATF 5", "ATF 6"],
+        ["ATF 5", "ATF 6"]
+    ]
+
     ordered = []
+    used = set()
 
-    # try to prioritize front image first
-    for url in images:
-        if "front" in url.lower():
-            ordered.append(url)
+    for rule in rules:
+        img = get_first_available(prop_map, rule)
 
-    for url in images:
-        if url not in ordered:
-            ordered.append(url)
+        if img and img not in used:
+            ordered.append(img)
+            used.add(img)
 
     return ordered
 
 # =========================================
-# ✅ CVS IMAGES (ORDER ALREADY CORRECT)
+# ✅ CVS IMAGES
 # =========================================
 def get_cvs_images(url):
     html = get_html(url)
@@ -133,12 +140,10 @@ def get_cvs_images(url):
         html
     )
 
-    images = ["https://www.cvs.com" + m for m in matches]
-
-    return images
+    return ["https://www.cvs.com" + m for m in matches]
 
 # =========================================
-# ✅ NORMALIZE TEXT
+# ✅ TEXT HELPERS
 # =========================================
 def normalize_text(text):
     text = str(text).lower()
@@ -177,56 +182,49 @@ if uploaded_file:
 
         st.subheader(f"SKU: {row['sku']}")
 
-        full_html = get_html(row["retail_url"])
-
         try:
-            # ✅ GET IMAGES
-            s_images = get_salsify_images(row["salsify_url"])
+            soup = get_soup(row["salsify_url"])
+
+            # ✅ NEW LOGIC
+            prop_map = build_property_map(soup)
+            s_images = build_salsify_order(prop_map)
+
             r_images = get_cvs_images(row["retail_url"])
 
             st.write(f"✅ Salsify images: {len(s_images)}")
 
-            # =========================================
-            # ✅ SIDE-BY-SIDE ORDERED VIEW
-            # =========================================
-            st.markdown("## 🔍 Ordered Image Comparison")
-
+            # ✅ ORDERED VIEW
             max_len = max(len(s_images), len(r_images))
 
             for i in range(max_len):
                 col1, col2 = st.columns(2)
 
-                # ===== SALSIFY =====
+                # SALSIFY
                 if i < len(s_images):
                     col1.markdown(f"**Salsify #{i+1}**")
                     img_obj = load_image(s_images[i])
-
                     if img_obj:
                         col1.image(img_obj, use_container_width=True)
-                    else:
-                        col1.write("❌ Failed")
-                        col1.write(s_images[i])
                 else:
                     col1.write("❌ Missing Salsify")
 
-                # ===== CVS =====
+                # CVS
                 if i < len(r_images):
                     col2.markdown(f"**CVS #{i+1}**")
                     img_obj = load_image(r_images[i])
-
                     if img_obj:
                         col2.image(img_obj, use_container_width=True)
                 else:
                     col2.write("❌ Missing CVS")
 
-            # ✅ SIMPLE MATCH SCORE
+            # ✅ SCORE
             img_score = int((min(len(s_images), len(r_images)) / max(len(s_images), len(r_images), 1)) * 100)
             st.write(f"✅ Image Match: {img_score}%")
 
             summary_rows.append({
                 "SKU": row["sku"],
-                "Image Count Salsify": len(s_images),
-                "Image Count CVS": len(r_images),
+                "Salsify Count": len(s_images),
+                "CVS Count": len(r_images),
                 "Image %": img_score
             })
 
