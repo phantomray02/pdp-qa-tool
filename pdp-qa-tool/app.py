@@ -114,149 +114,198 @@ def clean_text(raw):
 # =========================================
 # ✅ SALSIFY IMAGES - FORCED EXTRACTION WITH CONDITIONAL LOGIC
 # =========================================
-def get_salsify_images(url):
-    """
-    Force extraction of specific image properties from Salsify.
-    Uses conditional logic:
-    - Always get: Online Optimized Image, Flat Back_2D, Flat Left_2D
-    - Conditional: Get ATF I/O-Generic if exists, otherwise ATF 2-Generic
-    - Fallback: Get ATF 6-Generic only if ATF I/O-Generic does NOT exist
-    """
-    html = get_html(url)
-    images = []
-    seen_urls = set()
-    
-    try:
-        soup = BeautifulSoup(html, "html.parser")
-        
-        print(f"\n🔍 EXTRACTING IMAGES WITH CONDITIONAL LOGIC:\n")
-        
-        # Find all asset containers
-        
-        asset_containers = soup.find_all(
-            lambda tag: tag.name == "div" and tag.get("class") and
-            any("asset-list_images__" in c for c in tag.get("class"))
-        )
-        print(f"Total asset containers found: {len(asset_containers)}\n")
-        
-        # Build a map of property_name -> container
-        property_map = {}
-        for container in asset_containers:
-            aria_label = container.get("aria-label", "").strip()
-            prop_name = aria_label.strip() if aria_label else ""
-            
-            if prop_name:
-                property_map[prop_name] = container
-                print(f"  📍 Found property: {prop_name}")
-        
-        print(f"\n" + "="*80 + "\n")
-        
-        # ===== STEP 1: Always extract these properties =====
-        print("STEP 1: Always extract these properties\n")
-        for required_prop in ALWAYS_REQUIRED:
-            print(f"🔎 Looking for: {required_prop}")
-            img_url = find_and_extract_image(required_prop, property_map)
-            
-            if img_url and img_url not in seen_urls:
-                seen_urls.add(img_url)
-                images.append({
-                    "type": required_prop,
-                    "url": img_url
-                })
-                print(f"   ✅ FOUND: {img_url[:90]}...\n")
-            else:
-                print(f"   ❌ NOT FOUND\n")
-        
-        print(f"="*80 + "\n")
-        
-        # ===== STEP 2: Conditional - Try ATF I/O-Generic first =====
-        print("STEP 2: Conditional extraction\n")
-        print(f"🔎 Looking for: ATF I/O-Generic (or ATF 2-Generic as fallback)")
-        
-        io_found = False
-        io_url = find_and_extract_image("ATF I/O-Generic", property_map)
-        
-        if io_url and io_url not in seen_urls:
-            seen_urls.add(io_url)
-            images.append({
-                "type": "ATF I/O-Generic",
-                "url": io_url
-            })
-            print(f"   ✅ FOUND ATF I/O-Generic: {io_url[:90]}...\n")
-            io_found = True
-        else:
-            print(f"   ❌ ATF I/O-Generic not found, trying ATF 2-Generic instead\n")
-            atf2_url = find_and_extract_image("ATF 2-Generic", property_map)
-            
-            if atf2_url and atf2_url not in seen_urls:
-                seen_urls.add(atf2_url)
-                images.append({
-                    "type": "ATF 2-Generic",
-                    "url": atf2_url
-                })
-                print(f"   ✅ FOUND ATF 2-Generic: {atf2_url[:90]}...\n")
-        
-        print(f"="*80 + "\n")
-        
-        # ===== STEP 3: Fallback - Get ATF 6-Generic ONLY if ATF I/O-Generic was NOT found =====
-        print("STEP 3: Fallback extraction (only if ATF I/O-Generic missing)\n")
-        
-        if not io_found:
-            print(f"🔎 ATF I/O-Generic was missing, checking for: ATF 6-Generic")
-            atf6_url = find_and_extract_image("ATF 6-Generic", property_map)
-            
-            if atf6_url and atf6_url not in seen_urls:
-                seen_urls.add(atf6_url)
-                images.append({
-                    "type": "ATF 6-Generic",
-                    "url": atf6_url
-                })
-                print(f"   ✅ FOUND ATF 6-Generic: {atf6_url[:90]}...\n")
-            else:
-                print(f"   ❌ ATF 6-Generic not found\n")
-        else:
-            print(f"⏭️  Skipping ATF 6-Generic (ATF I/O-Generic was found)\n")
-        
-        print(f"="*80)
-        print(f"\n✅ Total images extracted: {len(images)}\n")
-    
-    except Exception as e:
-        print(f"❌ Error extracting images: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    return images
+def normalize_prop(p):
+    return p.lower().replace(" ", "").replace("_", "").replace("-", "")
 
 
-def find_and_extract_image(required_prop, property_map):
-    """
-    Find a property and extract its image.
-    Tries exact match first, then fuzzy match.
-    """
-    # Try exact match first
-    if required_prop in property_map:
-        container = property_map[required_prop]
-        return extract_image_from_container(container)
-    
-    # Try fuzzy match (normalize property names)
-    req_normalized = required_prop.lower().replace(" ", "").replace("_", "")
-    for prop_name, container in property_map.items():
-        prop_normalized = prop_name.lower().replace(" ", "").replace("_", "")
-        if req_normalized == prop_normalized:
-            return extract_image_from_container(container)
-    
+def extract_best_image_from_tag(img_tag):
+    if not img_tag:
+        return None
+
+    srcset = img_tag.get("srcset", "")
+    src = img_tag.get("src", "")
+
+    if srcset and "salsify" in srcset:
+        urls = [u.strip().split()[0] for u in srcset.split(",") if u.strip()]
+        return urls[-1] if urls else None
+
+    if src and "salsify" in src:
+        return src
+
     return None
 
 
-def extract_image_from_container(container):
+def extract_from_container(container):
+    # Try noscript first (best quality)
+    noscript = container.find("noscript")
+    if noscript:
+        img = noscript.find("img")
+        url = extract_best_image_from_tag(img)
+        if url:
+            return url
+
+    # Try main img
+    img = container.find("img")
+    url = extract_best_image_from_tag(img)
+    if url:
+        return url
+
+    # Try ANY image inside
+    for img in container.find_all("img"):
+        url = extract_best_image_from_tag(img)
+        if url:
+            return url
+
+    return None
+
+
+def extract_from_json(html):
     """
-    Extract a single image URL from a container.
-    Tries multiple methods to find the image.
+    🔥 Most reliable fallback
+    Extracts images directly from embedded JSON
     """
-    if not container:
+    results = []
+
+    try:
+        matches = re.findall(r'https://images\\.salsify\\.com[^"]+', html)
+
+        for m in matches:
+            clean = m.split("?")[0]
+            results.append(clean)
+
+        return list(dict.fromkeys(results))  # dedupe
+
+    except:
+        return []
+
+
+def get_salsify_images(url):
+    html = get_html(url)
+    soup = BeautifulSoup(html, "html.parser")
+
+    images = []
+    seen = set()
+
+    print("\n🔍 HARDENED EXTRACTION START\n")
+
+    # ==================================================
+    # 🔹 STEP 1: FIND PROPERTY-BASED CONTAINERS
+    # ==================================================
+    containers = soup.find_all(
+        lambda tag: tag.name == "div"
+        and tag.get("class")
+        and any("asset-list_images__" in c for c in tag.get("class"))
+    )
+
+    property_map = {}
+
+    for c in containers:
+        aria = c.get("aria-label", "").strip().rstrip("-")
+
+        if aria:
+            property_map[aria] = c
+
+    print(f"✅ Found {len(property_map)} property containers")
+
+    def get_prop_image(target):
+        t_norm = normalize_prop(target)
+
+        for pname, container in property_map.items():
+            if normalize_prop(pname) == t_norm:
+                return extract_from_container(container)
+
         return None
-    
-    img_url = None
+
+    # ==================================================
+    # 🔹 STEP 2: ALWAYS REQUIRED
+    # ==================================================
+    ALWAYS = [
+        "Online Optimized Image",
+        "Flat Back_2D",
+        "Flat Left_2D"
+    ]
+
+    for prop in ALWAYS:
+        url = get_prop_image(prop)
+
+        if url and url not in seen:
+            images.append({"type": prop, "url": url})
+            seen.add(url)
+            print(f"✅ {prop}")
+        else:
+            print(f"❌ {prop}")
+
+    # ==================================================
+    # 🔹 STEP 3: IO / 2 LOGIC
+    # ==================================================
+    io_url = get_prop_image("ATF I/O-Generic")
+
+    io_found = False
+
+    if io_url:
+        images.append({"type": "ATF I/O-Generic", "url": io_url})
+        seen.add(io_url)
+        io_found = True
+        print("✅ ATF I/O-Generic")
+    else:
+        atf2 = get_prop_image("ATF 2-Generic")
+
+        if atf2:
+            images.append({"type": "ATF 2-Generic", "url": atf2})
+            seen.add(atf2)
+            print("✅ ATF 2-Generic")
+        else:
+            print("❌ No ATF I/O or 2")
+
+    # ==================================================
+    # 🔹 STEP 4: ATF 6 FALLBACK
+    # ==================================================
+    if not io_found:
+        atf6 = get_prop_image("ATF 6-Generic")
+
+        if atf6:
+            images.append({"type": "ATF 6-Generic", "url": atf6})
+            seen.add(atf6)
+            print("✅ ATF 6-Generic")
+        else:
+            print("❌ No ATF 6")
+
+    else:
+        print("⏭️ Skipping ATF 6 (I/O exists)")
+
+    # ==================================================
+    # 🔹 STEP 5: FALLBACK → GALLERY IMAGES
+    # ==================================================
+    if not images:
+        print("⚠️ No structured images → fallback to gallery")
+
+        for img in soup.find_all("img"):
+            url = extract_best_image_from_tag(img)
+
+            if url and "salsify" in url and url not in seen:
+                seen.add(url)
+                images.append({
+                    "type": "Fallback",
+                    "url": url
+                })
+
+    # ==================================================
+    # 🔹 STEP 6: FINAL FALLBACK → JSON PARSE
+    # ==================================================
+    if not images:
+        print("⚠️ No gallery images → parsing JSON")
+
+        json_imgs = extract_from_json(html)
+
+        for url in json_imgs[:10]:  # limit
+            images.append({
+                "type": "JSON",
+                "url": url
+            })
+
+    print(f"\n✅ FINAL IMAGE COUNT: {len(images)}\n")
+
+    return images
     
     # Method 1: Look in noscript tag (lazy loading fallback)
     noscript = container.find("noscript")
