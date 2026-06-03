@@ -8,13 +8,30 @@ from PIL import Image
 from io import BytesIO
 import json
 
-st.write("🚀 VERSION TEST - NO PLAYWRIGHT")
 st.title("PDP QA Tool ✅")
 
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
+# ✅ TOP DOWNLOAD BUTTON PLACEHOLDER
 download_placeholder = st.empty()
+
+# ✅ STORAGE FOR EXPORT DATA
 export_rows = []
+
+# =========================================
+# ✅ IMAGE ORDER
+# =========================================
+IMAGE_ORDER = [
+    "Online Optimized Image",
+    "Flat Back_2D",
+    "Flat Left_2D",
+    "ATF I/O-Generic",
+    "ATF 2-Generic",
+    "ATF 3-Generic",
+    "ATF 4-Generic",
+    "ATF 5-Generic",
+    "ATF 6-Generic"
+]
 
 # =========================================
 # ✅ CACHE
@@ -65,66 +82,41 @@ def clean_text(raw):
     return raw.strip()
 
 # =========================================
-# ✅ IMAGE HELPERS
-# =========================================
-def extract_best_image_from_tag(img_tag):
-    if not img_tag:
-        return None
-
-    srcset = img_tag.get("srcset", "")
-    src = img_tag.get("src", "")
-
-    if srcset and "salsify" in srcset:
-        urls = [u.strip().split()[0] for u in srcset.split(",") if u.strip()]
-        return urls[-1] if urls else None
-
-    if src and "salsify" in src:
-        return src
-
-    return None
-
-
-def extract_from_json(html):
-    results = []
-
-    try:
-        matches = re.findall(r'https://images\\.salsify\\.com[^"]+', html)
-
-        for m in matches:
-            clean = m.split("?")[0]
-            results.append(clean)
-
-        return list(dict.fromkeys(results))
-    except:
-        return []
-
-# =========================================
-# ✅ SALSIFY IMAGE EXTRACTION (UNCHANGED STRUCTURE)
+# ✅ SALSIFY IMAGE BUCKETS
 # =========================================
 def get_salsify_images(url):
-    html = get_html(url)
-    soup = BeautifulSoup(html, "html.parser")
-
-    images = []
-
-    # JSON
-    json_imgs = extract_from_json(html)
-    for url in json_imgs:
-        images.append({
-            "type": "JSON Image",
-            "url": url
-        })
-
-    # DOM
-    for img in soup.find_all("img"):
-        url = extract_best_image_from_tag(img)
-        if url and "salsify" in url:
-            images.append({
-                "type": "DOM Image",
-                "url": url
-            })
-
-    return images
+    try:
+        soup = get_soup(url)
+        images = []
+        seen_urls = set()
+        
+        for img in soup.find_all("img"):
+            src = img.get("src") or ""
+            srcset = img.get("srcset") or ""
+            
+            if "salsify.com" in src and src not in seen_urls:
+                seen_urls.add(src)
+                images.append({
+                    "url": src,
+                    "type": "Image"
+                })
+            
+            if srcset and "salsify.com" in srcset:
+                urls = [u.strip().split()[0] for u in srcset.split(",")]
+                for url_candidate in urls:
+                    if url_candidate not in seen_urls and "salsify.com" in url_candidate:
+                        seen_urls.add(url_candidate)
+                        images.append({
+                            "url": url_candidate,
+                            "type": "Image"
+                        })
+        
+        print(f"✅ Found {len(images)} Salsify images")
+        return images
+    
+    except Exception as e:
+        print(f"Error extracting Salsify images: {e}")
+        return []
 
 # =========================================
 # ✅ CVS IMAGES
@@ -153,24 +145,6 @@ def get_cvs_images(url):
     return [v["url"] for v in image_dict.values()]
 
 # =========================================
-# ✅ LOAD IMAGE
-# =========================================
-def load_image(url):
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "image/*,*/*;q=0.8"
-        }
-        r = requests.get(url, headers=headers, timeout=10)
-
-        if r.status_code == 200:
-            return Image.open(BytesIO(r.content))
-    except:
-        return None
-
-    return None
-
-# =========================================
 # ✅ IMAGE COMPARISON
 # =========================================
 def render_image_comparison_by_property(s_images, r_images):
@@ -184,24 +158,13 @@ def render_image_comparison_by_property(s_images, r_images):
 
         if i < len(s_images):
             col1.markdown(f"**{s_images[i]['type']}**")
-
-            img_obj = load_image(s_images[i]["url"])
-            if img_obj:
-                col1.image(img_obj)
-            else:
-                col1.write("❌ Failed to load")
-
+            col1.image(s_images[i]["url"])
         else:
             col1.write("❌ Missing in Salsify")
 
         if i < len(r_images):
             col2.markdown(f"**CVS Image {i+1}**")
-
-            img_obj = load_image(r_images[i])
-            if img_obj:
-                col2.image(img_obj)
-            else:
-                col2.write("❌ Failed to load CVS image")
+            col2.image(r_images[i])
         else:
             col2.write("❌ Missing in CVS")
 
@@ -211,6 +174,7 @@ def render_image_comparison_by_property(s_images, r_images):
 if uploaded_file:
 
     df = pd.read_csv(uploaded_file)
+    export_rows = []
     summary_rows = []
 
     for _, row in df.iterrows():
@@ -227,7 +191,7 @@ if uploaded_file:
                 st.write("Total Salsify images:", len(s_images))
 
                 for img in s_images:
-                    st.write(f"{img['type']} → {img['url']}")
+                    st.write(img["type"], "→", img["url"])
 
             render_image_comparison_by_property(s_images, r_images)
 
