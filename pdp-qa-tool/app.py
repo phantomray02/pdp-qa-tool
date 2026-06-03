@@ -121,57 +121,45 @@ def clean_text(raw):
 # =========================================
 def get_salsify_images(url):
     """
-    Extract Salsify images by finding all image sections in page order.
-    Focuses on finding the actual image file URLs.
+    Extract Salsify images in page order.
+    Finds all salsify.com image URLs from img tags in the rendered HTML.
     """
-    html = get_html(url)
-    images = []
-    seen_hashes = set()  # Track by image hash, not full URL
-    
     try:
-        # Find all salsify image URLs in the HTML
-        # Pattern captures the image hash at the end
-        matches = re.findall(
-            r'https://images\.salsify\.com/image/upload/[^"\']+/([a-z0-9]+\.jpg)',
-            html
-        )
+        soup = get_soup(url)
+        images = []
+        seen_urls = set()
         
-        if not matches:
-            print("No salsify images found")
-            return images
-        
-        # Now find the property names that go with each image
-        soup = BeautifulSoup(html, "html.parser")
-        
-        # Find all property name spans in order
-        property_names = []
-        for span in soup.find_all("span", {"data-testid": "property-name"}):
-            name = span.get_text(strip=True).rstrip("-").strip()
-            if name:
-                property_names.append(name)
-        
-        # Match images with property names (in order)
-        for idx, img_hash in enumerate(matches):
-            if img_hash not in seen_hashes:
-                seen_hashes.add(img_hash)
-                
-                # Get property name if available
-                prop_name = property_names[idx] if idx < len(property_names) else f"Image {idx + 1}"
-                
-                # Reconstruct full URL
-                full_url = f"https://images.salsify.com/image/upload/f_auto,c_limit,w_1080,q_auto/{img_hash}"
-                
+        # Find ALL img tags
+        for img in soup.find_all("img"):
+            src = img.get("src") or ""
+            srcset = img.get("srcset") or ""
+            
+            # Check src first
+            if "salsify.com" in src and src not in seen_urls:
+                seen_urls.add(src)
                 images.append({
-                    "type": prop_name,
-                    "url": full_url
+                    "url": src,
+                    "type": "Image"
                 })
+            
+            # Check srcSet (often has multiple resolutions)
+            if srcset and "salsify.com" in srcset:
+                # srcSet format: "url1 1x, url2 2x"
+                urls = [u.strip().split()[0] for u in srcset.split(",")]
+                for url_candidate in urls:
+                    if url_candidate not in seen_urls and "salsify.com" in url_candidate:
+                        seen_urls.add(url_candidate)
+                        images.append({
+                            "url": url_candidate,
+                            "type": "Image"
+                        })
         
-        print(f"✅ Found {len(images)} unique images")
+        print(f"✅ Found {len(images)} Salsify images")
+        return images
     
     except Exception as e:
-        print(f"Error: {e}")
-    
-    return images
+        print(f"Error extracting Salsify images: {e}")
+        return []
 # =========================================
 # ✅ CVS IMAGES
 # =========================================
