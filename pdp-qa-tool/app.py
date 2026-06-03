@@ -155,47 +155,33 @@ def clean_text(raw):
 # ✅ SALSIFY IMAGE BUCKETS
 # =========================================
 def get_salsify_images(url):
+
     html = get_html(url)
 
     images = []
 
     try:
-        import json
-        import re
+        # ✅ find ALL property + value pairs independently
+        matches = re.findall(
+            r'"property":"([^"]+)".*?"value":"(https://images\.salsify\.com[^"]+)"',
+            html,
+            re.DOTALL
+        )
 
-        # Try to find the product property payload that contains image properties.
-        match = re.search(r'"properties":(\[.*?\])', html, re.DOTALL)
+        seen = set()
 
-        if not match:
-            return []
+        for prop, img_url in matches:
 
-        raw_json = match.group(1)
-        raw_json = raw_json.replace('\\"', '"')
+            if img_url not in seen:
+                seen.add(img_url)
 
-        properties = json.loads(raw_json)
-
-        for prop in properties:
-            prop_name = str(prop.get("property", "")).strip()
-            values = prop.get("values", [])
-
-            if not prop_name or not values:
-                continue
-
-            first_value = values[0]
-
-            if isinstance(first_value, dict):
-                img_url = first_value.get("value", "")
-            else:
-                img_url = ""
-
-            if img_url and "images.salsify.com" in img_url:
                 images.append({
-                    "type": prop_name,
+                    "type": prop.strip(),
                     "url": img_url
                 })
 
     except Exception as e:
-        print("Salsify image parse error:", e)
+        print("Salsify regex error:", e)
 
     return images
 # =========================================
