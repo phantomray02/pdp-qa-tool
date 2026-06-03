@@ -5,7 +5,6 @@ import re
 from difflib import SequenceMatcher
 from PIL import Image
 from io import BytesIO
-from bs4 import BeautifulSoup
 
 st.title("PDP QA Tool ✅")
 
@@ -46,91 +45,45 @@ def load_image(url):
     return None
 
 # =========================================
-# ✅ ✅ SALSIFY IMAGES (PROPERTY-BASED ✅)
+# ✅ ✅ SALSIFY IMAGES (FINAL FIX ✅)
 # =========================================
 def get_salsify_images(url):
     html = get_html(url)
-    soup = BeautifulSoup(html, "html.parser")
 
-    images = []
+    matches = re.findall(r'https://images\.salsify\.com[^"\s]+', html)
+
+    image_map = {}
     seen = set()
 
-    # ✅ Correct PDP order
-    TARGET_ORDER = [
-        "Online Optimized Image",
-        "Flat Back_2D",
-        "Flat Left_2D",
-        "ATF I/O-Generic",
-        "ATF 2-Generic",
-        "ATF 3-Generic",
-        "ATF 4-Generic",
-        "ATF 5-Generic",
-        "ATF 6-Generic"
+    for m in matches:
+
+        base = m.split("?")[0]
+        fname = base.split("/")[-1].lower()
+
+        # ✅ REMOVE thumbnail / UI junk
+        if any(x in fname for x in ["thumb", "icon", "small"]):
+            continue
+
+        # ✅ NORMALIZE (KILLS CROPPED DUPES ✅)
+        fname_key = re.sub(r'(_|-)?\d+x\d+', '', fname)
+
+        if fname_key in seen:
+            continue
+
+        seen.add(fname_key)
+
+        # ✅ grab best version (base)
+        image_map[fname_key] = base
+
+    images = list(image_map.values())
+
+    return [
+        {"type": f"Salsify {i+1}", "url": u}
+        for i, u in enumerate(images[:8])
     ]
 
-    # ✅ Find Salsify image containers
-    containers = soup.find_all(
-        lambda tag: tag.name == "div"
-        and tag.get("class")
-        and any("asset-list_images__" in c for c in tag.get("class"))
-    )
-
-    property_map = {}
-
-    for c in containers:
-        prop = c.get("aria-label", "").replace("-", "").strip()
-
-        if not prop:
-            continue
-
-        img = None
-
-        # ✅ BEST: noscript image (full quality, no lazy load)
-        ns = c.find("noscript")
-        if ns:
-            img = ns.find("img")
-
-        # ✅ fallback
-        if not img:
-            img = c.find("img")
-
-        if not img:
-            continue
-
-        src = img.get("src") or ""
-        srcset = img.get("srcset") or ""
-
-        # ✅ get highest quality version
-        if srcset and "salsify" in srcset:
-            urls = [u.strip().split()[0] for u in srcset.split(",")]
-            final_url = urls[-1]
-        else:
-            final_url = src
-
-        if not final_url or "salsify" not in final_url:
-            continue
-
-        clean = final_url.split("?")[0]
-
-        # ✅ avoid duplicates across properties
-        if clean in seen:
-            continue
-
-        seen.add(clean)
-        property_map[prop] = clean
-
-    # ✅ BUILD ORDERED RESULT
-    for prop in TARGET_ORDER:
-        if prop in property_map:
-            images.append({
-                "type": prop,
-                "url": property_map[prop]
-            })
-
-    return images
-
 # =========================================
-# ✅ CVS IMAGES (DEDUP + BEST ✅)
+# ✅ CVS IMAGES (DEDUP + HIGHEST RES ✅)
 # =========================================
 def get_cvs_images(url):
     html = get_html(url)
@@ -240,7 +193,7 @@ if uploaded_file:
         c2.write("N/A")
 
         # =========================================
-        # ✅ IMAGE COMPARISON (CLEAN ✅)
+        # ✅ IMAGE COMPARISON
         # =========================================
         st.markdown("## Image Comparison")
 
@@ -255,16 +208,16 @@ if uploaded_file:
 
             c1, c2 = st.columns(2)
 
-            # ✅ LEFT = PROPERTY-BASED
+            # ✅ Salsify LEFT
             if i < len(s_images):
-                c1.markdown(f"**{s_images[i]['type']}**")
+                c1.markdown(f"**Salsify {i+1}**")
                 img = load_image(s_images[i]["url"])
                 if img:
                     c1.image(img, use_container_width=True)
             else:
                 c1.write("")
 
-            # ✅ RIGHT = CVS
+            # ✅ CVS RIGHT
             if i < len(r_images):
                 c2.markdown(f"**CVS {i+1}**")
                 img = load_image(r_images[i])
@@ -273,7 +226,7 @@ if uploaded_file:
             else:
                 c2.write("")
 
-        # ✅ SCORING
+        # ✅ SCORE
         img_score = int(
             (min(len(s_images), len(r_images)) /
              max(len(s_images), len(r_images), 1)) * 100
