@@ -121,83 +121,55 @@ def clean_text(raw):
 # =========================================
 def get_salsify_images(url):
     """
-    Extract Salsify images in the exact order they appear on the page.
-    Uses Playwright to ensure all images are loaded before extracting.
+    Extract Salsify images by finding all image sections in page order.
+    Focuses on finding the actual image file URLs.
     """
     html = get_html(url)
     images = []
-    seen_urls = set()
+    seen_hashes = set()  # Track by image hash, not full URL
     
     try:
-        soup = BeautifulSoup(html, "html.parser")
+        # Find all salsify image URLs in the HTML
+        # Pattern captures the image hash at the end
+        matches = re.findall(
+            r'https://images\.salsify\.com/image/upload/[^"\']+/([a-z0-9]+\.jpg)',
+            html
+        )
         
-        # Find the main digital assets section
-        # This is the container with all the image groups in order
-        asset_heading = soup.find("h2", {"class": "asset-list_label__tcnt3"})
-        
-        if not asset_heading:
-            print("Asset heading not found")
+        if not matches:
+            print("No salsify images found")
             return images
         
-        # Get the parent container
-        parent = asset_heading.find_parent("div", {"class": "asset-list_images__2aKCB"})
+        # Now find the property names that go with each image
+        soup = BeautifulSoup(html, "html.parser")
         
-        if not parent:
-            parent = asset_heading.find_parent()
+        # Find all property name spans in order
+        property_names = []
+        for span in soup.find_all("span", {"data-testid": "property-name"}):
+            name = span.get_text(strip=True).rstrip("-").strip()
+            if name:
+                property_names.append(name)
         
-        # Find ALL asset containers in order
-        asset_containers = []
+        # Match images with property names (in order)
+        for idx, img_hash in enumerate(matches):
+            if img_hash not in seen_hashes:
+                seen_hashes.add(img_hash)
+                
+                # Get property name if available
+                prop_name = property_names[idx] if idx < len(property_names) else f"Image {idx + 1}"
+                
+                # Reconstruct full URL
+                full_url = f"https://images.salsify.com/image/upload/f_auto,c_limit,w_1080,q_auto/{img_hash}"
+                
+                images.append({
+                    "type": prop_name,
+                    "url": full_url
+                })
         
-        # Go up to find the main wrapper
-        current = asset_heading
-        while current:
-            if "digital-assets" in current.get("class", []):
-                asset_containers = current.find_all("div", {"class": "asset-list_images__2aKCB"})
-                break
-            current = current.parent
-        
-        # Extract images in order
-        for idx, container in enumerate(asset_containers):
-            
-            # Try to get property name from aria-label
-            aria_label = container.get("aria-label", "").strip()
-            prop_name = aria_label.rstrip("-").strip() if aria_label else f"Image {idx + 1}"
-            
-            # Look for noscript with srcSet (the actual image URL)
-            noscript = container.find("noscript")
-            if noscript:
-                img_tag = noscript.find("img")
-                if img_tag:
-                    srcset = img_tag.get("srcset", "")
-                    src = img_tag.get("src", "")
-                    
-                    # Try srcSet first (has multiple resolutions)
-                    img_url = None
-                    if srcset:
-                        # srcSet format: "url1 1x, url2 2x"
-                        urls = [u.strip().split()[0] for u in srcset.split(",") if u.strip()]
-                        img_url = urls[-1] if urls else None
-                    
-                    # Fallback to src
-                    if not img_url:
-                        img_url = src
-                    
-                    # Validate and add
-                    if img_url and "salsify" in img_url and img_url not in seen_urls:
-                        seen_urls.add(img_url)
-                        images.append({
-                            "type": prop_name,
-                            "url": img_url
-                        })
-        
-        print(f"✅ Extracted {len(images)} images in order")
-        for img in images:
-            print(f"   - {img['type']}: {img['url'][:80]}...")
+        print(f"✅ Found {len(images)} unique images")
     
     except Exception as e:
-        print(f"Error extracting images: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"Error: {e}")
     
     return images
 # =========================================
