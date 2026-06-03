@@ -42,56 +42,19 @@ html_cache = {}
 image_cache = {}
 
 def get_html(url):
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "text/html,application/xhtml+xml",
+        "Referer": "https://www.google.com/",
+    }
 
-        page.goto(url)
-
-        # ✅ STEP 1 — SCROLL MULTIPLE TIMES
-        for _ in range(5):
-            page.evaluate("window.scrollBy(0, document.body.scrollHeight)")
-            page.wait_for_timeout(1000)
-
-        # ✅ STEP 2 — WAIT FOR IMAGES TO LOAD
-        page.wait_for_selector("img", timeout=10000)
-
-        # ✅ EXTRA BUFFER
-        page.wait_for_timeout(2000)
-
-        html = page.content()
-        browser.close()
-
-    return html
-
-    # =========================================
-    # ✅ STEP 1: TRY API USING PRODUCT ID
-    # =========================================
-    product_id_match = re.search(r'prodid-(\d+)', url)
-
-    if product_id_match:
-        product_id = product_id_match.group(1)
-
-        api_url = f"https://www.cvs.com/api/product/v2/{product_id}"
-
-        try:
-            res = requests.get(api_url, headers=headers, timeout=15)
-
-            if res.status_code == 200 and res.text.strip():
-                return res.text  # ✅ JSON response
-
-        except:
-            pass
-
-    # =========================================
-    # ✅ STEP 2: FALLBACK TO NORMAL PAGE
-    # =========================================
     try:
         res = requests.get(url, headers=headers, timeout=15)
         return res.text
     except:
         return ""
-        
+
 def get_soup(url):
     return BeautifulSoup(get_html(url), "html.parser")
 
@@ -118,48 +81,61 @@ def clean_text(raw):
 # ✅ SALSIFY IMAGES
 # =========================================
 def get_salsify_images(url):
+    soup = get_soup(url)
 
-    html = get_html(url)
+    raw_urls = []
 
-    image_map = {}
+    # ✅ STEP 1
+    for img in soup.select('img[data-testid="salsify-image"]'):
+        src = img.get("src") or ""
+        if src.startswith("http"):
+            raw_urls.append(src.split("?")[0])
 
-    try:
-        matches = re.findall(
-            r'"property":"([^"]+)".*?"value":"(https://images\.salsify\.com[^"]+)"',
-            html,
-            re.DOTALL
-        )
+    if not raw_urls:
+        return []
 
-        for prop, img_url in matches:
-            clean_prop = prop.strip().replace("-", "").replace("–", "").replace("—", "").strip()
-            image_map[clean_prop] = img_url
+    # ✅ STEP 2
+    seen = set()
+    unique_urls = []
+    for u in raw_urls:
+        if u not in seen:
+            seen.add(u)
+            unique_urls.append(u)
 
-    except Exception as e:
-        print("Parse error:", e)
+    # ✅ STEP 3 (THE FIX)
+    final_images = []
+    pack_images = []
 
-    TARGET_PROPERTIES = [
-        "Online Optimized Image",
-        "Flat Back_2D",
-        "Flat Left_2D",
-        "ATF 2 Generic",
-        "ATF 3 Generic",
-        "ATF 4 Generic",
-        "ATF 5 Generic",
-        "ATF 6 Generic"
-    ]
+    for curr in unique_urls:
+        is_duplicate = False
 
-    images = []
+        for existing in final_images:
+            score = compare_images_visually(existing["url"], curr)
+            if score > 85:
+                is_duplicate = True
+                break
 
-    for prop in TARGET_PROPERTIES:
+        if is_duplicate:
+            continue
 
-        url = image_map.get(prop, "")
+        is_pack = False
+        if final_images:
+            score_pack = compare_images_visually(final_images[0]["url"], curr)
+            if score_pack > 45:
+                is_pack = True
 
-        images.append({
-            "type": prop,
-            "url": url
+        if is_pack:
+            if len(pack_images) >= 3:
+                continue
+            pack_images.append(curr)
+
+        final_images.append({
+            "url": curr,
+            "type": ""
         })
 
-    return images
+    return final_images
+
 # =========================================
 # ✅ ORDER IMAGES
 # =========================================
@@ -244,72 +220,51 @@ def extract_features_from_description(desc):
 # =========================================
 # ✅ CVS TEXT (FINAL WORKING VERSION)
 # =========================================
-import re
-import json
+def get_cvs_text(url):
 
-def get_cvs_text(html):
+    html = get_html(url)
 
     description = ""
     features = []
 
-    if not html:
-        return {"description": "", "features": []}
+    soup = BeautifulSoup(html, "html.parser")
 
-    # =========================================
-    # ✅ STEP 1 — Extract JSON-like text blocks
-    # =========================================
     try:
-        # Grab all JS blocks that contain text
-        matches = re.findall(
-            r'self\.__next_f\.push\((.*?)\);',
-            html,
-            re.DOTALL
-        )
+        # ✅ DESCRIPTION (ROBUST + TARGETED)
 
-        full_text = " ".join(matches)
+        description = ""
+        
+        paragraphs = soup.find_all("p")
+        
+        for p in paragraphs:
+            text = clean_text(p.get_text(" ", strip=True))
+        
+            # ✅ look for known product-style text
+            if "poise" in text.lower() and "liner" in text.lower():
+                description = text
+                break
+        
+        # ✅ fallback if nothing matched
+        if not description:
+            all_text = []
+            for p in paragraphs:
+                text = clean_text(p.get_text(" ", strip=True))
+                if len(text) > 40:
+                    all_text.append(text)
+        
+            description = " ".join(all_text)[:2000]
 
-        # =========================================
-        # ✅ DESCRIPTION
-        # =========================================
-        desc_match = re.search(
-            r'vendorDetailsParagraph":"(.*?)"',
-            full_text,
-            re.DOTALL
-        )
+        # ✅ FEATURES FROM DESCRIPTION ONLY (FINAL)
+        features = extract_features_from_description(description)
 
-        if desc_match:
-            description = desc_match.group(1)
-
-            # clean escaped text
-            description = description.replace('\\\"', '"')
-            description = re.sub(r'\\n', ' ', description)
-            description = re.sub(r'\s+', ' ', description)
-
-        # =========================================
-        # ✅ FEATURES
-        # =========================================
-        feature_matches = re.findall(
-            r'([A-Z][A-Z\s\-]+:\s.*?)(?:\\n|\\")',
-            full_text
-        )
-
-        for f in feature_matches:
-            clean_f = f.replace('\\\"', '"')
-            clean_f = re.sub(r'\s+', ' ', clean_f).strip()
-
-            if len(clean_f) > 20:
-                features.append(clean_f)
-
-        # remove duplicates
-        features = list(dict.fromkeys(features))[:5]
-
-    except:
-        pass
+    except Exception as e:
+        print("CVS parsing error:", e)
 
     return {
-        "description": description.strip(),
+        "description": description,
         "features": features
     }
+
 # =========================================
 # ✅ SALSIFY TEXT CLEAN VERSION
 # =========================================
@@ -423,45 +378,20 @@ def compare_images_visually(s_url, r_url):
         return 0
 
 def match_images_visual(s_images, r_images):
-
     results = []
-    used_r = set()
 
-    for s in s_images:
+    # ✅ HANDLE ALL IMAGES (no limit)
+    max_len = max(len(s_images), len(r_images))
 
-        best_score = 0
-        best_r = None
-        best_idx = None
+    for i in range(max_len):
+        s_url = s_images[i]["url"] if i < len(s_images) else ""
+        r_url = r_images[i] if i < len(r_images) else ""
 
-        for i, r in enumerate(r_images):
+        score = compare_images_visually(s_url, r_url) if s_url and r_url else 0
 
-            if i in used_r:
-                continue
-
-            score = compare_images_visually(s["url"], r)
-
-            if score > best_score:
-                best_score = score
-                best_r = r
-                best_idx = i
-
-        # ✅ LOWER THRESHOLD (IMPORTANT)
-        if best_score >= 40:
-            results.append((s["url"], best_r, best_score))
-            used_r.add(best_idx)
-        else:
-            results.append((s["url"], "", best_score))
+        results.append((s_url, r_url, score))
 
     return results
-    # ✅ find unmatched CVS images
-        unmatched_r = [
-            r for i, r in enumerate(r_images)
-            if all(r != match[1] for match in image_matches)
-        ]
-        
-        for r in unmatched_r:
-            st.error("🚨 Image exists on CVS but not matched to Salsify")
-            st.image(r)
 # =========================================
 # ✅ TEXT NORMALIZATION
 # =========================================
@@ -549,40 +479,33 @@ if uploaded_file:
 
         st.subheader(f"SKU: {row['sku']}")
 
-        # ✅ ALWAYS GET HTML THROUGH SCRAPERAPI
+        # ✅ DEBUG FIRST (ALWAYS RUNS)
         full_html = get_html(row["retail_url"])
 
-        # ✅ DEBUG BLOCK (ALWAYS VISIBLE)
-        with st.expander("🔍 HTML DEBUG", expanded=True):
-            st.write("HTML LENGTH:", len(full_html))
-            st.write("Contains bladder:", "bladder" in full_html.lower())
-            st.write("HAS vendorDetailsParagraph:", "vendorDetailsParagraph" in full_html)
-            st.write("HAS ULTRA-ABSORBENT:", "ULTRA-ABSORBENT" in full_html)
-            st.text(full_html[:500])
-            s_images = get_salsify_images(row["salsify_url"])
-            s_images = [img for img in s_images if img["url"]]
-            
-            st.write("Salsify image count:", len(s_images))
-            
-            for i, img in enumerate(s_images):
-                st.image(img["url"], caption=f"Salsify Image {i}")
+        st.markdown("### ✅ HTML CHECK")
+        st.write("HTML LENGTH:", len(full_html))
+        st.write("Contains bladder:", "bladder" in full_html.lower())
+        st.text(full_html[:300])
 
         try:
             # =========================
-            # ✅ TEXT EXTRACTION
+            # ✅ IMAGE LOAD
             # =========================
-            # =========================
-            # ✅ TEXT EXTRACTION
-            # =========================
+            s_images = get_salsify_images(row["salsify_url"]) or []
+            r_images = get_cvs_images(row["retail_url"]) or []
+
+            # ✅ TEXT
             s_text = get_salsify_text(row["salsify_url"])
-            r_text = get_cvs_text(full_html)
+            r_text = get_cvs_text(row["retail_url"])
 
-            # AFTER parsing
-            r_text = get_cvs_text(full_html)
-            
-            st.write("✅ CVS DESCRIPTION:", r_text.get("description", ""))
-            st.write("✅ CVS FEATURES:", r_text.get("features", []))
+            # =========================
+            # ✅ EXTRA DEBUG (OPTIONAL)
+            # =========================
+            st.markdown("### 🔍 RAW HTML SAMPLE")
+            st.text(full_html[:500])
 
+            st.write("DEBUG CVS DESCRIPTION:", r_text.get("description", ""))
+            st.write("DEBUG CVS FEATURES:", r_text.get("features", []))
 
             # =========================
             # ✅ TITLE
@@ -600,7 +523,7 @@ if uploaded_file:
                         s_title = span.get_text(strip=True)
                         break
 
-            r_html = full_html  # ✅ use already-fetched HTML
+            r_html = get_html(row["retail_url"])
 
             r_title_match = re.search(r'"productName":"(.*?)"', r_html)
             r_title = r_title_match.group(1) if r_title_match else ""
