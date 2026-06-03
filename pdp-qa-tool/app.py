@@ -596,51 +596,62 @@ if uploaded_file:
 
         st.subheader(f"SKU: {row['sku']}")
 
-        # ✅ ALWAYS GET HTML THROUGH SCRAPERAPI
         full_html = get_html(row["retail_url"])
-
-        # ✅ DEBUG BLOCK (ALWAYS VISIBLE)
-        with st.expander("🔍 HTML DEBUG", expanded=True):
-            st.write("HTML LENGTH:", len(full_html))
-            st.write("Contains bladder:", "bladder" in full_html.lower())
-            st.write("HAS vendorDetailsParagraph:", "vendorDetailsParagraph" in full_html)
-            st.write("HAS ULTRA-ABSORBENT:", "ULTRA-ABSORBENT" in full_html)
-            st.text(full_html[:500])
-            
-            raw_images = get_salsify_images(row["salsify_url"])
-            raw_images = [img for img in raw_images if img["url"]]
-            
-            ordered_map = order_salsify(raw_images)
-            
-            # ✅ convert back to list for matching
-            s_images = [
-                {"type": k, "url": v}
-                for k, v in ordered_map.items()
-                if
-
-            s_images = [img for img in s_images if img["url"]]
-            
-            st.write("Salsify image count:", len(s_images))
-            
-            for i, img in enumerate(s_images):
-                st.image(img["url"], caption=f"Salsify Image {i}")
 
         try:
             # =========================
-            # ✅ TEXT EXTRACTION
+            # ✅ IMAGE BUCKETS
             # =========================
+            raw_images = get_salsify_images(row["salsify_url"])
+            raw_images = [img for img in raw_images if img["url"]]
+
+            r_images = get_cvs_images(row["retail_url"])
+
+            # =========================
+            # ✅ MATCHING
+            # =========================
+            image_matches = match_images_visual(raw_images, r_images)
+
+            # =========================
+            # ✅ DEBUG VIEW
+            # =========================
+            with st.expander("🔍 IMAGE DEBUG", expanded=True):
+
+                st.markdown("### 🧺 Salsify")
+                for i, img in enumerate(raw_images):
+                    st.image(img["url"], caption=f"Salsify {i}")
+
+                st.markdown("### 🧺 CVS")
+                for i, img in enumerate(r_images):
+                    st.image(img, caption=f"CVS {i}")
+
+                st.markdown("### 🔗 Matches")
+
+                for s_url, r_url, score in image_matches:
+                    col1, col2 = st.columns(2)
+                    col1.image(s_url, caption="Salsify")
+
+                    if r_url:
+                        col2.image(r_url, caption=f"{score}%")
+                    else:
+                        col2.write(f"❌ Missing ({score}%)")
+
+            # =========================
+            # ✅ IMAGE SCORE
+            # =========================
+            img_scores = [score for _, _, score in image_matches if score > 0]
+            avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
+
+            st.write(f"✅ Image Match: {avg_img_score}%")
+
             # =========================
             # ✅ TEXT EXTRACTION
             # =========================
             s_text = get_salsify_text(row["salsify_url"])
             r_text = get_cvs_text(full_html)
 
-            # AFTER parsing
-            r_text = get_cvs_text(full_html)
-            
             st.write("✅ CVS DESCRIPTION:", r_text.get("description", ""))
             st.write("✅ CVS FEATURES:", r_text.get("features", []))
-
 
             # =========================
             # ✅ TITLE
@@ -658,14 +669,8 @@ if uploaded_file:
                         s_title = span.get_text(strip=True)
                         break
 
-            r_html = full_html  # ✅ use already-fetched HTML
-
-            r_title_match = re.search(r'"productName":"(.*?)"', r_html)
+            r_title_match = re.search(r'"productName":"(.*?)"', full_html)
             r_title = r_title_match.group(1) if r_title_match else ""
-
-            if not r_title:
-                fallback = re.search(r'<title>(.*?)</title>', r_html)
-                r_title = fallback.group(1) if fallback else ""
 
             r_title = re.sub(r'\s*-\s*CVS.*$', '', r_title).strip()
 
@@ -689,74 +694,35 @@ if uploaded_file:
             c2.write(r_text.get("description", ""))
 
             desc_score = keyword_score(
-                str(s_text.get("description", "")),
-                str(r_text.get("description", ""))
+                s_text.get("description", ""),
+                r_text.get("description", "")
             )
 
             st.write(f"✅ Description Match: {desc_score}%")
 
-        except Exception as e:
-            st.error(f"❌ Error on SKU {row['sku']}: {e}")
-            continue
             # =========================
-            # ✅ IMAGE SCORE
+            # ✅ FEATURE SCORE (TEMP)
             # =========================
-            img_scores = [sc for _, _, sc in image_matches if sc > 0]
-            avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
-
-            st.write(f"✅ Image Match: {avg_img_score}%")
+            avg_feature_score = 0
 
             # =========================
             # ✅ OVERALL SCORE
             # =========================
-            feature_scores = [sc for _, _, sc in matched]
-            avg_feature_score = int(sum(feature_scores) / len(feature_scores)) if feature_scores else 0
-
             overall_score = int(
                 (title_score + desc_score + avg_feature_score + avg_img_score) / 4
             )
 
-            # =========================
-            # ✅ SUMMARY SHEET
-            # =========================
-            summary_row = {
+            summary_rows.append({
                 "SKU": row["sku"],
                 "Title %": title_score,
                 "Description %": desc_score,
-                "Feature %": avg_feature_score,
-                "Image Match %": avg_img_score,
+                "Image %": avg_img_score,
                 "Overall %": overall_score
-            }
-
-            # ✅ IMAGE SCORES PER IMAGE
-            for i, (_, _, sc) in enumerate(image_matches):
-                summary_row[f"Image {i+1} %"] = sc
-
-            summary_rows.append(summary_row)
-
-            # =========================
-            # ✅ DETAIL SHEET
-            # =========================
-            export_row = {
-                "SKU": row["sku"],
-                "Salsify Title": s_title,
-                "CVS Title": r_title,
-                "Salsify Description": s_text.get("description", ""),
-                "CVS Description": r_text.get("description", "")
-            }
-
-            # ✅ SAFELY ADD FEATURES
-            for i in range(min(len(matched), 5)):
-                export_row[f"Feature {i+1}"] = matched[i][1]
-
-            export_rows.append(export_row)
-
-            st.divider()
+            })
 
         except Exception as e:
             st.error(f"❌ Error on SKU {row['sku']}: {e}")
             continue
-
 # =========================================
 # ✅ EXPORT
 # =========================================
