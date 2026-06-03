@@ -45,7 +45,7 @@ def load_image(url):
     return None
 
 # =========================================
-# ✅ ✅ SALSIFY IMAGES (FINAL FIX ✅)
+# ✅ SALSIFY (LIMIT TO 8 ✅ CLEAN ✅)
 # =========================================
 def get_salsify_images(url):
     html = get_html(url)
@@ -60,11 +60,11 @@ def get_salsify_images(url):
         base = m.split("?")[0]
         fname = base.split("/")[-1].lower()
 
-        # ✅ REMOVE thumbnail / UI junk
+        # ✅ remove junk
         if any(x in fname for x in ["thumb", "icon", "small"]):
             continue
 
-        # ✅ NORMALIZE (KILLS CROPPED DUPES ✅)
+        # ✅ normalize → removes cropped versions
         fname_key = re.sub(r'(_|-)?\d+x\d+', '', fname)
 
         if fname_key in seen:
@@ -72,18 +72,18 @@ def get_salsify_images(url):
 
         seen.add(fname_key)
 
-        # ✅ grab best version (base)
         image_map[fname_key] = base
 
-    images = list(image_map.values())
+    # ✅ FINAL: LIMIT TO 8 ONLY (your rule)
+    cleaned = list(image_map.values())[:8]
 
     return [
         {"type": f"Salsify {i+1}", "url": u}
-        for i, u in enumerate(images[:8])
+        for i, u in enumerate(cleaned)
     ]
 
 # =========================================
-# ✅ CVS IMAGES (DEDUP + HIGHEST RES ✅)
+# ✅ CVS (NO LIMIT ✅ CLEAN ✅)
 # =========================================
 def get_cvs_images(url):
     html = get_html(url)
@@ -109,6 +109,7 @@ def get_cvs_images(url):
                 "size": size
             }
 
+    # ✅ NO LIMIT HERE
     return [v["url"] for v in best_images.values()]
 
 # =========================================
@@ -168,14 +169,11 @@ if uploaded_file:
         s_text = get_salsify_text(row["salsify_url"])
         r_text = get_cvs_text(retail_html)
 
-        # ✅ COPY FIRST
+        # ✅ COPY
         st.markdown("## Description")
 
         c1, c2 = st.columns(2)
-        c1.markdown("**Salsify**")
         c1.write(s_text.get("description", ""))
-
-        c2.markdown("**CVS**")
         c2.write(r_text.get("description", ""))
 
         desc_score = keyword_score(
@@ -185,13 +183,6 @@ if uploaded_file:
 
         st.write(f"✅ Description Match: {desc_score}%")
 
-        # ✅ FEATURES
-        st.markdown("## Features")
-
-        c1, c2 = st.columns(2)
-        c1.write(s_text.get("features", []))
-        c2.write("N/A")
-
         # =========================================
         # ✅ IMAGE COMPARISON
         # =========================================
@@ -200,7 +191,7 @@ if uploaded_file:
         s_images = get_salsify_images(row["salsify_url"])
         r_images = get_cvs_images(row["retail_url"])
 
-        st.write(f"Salsify: {len(s_images)} | CVS: {len(r_images)}")
+        st.write(f"Salsify: {len(s_images)} (max 8) | CVS: {len(r_images)} (unlimited)")
 
         max_len = max(len(s_images), len(r_images))
 
@@ -208,25 +199,25 @@ if uploaded_file:
 
             c1, c2 = st.columns(2)
 
-            # ✅ Salsify LEFT
+            # ✅ LEFT (Salsify)
             if i < len(s_images):
                 c1.markdown(f"**Salsify {i+1}**")
                 img = load_image(s_images[i]["url"])
                 if img:
-                    c1.image(img, use_container_width=True)
+                    c1.image(img)
             else:
                 c1.write("")
 
-            # ✅ CVS RIGHT
+            # ✅ RIGHT (CVS)
             if i < len(r_images):
                 c2.markdown(f"**CVS {i+1}**")
                 img = load_image(r_images[i])
                 if img:
-                    c2.image(img, use_container_width=True)
+                    c2.image(img)
             else:
                 c2.write("")
 
-        # ✅ SCORE
+        # ✅ SCORING
         img_score = int(
             (min(len(s_images), len(r_images)) /
              max(len(s_images), len(r_images), 1)) * 100
@@ -251,7 +242,7 @@ if 'summary_rows' in locals() and summary_rows:
     file_name = "pdp_qa_results.xlsx"
 
     with pd.ExcelWriter(file_name, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Summary")
+        df.to_excel(writer, index=False)
 
     with open(file_name, "rb") as f:
         download_placeholder.download_button(
