@@ -403,13 +403,37 @@ def render_image_comparison_by_property(s_images, r_images):
 
         if i < len(s_images):
             col1.markdown(f"**{s_images[i]['type']}**")
-            col1.image(s_images[i]["url"])
+def load_image(url):
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "image/*,*/*;q=0.8"
+        }
+        response = requests.get(url, headers=headers, timeout=10)
+
+        if response.status_code == 200:
+            return Image.open(BytesIO(response.content))
+        else:
+            print(f"❌ Image failed: {response.status_code} → {url}")
+            return None
+
+    except Exception as e:
+        print(f"❌ Image error: {e}")
+        return None
+
         else:
             col1.write("❌ Missing in Salsify")
 
         if i < len(r_images):
             col2.markdown(f"**CVS Image {i+1}**")
-            col2.image(r_images[i])
+            
+        img_obj = load_image(r_images[i])
+        
+        if img_obj:
+            col2.image(img_obj)
+        else:
+            col2.write("❌ Failed to load CVS image")
+
         else:
             col2.write("❌ Missing in CVS")
 
