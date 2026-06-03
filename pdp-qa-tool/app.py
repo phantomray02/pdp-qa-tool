@@ -158,7 +158,7 @@ def get_salsify_images(url):
 
     html = get_html(url)
 
-    image_map = {}
+    images = []
 
     try:
         matches = re.findall(
@@ -168,33 +168,13 @@ def get_salsify_images(url):
         )
 
         for prop, img_url in matches:
-            clean_prop = prop.strip().replace("-", "").replace("–", "").replace("—", "").strip()
-            image_map[clean_prop] = img_url
+            images.append({
+                "type": prop,   # ✅ keep original name
+                "url": img_url
+            })
 
     except Exception as e:
         print("Parse error:", e)
-
-    TARGET_PROPERTIES = [
-        "Online Optimized Image",
-        "Flat Back_2D",
-        "Flat Left_2D",
-        "ATF 2 Generic",
-        "ATF 3 Generic",
-        "ATF 4 Generic",
-        "ATF 5 Generic",
-        "ATF 6 Generic"
-    ]
-
-    images = []
-
-    for prop in TARGET_PROPERTIES:
-
-        url = image_map.get(prop, "")
-
-        images.append({
-            "type": prop,
-            "url": url
-        })
 
     return images
 # =========================================
@@ -626,7 +606,18 @@ if uploaded_file:
             st.write("HAS vendorDetailsParagraph:", "vendorDetailsParagraph" in full_html)
             st.write("HAS ULTRA-ABSORBENT:", "ULTRA-ABSORBENT" in full_html)
             st.text(full_html[:500])
-            s_images = get_salsify_images(row["salsify_url"])
+            
+            raw_images = get_salsify_images(row["salsify_url"])
+            raw_images = [img for img in raw_images if img["url"]]
+            
+            ordered_map = order_salsify(raw_images)
+            
+            # ✅ convert back to list for matching
+            s_images = [
+                {"type": k, "url": v}
+                for k, v in ordered_map.items()
+                if
+
             s_images = [img for img in s_images if img["url"]]
             
             st.write("Salsify image count:", len(s_images))
