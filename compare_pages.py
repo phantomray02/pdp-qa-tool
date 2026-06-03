@@ -2,19 +2,24 @@ import requests
 from bs4 import BeautifulSoup
 import re
 from playwright.sync_api import sync_playwright
+import json
 
 # URLs to compare
 url_working = "https://sites.salsify.com/c59eb481-0fb4-407b-ac3d-710e4b28a712/83f32e36-ef43-47a1-92e5-8c9a07b01e56/product/01247-06/U-by-Kotex-Clean-andamp-Secure-Wrapped-Panty-Liners-Light-Absorbency-Long-Length-16-Count/"
 url_broken = "https://sites.salsify.com/c59eb481-0fb4-407b-ac3d-710e4b28a712/83f32e36-ef43-47a1-92e5-8c9a07b01e56/product/19304-13/Poise-Daily-Liners-Incontinence-Panty-Liners-2-Drop-Very-Light-Absorbency-Long-Length-44-Count-of-Pantiliners/"
 
-def get_html_playwright(url):
+print("🚀 Starting Salsify page comparison...\n")
+
+def get_html_playwright(url, name):
     """Get HTML using Playwright"""
+    print(f"⏳ Loading {name}...")
     try:
         p = sync_playwright().start()
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
         page.goto(url, timeout=30000, wait_until="networkidle")
         
+        print(f"   Scrolling for lazy load...")
         for _ in range(5):
             page.evaluate("window.scrollBy(0, document.body.scrollHeight)")
             page.wait_for_timeout(1000)
@@ -23,69 +28,165 @@ def get_html_playwright(url):
         page.close()
         browser.close()
         p.stop()
+        print(f"   ✅ Loaded ({len(html)} bytes)\n")
         return html
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"   ❌ Error: {e}\n")
         return ""
 
-def analyze_page(url, name):
+def analyze_page(url, name, filename):
     """Analyze a Salsify page"""
-    print(f"\n{'='*80}")
+    print(f"\n{'='*100}")
     print(f"📊 ANALYZING: {name}")
-    print(f"{'='*80}\n")
+    print(f"{'='*100}\n")
     
-    html = get_html_playwright(url)
+    html = get_html_playwright(url, name)
+    if not html:
+        return None
+    
     soup = BeautifulSoup(html, "html.parser")
     
     # Find asset containers
     asset_containers = soup.find_all("div", {"class": "asset-list_images__2aKCB"})
-    print(f"✅ Asset containers found: {len(asset_containers)}")
+    print(f"✅ Asset containers found: {len(asset_containers)}\n")
+    
+    container_details = []
     
     if len(asset_containers) > 0:
-        print(f"\n🔍 Container Details:")
-        for idx, container in enumerate(asset_containers[:5]):
+        print(f"🔍 CONTAINER DETAILS:\n")
+        for idx, container in enumerate(asset_containers):
             aria_label = container.get("aria-label", "N/A")
             noscript = container.find("noscript")
             img_in_noscript = noscript.find("img") if noscript else None
             
-            print(f"\n  Container {idx + 1}:")
-            print(f"    aria-label: {aria_label}")
-            print(f"    has noscript: {noscript is not None}")
-            print(f"    has img in noscript: {img_in_noscript is not None}")
+            print(f"  Container {idx + 1}:")
+            print(f"    ├─ aria-label: {aria_label}")
+            print(f"    ├─ has noscript: {noscript is not None}")
+            print(f"    ├─ has img in noscript: {img_in_noscript is not None}")
+            
+            img_url = None
+            srcset_exists = False
+            src_exists = False
             
             if img_in_noscript:
                 srcset = img_in_noscript.get("srcset", "")
                 src = img_in_noscript.get("src", "")
-                print(f"    srcset exists: {len(srcset) > 0}")
-                print(f"    src exists: {len(src) > 0}")
+                srcset_exists = len(srcset) > 0
+                src_exists = len(src) > 0
+                
+                print(f"    ├─ srcset exists: {srcset_exists}")
+                print(f"    ├─ src exists: {src_exists}")
+                
                 if srcset:
-                    first_url = srcset.split(",")[0].strip().split()[0] if srcset else ""
-                    print(f"    first srcset URL: {first_url[:100]}...")
+                    urls = srcset.split(",")
+                    img_url = urls[-1].strip().split()[0]  # Get 2x version
+                    print(f"    └─ image URL: {img_url[:90]}...")
+                elif src:
+                    img_url = src
+                    print(f"    └─ image URL (src): {img_url[:90]}...")
+                else:
+                    print(f"    └─ image URL: NONE")
+            else:
+                print(f"    └─ image URL: NONE (no img tag)")
+            
+            container_details.append({
+                "index": idx + 1,
+                "label": aria_label,
+                "has_noscript": noscript is not None,
+                "has_img": img_in_noscript is not None,
+                "has_srcset": srcset_exists,
+                "has_src": src_exists,
+                "url": img_url
+            })
+            
+            if idx < len(asset_containers) - 1:
+                print()
     
     # All img tags with salsify
     all_imgs = soup.find_all("img")
     salsify_imgs = [img for img in all_imgs if "salsify" in (img.get("src", "") + img.get("srcset", ""))]
-    print(f"\n✅ Total img tags: {len(all_imgs)}")
-    print(f"✅ Salsify img tags: {len(salsify_imgs)}")
+    
+    print(f"\n{'─'*100}")
+    print(f"📈 IMAGE STATISTICS:")
+    print(f"{'─'*100}\n")
+    print(f"  Total <img> tags: {len(all_imgs)}")
+    print(f"  Salsify <img> tags: {len(salsify_imgs)}")
     
     # Save HTML for inspection
-    filename = f"salsify_{name.replace(' ', '_').lower()}.html"
     with open(filename, "w", encoding="utf-8") as f:
         f.write(html)
-    print(f"\n💾 HTML saved to: {filename}")
+    print(f"\n💾 Full HTML saved to: {filename}")
     
     return {
         "containers": len(asset_containers),
         "total_imgs": len(all_imgs),
-        "salsify_imgs": len(salsify_imgs)
+        "salsify_imgs": len(salsify_imgs),
+        "details": container_details
     }
 
 # Analyze both
-working = analyze_page(url_working, "WORKING - U by Kotex")
-broken = analyze_page(url_broken, "BROKEN - Poise")
+print("="*100)
+print("🔄 COMPARISON: WORKING vs BROKEN SALSIFY PAGES")
+print("="*100)
 
-print(f"\n{'='*80}")
-print("📈 COMPARISON")
-print(f"{'='*80}")
-print(f"Working - Containers: {working['containers']}, Salsify imgs: {working['salsify_imgs']}")
-print(f"Broken  - Containers: {broken['containers']}, Salsify imgs: {broken['salsify_imgs']}")
+working = analyze_page(url_working, "WORKING - U by Kotex", "salsify_working_u_by_kotex.html")
+broken = analyze_page(url_broken, "BROKEN - Poise", "salsify_broken_poise.html")
+
+# Comparison
+print(f"\n\n{'='*100}")
+print(f"🎯 SIDE-BY-SIDE COMPARISON")
+print(f"{'='*100}\n")
+
+print(f"{'Metric':<40} {'Working':<30} {'Broken':<30}")
+print(f"{'-'*40} {'-'*30} {'-'*30}")
+print(f"{'Asset containers':<40} {working['containers']:<30} {broken['containers']:<30}")
+print(f"{'Total img tags':<40} {working['total_imgs']:<30} {broken['total_imgs']:<30}")
+print(f"{'Salsify img tags':<40} {working['salsify_imgs']:<30} {broken['salsify_imgs']:<30}")
+
+# Find differences
+print(f"\n\n{'='*100}")
+print(f"🔍 DIFFERENCES FOUND:")
+print(f"{'='*100}\n")
+
+if working['containers'] != broken['containers']:
+    print(f"⚠️  Different number of containers: {working['containers']} vs {broken['containers']}\n")
+
+if working['salsify_imgs'] != broken['salsify_imgs']:
+    print(f"⚠️  Different number of salsify images: {working['salsify_imgs']} vs {broken['salsify_imgs']}\n")
+
+# Check for missing containers
+working_labels = {d['label'] for d in working['details']}
+broken_labels = {d['label'] for d in broken['details']}
+
+missing_in_broken = working_labels - broken_labels
+extra_in_broken = broken_labels - working_labels
+
+if missing_in_broken:
+    print(f"❌ Missing in BROKEN page:\n")
+    for label in missing_in_broken:
+        print(f"   - {label}")
+    print()
+
+if extra_in_broken:
+    print(f"✨ Extra in BROKEN page:\n")
+    for label in extra_in_broken:
+        print(f"   - {label}")
+    print()
+
+# Check for structural differences
+print(f"\nContainer structure differences:\n")
+for i in range(max(len(working['details']), len(broken['details']))):
+    w = working['details'][i] if i < len(working['details']) else None
+    b = broken['details'][i] if i < len(broken['details']) else None
+    
+    if w and b:
+        if w['label'] != b['label']:
+            print(f"   Position {i+1}: '{w['label']}' (working) vs '{b['label']}' (broken)")
+        if w['has_noscript'] != b['has_noscript']:
+            print(f"   Position {i+1} noscript: {w['has_noscript']} vs {b['has_noscript']}")
+        if w['has_img'] != b['has_img']:
+            print(f"   Position {i+1} img tag: {w['has_img']} vs {b['has_img']}")
+
+print(f"\n{'='*100}")
+print(f"✅ Analysis complete! Check the HTML files for detailed inspection.")
+print(f"{'='*100}\n")
