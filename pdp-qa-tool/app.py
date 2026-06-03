@@ -45,50 +45,73 @@ def load_image(url):
     return None
 
 # =========================================
-# ✅ ✅ SALSIFY (LARGEST RES ONLY ✅ FINAL)
+# ✅ ✅ SALSIFY (SMART DEDUPE ONLY TOP ✅)
 # =========================================
 def get_salsify_images(url):
     html = get_html(url)
 
     matches = re.findall(r'https://images\.salsify\.com[^"\s]+', html)
 
-    image_map = {}
+    raw_images = []
 
+    # ✅ STEP 1: collect ALL images in order
     for m in matches:
-
         base = m.split("?")[0]
         fname = base.split("/")[-1].lower()
 
-        # ✅ remove junk thumbnails
+        # remove UI junk
         if any(x in fname for x in ["thumb", "icon", "small"]):
             continue
 
-        # ✅ normalize file key (REMOVE crop variants)
-        fname_key = re.sub(r'(_|-)?\d+x\d+', '', fname)
-
-        # ✅ extract resolution (CRITICAL)
         size = 0
         size_match = re.search(r'Resize=\((\d+)', m)
         if size_match:
             size = int(size_match.group(1))
 
-        # ✅ KEEP ONLY HIGHEST RES VERSION
-        if fname_key not in image_map or size > image_map[fname_key]["size"]:
-            image_map[fname_key] = {
-                "url": base,
-                "size": size
-            }
+        raw_images.append({
+            "url": base,
+            "fname": fname,
+            "size": size
+        })
 
-    # ✅ FINAL CLEAN LIST (LIMIT 8 ONLY)
-    cleaned = list(image_map.values())[:8]
+    # =========================================
+    # ✅ STEP 2: TOP IMAGES (DEDUP ONLY HERE)
+    # =========================================
+    hero_candidates = raw_images[:12]  # enough to capture variants
+    hero_map = {}
+
+    for img in hero_candidates:
+
+        # normalize filename (removes crop variants)
+        key = re.sub(r'(_|-)?\d+x\d+', '', img["fname"])
+
+        # keep ONLY highest resolution
+        if key not in hero_map or img["size"] > hero_map[key]["size"]:
+            hero_map[key] = img
+
+    # ✅ FINAL HERO (ONLY FIRST 3 UNIQUE)
+    hero_images = list(hero_map.values())[:3]
+
+    # =========================================
+    # ✅ STEP 3: ATF IMAGES (NO DEDUPE ✅)
+    # =========================================
+    atf_images = raw_images[len(hero_candidates):]
+
+    # =========================================
+    # ✅ STEP 4: COMBINE
+    # =========================================
+    final_images = hero_images + atf_images
+
+    # ✅ LIMIT TOTAL TO 8
+    final_images = final_images[:8]
 
     return [
         {"type": f"Salsify {i+1}", "url": img["url"]}
-        for i, img in enumerate(cleaned)
+        for i, img in enumerate(final_images)
     ]
 
 # =========================================
-# ✅ CVS (UNLIMITED BUT CLEAN ✅)
+# ✅ CVS (UNLIMITED CLEAN ✅)
 # =========================================
 def get_cvs_images(url):
     html = get_html(url)
@@ -114,7 +137,6 @@ def get_cvs_images(url):
                 "size": size
             }
 
-    # ✅ NO LIMIT
     return [v["url"] for v in best_images.values()]
 
 # =========================================
@@ -174,7 +196,7 @@ if uploaded_file:
         s_text = get_salsify_text(row["salsify_url"])
         r_text = get_cvs_text(retail_html)
 
-        # ✅ COPY TOP
+        # ✅ COPY
         st.markdown("## Description")
 
         c1, c2 = st.columns(2)
@@ -204,7 +226,6 @@ if uploaded_file:
 
             c1, c2 = st.columns(2)
 
-            # ✅ LEFT (Salsify cleaned)
             if i < len(s_images):
                 c1.markdown(f"**Salsify {i+1}**")
                 img = load_image(s_images[i]["url"])
@@ -213,7 +234,6 @@ if uploaded_file:
             else:
                 c1.write("")
 
-            # ✅ RIGHT (CVS full)
             if i < len(r_images):
                 c2.markdown(f"**CVS {i+1}**")
                 img = load_image(r_images[i])
