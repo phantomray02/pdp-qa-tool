@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import requests
@@ -45,7 +46,7 @@ def load_image(url):
     return None
 
 # =========================================
-# ✅ SALSIFY IMAGES (DEDUPED ✅)
+# ✅ SALSIFY IMAGES (MAIN ONLY ✅)
 # =========================================
 def get_salsify_images(url):
     html = get_html(url)
@@ -58,9 +59,26 @@ def get_salsify_images(url):
     for m in matches:
         clean = m.split("?")[0].strip()
 
-        # ✅ REMOVE DUPLICATES
+        # ✅ remove duplicates
         if clean in seen:
             continue
+
+        # ✅ FILTER OUT THUMBNAILS / SELECTOR IMAGES
+        if any(x in m.lower() for x in [
+            "thumb",
+            "small",
+            "icon",
+            "tile"
+        ]):
+            continue
+
+        # ✅ FILTER OUT SMALL IMAGES (KEY FIX)
+        if "resize" in m.lower():
+            size_match = re.search(r'Resize=\((\d+)', m)
+            if size_match:
+                size = int(size_match.group(1))
+                if size < 500:
+                    continue
 
         seen.add(clean)
 
@@ -72,7 +90,7 @@ def get_salsify_images(url):
     return images[:8]
 
 # =========================================
-# ✅ CVS IMAGES (HIGHEST RES ONLY ✅)
+# ✅ CVS IMAGES (DEDUP + HIGHEST RES ✅)
 # =========================================
 def get_cvs_images(url):
     html = get_html(url)
@@ -101,7 +119,7 @@ def get_cvs_images(url):
     return [v["url"] for v in best_images.values()]
 
 # =========================================
-# ✅ TEXT
+# ✅ TEXT (WORKING ✅)
 # =========================================
 def get_salsify_text(url):
     html = get_html(url)
@@ -160,7 +178,7 @@ if uploaded_file:
         r_text = get_cvs_text(html)
 
         # =========================================
-        # ✅ COPY AT TOP ✅
+        # ✅ COPY AT TOP
         # =========================================
         st.markdown("## Description")
 
@@ -186,7 +204,7 @@ if uploaded_file:
         c2.write("N/A")
 
         # =========================================
-        # ✅ IMAGES (LEFT = SALSIFY | RIGHT = CVS)
+        # ✅ IMAGES
         # =========================================
         st.markdown("## Image Comparison")
 
@@ -199,7 +217,6 @@ if uploaded_file:
 
             c1, c2 = st.columns(2)
 
-            # ✅ LEFT = SALSIFY
             if i < len(s_images):
                 c1.markdown(f"**Salsify {i+1}**")
                 img = load_image(s_images[i]["url"])
@@ -210,7 +227,6 @@ if uploaded_file:
             else:
                 c1.write("❌ Missing")
 
-            # ✅ RIGHT = CVS
             if i < len(r_images):
                 c2.markdown(f"**CVS {i+1}**")
                 img = load_image(r_images[i])
