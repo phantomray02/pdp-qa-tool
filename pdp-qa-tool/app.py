@@ -94,34 +94,6 @@ def get_html(url):
     except Exception as e:
         print(f"Playwright failed for {url}: {e}")
         return ""
-    # =========================================
-    # ✅ STEP 1: TRY API USING PRODUCT ID
-    # =========================================
-    product_id_match = re.search(r'prodid-(\d+)', url)
-
-    if product_id_match:
-        product_id = product_id_match.group(1)
-
-        api_url = f"https://www.cvs.com/api/product/v2/{product_id}"
-
-        try:
-            res = requests.get(api_url, headers=headers, timeout=15)
-
-            if res.status_code == 200 and res.text.strip():
-                return res.text  # ✅ JSON response
-
-        except:
-            pass
-
-    # =========================================
-    # ✅ STEP 2: FALLBACK TO NORMAL PAGE
-    # =========================================
-    try:
-        res = requests.get(url, headers=headers, timeout=15)
-        return res.text
-    except:
-        return ""
-        
 def get_soup(url):
     return BeautifulSoup(get_html(url), "html.parser")
 
@@ -149,63 +121,50 @@ def clean_text(raw):
 # =========================================
 def get_salsify_images(url):
     """
-    Extract Salsify images from product page by parsing embedded JSON.
-    Returns list of dicts with 'type' (property name) and 'url'.
+    Extract ALL image properties from Salsify product page.
+    Works by parsing the rendered HTML table structure.
     """
-    html = get_html(url)
+    soup = get_soup(url)
     images = []
+    seen_urls = set()
     
     try:
-        # ✅ Find the main JSON data block (usually in <script> tags)
-        # Salsify embeds product data in window.__INITIAL_STATE__ or similar
-        json_match = re.search(
-            r'<script[^>]*>.*?"product".*?"properties":\s*(\[.*?\])',
-            html,
-            re.DOTALL
-        )
+        # Find all table rows
+        rows = soup.find_all("tr")
         
-        if not json_match:
-            print(f"No JSON block found for {url}")
-            return images
-        
-        json_str = json_match.group(1)
-        properties = json.loads(json_str)
-        
-        # ✅ Track which URLs we've seen AND for which properties
-        seen_combinations = set()
-        
-        for prop in properties:
-            if not isinstance(prop, dict):
+        for row in rows:
+            # Get the property name (left column)
+            cells = row.find_all("td")
+            if len(cells) < 2:
                 continue
             
-            prop_name = prop.get("property", "")
-            value = prop.get("value", "")
+            prop_name_cell = cells[0]
+            prop_value_cell = cells[1]
             
-            # ✅ Only grab actual image properties
-            if "image" not in prop_name.lower():
+            # Check if property name contains "image" or "photo"
+            prop_text = prop_name_cell.get_text(strip=True).lower()
+            
+            if "image" not in prop_text and "photo" not in prop_text:
                 continue
             
-            # ✅ Value could be a string URL or JSON object
-            if isinstance(value, str) and "salsify.com" in value:
-                combo = (prop_name, value)
-                if combo not in seen_combinations:
-                    seen_combinations.add(combo)
+            # Look for img tags in the value cell
+            img_tags = prop_value_cell.find_all("img")
+            
+            for img in img_tags:
+                img_src = img.get("src", "")
+                
+                # Only grab actual image URLs (salsify or cdn)
+                if ("salsify" in img_src or "images.salsify" in img_src) and img_src not in seen_urls:
+                    seen_urls.add(img_src)
+                    
+                    # Get the property name from the first column
+                    prop_label = prop_name_cell.get_text(strip=True)
+                    
                     images.append({
-                        "type": prop_name.strip(),
-                        "url": value
-                    })
-            elif isinstance(value, dict) and "salsify:url" in value:
-                url_val = value.get("salsify:url", "")
-                combo = (prop_name, url_val)
-                if combo not in seen_combinations:
-                    seen_combinations.add(combo)
-                    images.append({
-                        "type": prop_name.strip(),
-                        "url": url_val
+                        "type": prop_label,
+                        "url": img_src
                     })
     
-    except json.JSONDecodeError as e:
-        print(f"JSON parse error: {e}")
     except Exception as e:
         print(f"Salsify image extraction error: {e}")
     
