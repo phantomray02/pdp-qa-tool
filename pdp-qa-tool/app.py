@@ -44,9 +44,24 @@ def get_html(url):
         page = browser.new_page()
         page.goto(url, timeout=30000, wait_until="networkidle")
 
-        for _ in range(5):
+        # Force full scroll multiple times
+        for _ in range(10):
             page.evaluate("window.scrollBy(0, document.body.scrollHeight)")
-            page.wait_for_timeout(1000)
+            page.wait_for_timeout(800)
+        
+        # 🔥 Wait for late-loading JS images
+        page.wait_for_timeout(3000)
+        
+        # 🔥 Click through gallery arrows (critical)
+        for _ in range(10):
+            try:
+                page.click('button[aria-label="Next"]', timeout=1000)
+                page.wait_for_timeout(500)
+            except:
+                break
+        
+        # Final wait to let images register
+        page.wait_for_timeout(2000)
 
         html = page.content()
         page.close()
