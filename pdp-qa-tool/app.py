@@ -201,18 +201,48 @@ def get_salsify_images(url):
 # ✅ ORDER IMAGES
 # =========================================
 def order_salsify(images):
-    ordered = {k: None for k in IMAGE_ORDER}
+
+    ordered = {
+        "Online Optimized Image": None,
+        "Flat Back_2D": None,
+        "Flat Left_2D": None,
+        "ATF I/O-Generic": None,
+        "ATF 2-Generic": None,
+        "ATF 3-Generic": None,
+        "ATF 4-Generic": None,
+        "ATF 5-Generic": None,
+        "ATF 6-Generic": None
+    }
+
+    atf_images = []
 
     for img in images:
-        t = img.get("type")
-        if t in ordered and ordered[t] is None:
-            ordered[t] = img["url"]
+        name = img["type"].lower()
 
-    img_list = [img["url"] for img in images]
+        if "online" in name:
+            ordered["Online Optimized Image"] = img["url"]
 
-    for i, key in enumerate(IMAGE_ORDER):
-        if ordered[key] is None and i < len(img_list):
-            ordered[key] = img_list[i]
+        elif "flat back" in name:
+            ordered["Flat Back_2D"] = img["url"]
+
+        elif "flat left" in name:
+            ordered["Flat Left_2D"] = img["url"]
+
+        elif "atf" in name:
+            atf_images.append(img["url"])
+
+    # ✅ FLEXIBLE ATF FILL (KEY FIX)
+    atf_keys = [
+        "ATF I/O-Generic",
+        "ATF 2-Generic",
+        "ATF 3-Generic",
+        "ATF 4-Generic",
+        "ATF 5-Generic",
+        "ATF 6-Generic"
+    ]
+
+    for i in range(min(len(atf_images), len(atf_keys))):
+        ordered[atf_keys[i]] = atf_images[i]
 
     return ordered
 
