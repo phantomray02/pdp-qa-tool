@@ -219,76 +219,92 @@ def get_salsify_images(url):
     # ==================================================
     # 🔹 STEP 2: ALWAYS REQUIRED
     # ==================================================
-    ALWAYS = [
-        "Online Optimized Image",
-        "Flat Back_2D",
-        "Flat Left_2D"
-    ]
-
     for prop in ALWAYS:
         url = get_prop_image(prop)
-
-        if url and url not in seen:
-            images.append({"type": prop, "url": url})
-            seen.add(url)
-            print(f"✅ {prop}")
+    
+        if url:
+            key = (prop, url)
+    
+            if key not in seen_pairs:
+                seen_pairs.add(key)
+                images.append({
+                    "type": prop,
+                    "url": url
+                })
+                print(f"✅ {prop}")
         else:
             print(f"❌ {prop}")
 
     # ==================================================
     # 🔹 STEP 3: IO / 2 LOGIC
     # ==================================================
-    io_url = get_prop_image("ATF I/O-Generic")
-
-    io_found = False
-
     if io_url:
-        images.append({"type": "ATF I/O-Generic", "url": io_url})
-        seen.add(io_url)
+        key = ("ATF I/O-Generic", io_url)
+    
+        if key not in seen_pairs:
+            seen_pairs.add(key)
+            images.append({
+                "type": "ATF I/O-Generic",
+                "url": io_url
+            })
+    
         io_found = True
         print("✅ ATF I/O-Generic")
     else:
         atf2 = get_prop_image("ATF 2-Generic")
-
+    
         if atf2:
-            images.append({"type": "ATF 2-Generic", "url": atf2})
-            seen.add(atf2)
+            key = ("ATF 2-Generic", atf2)
+    
+            if key not in seen_pairs:
+                seen_pairs.add(key)
+                images.append({
+                    "type": "ATF 2-Generic",
+                    "url": atf2
+                })
+    
             print("✅ ATF 2-Generic")
         else:
             print("❌ No ATF I/O or 2")
-
     # ==================================================
     # 🔹 STEP 4: ATF 6 FALLBACK
     # ==================================================
     if not io_found:
         atf6 = get_prop_image("ATF 6-Generic")
-
+    
         if atf6:
-            images.append({"type": "ATF 6-Generic", "url": atf6})
-            seen.add(atf6)
+            key = ("ATF 6-Generic", atf6)
+    
+            if key not in seen_pairs:
+                seen_pairs.add(key)
+                images.append({
+                    "type": "ATF 6-Generic",
+                    "url": atf6
+                })
+    
             print("✅ ATF 6-Generic")
         else:
             print("❌ No ATF 6")
-
     else:
         print("⏭️ Skipping ATF 6 (I/O exists)")
-
     # ==================================================
     # 🔹 STEP 5: FALLBACK → GALLERY IMAGES
     # ==================================================
     if not images:
         print("⚠️ No structured images → fallback to gallery")
-
+    
         for img in soup.find_all("img"):
             url = extract_best_image_from_tag(img)
-
-            if url and "salsify" in url and url not in seen:
-                seen.add(url)
-                images.append({
-                    "type": "Fallback",
-                    "url": url
-                })
-
+    
+            if url and "salsify" in url:
+                key = ("Fallback", url)
+    
+                if key not in seen_pairs:
+                    seen_pairs.add(key)
+                    images.append({
+                        "type": "Fallback",
+                        "url": url
+                    })    
     # ==================================================
     # 🔹 STEP 6: FINAL FALLBACK → JSON PARSE
     # ==================================================
@@ -519,6 +535,9 @@ if uploaded_file:
         try:
             # Get images
             s_images = get_salsify_images(row["salsify_url"])
+            st.write("🔍 Extracted Images:")
+            for img in s_images:
+                st.write(f"{img['type']} → {img['url']}")
             s_images = [img for img in s_images if img.get("url")]
 
             r_images = get_cvs_images(row["retail_url"])
@@ -527,16 +546,22 @@ if uploaded_file:
             with st.expander("🧺 Salsify Images", expanded=True):
                 st.write("Total Salsify images:", len(s_images))
                 cols = st.columns(3)
-                
-                for i, img in enumerate(s_images):
-                    img_obj = load_image(img["url"])
-
+                        
+        for i, img in enumerate(s_images):
+            col = cols[i % 3]
+            
+            img_obj = load_image(img["url"])
+        
             if img_obj:
-                cols[i % 3].image(img_obj, caption=img["type"], use_container_width=True)
+                col.image(
+                    img_obj,
+                    caption=img["type"],
+                    use_container_width=True
+                )
             else:
-                cols[i % 3].write("❌ Failed")
+                col.write(f"❌ Failed: {img['type']}")
+                col.write(img["url"])
                 
-
             # Comparison
             render_image_comparison_by_property(s_images, r_images)
 
