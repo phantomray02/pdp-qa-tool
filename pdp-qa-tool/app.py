@@ -37,7 +37,7 @@ def get_soup(url):
     return BeautifulSoup(get_html(url), "html.parser")
 
 # =========================================
-# ✅ IMAGE HELPERS
+# ✅ IMAGE LOAD
 # =========================================
 def load_image(url):
     try:
@@ -48,108 +48,38 @@ def load_image(url):
         return None
     return None
 
-def extract_best_image_from_tag(img_tag):
-    if not img_tag:
-        return None
-
-    srcset = img_tag.get("srcset", "")
-    src = img_tag.get("src", "")
-
-    if srcset and "salsify" in srcset:
-        urls = [u.strip().split()[0] for u in srcset.split(",") if u.strip()]
-        return urls[-1] if urls else None
-
-    if src and "salsify" in src:
-        return src
-
-    return None
-
 # =========================================
-# ✅ COALESCE / PRIORITY IMAGE LOGIC
+# ✅ SALSIFY IMAGES (FIXED)
 # =========================================
-def normalize_prop(p):
-    return p.lower().replace(" ", "").replace("_", "").replace("-", "")
-
 def get_salsify_images(url):
     html = get_html(url)
-    soup = BeautifulSoup(html, "html.parser")
 
     images = []
     seen = set()
 
-    # 🔹 STEP 1: PROPERTY CONTAINERS
-    containers = soup.find_all(
-        lambda tag: tag.name == "div"
-        and tag.get("class")
-        and any("asset-list_images__" in c for c in tag.get("class"))
-    )
+    try:
+        matches = re.findall(
+            r'https://images\.salsify\.com[^"]+',
+            html
+        )
 
-    property_map = {}
+        for m in matches:
+            clean = m.split("?")[0]
 
-    for c in containers:
-        aria = c.get("aria-label", "").strip().rstrip("-")
-        if aria:
-            property_map[aria] = c
+            if clean not in seen:
+                seen.add(clean)
+                images.append({
+                    "type": "Salsify",
+                    "url": clean
+                })
 
-    def get_prop_image(target):
-        t_norm = normalize_prop(target)
+    except Exception as e:
+        print("Salsify image error:", e)
 
-        for pname, container in property_map.items():
-            if normalize_prop(pname) == t_norm:
-                return extract_best_image_from_tag(container.find("img")) or None
-        return None
-
-    # 🔹 STEP 2: ALWAYS REQUIRED
-    always = [
-        "Online Optimized Image",
-        "Flat Back_2D",
-        "Flat Left_2D"
-    ]
-
-    for prop in always:
-        url = get_prop_image(prop)
-        if url and url not in seen:
-            images.append({"type": prop, "url": url})
-            seen.add(url)
-
-    # 🔹 STEP 3: IO or 2
-    io = get_prop_image("ATF I/O-Generic")
-
-    if io:
-        images.append({"type": "ATF I/O-Generic", "url": io})
-        seen.add(io)
-    else:
-        atf2 = get_prop_image("ATF 2-Generic")
-        if atf2:
-            images.append({"type": "ATF 2-Generic", "url": atf2})
-            seen.add(atf2)
-
-    # 🔹 STEP 4: Add remaining ATFs
-    for lvl in ["ATF 3-Generic", "ATF 4-Generic", "ATF 5-Generic"]:
-        val = get_prop_image(lvl)
-        if val and val not in seen:
-            images.append({"type": lvl, "url": val})
-            seen.add(val)
-
-    # 🔹 STEP 5: ATF 6 fallback
-    if not io:
-        atf6 = get_prop_image("ATF 6-Generic")
-        if atf6 and atf6 not in seen:
-            images.append({"type": "ATF 6-Generic", "url": atf6})
-            seen.add(atf6)
-
-    # 🔹 STEP 6: FALLBACK → any image
-    if not images:
-        for img in soup.find_all("img"):
-            url = extract_best_image_from_tag(img)
-            if url and "salsify" in url and url not in seen:
-                seen.add(url)
-                images.append({"type": "Fallback", "url": url})
-
-    return images
+    return images[:8]
 
 # =========================================
-# ✅ CVS IMAGES
+# ✅ CVS IMAGES (DEDUPED)
 # =========================================
 def get_cvs_images(url):
     html = get_html(url)
@@ -159,10 +89,63 @@ def get_cvs_images(url):
         html
     )
 
-    return ["https://www.cvs.com" + m for m in matches]
+    seen = set()
+    results = []
+
+    for m in matches:
+        full = "https://www.cvs.com" + m
+        name = full.split("/")[-1]
+
+        if name not in seen:
+            seen.add(name)
+            results.append(full)
+
+    return results
 
 # =========================================
-# ✅ TEXT
+# ✅ SALSIFY TEXT (FIXED)
+# =========================================
+def get_salsify_text(url):
+    html = get_html(url)
+
+    description = ""
+    features = []
+
+    try:
+        desc = re.search(r'"generalDescription":"(.*?)"', html)
+        if desc:
+            description = desc.group(1)
+
+        features = re.findall(r'"generalFeature\d+":"(.*?)"', html)
+
+    except:
+        pass
+
+    return {
+        "description": description,
+        "features": features[:5]
+    }
+
+# =========================================
+# ✅ CVS TEXT (FIXED)
+# =========================================
+def get_cvs_text(html):
+    description = ""
+
+    try:
+        text = html.replace('\\"', '"')
+
+        match = re.search(r'vendorDetailsParagraph":"(.*?)"', text)
+        if match:
+            description = match.group(1)
+
+    except:
+        pass
+
+    return {"description": description}
+
+# =========================================
+# ✅ TEXT SCORING
 # =========================================
 def normalize_text(text):
     text = str(text).lower()
@@ -177,27 +160,6 @@ def keyword_score(a, b):
         return 0
 
     return int(SequenceMatcher(None, a, b).ratio() * 100)
-
-def get_salsify_text(url):
-    soup = get_soup(url)
-    desc = ""
-
-    for row in soup.find_all("tr"):
-        label = row.get_text(" ", strip=True).lower()
-        if "general description" in label:
-            desc = row.get_text(" ", strip=True)
-            break
-
-    return {"description": desc}
-
-def get_cvs_text(html):
-    desc = ""
-
-    match = re.search(r'vendorDetailsParagraph":"(.*?)"', html)
-    if match:
-        desc = match.group(1)
-
-    return {"description": desc}
 
 # =========================================
 # ✅ MAIN
@@ -214,39 +176,61 @@ if uploaded_file:
         s_images = get_salsify_images(row["salsify_url"])
         r_images = get_cvs_images(row["retail_url"])
 
-        # ✅ IMAGE VIEW
+        # ✅ IMAGE COMPARISON
         max_len = max(len(s_images), len(r_images))
 
         for i in range(max_len):
             c1, c2 = st.columns(2)
 
             if i < len(s_images):
-                c1.markdown(f"Salsify {i+1}")
+                c1.markdown(f"**Salsify {i+1}**")
                 img = load_image(s_images[i]["url"])
                 if img:
                     c1.image(img)
+                else:
+                    c1.write("❌ failed")
             else:
-                c1.write("Missing")
+                c1.write("❌ Missing")
 
             if i < len(r_images):
-                c2.markdown(f"CVS {i+1}")
+                c2.markdown(f"**CVS {i+1}**")
                 img = load_image(r_images[i])
                 if img:
                     c2.image(img)
+                else:
+                    c2.write("❌ failed")
             else:
-                c2.write("Missing")
+                c2.write("❌ Missing")
 
-        # ✅ SCORE
-        img_score = int((min(len(s_images), len(r_images)) / max(len(s_images), len(r_images), 1)) * 100)
-
+        # =========================================
+        # ✅ TEXT
+        # =========================================
         s_text = get_salsify_text(row["salsify_url"])
         r_text = get_cvs_text(get_html(row["retail_url"]))
+
+        st.markdown("## Description")
+        c1, c2 = st.columns(2)
+        c1.write(s_text.get("description", ""))
+        c2.write(r_text.get("description", ""))
 
         desc_score = keyword_score(
             s_text.get("description", ""),
             r_text.get("description", "")
         )
 
+        st.write(f"✅ Description Match: {desc_score}%")
+
+        # =========================================
+        # ✅ IMAGE SCORE
+        # =========================================
+        img_score = int(
+            (min(len(s_images), len(r_images)) /
+            max(len(s_images), len(r_images), 1)) * 100
+        )
+
+        # =========================================
+        # ✅ SUMMARY
+        # =========================================
         overall = int((img_score + desc_score) / 2)
 
         summary_rows.append({
