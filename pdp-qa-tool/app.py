@@ -40,7 +40,7 @@ html_cache = {}
 image_cache = {}
 
 # =========================================
-# ✅ GET HTML (REPLACED PLAYWRIGHT)
+# ✅ GET HTML (REPLACED PLAYWRIGHT ONLY)
 # =========================================
 def get_html(url):
     if url in html_cache:
@@ -85,38 +85,45 @@ def clean_text(raw):
 # ✅ SALSIFY IMAGE BUCKETS
 # =========================================
 def get_salsify_images(url):
+    soup = get_soup(url)
+    images = []
+    seen_urls = set()
+    
     try:
-        soup = get_soup(url)
-        images = []
-        seen_urls = set()
+        rows = soup.find_all("tr")
         
-        for img in soup.find_all("img"):
-            src = img.get("src") or ""
-            srcset = img.get("srcset") or ""
+        for row in rows:
+            cells = row.find_all("td")
+            if len(cells) < 2:
+                continue
             
-            if "salsify.com" in src and src not in seen_urls:
-                seen_urls.add(src)
-                images.append({
-                    "url": src,
-                    "type": "Image"
-                })
+            prop_name_cell = cells[0]
+            prop_value_cell = cells[1]
             
-            if srcset and "salsify.com" in srcset:
-                urls = [u.strip().split()[0] for u in srcset.split(",")]
-                for url_candidate in urls:
-                    if url_candidate not in seen_urls and "salsify.com" in url_candidate:
-                        seen_urls.add(url_candidate)
-                        images.append({
-                            "url": url_candidate,
-                            "type": "Image"
-                        })
-        
-        print(f"✅ Found {len(images)} Salsify images")
-        return images
+            prop_text = prop_name_cell.get_text(strip=True).lower()
+            
+            if "image" not in prop_text and "photo" not in prop_text:
+                continue
+            
+            img_tags = prop_value_cell.find_all("img")
+            
+            for img in img_tags:
+                img_src = img.get("src", "")
+                
+                if ("salsify" in img_src or "images.salsify" in img_src) and img_src not in seen_urls:
+                    seen_urls.add(img_src)
+                    
+                    prop_label = prop_name_cell.get_text(strip=True)
+                    
+                    images.append({
+                        "type": prop_label,
+                        "url": img_src
+                    })
     
     except Exception as e:
-        print(f"Error extracting Salsify images: {e}")
-        return []
+        print(f"Salsify image extraction error: {e}")
+    
+    return images
 
 # =========================================
 # ✅ CVS IMAGES
@@ -145,7 +152,7 @@ def get_cvs_images(url):
     return [v["url"] for v in image_dict.values()]
 
 # =========================================
-# ✅ IMAGE COMPARISON
+# ✅ RENDER IMAGE COMPARISON BY SALSIFY PROPERTY
 # =========================================
 def render_image_comparison_by_property(s_images, r_images):
     st.markdown("## Image Comparison ✅")
@@ -185,13 +192,16 @@ if uploaded_file:
 
         try:
             s_images = get_salsify_images(row["salsify_url"])
+            s_images = [img for img in s_images if img.get("url")]
+
             r_images = get_cvs_images(row["retail_url"])
 
             with st.expander("🧺 Salsify Images", expanded=True):
                 st.write("Total Salsify images:", len(s_images))
+                cols = st.columns(3)
 
-                for img in s_images:
-                    st.write(img["type"], "→", img["url"])
+                for i, img in enumerate(s_images):
+                    cols[i % 3].image(img["url"], caption=img["type"])
 
             render_image_comparison_by_property(s_images, r_images)
 
