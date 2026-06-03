@@ -159,8 +159,12 @@ def get_salsify_images(url):
     html = get_html(url)
 
     image_map = {}
+    seen_urls = set()
 
     try:
+        # =====================================
+        # ✅ 1. PROPERTY IMAGES (one per prop)
+        # =====================================
         matches = re.findall(
             r'"property":"([^"]+)".*?"value":"(https://images\.salsify\.com[^"]+)"',
             html,
@@ -168,68 +172,30 @@ def get_salsify_images(url):
         )
 
         for prop, img_url in matches:
-
-            prop = prop.strip()
-
-            # ✅ ONLY KEEP FIRST IMAGE PER PROPERTY
             if prop not in image_map:
                 image_map[prop] = img_url
+                seen_urls.add(img_url)
+
+        # =====================================
+        # ✅ 2. EXTRA MEDIA (THIS FIXES YOUR ISSUE)
+        # =====================================
+        all_imgs = re.findall(
+            r'https://images\.salsify\.com[^\s"]+\.jpg',
+            html
+        )
+
+        extra_count = 1
+
+        for img_url in all_imgs:
+            if img_url not in seen_urls:
+                image_map[f"Extra Image {extra_count}"] = img_url
+                seen_urls.add(img_url)
+                extra_count += 1
 
     except Exception as e:
         print("Parse error:", e)
 
-    # ✅ convert to list
-    images = [{"type": k, "url": v} for k, v in image_map.items()]
-
-    return images
-# =========================================
-# ✅ ORDER IMAGES
-# =========================================
-def order_salsify(images):
-
-    ordered = {
-        "Online Optimized Image": None,
-        "Flat Back_2D": None,
-        "Flat Left_2D": None,
-        "ATF I/O-Generic": None,
-        "ATF 2-Generic": None,
-        "ATF 3-Generic": None,
-        "ATF 4-Generic": None,
-        "ATF 5-Generic": None,
-        "ATF 6-Generic": None
-    }
-
-    atf_images = []
-
-    for img in images:
-        name = img["type"].lower()
-
-        if "online" in name:
-            ordered["Online Optimized Image"] = img["url"]
-
-        elif "flat back" in name:
-            ordered["Flat Back_2D"] = img["url"]
-
-        elif "flat left" in name:
-            ordered["Flat Left_2D"] = img["url"]
-
-        elif "atf" in name:
-            atf_images.append(img["url"])
-
-    # ✅ FLEXIBLE ATF FILL (KEY FIX)
-    atf_keys = [
-        "ATF I/O-Generic",
-        "ATF 2-Generic",
-        "ATF 3-Generic",
-        "ATF 4-Generic",
-        "ATF 5-Generic",
-        "ATF 6-Generic"
-    ]
-
-    for i in range(min(len(atf_images), len(atf_keys))):
-        ordered[atf_keys[i]] = atf_images[i]
-
-    return ordered
+    return [{"type": k, "url": v} for k, v in image_map.items()]
 
 # =========================================
 # ✅ CVS IMAGES
@@ -620,12 +586,17 @@ if uploaded_file:
             # =========================
             # ✅ DEBUG VIEW
             # =========================
-            with st.expander("🔍 IMAGE BUCKETS", expanded=True):
+            with st.expander("🧺 Salsify Images", expanded=True):
+            
+                s_images = get_salsify_images(row["salsify_url"])
+            
+                st.write("Total images:", len(s_images))
+            
+                cols = st.columns(3)
+            
+                for i, img in enumerate(s_images):
+                    cols[i % 3].image(img["url"], caption=img["type"])
 
-            raw_images = get_salsify_images(row["salsify_url"])
-            raw_images = [img for img in raw_images if img["url"]]
-        
-            r_images = get_cvs_images(row["retail_url"])
         
             # =========================
             # ✅ GROUP SALSIFY
