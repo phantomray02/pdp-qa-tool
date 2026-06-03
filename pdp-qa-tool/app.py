@@ -9,17 +9,14 @@ from io import BytesIO
 from playwright.sync_api import sync_playwright
 import atexit
 
-# =========================================
-# ✅ APP HEADER
-# =========================================
-st.write("🚀 VERSION PRODUCTION CLEAN")
+st.write("🚀 VERSION ORDERED QA FIX")
 st.title("PDP QA Tool ✅")
 
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 download_placeholder = st.empty()
 
 # =========================================
-# ✅ START PLAYWRIGHT (ONCE)
+# ✅ START PLAYWRIGHT
 # =========================================
 p = sync_playwright().start()
 browser = p.chromium.launch(headless=True)
@@ -44,24 +41,11 @@ def get_html(url):
         page = browser.new_page()
         page.goto(url, timeout=30000, wait_until="networkidle")
 
-        # Force full scroll multiple times
         for _ in range(10):
             page.evaluate("window.scrollBy(0, document.body.scrollHeight)")
             page.wait_for_timeout(800)
-        
-        # 🔥 Wait for late-loading JS images
+
         page.wait_for_timeout(3000)
-        
-        # 🔥 Click through gallery arrows (critical)
-        for _ in range(10):
-            try:
-                page.click('button[aria-label="Next"]', timeout=1000)
-                page.wait_for_timeout(500)
-            except:
-                break
-        
-        # Final wait to let images register
-        page.wait_for_timeout(2000)
 
         html = page.content()
         page.close()
@@ -89,22 +73,19 @@ def load_image(url):
     return None
 
 # =========================================
-# ✅ FIXED SALSIFY IMAGE EXTRACTION
+# ✅ FIXED SALSIFY EXTRACTION + ORDER
 # =========================================
 def get_salsify_images(url):
     html = get_html(url)
     soup = BeautifulSoup(html, "html.parser")
 
-    images = []
+    raw_images = []
 
     # ✅ JSON (handles escaped URLs)
     json_matches = re.findall(r'https?:\\\\?/\\\\?/images\\\\?.salsify\\\\?.com[^"]+', html)
     for m in json_matches:
         clean = m.replace("\\/", "/").split("?")[0]
-        images.append({
-            "type": "JSON",
-            "url": clean
-        })
+        raw_images.append(clean)
 
     # ✅ DOM fallback
     for img in soup.find_all("img"):
@@ -112,56 +93,52 @@ def get_salsify_images(url):
         srcset = img.get("srcset", "")
 
         if "salsify" in src:
-            images.append({
-                "type": "DOM",
-                "url": src.split("?")[0]
-            })
+            raw_images.append(src.split("?")[0])
 
         if "salsify" in srcset:
             urls = [u.split()[0] for u in srcset.split(",") if u]
             if urls:
-                images.append({
-                    "type": "DOM",
-                    "url": urls[-1].split("?")[0]
-                })
+                raw_images.append(urls[-1].split("?")[0])
 
-    # ✅ dedupe (safe)
+    # ✅ dedupe (keep order)
     seen = set()
-    cleaned = []
-    for img in images:
-        if img["url"] not in seen:
-            seen.add(img["url"])
-            cleaned.append(img)
+    images = []
+    for url in raw_images:
+        if url not in seen:
+            seen.add(url)
+            images.append(url)
 
-    return cleaned
+    # ✅ FORCE ORDER (best-effort heuristic)
+    ordered = []
+
+    # try to prioritize front image first
+    for url in images:
+        if "front" in url.lower():
+            ordered.append(url)
+
+    for url in images:
+        if url not in ordered:
+            ordered.append(url)
+
+    return ordered
 
 # =========================================
-# ✅ CVS IMAGE EXTRACTION
+# ✅ CVS IMAGES (ORDER ALREADY CORRECT)
 # =========================================
 def get_cvs_images(url):
     html = get_html(url)
 
     matches = re.findall(
-        r'/bizcontent/merchandising/productimages/high_res/[^\s"]+\.jpg\?[^\s"]*',
+        r'/bizcontent/merchandising/productimages/high_res/[^\s"]+\.jpg',
         html
     )
 
-    image_dict = {}
+    images = ["https://www.cvs.com" + m for m in matches]
 
-    for m in matches:
-        base = ("https://www.cvs.com" + m).split("?")[0]
-        name = base.split("/")[-1]
-
-        size_match = re.search(r'Resize=\((\d+)', m)
-        size = int(size_match.group(1)) if size_match else 0
-
-        if name not in image_dict or size > image_dict[name]["size"]:
-            image_dict[name] = {"url": base, "size": size}
-
-    return [v["url"] for v in image_dict.values()]
+    return images
 
 # =========================================
-# ✅ TEXT HELPERS
+# ✅ NORMALIZE TEXT
 # =========================================
 def normalize_text(text):
     text = str(text).lower()
@@ -203,43 +180,53 @@ if uploaded_file:
         full_html = get_html(row["retail_url"])
 
         try:
-            # ✅ IMAGES
+            # ✅ GET IMAGES
             s_images = get_salsify_images(row["salsify_url"])
             r_images = get_cvs_images(row["retail_url"])
 
             st.write(f"✅ Salsify images: {len(s_images)}")
 
-            # ✅ SHOW SALSIFY
-            with st.expander("🧺 Salsify Images", expanded=True):
-                cols = st.columns(3)
+            # =========================================
+            # ✅ SIDE-BY-SIDE ORDERED VIEW
+            # =========================================
+            st.markdown("## 🔍 Ordered Image Comparison")
 
-                for i, img in enumerate(s_images):
-                    col = cols[i % 3]
-                    img_obj = load_image(img["url"])
+            max_len = max(len(s_images), len(r_images))
+
+            for i in range(max_len):
+                col1, col2 = st.columns(2)
+
+                # ===== SALSIFY =====
+                if i < len(s_images):
+                    col1.markdown(f"**Salsify #{i+1}**")
+                    img_obj = load_image(s_images[i])
 
                     if img_obj:
-                        col.image(img_obj, caption=img["type"], use_container_width=True)
+                        col1.image(img_obj, use_container_width=True)
                     else:
-                        col.write("❌ Failed")
-                        col.write(img["url"])
+                        col1.write("❌ Failed")
+                        col1.write(s_images[i])
+                else:
+                    col1.write("❌ Missing Salsify")
 
-            # ✅ SHOW CVS
-            with st.expander("🧺 CVS Images"):
-                cols = st.columns(3)
-
-                for i, url in enumerate(r_images):
-                    col = cols[i % 3]
-                    img_obj = load_image(url)
+                # ===== CVS =====
+                if i < len(r_images):
+                    col2.markdown(f"**CVS #{i+1}**")
+                    img_obj = load_image(r_images[i])
 
                     if img_obj:
-                        col.image(img_obj, use_container_width=True)
+                        col2.image(img_obj, use_container_width=True)
+                else:
+                    col2.write("❌ Missing CVS")
 
-            # ✅ IMAGE SCORE
+            # ✅ SIMPLE MATCH SCORE
             img_score = int((min(len(s_images), len(r_images)) / max(len(s_images), len(r_images), 1)) * 100)
             st.write(f"✅ Image Match: {img_score}%")
 
             summary_rows.append({
                 "SKU": row["sku"],
+                "Image Count Salsify": len(s_images),
+                "Image Count CVS": len(r_images),
                 "Image %": img_score
             })
 
