@@ -157,50 +157,31 @@ def clean_text(raw):
 def get_salsify_images(url):
 
     html = get_html(url)
-    images = set()
+
+    image_map = {}
 
     try:
-        # =====================================
-        # ✅ 1. ORIGINAL PROPERTY MATCH (keep)
-        # =====================================
-        prop_matches = re.findall(
-            r'"value":"(https://images\.salsify\.com[^"]+)"',
-            html
+        matches = re.findall(
+            r'"property":"([^"]+)".*?"value":"(https://images\.salsify\.com[^"]+)"',
+            html,
+            re.DOTALL
         )
 
-        for img in prop_matches:
-            images.add(img)
+        for prop, img_url in matches:
 
-        # =====================================
-        # ✅ 2. DIRECT IMG TAGS (VERY IMPORTANT)
-        # =====================================
-        soup = BeautifulSoup(html, "html.parser")
+            prop = prop.strip()
 
-        for img in soup.find_all("img"):
-            src = img.get("src")
-            if src and "salsify" in src:
-                images.add(src)
-
-            data_src = img.get("data-src")
-            if data_src and "salsify" in data_src:
-                images.add(data_src)
-
-        # =====================================
-        # ✅ 3. FALLBACK ANY IMAGE (last resort)
-        # =====================================
-        fallback = re.findall(
-            r'(https://images\.salsify\.com[^\s"]+)',
-            html
-        )
-
-        for img in fallback:
-            images.add(img)
+            # ✅ ONLY KEEP FIRST IMAGE PER PROPERTY
+            if prop not in image_map:
+                image_map[prop] = img_url
 
     except Exception as e:
-        print("Salsify parse error:", e)
+        print("Parse error:", e)
 
-    # ✅ return as list of dicts
-    return [{"type": "unknown", "url": img} for img in images]
+    # ✅ convert to list
+    images = [{"type": k, "url": v} for k, v in image_map.items()]
+
+    return images
 # =========================================
 # ✅ ORDER IMAGES
 # =========================================
