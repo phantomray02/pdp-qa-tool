@@ -121,84 +121,32 @@ def clean_text(raw):
 # =========================================
 def get_salsify_images(url):
     """
-    Extract images from Salsify by calling their API directly.
-    This avoids HTML scraping issues and gets clean, deduplicated data.
-    
-    URL format: https://sites.salsify.com/{workspace}/{catalog}/product/{sku}
+    Extract all salsify image URLs from the page HTML.
+    Simple, reliable, no false positives.
     """
+    html = get_html(url)
     images = []
+    seen_urls = set()
     
     try:
-        # Extract workspace, catalog, and SKU from URL
-        # Format: https://sites.salsify.com/c59eb481.../83f32e36.../product/19304-13/...
-        match = re.search(
-            r'sites\.salsify\.com/([^/]+)/([^/]+)/product/([^/]+)/',
-            url
+        # Find all salsify image URLs in srcSet attributes
+        # Pattern: looks for https://images.salsify.com/... URLs
+        img_urls = re.findall(
+            r'https://images\.salsify\.com/image/upload/[^"\s]+',
+            html
         )
         
-        if not match:
-            print(f"Could not parse Salsify URL: {url}")
-            return images
-        
-        workspace_id = match.group(1)
-        catalog_id = match.group(2)
-        sku = match.group(3)
-        
-        # Call Salsify API
-        api_url = f"https://api.salsify.com/organizations/{workspace_id}/catalogs/{catalog_id}/products?sku={sku}"
-        
-        headers = {
-            "User-Agent": "Mozilla/5.0"
-        }
-        
-        response = requests.get(api_url, headers=headers, timeout=10)
-        
-        if response.status_code != 200:
-            print(f"API error: {response.status_code}")
-            return images
-        
-        data = response.json()
-        
-        if not data.get("products"):
-            print("No products found in API response")
-            return images
-        
-        product = data["products"][0]
-        
-        # Look for image properties
-        seen_urls = set()
-        
-        for attr_id, attr_value in product.get("attributes", {}).items():
-            # Check if this is an image attribute
-            if isinstance(attr_value, dict):
-                # Image format: {"url": "...", "name": "..."}
-                if "url" in attr_value:
-                    img_url = attr_value.get("url", "")
-                    prop_name = attr_value.get("name", attr_id)
-                    
-                    if img_url and "salsify" in img_url and img_url not in seen_urls:
-                        seen_urls.add(img_url)
-                        images.append({
-                            "type": prop_name,
-                            "url": img_url
-                        })
-            
-            elif isinstance(attr_value, list):
-                # Image array format
-                for item in attr_value:
-                    if isinstance(item, dict) and "url" in item:
-                        img_url = item.get("url", "")
-                        prop_name = attr_id
-                        
-                        if img_url and "salsify" in img_url and img_url not in seen_urls:
-                            seen_urls.add(img_url)
-                            images.append({
-                                "type": prop_name,
-                                "url": img_url
-                            })
+        for img_url in img_urls:
+            # Only add if we haven't seen it before
+            if img_url not in seen_urls:
+                seen_urls.add(img_url)
+                images.append({
+                    "type": f"Image {len(images) + 1}",
+                    "url": img_url
+                })
     
     except Exception as e:
-        print(f"Salsify API error: {e}")
+        print(f"Error extracting images: {e}")
     
     return images
 # =========================================
