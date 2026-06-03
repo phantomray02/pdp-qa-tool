@@ -36,26 +36,59 @@ def load_image(url):
         return None
     return None
 
-# ✅ FINAL SALSIFY FIX
+# =========================================
+# ✅ ✅ FINAL SALSIFY SOLUTION ✅
+# =========================================
 def get_salsify_images(url):
     html = get_html(url)
 
-    matches = re.findall(
+    # =========================================
+    # ✅ STEP 1: TOP IMAGES (HERO - FIX DUPS ✅)
+    # =========================================
+    matches = re.findall(r'https://images\.salsify\.com[^"\s]+', html)
+
+    hero_map = {}
+
+    for m in matches[:15]:  # first part = hero zone
+        base = m.split("?")[0]
+        fname = base.split("/")[-1].lower()
+
+        if any(x in fname for x in ["thumb", "icon", "small"]):
+            continue
+
+        key = re.sub(r'(_|-)?\d+x\d+', '', fname)
+
+        size = 0
+        size_match = re.search(r'Resize=\((\d+)', m)
+        if size_match:
+            size = int(size_match.group(1))
+
+        if key not in hero_map or size > hero_map[key]["size"]:
+            hero_map[key] = {"url": base, "size": size}
+
+    hero_images = list(hero_map.values())[:3]
+
+    # =========================================
+    # ✅ STEP 2: ATF (1 PER PROPERTY ✅)
+    # =========================================
+    atf_matches = re.findall(
         r'"property":"([^"]+)".*?"value":"(https://images\.salsify\.com[^"]+)"',
         html,
         re.DOTALL
     )
 
-    image_map = {}
+    atf_map = {}
 
-    for prop, img_url in matches:
-        if prop not in image_map:
-            image_map[prop.strip()] = img_url.split("?")[0]
+    for prop, img_url in atf_matches:
+        prop = prop.strip()
+
+        if prop.startswith("ATF"):
+
+            # ✅ ONE PER PROPERTY (your requirement)
+            if prop not in atf_map:
+                atf_map[prop] = img_url.split("?")[0]
 
     TARGET_ORDER = [
-        "Online Optimized Image",
-        "Flat Back_2D",
-        "Flat Left_2D",
         "ATF I/O-Generic",
         "ATF 2-Generic",
         "ATF 3-Generic",
@@ -64,18 +97,25 @@ def get_salsify_images(url):
         "ATF 6-Generic"
     ]
 
-    final = []
+    atf_images = [
+        {"type": prop, "url": atf_map[prop]}
+        for prop in TARGET_ORDER
+        if prop in atf_map
+    ]
 
-    for prop in TARGET_ORDER:
-        if prop in image_map:
-            final.append({
-                "type": prop,
-                "url": image_map[prop]
-            })
+    # =========================================
+    # ✅ STEP 3: COMBINE ✅
+    # =========================================
+    final = (
+        [{"type": f"Hero {i+1}", "url": img["url"]} for i, img in enumerate(hero_images)]
+        + atf_images
+    )
 
     return final[:8]
 
-# ✅ CVS (unchanged)
+# =========================================
+# ✅ CVS (UNCHANGED — CORRECT ✅)
+# =========================================
 def get_cvs_images(url):
     html = get_html(url)
 
@@ -99,6 +139,9 @@ def get_cvs_images(url):
 
     return [v["url"] for v in best.values()]
 
+# =========================================
+# ✅ TEXT
+# =========================================
 def get_salsify_text(url):
     html = get_html(url)
 
@@ -126,7 +169,7 @@ def keyword_score(a, b):
     return int(SequenceMatcher(None, normalize_text(a), normalize_text(b)).ratio() * 100)
 
 # =========================================
-# MAIN
+# ✅ MAIN
 # =========================================
 if uploaded_file:
 
@@ -142,6 +185,7 @@ if uploaded_file:
         s_text = get_salsify_text(row["salsify_url"])
         r_text = get_cvs_text(html)
 
+        # ✅ COPY
         st.markdown("## Description")
 
         c1, c2 = st.columns(2)
@@ -151,6 +195,7 @@ if uploaded_file:
         desc_score = keyword_score(s_text["description"], r_text["description"])
         st.write(f"✅ Description Match: {desc_score}%")
 
+        # ✅ IMAGES
         st.markdown("## Image Comparison")
 
         s_images = get_salsify_images(row["salsify_url"])
@@ -167,16 +212,12 @@ if uploaded_file:
                 img = load_image(s_images[i]["url"])
                 if img:
                     c1.image(img)
-            else:
-                c1.write("")
 
             if i < len(r_images):
                 c2.markdown(f"**CVS {i+1}**")
                 img = load_image(r_images[i])
                 if img:
                     c2.image(img)
-            else:
-                c2.write("")
 
         img_score = int(
             (min(len(s_images), len(r_images)) /
@@ -195,6 +236,7 @@ if uploaded_file:
 # ✅ EXPORT
 if summary_rows:
     df = pd.DataFrame(summary_rows)
+
     file_name = "pdp_qa_results.xlsx"
 
     with pd.ExcelWriter(file_name, engine="openpyxl") as writer:
