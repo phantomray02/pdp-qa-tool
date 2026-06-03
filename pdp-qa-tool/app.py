@@ -157,45 +157,38 @@ def clean_text(raw):
 def get_salsify_images(url):
 
     html = get_html(url)
+    soup = BeautifulSoup(html, "html.parser")
 
-    image_map = {}
-    seen_urls = set()
+    images = {}
+    extra_count = 1
 
     try:
-        # =====================================
-        # ✅ 1. PROPERTY IMAGES (one per prop)
-        # =====================================
-        matches = re.findall(
-            r'"property":"([^"]+)".*?"value":"(https://images\.salsify\.com[^"]+)"',
-            html,
-            re.DOTALL
-        )
+        # ✅ LOOP THROUGH EACH IMAGE GROUP (THIS MATCHES YOUR HTML)
+        groups = soup.find_all("div", {"class": "asset-list_images__2aKCB"})
 
-        for prop, img_url in matches:
-            if prop not in image_map:
-                image_map[prop] = img_url
-                seen_urls.add(img_url)
+        for group in groups:
 
-        # =====================================
-        # ✅ 2. EXTRA MEDIA (THIS FIXES YOUR ISSUE)
-        # =====================================
-        all_imgs = re.findall(
-            r'https://images\.salsify\.com[^\s"]+\.jpg',
-            html
-        )
+            # ✅ PROPERTY NAME
+            prop_tag = group.find("span", {"data-testid": "property-name"})
+            prop_name = prop_tag.get_text(strip=True) if prop_tag else f"Extra {extra_count}"
 
-        extra_count = 1
+            # ✅ IMAGE URL FROM ...
+            link = group.find("a", href=True)
 
-        for img_url in all_imgs:
-            if img_url not in seen_urls:
-                image_map[f"Extra Image {extra_count}"] = img_url
-                seen_urls.add(img_url)
+            if link:
+                img_url = link["href"]
+
+                # ✅ ONLY KEEP FIRST PER PROPERTY
+                if prop_name not in images:
+                    images[prop_name] = img_url
+
+            else:
                 extra_count += 1
 
     except Exception as e:
         print("Parse error:", e)
 
-    return [{"type": k, "url": v} for k, v in image_map.items()]
+    return [{"type": k, "url": v} for k, v in images.items()]
 
 # =========================================
 # ✅ CVS IMAGES
