@@ -40,20 +40,39 @@ html_cache = {}
 image_cache = {}
 
 # =========================================
-# ✅ GET HTML (REPLACED PLAYWRIGHT ONLY)
+# ✅ GET HTML (PLAYWRIGHT REMOVED, SAME LOGIC KEPT)
 # =========================================
 def get_html(url):
     if url in html_cache:
         return html_cache[url]
 
+    headers = {"User-Agent": "Mozilla/5.0"}
+
+    # =========================================
+    # ✅ STEP 1: TRY API USING PRODUCT ID
+    # =========================================
+    product_id_match = re.search(r'prodid-(\d+)', url)
+
+    if product_id_match:
+        product_id = product_id_match.group(1)
+        api_url = f"https://www.cvs.com/api/product/v2/{product_id}"
+
+        try:
+            res = requests.get(api_url, headers=headers, timeout=15)
+
+            if res.status_code == 200 and res.text.strip():
+                html_cache[url] = res.text
+                return res.text
+        except:
+            pass
+
+    # =========================================
+    # ✅ STEP 2: FALLBACK TO NORMAL PAGE
+    # =========================================
     try:
-        headers = {"User-Agent": "Mozilla/5.0"}
-        r = requests.get(url, headers=headers, timeout=15)
-
-        if r.status_code == 200:
-            html_cache[url] = r.text
-            return r.text
-
+        res = requests.get(url, headers=headers, timeout=15)
+        html_cache[url] = res.text
+        return res.text
     except Exception as e:
         print(f"Request failed for {url}: {e}")
 
@@ -85,44 +104,57 @@ def clean_text(raw):
 # ✅ SALSIFY IMAGE BUCKETS
 # =========================================
 def get_salsify_images(url):
-    soup = get_soup(url)
+    html = get_html(url)
     images = []
-    seen_urls = set()
     
     try:
-        rows = soup.find_all("tr")
+        json_match = re.search(
+            r'&lt;script[^&gt;]*&gt;.*?"product".*?"properties":\s*(\[.*?\])',
+            html,
+            re.DOTALL
+        )
         
-        for row in rows:
-            cells = row.find_all("td")
-            if len(cells) < 2:
+        if not json_match:
+            return images
+        
+        json_str = json_match.group(1)
+        properties = json.loads(json_str)
+        
+        seen_combinations = set()
+        
+        for prop in properties:
+            if not isinstance(prop, dict):
                 continue
             
-            prop_name_cell = cells[0]
-            prop_value_cell = cells[1]
+            prop_name = prop.get("property", "")
+            value = prop.get("value", "")
             
-            prop_text = prop_name_cell.get_text(strip=True).lower()
-            
-            if "image" not in prop_text and "photo" not in prop_text:
+            if "image" not in prop_name.lower():
                 continue
             
-            img_tags = prop_value_cell.find_all("img")
-            
-            for img in img_tags:
-                img_src = img.get("src", "")
-                
-                if ("salsify" in img_src or "images.salsify" in img_src) and img_src not in seen_urls:
-                    seen_urls.add(img_src)
-                    
-                    prop_label = prop_name_cell.get_text(strip=True)
-                    
+            if isinstance(value, str) and "salsify.com" in value:
+                combo = (prop_name, value)
+                if combo not in seen_combinations:
+                    seen_combinations.add(combo)
                     images.append({
-                        "type": prop_label,
-                        "url": img_src
+                        "type": prop_name.strip(),
+                        "url": value
                     })
-    
+
+            elif isinstance(value, dict) and "salsify:url" in value:
+                url_val = value.get("salsify:url", "")
+                combo = (prop_name, url_val)
+
+                if combo not in seen_combinations:
+                    seen_combinations.add(combo)
+                    images.append({
+                        "type": prop_name.strip(),
+                        "url": url_val
+                    })
+
     except Exception as e:
-        print(f"Salsify image extraction error: {e}")
-    
+        print(f"Salsify error: {e}")
+
     return images
 
 # =========================================
@@ -152,7 +184,7 @@ def get_cvs_images(url):
     return [v["url"] for v in image_dict.values()]
 
 # =========================================
-# ✅ RENDER IMAGE COMPARISON BY SALSIFY PROPERTY
+# ✅ RENDER IMAGE COMPARISON
 # =========================================
 def render_image_comparison_by_property(s_images, r_images):
     st.markdown("## Image Comparison ✅")
@@ -176,6 +208,38 @@ def render_image_comparison_by_property(s_images, r_images):
             col2.write("❌ Missing in CVS")
 
 # =========================================
+# ✅ TEXT / SCORING (UNCHANGED)
+# =========================================
+def normalize_text(text):
+    text = str(text).lower()
+    text = re.sub(r'[^a-z0-9\s]', '', text)
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
+
+def keyword_score(a, b):
+    a = normalize_text(a)
+    b = normalize_text(b)
+
+    if not a or not b:
+        return 0
+
+    ratio = max(
+        SequenceMatcher(None, a, b).ratio(),
+        SequenceMatcher(None, a[:200], b[:200]).ratio()
+    )
+
+    a_words = set(a.split())
+    b_words = set(b.split())
+
+    overlap = len(a_words & b_words)
+    total = len(a_words | b_words)
+
+    word_score = (overlap / total) if total else 0
+    final = (ratio * 0.6) + (word_score * 0.4)
+
+    return int(final * 100)
+
+# =========================================
 # ✅ MAIN
 # =========================================
 if uploaded_file:
@@ -187,7 +251,6 @@ if uploaded_file:
     for _, row in df.iterrows():
 
         st.subheader(f"SKU: {row['sku']}")
-
         full_html = get_html(row["retail_url"])
 
         try:
@@ -207,3 +270,26 @@ if uploaded_file:
 
         except Exception as e:
             st.error(f"❌ Error on SKU {row['sku']}: {e}")
+            continue
+
+# =========================================
+# ✅ EXPORT (UNCHANGED ✅)
+# =========================================
+if summary_rows:
+
+    summary_df = pd.DataFrame(summary_rows)
+    detail_df = pd.DataFrame(export_rows)
+
+    file_name = "pdp_qa_results.xlsx"
+
+    with pd.ExcelWriter(file_name, engine="openpyxl") as writer:
+        summary_df.to_excel(writer, index=False, sheet_name="Summary")
+        detail_df.to_excel(writer, index=False, sheet_name="Details")
+
+    with open(file_name, "rb") as f:
+        download_placeholder.download_button(
+            label="📥 Download Excel Report",
+            data=f,
+            file_name=file_name,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
