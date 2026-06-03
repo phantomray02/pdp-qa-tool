@@ -157,26 +157,50 @@ def clean_text(raw):
 def get_salsify_images(url):
 
     html = get_html(url)
-
-    images = []
+    images = set()
 
     try:
-        matches = re.findall(
-            r'"property":"([^"]+)".*?"value":"(https://images\.salsify\.com[^"]+)"',
-            html,
-            re.DOTALL
+        # =====================================
+        # ✅ 1. ORIGINAL PROPERTY MATCH (keep)
+        # =====================================
+        prop_matches = re.findall(
+            r'"value":"(https://images\.salsify\.com[^"]+)"',
+            html
         )
 
-        for prop, img_url in matches:
-            images.append({
-                "type": prop,   # ✅ keep original name
-                "url": img_url
-            })
+        for img in prop_matches:
+            images.add(img)
+
+        # =====================================
+        # ✅ 2. DIRECT IMG TAGS (VERY IMPORTANT)
+        # =====================================
+        soup = BeautifulSoup(html, "html.parser")
+
+        for img in soup.find_all("img"):
+            src = img.get("src")
+            if src and "salsify" in src:
+                images.add(src)
+
+            data_src = img.get("data-src")
+            if data_src and "salsify" in data_src:
+                images.add(data_src)
+
+        # =====================================
+        # ✅ 3. FALLBACK ANY IMAGE (last resort)
+        # =====================================
+        fallback = re.findall(
+            r'(https://images\.salsify\.com[^\s"]+)',
+            html
+        )
+
+        for img in fallback:
+            images.add(img)
 
     except Exception as e:
-        print("Parse error:", e)
+        print("Salsify parse error:", e)
 
-    return images
+    # ✅ return as list of dicts
+    return [{"type": "unknown", "url": img} for img in images]
 # =========================================
 # ✅ ORDER IMAGES
 # =========================================
