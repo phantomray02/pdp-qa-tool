@@ -11,6 +11,9 @@ st.title("PDP QA Tool ✅")
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 download_placeholder = st.empty()
 
+# =========================================
+# ✅ CACHE
+# =========================================
 html_cache = {}
 
 def get_html(url):
@@ -27,6 +30,9 @@ def get_html(url):
 
     return ""
 
+# =========================================
+# ✅ LOAD IMAGE
+# =========================================
 def load_image(url):
     try:
         r = requests.get(url, timeout=10)
@@ -37,19 +43,19 @@ def load_image(url):
     return None
 
 # =========================================
-# ✅ ✅ FINAL SALSIFY SOLUTION ✅
+# ✅ ✅ FINAL SALSIFY (PROPERTY + HERO FIX ✅)
 # =========================================
 def get_salsify_images(url):
     html = get_html(url)
 
     # =========================================
-    # ✅ STEP 1: TOP IMAGES (HERO - FIX DUPS ✅)
+    # ✅ STEP 1: HERO (TOP 3 FIX ✅)
     # =========================================
-    matches = re.findall(r'https://images\.salsify\.com[^"\s]+', html)
+    hero_matches = re.findall(r'https://images\.salsify\.com[^"\s]+', html)
 
     hero_map = {}
 
-    for m in matches[:15]:  # first part = hero zone
+    for m in hero_matches[:15]:
         base = m.split("?")[0]
         fname = base.split("/")[-1].lower()
 
@@ -69,26 +75,40 @@ def get_salsify_images(url):
     hero_images = list(hero_map.values())[:3]
 
     # =========================================
-    # ✅ STEP 2: ATF (1 PER PROPERTY ✅)
+    # ✅ STEP 2: PROPERTY-LEVEL (CRITICAL FIX ✅)
     # =========================================
-    atf_matches = re.findall(
+    prop_matches = re.findall(
         r'"property":"([^"]+)".*?"value":"(https://images\.salsify\.com[^"]+)"',
         html,
         re.DOTALL
     )
 
-    atf_map = {}
+    property_map = {}
 
-    for prop, img_url in atf_matches:
+    for prop, img_url in prop_matches:
+
         prop = prop.strip()
+        base = img_url.split("?")[0]
 
-        if prop.startswith("ATF"):
+        size = 0
+        size_match = re.search(r'Resize=\((\d+)', img_url)
+        if size_match:
+            size = int(size_match.group(1))
 
-            # ✅ ONE PER PROPERTY (your requirement)
-            if prop not in atf_map:
-                atf_map[prop] = img_url.split("?")[0]
+        # ✅ KEEP ONLY ONE (BEST) IMAGE PER PROPERTY
+        if prop not in property_map or size > property_map[prop]["size"]:
+            property_map[prop] = {
+                "url": base,
+                "size": size
+            }
 
+    # =========================================
+    # ✅ STEP 3: ORDERED ATF
+    # =========================================
     TARGET_ORDER = [
+        "Online Optimized Image",
+        "Flat Back_2D",
+        "Flat Left_2D",
         "ATF I/O-Generic",
         "ATF 2-Generic",
         "ATF 3-Generic",
@@ -97,24 +117,41 @@ def get_salsify_images(url):
         "ATF 6-Generic"
     ]
 
-    atf_images = [
-        {"type": prop, "url": atf_map[prop]}
-        for prop in TARGET_ORDER
-        if prop in atf_map
-    ]
+    property_images = []
+
+    for prop in TARGET_ORDER:
+        if prop in property_map:
+            property_images.append({
+                "type": prop,
+                "url": property_map[prop]["url"]
+            })
 
     # =========================================
-    # ✅ STEP 3: COMBINE ✅
+    # ✅ STEP 4: MERGE (NO DUPLICATES)
     # =========================================
-    final = (
-        [{"type": f"Hero {i+1}", "url": img["url"]} for i, img in enumerate(hero_images)]
-        + atf_images
-    )
+    final = []
+
+    used_urls = set()
+
+    # ✅ add hero first
+    for i, img in enumerate(hero_images):
+        if img["url"] not in used_urls:
+            final.append({
+                "type": f"Hero {i+1}",
+                "url": img["url"]
+            })
+            used_urls.add(img["url"])
+
+    # ✅ then properties
+    for img in property_images:
+        if img["url"] not in used_urls:
+            final.append(img)
+            used_urls.add(img["url"])
 
     return final[:8]
 
 # =========================================
-# ✅ CVS (UNCHANGED — CORRECT ✅)
+# ✅ CVS (UNLIMITED + BEST RES ✅)
 # =========================================
 def get_cvs_images(url):
     html = get_html(url)
@@ -185,7 +222,7 @@ if uploaded_file:
         s_text = get_salsify_text(row["salsify_url"])
         r_text = get_cvs_text(html)
 
-        # ✅ COPY
+        # ✅ DESCRIPTION
         st.markdown("## Description")
 
         c1, c2 = st.columns(2)
@@ -195,7 +232,7 @@ if uploaded_file:
         desc_score = keyword_score(s_text["description"], r_text["description"])
         st.write(f"✅ Description Match: {desc_score}%")
 
-        # ✅ IMAGES
+        # ✅ IMAGE COMPARISON
         st.markdown("## Image Comparison")
 
         s_images = get_salsify_images(row["salsify_url"])
@@ -233,7 +270,9 @@ if uploaded_file:
             "Overall %": overall
         })
 
-# ✅ EXPORT
+# =========================================
+# ✅ EXPORT ✅
+# =========================================
 if summary_rows:
     df = pd.DataFrame(summary_rows)
 
