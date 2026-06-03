@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import requests
-from bs4 import BeautifulSoup
 import re
 from difflib import SequenceMatcher
 from PIL import Image
@@ -33,6 +32,9 @@ def get_html(url):
 
     return ""
 
+# =========================================
+# ✅ IMAGE LOAD
+# =========================================
 def load_image(url):
     try:
         r = requests.get(url, timeout=10)
@@ -43,7 +45,7 @@ def load_image(url):
     return None
 
 # =========================================
-# ✅ SALSIFY IMAGES (JSON BASED)
+# ✅ SALSIFY IMAGES (DEDUPED ✅)
 # =========================================
 def get_salsify_images(url):
     html = get_html(url)
@@ -54,14 +56,18 @@ def get_salsify_images(url):
     matches = re.findall(r'https://images\.salsify\.com[^"]+', html)
 
     for m in matches:
-        clean = m.split("?")[0]
+        clean = m.split("?")[0].strip()
 
-        if clean not in seen:
-            seen.add(clean)
-            images.append({
-                "type": "Salsify",
-                "url": clean
-            })
+        # ✅ REMOVE DUPLICATES
+        if clean in seen:
+            continue
+
+        seen.add(clean)
+
+        images.append({
+            "type": f"Salsify {len(images)+1}",
+            "url": clean
+        })
 
     return images[:8]
 
@@ -83,7 +89,6 @@ def get_cvs_images(url):
         base = full.split("?")[0]
         name = base.split("/")[-1]
 
-        # extract size
         size_match = re.search(r'Resize=\((\d+)', m)
         size = int(size_match.group(1)) if size_match else 0
 
@@ -126,6 +131,9 @@ def get_cvs_text(html):
 
     return {"description": desc}
 
+# =========================================
+# ✅ TEXT SCORE
+# =========================================
 def normalize_text(t):
     return re.sub(r'[^a-z0-9\s]', '', str(t).lower())
 
@@ -170,9 +178,18 @@ if uploaded_file:
 
         st.write(f"✅ Description Match: {desc_score}%")
 
+        # ✅ FEATURES
+        st.markdown("## Features")
+
+        c1, c2 = st.columns(2)
+        c1.write(s_text.get("features", []))
+        c2.write("N/A")
+
         # =========================================
-        # ✅ IMAGES BELOW
+        # ✅ IMAGES (LEFT = SALSIFY | RIGHT = CVS)
         # =========================================
+        st.markdown("## Image Comparison")
+
         s_images = get_salsify_images(row["salsify_url"])
         r_images = get_cvs_images(row["retail_url"])
 
@@ -182,28 +199,30 @@ if uploaded_file:
 
             c1, c2 = st.columns(2)
 
+            # ✅ LEFT = SALSIFY
             if i < len(s_images):
-                c1.markdown(f"Salsify {i+1}")
+                c1.markdown(f"**Salsify {i+1}**")
                 img = load_image(s_images[i]["url"])
                 if img:
                     c1.image(img)
                 else:
-                    c1.write("❌ failed")
+                    c1.write("❌ Failed")
             else:
                 c1.write("❌ Missing")
 
+            # ✅ RIGHT = CVS
             if i < len(r_images):
-                c2.markdown(f"CVS {i+1}")
+                c2.markdown(f"**CVS {i+1}**")
                 img = load_image(r_images[i])
                 if img:
                     c2.image(img)
                 else:
-                    c2.write("❌ failed")
+                    c2.write("❌ Failed")
             else:
                 c2.write("❌ Missing")
 
         # =========================================
-        # ✅ SCORE
+        # ✅ SCORING
         # =========================================
         img_score = int(
             (min(len(s_images), len(r_images)) /
@@ -229,7 +248,7 @@ if 'summary_rows' in locals() and summary_rows:
     file_name = "pdp_qa_results.xlsx"
 
     with pd.ExcelWriter(file_name, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False)
+        df.to_excel(writer, index=False, sheet_name="Summary")
 
     with open(file_name, "rb") as f:
         download_placeholder.download_button(
