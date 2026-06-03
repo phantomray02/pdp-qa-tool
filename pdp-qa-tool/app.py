@@ -33,12 +33,6 @@ def get_html(url):
 
     return ""
 
-def get_soup(url):
-    return BeautifulSoup(get_html(url), "html.parser")
-
-# =========================================
-# ✅ IMAGE LOAD
-# =========================================
 def load_image(url):
     try:
         r = requests.get(url, timeout=10)
@@ -49,7 +43,7 @@ def load_image(url):
     return None
 
 # =========================================
-# ✅ SALSIFY IMAGES (FIXED)
+# ✅ SALSIFY IMAGES (JSON BASED)
 # =========================================
 def get_salsify_images(url):
     html = get_html(url)
@@ -57,108 +51,87 @@ def get_salsify_images(url):
     images = []
     seen = set()
 
-    try:
-        matches = re.findall(
-            r'https://images\.salsify\.com[^"]+',
-            html
-        )
+    matches = re.findall(r'https://images\.salsify\.com[^"]+', html)
 
-        for m in matches:
-            clean = m.split("?")[0]
+    for m in matches:
+        clean = m.split("?")[0]
 
-            if clean not in seen:
-                seen.add(clean)
-                images.append({
-                    "type": "Salsify",
-                    "url": clean
-                })
-
-    except Exception as e:
-        print("Salsify image error:", e)
+        if clean not in seen:
+            seen.add(clean)
+            images.append({
+                "type": "Salsify",
+                "url": clean
+            })
 
     return images[:8]
 
 # =========================================
-# ✅ CVS IMAGES (DEDUPED)
+# ✅ CVS IMAGES (HIGHEST RES ONLY ✅)
 # =========================================
 def get_cvs_images(url):
     html = get_html(url)
 
     matches = re.findall(
-        r'/bizcontent/merchandising/productimages/high_res/[^\s"]+\.jpg',
+        r'/bizcontent/merchandising/productimages/high_res/[^\s"]+\.jpg\?[^"]*',
         html
     )
 
-    seen = set()
-    results = []
+    best_images = {}
 
     for m in matches:
         full = "https://www.cvs.com" + m
-        name = full.split("/")[-1]
+        base = full.split("?")[0]
+        name = base.split("/")[-1]
 
-        if name not in seen:
-            seen.add(name)
-            results.append(full)
+        # extract size
+        size_match = re.search(r'Resize=\((\d+)', m)
+        size = int(size_match.group(1)) if size_match else 0
 
-    return results
+        if name not in best_images or size > best_images[name]["size"]:
+            best_images[name] = {
+                "url": base,
+                "size": size
+            }
+
+    return [v["url"] for v in best_images.values()]
 
 # =========================================
-# ✅ SALSIFY TEXT (FIXED)
+# ✅ TEXT
 # =========================================
 def get_salsify_text(url):
     html = get_html(url)
 
-    description = ""
+    desc = ""
     features = []
 
-    try:
-        desc = re.search(r'"generalDescription":"(.*?)"', html)
-        if desc:
-            description = desc.group(1)
+    d = re.search(r'"generalDescription":"(.*?)"', html)
+    if d:
+        desc = d.group(1)
 
-        features = re.findall(r'"generalFeature\d+":"(.*?)"', html)
-
-    except:
-        pass
+    features = re.findall(r'"generalFeature\d+":"(.*?)"', html)
 
     return {
-        "description": description,
+        "description": desc,
         "features": features[:5]
     }
 
-# =========================================
-# ✅ CVS TEXT (FIXED)
-# =========================================
 def get_cvs_text(html):
-    description = ""
+    desc = ""
 
-    try:
-        text = html.replace('\\"', '"')
+    text = html.replace('\\"', '"')
 
-        match = re.search(r'vendorDetailsParagraph":"(.*?)"', text)
-        if match:
-            description = match.group(1)
+    m = re.search(r'vendorDetailsParagraph":"(.*?)"', text)
+    if m:
+        desc = m.group(1)
 
-    except:
-        pass
+    return {"description": desc}
 
-    return {"description": description}
-
-# =========================================
-# ✅ TEXT SCORING
-# =========================================
-def normalize_text(text):
-    text = str(text).lower()
-    text = re.sub(r'[^a-z0-9\s]', '', text)
-    return text
+def normalize_text(t):
+    return re.sub(r'[^a-z0-9\s]', '', str(t).lower())
 
 def keyword_score(a, b):
     a = normalize_text(a)
     b = normalize_text(b)
-
-    if not a or not b:
-        return 0
-
     return int(SequenceMatcher(None, a, b).ratio() * 100)
 
 # =========================================
@@ -173,44 +146,21 @@ if uploaded_file:
 
         st.subheader(f"SKU: {row['sku']}")
 
-        s_images = get_salsify_images(row["salsify_url"])
-        r_images = get_cvs_images(row["retail_url"])
+        html = get_html(row["retail_url"])
 
-        # ✅ IMAGE COMPARISON
-        max_len = max(len(s_images), len(r_images))
-
-        for i in range(max_len):
-            c1, c2 = st.columns(2)
-
-            if i < len(s_images):
-                c1.markdown(f"**Salsify {i+1}**")
-                img = load_image(s_images[i]["url"])
-                if img:
-                    c1.image(img)
-                else:
-                    c1.write("❌ failed")
-            else:
-                c1.write("❌ Missing")
-
-            if i < len(r_images):
-                c2.markdown(f"**CVS {i+1}**")
-                img = load_image(r_images[i])
-                if img:
-                    c2.image(img)
-                else:
-                    c2.write("❌ failed")
-            else:
-                c2.write("❌ Missing")
-
-        # =========================================
-        # ✅ TEXT
-        # =========================================
         s_text = get_salsify_text(row["salsify_url"])
-        r_text = get_cvs_text(get_html(row["retail_url"]))
+        r_text = get_cvs_text(html)
 
+        # =========================================
+        # ✅ COPY AT TOP ✅
+        # =========================================
         st.markdown("## Description")
+
         c1, c2 = st.columns(2)
+        c1.markdown("**Salsify**")
         c1.write(s_text.get("description", ""))
+
+        c2.markdown("**CVS**")
         c2.write(r_text.get("description", ""))
 
         desc_score = keyword_score(
@@ -221,16 +171,45 @@ if uploaded_file:
         st.write(f"✅ Description Match: {desc_score}%")
 
         # =========================================
-        # ✅ IMAGE SCORE
+        # ✅ IMAGES BELOW
+        # =========================================
+        s_images = get_salsify_images(row["salsify_url"])
+        r_images = get_cvs_images(row["retail_url"])
+
+        max_len = max(len(s_images), len(r_images))
+
+        for i in range(max_len):
+
+            c1, c2 = st.columns(2)
+
+            if i < len(s_images):
+                c1.markdown(f"Salsify {i+1}")
+                img = load_image(s_images[i]["url"])
+                if img:
+                    c1.image(img)
+                else:
+                    c1.write("❌ failed")
+            else:
+                c1.write("❌ Missing")
+
+            if i < len(r_images):
+                c2.markdown(f"CVS {i+1}")
+                img = load_image(r_images[i])
+                if img:
+                    c2.image(img)
+                else:
+                    c2.write("❌ failed")
+            else:
+                c2.write("❌ Missing")
+
+        # =========================================
+        # ✅ SCORE
         # =========================================
         img_score = int(
             (min(len(s_images), len(r_images)) /
-            max(len(s_images), len(r_images), 1)) * 100
+             max(len(s_images), len(r_images), 1)) * 100
         )
 
-        # =========================================
-        # ✅ SUMMARY
-        # =========================================
         overall = int((img_score + desc_score) / 2)
 
         summary_rows.append({
@@ -250,7 +229,7 @@ if 'summary_rows' in locals() and summary_rows:
     file_name = "pdp_qa_results.xlsx"
 
     with pd.ExcelWriter(file_name, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Summary")
+        df.to_excel(writer, index=False)
 
     with open(file_name, "rb") as f:
         download_placeholder.download_button(
