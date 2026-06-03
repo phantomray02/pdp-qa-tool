@@ -36,33 +36,70 @@ IMAGE_ORDER = [
 ]
 
 # =========================================
+# ✅ START PLAYWRIGHT ONCE (GLOBAL)
+# =========================================
+from playwright.sync_api import sync_playwright
+
+import atexit
+
+def cleanup():
+    try:
+        browser.close()
+        p.stop()
+    except:
+        pass
+
+atexit.register(cleanup)
+
+
+
+p = sync_playwright().start()
+browser = p.chromium.launch(headless=True)
+
+import atexit
+atexit.register(lambda: (browser.close(), p.stop()))
+
+# =========================================
 # ✅ CACHE
 # =========================================
 html_cache = {}
 image_cache = {}
 
+# =========================================
+# ✅ GET HTML (OPTIMIZED)
+# =========================================
 def get_html(url):
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+
+    # ✅ USE CACHE FIRST
+    if url in html_cache:
+        return html_cache[url]
+
+    try:
         page = browser.new_page()
 
-        page.goto(url)
+        page.goto(url, timeout=30000, wait_until="networkidle")
 
-        # ✅ STEP 1 — SCROLL MULTIPLE TIMES
+        # ✅ Scroll for lazy loading
         for _ in range(5):
             page.evaluate("window.scrollBy(0, document.body.scrollHeight)")
             page.wait_for_timeout(1000)
 
-        # ✅ STEP 2 — WAIT FOR IMAGES TO LOAD
+        # ✅ Wait for images/content
         page.wait_for_selector("img", timeout=10000)
-
-        # ✅ EXTRA BUFFER
         page.wait_for_timeout(2000)
 
         html = page.content()
-        browser.close()
+        page.close()
 
-    return html
+        # ✅ SAVE TO CACHE
+        html_cache[url] = html
+
+        return html
+
+    except Exception as e:
+        print(f"Playwright failed for {url}: {e}")
+        return ""
+
 
     # =========================================
     # ✅ STEP 1: TRY API USING PRODUCT ID
@@ -699,24 +736,28 @@ if uploaded_file:
             st.error(f"❌ Error on SKU {row['sku']}: {e}")
             continue
 
-    # =========================================
-    # ✅ EXPORT
-    # =========================================
-    if summary_rows:
+# =========================================
+# ✅ EXPORT
+# =========================================
+if summary_rows:
 
-        summary_df = pd.DataFrame(summary_rows)
-        detail_df = pd.DataFrame(export_rows)
+    summary_df = pd.DataFrame(summary_rows)
+    detail_df = pd.DataFrame(export_rows)
 
-        file_name = "pdp_qa_results.xlsx"
+    file_name = "pdp_qa_results.xlsx"
 
-        with pd.ExcelWriter(file_name, engine="openpyxl") as writer:
-            summary_df.to_excel(writer, index=False, sheet_name="Summary")
-            detail_df.to_excel(writer, index=False, sheet_name="Details")
+    with pd.ExcelWriter(file_name, engine="openpyxl") as writer:
+        summary_df.to_excel(writer, index=False, sheet_name="Summary")
+        detail_df.to_excel(writer, index=False, sheet_name="Details")
 
-        with open(file_name, "rb") as f:
-            download_placeholder.download_button(
-                label="📥 Download Excel Report",
-                data=f,
-                file_name=file_name,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+    with open(file_name, "rb") as f:
+        download_placeholder.download_button(
+            label="📥 Download Excel Report",
+            data=f,
+            file_name=file_name,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+# ✅ ✅ CLEANUP GOES HERE (VERY END)
+browser.close()
+p.stop()
