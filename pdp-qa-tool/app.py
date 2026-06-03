@@ -156,40 +156,42 @@ def clean_text(raw):
 # =========================================
 def get_salsify_images(url):
 
-    html = get_html(url)
-    soup = BeautifulSoup(html, "html.parser")
-
-    images = {}
-    extra_count = 1
+    images = []
 
     try:
-        # ✅ LOOP THROUGH EACH IMAGE GROUP (THIS MATCHES YOUR HTML)
-        groups = soup.find_all("div", {"class": "asset-list_images__2aKCB"})
+        page = browser.new_page()
+        page.goto(url, wait_until="networkidle")
 
-        for group in groups:
+        # ✅ WAIT LONGER (critical fix)
+        page.wait_for_timeout(4000)
 
-            # ✅ PROPERTY NAME
-            prop_tag = group.find("span", {"data-testid": "property-name"})
-            prop_name = prop_tag.get_text(strip=True) if prop_tag else f"Extra {extra_count}"
+        # ✅ SCROLL — forces lazy images to load
+        for _ in range(5):
+            page.evaluate("window.scrollBy(0, document.body.scrollHeight)")
+            page.wait_for_timeout(1000)
 
-            # ✅ IMAGE URL FROM ...
-            link = group.find("a", href=True)
+        # ✅ GRAB RENDERED IMG TAGS (NOT RAW HTML)
+        img_urls = page.eval_on_selector_all(
+            "img",
+            "elements => elements.map(el => el.src)"
+        )
 
-            if link:
-                img_url = link["href"]
+        page.close()
 
-                # ✅ ONLY KEEP FIRST PER PROPERTY
-                if prop_name not in images:
-                    images[prop_name] = img_url
-
-            else:
-                extra_count += 1
+        # ✅ FILTER ONLY SALSIFY IMAGES
+        seen = set()
+        for url in img_urls:
+            if "images.salsify.com" in url and url not in seen:
+                seen.add(url)
+                images.append({
+                    "type": "rendered",
+                    "url": url
+                })
 
     except Exception as e:
-        print("Parse error:", e)
+        print("Playwright image error:", e)
 
-    return [{"type": k, "url": v} for k, v in images.items()]
-
+    return images
 # =========================================
 # ✅ CVS IMAGES
 # =========================================
