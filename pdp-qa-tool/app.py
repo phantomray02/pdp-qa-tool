@@ -162,36 +162,37 @@ def get_salsify_images(url):
         page = browser.new_page()
         page.goto(url, wait_until="networkidle")
 
-        # ✅ WAIT LONGER (critical fix)
+        # ✅ Ensure everything loads
         page.wait_for_timeout(4000)
 
-        # ✅ SCROLL — forces lazy images to load
-        for _ in range(5):
+        # ✅ Force lazy load
+        for _ in range(6):
             page.evaluate("window.scrollBy(0, document.body.scrollHeight)")
             page.wait_for_timeout(1000)
 
-        # ✅ GRAB RENDERED IMG TAGS (NOT RAW HTML)
+        # ✅ Pull ONLY visible gallery images (THIS FIXES EVERYTHING)
         img_urls = page.eval_on_selector_all(
-            "img",
-            "elements => elements.map(el => el.src)"
+            "section[aria-label='Product image gallery'] img",
+            "els => els.map(e => e.closest('a')?.href).filter(Boolean)"
         )
 
         page.close()
 
-        # ✅ FILTER ONLY SALSIFY IMAGES
+        # ✅ Deduplicate but KEEP order
         seen = set()
-        for url in img_urls:
-            if "images.salsify.com" in url and url not in seen:
-                seen.add(url)
-                images.append({
-                    "type": "rendered",
-                    "url": url
-                })
+        ordered = []
+
+        for img in img_urls:
+            if img and img not in seen:
+                seen.add(img)
+                ordered.append(img)
+
+        # ✅ label sequentially
+        return [{"type": f"Image {i+1}", "url": u} for i, u in enumerate(ordered)]
 
     except Exception as e:
-        print("Playwright image error:", e)
-
-    return images
+        print("Salsify extract error:", e)
+        return []
 # =========================================
 # ✅ CVS IMAGES
 # =========================================
@@ -457,6 +458,25 @@ def match_images_visual(s_images, r_images):
                 best_score = score
                 best_r = r
                 best_idx = i
+                st.markdown("## Index Comparison")
+        
+        max_len = max(len(s_images), len(r_images))
+        
+        for i in range(max_len):
+        
+            col1, col2 = st.columns(2)
+        
+            # Salsify
+            if i < len(s_images):
+                col1.image(s_images[i]["url"], caption=f"Salsify {i+1}")
+            else:
+                col1.write("❌ Missing")
+        
+            # CVS
+            if i < len(r_images):
+                col2.image(r_images[i], caption=f"CVS {i+1}")
+            else:
+                col2.write("❌ Missing")
 
         # ✅ LOWER THRESHOLD (IMPORTANT)
         if best_score >= 40:
