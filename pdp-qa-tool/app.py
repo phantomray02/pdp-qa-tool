@@ -1,5 +1,3 @@
-
-
 import streamlit as st
 import pandas as pd
 import requests
@@ -14,33 +12,13 @@ st.title("PDP QA Tool ✅")
 
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
-# ✅ TOP DOWNLOAD BUTTON PLACEHOLDER
 download_placeholder = st.empty()
-
-# ✅ STORAGE FOR EXPORT DATA
 export_rows = []
-
-
-# =========================================
-# ✅ IMAGE ORDER
-# =========================================
-IMAGE_ORDER = [
-    "Online Optimized Image",
-    "Flat Back_2D",
-    "Flat Left_2D",
-    "ATF I/O-Generic",
-    "ATF 2-Generic",
-    "ATF 3-Generic",
-    "ATF 4-Generic",
-    "ATF 5-Generic",
-    "ATF 6-Generic"
-]
 
 # =========================================
 # ✅ START PLAYWRIGHT ONCE (GLOBAL)
 # =========================================
 from playwright.sync_api import sync_playwright
-
 import atexit
 
 def cleanup():
@@ -52,12 +30,8 @@ def cleanup():
 
 atexit.register(cleanup)
 
-
-
 p = sync_playwright().start()
 browser = p.chromium.launch(headless=True)
-
-import atexit
 atexit.register(lambda: (browser.close(), p.stop()))
 
 # =========================================
@@ -94,6 +68,7 @@ def get_html(url):
     except Exception as e:
         print(f"Playwright failed for {url}: {e}")
         return ""
+
 def get_soup(url):
     return BeautifulSoup(get_html(url), "html.parser")
 
@@ -117,49 +92,110 @@ def clean_text(raw):
     return raw.strip()
 
 # =========================================
-# ✅ SALSIFY IMAGE BUCKETS
+# ✅ SALSIFY IMAGES - DEBUG VERSION
 # =========================================
 def get_salsify_images(url):
     """
-    Extract Salsify images in page order.
-    Finds all salsify.com image URLs from img tags in the rendered HTML.
+    Extract Salsify images from rendered HTML.
     """
+    html = get_html(url)
+    images = []
+    seen_urls = set()
+    
     try:
-        soup = get_soup(url)
-        images = []
-        seen_urls = set()
+        # ✅ SAVE DEBUG HTML
+        with open("salsify_debug.html", "w", encoding="utf-8") as f:
+            f.write(html)
+        print(f"📄 HTML saved to salsify_debug.html ({len(html)} chars)")
         
-        # Find ALL img tags
-        for img in soup.find_all("img"):
-            src = img.get("src") or ""
-            srcset = img.get("srcset") or ""
+        soup = BeautifulSoup(html, "html.parser")
+        
+        # ✅ DEBUG: Show what we're looking for
+        print("\n🔍 Looking for images...\n")
+        
+        # Try method 1: asset-list_images containers
+        asset_containers = soup.find_all("div", {"class": "asset-list_images__2aKCB"})
+        print(f"Method 1 - asset-list_images__2aKCB: Found {len(asset_containers)} containers")
+        
+        if len(asset_containers) > 0:
+            for idx, container in enumerate(asset_containers[:3]):  # Show first 3
+                print(f"  Container {idx + 1}:")
+                print(f"    aria-label: {container.get('aria-label', 'N/A')}")
+                noscript = container.find("noscript")
+                print(f"    Has noscript: {noscript is not None}")
+                if noscript:
+                    img = noscript.find("img")
+                    print(f"    Has img: {img is not None}")
+                    if img:
+                        srcset = img.get("srcset", "")
+                        print(f"    srcset length: {len(srcset)}")
+                        if srcset:
+                            first_url = srcset.split(",")[0].strip().split()[0]
+                            print(f"    First URL: {first_url[:80]}...")
+        
+        # Try method 2: Find all img tags with salsify URLs
+        print(f"\n\nMethod 2 - All img tags with 'salsify' in src/srcset:")
+        img_tags = soup.find_all("img")
+        print(f"Total img tags: {len(img_tags)}")
+        
+        salsify_count = 0
+        for img in img_tags:
+            src = img.get("src", "")
+            srcset = img.get("srcset", "")
+            if "salsify" in src or "salsify" in srcset:
+                salsify_count += 1
+                if salsify_count <= 5:  # Show first 5
+                    print(f"  Img {salsify_count}:")
+                    if srcset:
+                        first_url = srcset.split(",")[0].strip().split()[0]
+                        print(f"    srcset: {first_url[:80]}...")
+                    if src and src.startswith("http"):
+                        print(f"    src: {src[:80]}...")
+        
+        print(f"Total salsify imgs: {salsify_count}")
+        
+        # Now actually extract
+        print(f"\n\n✅ EXTRACTING IMAGES:\n")
+        
+        for idx, container in enumerate(asset_containers):
+            aria_label = container.get("aria-label", "").strip()
+            prop_name = aria_label.replace("-", "").strip() if aria_label else f"Image {idx + 1}"
             
-            # Check src first
-            if "salsify.com" in src and src not in seen_urls:
-                seen_urls.add(src)
+            noscript = container.find("noscript")
+            if not noscript:
+                continue
+            
+            img_tag = noscript.find("img")
+            if not img_tag:
+                continue
+            
+            srcset = img_tag.get("srcset", "")
+            src = img_tag.get("src", "")
+            
+            img_url = None
+            
+            if srcset and "salsify" in srcset:
+                urls = [u.strip().split()[0] for u in srcset.split(",") if u.strip()]
+                img_url = urls[-1] if urls else None
+            elif src and "salsify" in src:
+                img_url = src
+            
+            if img_url and img_url not in seen_urls:
+                seen_urls.add(img_url)
                 images.append({
-                    "url": src,
-                    "type": "Image"
+                    "type": prop_name,
+                    "url": img_url
                 })
-            
-            # Check srcSet (often has multiple resolutions)
-            if srcset and "salsify.com" in srcset:
-                # srcSet format: "url1 1x, url2 2x"
-                urls = [u.strip().split()[0] for u in srcset.split(",")]
-                for url_candidate in urls:
-                    if url_candidate not in seen_urls and "salsify.com" in url_candidate:
-                        seen_urls.add(url_candidate)
-                        images.append({
-                            "url": url_candidate,
-                            "type": "Image"
-                        })
-        
-        print(f"✅ Found {len(images)} Salsify images")
-        return images
+                print(f"✅ {prop_name}")
     
     except Exception as e:
-        print(f"Error extracting Salsify images: {e}")
-        return []
+        print(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    print(f"\n📊 Total images: {len(images)}\n")
+    return images
+
 # =========================================
 # ✅ CVS IMAGES
 # =========================================
@@ -185,8 +221,9 @@ def get_cvs_images(url):
             image_dict[name] = {"url": base, "size": size}
 
     return [v["url"] for v in image_dict.values()]
+
 # =========================================
-# ✅ RENDER IMAGE COMPARISON BY SALSIFY PROPERTY
+# ✅ RENDER IMAGE COMPARISON
 # =========================================
 def render_image_comparison_by_property(s_images, r_images):
     st.markdown("## Image Comparison ✅")
@@ -197,64 +234,55 @@ def render_image_comparison_by_property(s_images, r_images):
     for i in range(max_len):
         col1, col2 = st.columns(2)
 
-        # LEFT = Salsify property bucket.
         if i < len(s_images):
             col1.markdown(f"**{s_images[i]['type']}**")
             col1.image(s_images[i]["url"])
         else:
             col1.write("❌ Missing in Salsify")
 
-        # RIGHT = CVS image in order.
         if i < len(r_images):
             col2.markdown(f"**CVS Image {i+1}**")
             col2.image(r_images[i])
         else:
             col2.write("❌ Missing in CVS")
+
 # =========================================
-# ✅ FINAL FEATURE EXTRACTION (STRONG + GENERAL)
+# ✅ SALSIFY TEXT
 # =========================================
-def extract_features_from_description(desc):
+def get_salsify_text(url):
+    """Extract title, description, and features from Salsify."""
+    try:
+        soup = get_soup(url)
+        description = ""
+        features = []
+        
+        rows = soup.find_all("tr")
+        
+        for row in rows:
+            label = row.get_text(" ", strip=True).lower()
+            
+            if "general description" in label:
+                content = row.find("span", {"data-testid": "property-content"})
+                if content:
+                    description = clean_text(content.get_text(" ", strip=True))
+            
+            if re.search(r'general feature \d+', label, re.IGNORECASE):
+                clean = re.sub(r'general feature \d+\s*', '', label, flags=re.IGNORECASE)
+                if clean.strip():
+                    features.append(clean.strip())
+        
+        return {
+            "description": description,
+            "features": features[:5]
+        }
+    except:
+        return {"description": "", "features": []}
 
-    if not desc:
-        return []
-
-    sentences = re.split(r'(?<=[.!?])\s+', desc)
-
-    features = []
-
-    for s in sentences:
-        clean_s = clean_text(s)
-        words = clean_s.split()
-
-        wc = len(words)
-
-        # ✅ general feature-like sentence rules
-        if 8 <= wc <= 28 and clean_s and clean_s[0].isupper():
-            features.append(clean_s)
-
-        # ✅ CVS-style label extraction inside description
-        label_matches = re.findall(r'([A-Z][A-Z\s\-]+:\s[^.]+)', clean_s)
-        for lm in label_matches:
-            features.append(lm)
-
-    # ✅ remove duplicates
-    seen = set()
-    unique = []
-
-    for f in features:
-        if f not in seen and len(f) > 20:
-            seen.add(f)
-            unique.append(f)
-
-    return unique[:5]
 # =========================================
-# ✅ CVS TEXT (FINAL WORKING VERSION)
+# ✅ CVS TEXT
 # =========================================
-import re
-import json
-
 def get_cvs_text(html):
-
+    """Extract title, description, and features from CVS."""
     description = ""
     features = []
 
@@ -262,13 +290,8 @@ def get_cvs_text(html):
         return {"description": "", "features": []}
 
     try:
-        # ✅ 1. CLEAN RAW HTML TEXT
         text = html.replace('\\"', '"')
         text = re.sub(r'\\n', ' ', text)
-
-        # =========================================
-        # ✅ DESCRIPTION (MULTIPLE FALLBACKS)
-        # =========================================
 
         desc_patterns = [
             r'vendorDetailsParagraph":"(.*?)"',
@@ -282,14 +305,8 @@ def get_cvs_text(html):
                 description = match.group(1)
                 break
 
-        # ✅ extra cleaning
         description = re.sub(r'\s+', ' ', description).strip()
 
-        # =========================================
-        # ✅ FEATURES (MUCH STRONGER LOGIC)
-        # =========================================
-
-        # ✅ Find ALL CAPS label-style features
         feature_matches = re.findall(
             r'([A-Z][A-Z\s\-]{5,}:\s[^"]+)',
             text
@@ -297,15 +314,9 @@ def get_cvs_text(html):
 
         for f in feature_matches:
             clean_f = re.sub(r'\s+', ' ', f).strip()
-
             if len(clean_f) > 20:
                 features.append(clean_f)
 
-        # ✅ BONUS: extract from description if features missing
-        if not features and description:
-            features = extract_features_from_description(description)
-
-        # ✅ Deduplicate
         features = list(dict.fromkeys(features))[:5]
 
     except Exception as e:
@@ -317,167 +328,6 @@ def get_cvs_text(html):
     }
 
 # =========================================
-# ✅ SALSIFY TEXT CLEAN VERSION
-# =========================================
-def get_salsify_images(url):
-    """
-    Extract ALL Salsify product images by finding srcSet URLs in noscript tags.
-    This works because Salsify uses lazy loading with noscript fallbacks.
-    """
-    html = get_html(url)
-    images = []
-    seen_urls = set()
-    
-    try:
-        soup = BeautifulSoup(html, "html.parser")
-        
-        # Find all asset containers (each image property has one)
-        asset_containers = soup.find_all("div", {"class": "asset-list_images__2aKCB"})
-        
-        for container in asset_containers:
-            
-            # Get the property name from aria-label
-            # e.g., "Online Optimized Image-" or "Flat Back_2D-"
-            aria_label = container.get("aria-label", "")
-            prop_name = aria_label.replace("-", "").strip()
-            
-            if not prop_name:
-                continue
-            
-            # Look for the actual image URL in srcSet (inside noscript)
-            noscript = container.find("noscript")
-            if noscript:
-                img_tag = noscript.find("img", {"data-testid": "salsify-image"})
-                if img_tag:
-                    srcset = img_tag.get("srcset", "")
-                    
-                    # srcSet format: "url1 1x, url2 2x"
-                    # Extract the highest quality URL (the last one)
-                    if srcset:
-                        urls = [u.strip().split()[0] for u in srcset.split(",")]
-                        img_url = urls[-1]  # Get the 2x version (highest quality)
-                        
-                        if img_url and "salsify" in img_url and img_url not in seen_urls:
-                            seen_urls.add(img_url)
-                            images.append({
-                                "type": prop_name,
-                                "url": img_url
-                            })
-    
-    except Exception as e:
-        print(f"Salsify image extraction error: {e}")
-    
-    return images
-# =========================================
-# ✅ FAST + ALL IMAGES COMPARISON
-# =========================================
-def load_image_with_white_bg(img_data):
-    img = Image.open(BytesIO(img_data)).convert("RGBA")
-
-    # ✅ create white background
-    white_bg = Image.new("RGBA", img.size, (255, 255, 255, 255))
-
-    # ✅ paste using alpha channel (this removes transparency issue)
-    if img.mode == "RGBA":
-        white_bg.paste(img, mask=img.split()[3])
-    else:
-        white_bg.paste(img)
-
-    # ✅ convert back to grayscale
-    return white_bg.convert("L")
-
-
-def compare_images_visually(s_url, r_url):
-    try:
-        # ✅ CACHE DOWNLOAD
-        if s_url in image_cache:
-            s_img_data = image_cache[s_url]
-        else:
-            s_img_data = requests.get(s_url, timeout=5).content
-            image_cache[s_url] = s_img_data
-
-        if r_url in image_cache:
-            r_img_data = image_cache[r_url]
-        else:
-            r_img_data = requests.get(r_url, timeout=5).content
-            image_cache[r_url] = r_img_data
-
-        # =========================
-        # ✅ FIX: NORMALIZE BACKGROUND
-        # =========================
-
-        from PIL import ImageFilter
-        
-        # ✅ normalize + blur to ignore alignment issues
-        s_img = load_image_with_white_bg(s_img_data).resize((64, 64)).filter(ImageFilter.GaussianBlur(2))
-        r_img = load_image_with_white_bg(r_img_data).resize((64, 64)).filter(ImageFilter.GaussianBlur(2))
-
-        # =========================
-        # ✅ PIXEL DIFFERENCE
-        # =========================
-        diff = sum(
-            abs(a - b)
-            for a, b in zip(s_img.getdata(), r_img.getdata())
-        ) / (64 * 64)
-
-        # =========================
-        # ✅ IMPROVED SCORING
-        # =========================
-        if diff < 5:
-            return 100
-        elif diff < 15:
-            return 90
-        elif diff < 30:
-            return 75
-        elif diff < 45:
-            return 60
-        elif diff < 60:
-            return 45
-        elif diff < 80:
-            return 30
-        else:
-            return 15
-
-    except:
-        return 0
-
-def match_images_visual(s_images, r_images):
-    results = []
-    used_r = set()
-
-    for s in s_images:
-        best_score = 0
-        best_r = None
-        best_idx = None
-
-        for i, r in enumerate(r_images):
-            if i in used_r:
-                continue
-
-            score = compare_images_visually(s["url"], r)
-
-            if score > best_score:
-                best_score = score
-                best_r = r
-                best_idx = i
-
-        if best_score >= 40:
-            results.append((s["url"], best_r, best_score))
-            used_r.add(best_idx)
-        else:
-            results.append((s["url"], "", best_score))
-
-    return results
-    # ✅ find unmatched CVS images
-        unmatched_r = [
-            r for i, r in enumerate(r_images)
-            if all(r != match[1] for match in image_matches)
-        ]
-        
-        for r in unmatched_r:
-            st.error("🚨 Image exists on CVS but not matched to Salsify")
-            st.image(r)
-# =========================================
 # ✅ TEXT NORMALIZATION
 # =========================================
 def normalize_text(text):
@@ -486,29 +336,21 @@ def normalize_text(text):
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
 
-
 # =========================================
-# ✅ DESCRIPTION MATCHING (FIXES 0%)
+# ✅ KEYWORD SCORE
 # =========================================
-from difflib import SequenceMatcher
-
 def keyword_score(a, b):
-
     a = normalize_text(a)
     b = normalize_text(b)
 
     if not a or not b:
         return 0
 
-    # ✅ overall similarity
-    
     ratio = max(
         SequenceMatcher(None, a, b).ratio(),
         SequenceMatcher(None, a[:200], b[:200]).ratio()
     )
 
-
-    # ✅ word overlap bonus
     a_words = set(a.split())
     b_words = set(b.split())
 
@@ -517,39 +359,9 @@ def keyword_score(a, b):
 
     word_score = (overlap / total) if total else 0
 
-    # ✅ combine both
     final = (ratio * 0.6) + (word_score * 0.4)
 
     return int(final * 100)
-# =========================================
-# ✅ FEATURE MATCHING
-# =========================================
-def match_features(s_features, r_features):
-    results = []
-
-    for s in s_features:
-        best_match = ""
-        best_score = 0
-
-        for r in r_features:
-            # ✅ use fuzzy match instead of word overlap
-            score = SequenceMatcher(
-                None,
-                normalize_text(s),
-                normalize_text(r)
-            ).ratio()
-
-            if score > best_score:
-                best_score = score
-                best_match = r
-
-        # ✅ lower threshold (CRITICAL CHANGE)
-        if best_score >= 0.25:
-            results.append((s, best_match, int(best_score * 100)))
-        else:
-            results.append((s, "❌ Missing", int(best_score * 100)))
-
-    return results
 
 # =========================================
 # ✅ MAIN
@@ -567,58 +379,33 @@ if uploaded_file:
         full_html = get_html(row["retail_url"])
 
         try:
-            # =========================
-            # ✅ IMAGE BUCKETS
-            # =========================
+            # Get images
             s_images = get_salsify_images(row["salsify_url"])
             s_images = [img for img in s_images if img.get("url")]
 
             r_images = get_cvs_images(row["retail_url"])
 
-            # =========================
-            # ✅ DEBUG VIEW
-            # =========================
+            # Debug view
             with st.expander("🧺 Salsify Images", expanded=True):
                 st.write("Total Salsify images:", len(s_images))
                 cols = st.columns(3)
 
                 for i, img in enumerate(s_images):
-                    cols[i % 3].image(img["url"], caption=img["type"])
+                    cols[i % 3].image(img["url"], caption=img["type"], use_container_width=True)
 
-            # =========================
-            # ✅ PROPERTY-BASED COMPARISON VIEW
-            # =========================
+            # Comparison
             render_image_comparison_by_property(s_images, r_images)
 
-            # =========================
-            # ✅ OPTIONAL VISUAL MATCH SCORE
-            # =========================
-            image_matches = match_images_visual(s_images, r_images)
-            
-            # =========================
-            # ✅ IMAGE SCORE
-            # =========================
+            # Image score
+            img_score = 100 if len(s_images) == len(r_images) else int((min(len(s_images), len(r_images)) / max(len(s_images), len(r_images), 1)) * 100)
+            st.write(f"✅ Image Match: {img_score}%")
 
-            img_scores = [score for _, _, score in image_matches if score > 0]
-            avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
-
-            st.write(f"✅ Image Match: {avg_img_score}%")
-
-
-            # =========================
-            # ✅ TEXT EXTRACTION
-            # =========================
+            # Get text
             s_text = get_salsify_text(row["salsify_url"])
             r_text = get_cvs_text(full_html)
 
-            st.write("✅ CVS DESCRIPTION:", r_text.get("description", ""))
-            st.write("✅ CVS FEATURES:", r_text.get("features", []))
-
-            # =========================
-            # ✅ TITLE
-            # =========================
+            # Title
             st.markdown("## Title")
-
             soup = get_soup(row["salsify_url"])
 
             s_title = ""
@@ -632,71 +419,51 @@ if uploaded_file:
 
             r_title_match = re.search(r'"productName":"(.*?)"', full_html)
             r_title = r_title_match.group(1) if r_title_match else ""
-
             r_title = re.sub(r'\s*-\s*CVS.*$', '', r_title).strip()
 
             c1, c2 = st.columns(2)
-            c1.write(s_title)
-            c2.write(r_title)
+            c1.write(f"Salsify: {s_title}")
+            c2.write(f"CVS: {r_title}")
 
-            title_score = int(
-                SequenceMatcher(None, s_title.lower(), r_title.lower()).ratio() * 100
-            )
-
+            title_score = int(SequenceMatcher(None, s_title.lower(), r_title.lower()).ratio() * 100)
             st.write(f"✅ Title Match: {title_score}%")
 
-            # =========================
-            # ✅ DESCRIPTION
-            # =========================
+            # Description
             st.markdown("## Description")
-
             c1, c2 = st.columns(2)
-            c1.write(s_text.get("description", ""))
-            c2.write(r_text.get("description", ""))
+            c1.write(s_text.get("description", "")[:200])
+            c2.write(r_text.get("description", "")[:200])
 
-            desc_score = keyword_score(
-                s_text.get("description", ""),
-                r_text.get("description", "")
-            )
-
+            desc_score = keyword_score(s_text.get("description", ""), r_text.get("description", ""))
             st.write(f"✅ Description Match: {desc_score}%")
 
-            # =========================
-            # ✅ FEATURE SCORE (TEMP)
-            # =========================
-            avg_feature_score = 0
-
-            # =========================
-            # ✅ OVERALL SCORE
-            # =========================
-            overall_score = int(
-                (title_score + desc_score + avg_feature_score + avg_img_score) / 4
-            )
+            # Summary
+            overall_score = int((title_score + desc_score + img_score) / 3)
 
             summary_rows.append({
                 "SKU": row["sku"],
                 "Title %": title_score,
                 "Description %": desc_score,
-                "Image %": avg_img_score,
+                "Image %": img_score,
                 "Overall %": overall_score
             })
 
         except Exception as e:
             st.error(f"❌ Error on SKU {row['sku']}: {e}")
+            import traceback
+            traceback.print_exc()
             continue
+
 # =========================================
 # ✅ EXPORT
 # =========================================
 if summary_rows:
-
     summary_df = pd.DataFrame(summary_rows)
-    detail_df = pd.DataFrame(export_rows)
 
     file_name = "pdp_qa_results.xlsx"
 
     with pd.ExcelWriter(file_name, engine="openpyxl") as writer:
         summary_df.to_excel(writer, index=False, sheet_name="Summary")
-        detail_df.to_excel(writer, index=False, sheet_name="Details")
 
     with open(file_name, "rb") as f:
         download_placeholder.download_button(
