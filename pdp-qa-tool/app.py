@@ -8,6 +8,7 @@ import re
 from difflib import SequenceMatcher
 from PIL import Image
 from io import BytesIO
+import json
 
 st.title("PDP QA Tool ✅")
 
@@ -69,38 +70,30 @@ image_cache = {}
 # ✅ GET HTML (OPTIMIZED)
 # =========================================
 def get_html(url):
-
-    # ✅ USE CACHE FIRST
     if url in html_cache:
         return html_cache[url]
 
     try:
         page = browser.new_page()
-
         page.goto(url, timeout=30000, wait_until="networkidle")
-
-        # ✅ Scroll for lazy loading
+        
+        # Scroll for lazy loading
         for _ in range(5):
             page.evaluate("window.scrollBy(0, document.body.scrollHeight)")
             page.wait_for_timeout(1000)
-
-        # ✅ Wait for images/content
+        
         page.wait_for_selector("img", timeout=10000)
         page.wait_for_timeout(2000)
-
+        
         html = page.content()
         page.close()
-
-        # ✅ SAVE TO CACHE
+        
         html_cache[url] = html
-
         return html
-
+        
     except Exception as e:
         print(f"Playwright failed for {url}: {e}")
         return ""
-
-
     # =========================================
     # ✅ STEP 1: TRY API USING PRODUCT ID
     # =========================================
@@ -155,42 +148,68 @@ def clean_text(raw):
 # ✅ SALSIFY IMAGE BUCKETS
 # =========================================
 def get_salsify_images(url):
-
+    """
+    Extract Salsify images from product page by parsing embedded JSON.
+    Returns list of dicts with 'type' (property name) and 'url'.
+    """
     html = get_html(url)
-
     images = []
-
+    
     try:
-        # ✅ find ALL property + value pairs independently
-        matches = re.findall(
-            r'"property":"([^"]+)".*?"value":"(https://images\.salsify\.com[^"]+)"',
+        # ✅ Find the main JSON data block (usually in <script> tags)
+        # Salsify embeds product data in window.__INITIAL_STATE__ or similar
+        json_match = re.search(
+            r'<script[^>]*>.*?"product".*?"properties":\s*(\[.*?\])',
             html,
             re.DOTALL
         )
-
-        seen = set()
-
-        for prop, img_url in matches:
-
-            if img_url not in seen:
-                seen.add(img_url)
-
-                images.append({
-                    "type": prop.strip(),
-                    "url": img_url
-                })
-
+        
+        if not json_match:
+            print(f"No JSON block found for {url}")
+            return images
+        
+        json_str = json_match.group(1)
+        properties = json.loads(json_str)
+        
+        # ✅ Track which URLs we've seen AND for which properties
+        seen_combinations = set()
+        
+        for prop in properties:
+            if not isinstance(prop, dict):
+                continue
+            
+            prop_name = prop.get("property", "")
+            value = prop.get("value", "")
+            
+            # ✅ Only grab actual image properties
+            if "image" not in prop_name.lower():
+                continue
+            
+            # ✅ Value could be a string URL or JSON object
+            if isinstance(value, str) and "salsify.com" in value:
+                combo = (prop_name, value)
+                if combo not in seen_combinations:
+                    seen_combinations.add(combo)
+                    images.append({
+                        "type": prop_name.strip(),
+                        "url": value
+                    })
+            elif isinstance(value, dict) and "salsify:url" in value:
+                url_val = value.get("salsify:url", "")
+                combo = (prop_name, url_val)
+                if combo not in seen_combinations:
+                    seen_combinations.add(combo)
+                    images.append({
+                        "type": prop_name.strip(),
+                        "url": url_val
+                    })
+    
+    except json.JSONDecodeError as e:
+        print(f"JSON parse error: {e}")
     except Exception as e:
-        print("Salsify regex error:", e)
-
+        print(f"Salsify image extraction error: {e}")
+    
     return images
-
-st.markdown("### ✅ RAW SALSIFY DEBUG")
-
-for img in raw_images:
-    if "shufsx6py6bh03k8gebu" in img["url"]:
-        st.success("✅ FOUND TARGET IMAGE IN RAW")
-        st.write(img)
 # =========================================
 # ✅ CVS IMAGES
 # =========================================
