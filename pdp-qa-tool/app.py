@@ -184,6 +184,13 @@ def get_salsify_images(url):
         print("Salsify regex error:", e)
 
     return images
+
+st.markdown("### ✅ RAW SALSIFY DEBUG")
+
+for img in raw_images:
+    if "shufsx6py6bh03k8gebu" in img["url"]:
+        st.success("✅ FOUND TARGET IMAGE IN RAW")
+        st.write(img)
 # =========================================
 # ✅ CVS IMAGES
 # =========================================
