@@ -43,7 +43,7 @@ def load_image(url):
     return None
 
 # =========================================
-# ✅ ✅ FINAL SALSIFY (PROPERTY + HERO FIX ✅)
+# ✅ ✅ SALSIFY FINAL (ROOT FIX ✅)
 # =========================================
 def get_salsify_images(url):
     html = get_html(url)
@@ -59,9 +59,11 @@ def get_salsify_images(url):
         base = m.split("?")[0]
         fname = base.split("/")[-1].lower()
 
+        # remove UI junk
         if any(x in fname for x in ["thumb", "icon", "small"]):
             continue
 
+        # normalize for crop variants
         key = re.sub(r'(_|-)?\d+x\d+', '', fname)
 
         size = 0
@@ -69,41 +71,42 @@ def get_salsify_images(url):
         if size_match:
             size = int(size_match.group(1))
 
+        # keep highest res
         if key not in hero_map or size > hero_map[key]["size"]:
             hero_map[key] = {"url": base, "size": size}
 
     hero_images = list(hero_map.values())[:3]
 
     # =========================================
-    # ✅ STEP 2: PROPERTY-LEVEL (CRITICAL FIX ✅)
+    # ✅ STEP 2: PROPERTY PARSE (REAL FIX ✅)
     # =========================================
-    prop_matches = re.findall(
+    matches = re.findall(
         r'"property":"([^"]+)".*?"value":"(https://images\.salsify\.com[^"]+)"',
         html,
         re.DOTALL
     )
 
-    property_map = {}
+    seen_props = set()
+    property_images = []
 
-    for prop, img_url in prop_matches:
+    for prop, img_url in matches:
 
         prop = prop.strip()
-        base = img_url.split("?")[0]
 
-        size = 0
-        size_match = re.search(r'Resize=\((\d+)', img_url)
-        if size_match:
-            size = int(size_match.group(1))
+        # ✅ CRITICAL FIX:
+        # Only take FIRST image per property
+        if prop in seen_props:
+            continue
 
-        # ✅ KEEP ONLY ONE (BEST) IMAGE PER PROPERTY
-        if prop not in property_map or size > property_map[prop]["size"]:
-            property_map[prop] = {
-                "url": base,
-                "size": size
-            }
+        seen_props.add(prop)
+
+        property_images.append({
+            "type": prop,
+            "url": img_url.split("?")[0]
+        })
 
     # =========================================
-    # ✅ STEP 3: ORDERED ATF
+    # ✅ STEP 3: ORDER PROPERTIES
     # =========================================
     TARGET_ORDER = [
         "Online Optimized Image",
@@ -117,23 +120,21 @@ def get_salsify_images(url):
         "ATF 6-Generic"
     ]
 
-    property_images = []
+    ordered_props = []
 
     for prop in TARGET_ORDER:
-        if prop in property_map:
-            property_images.append({
-                "type": prop,
-                "url": property_map[prop]["url"]
-            })
+        for img in property_images:
+            if img["type"] == prop:
+                ordered_props.append(img)
+                break
 
     # =========================================
-    # ✅ STEP 4: MERGE (NO DUPLICATES)
+    # ✅ STEP 4: MERGE HERO + PROPERTIES
     # =========================================
     final = []
-
     used_urls = set()
 
-    # ✅ add hero first
+    # add hero images first
     for i, img in enumerate(hero_images):
         if img["url"] not in used_urls:
             final.append({
@@ -142,8 +143,8 @@ def get_salsify_images(url):
             })
             used_urls.add(img["url"])
 
-    # ✅ then properties
-    for img in property_images:
+    # then property images
+    for img in ordered_props:
         if img["url"] not in used_urls:
             final.append(img)
             used_urls.add(img["url"])
@@ -161,7 +162,7 @@ def get_cvs_images(url):
         html
     )
 
-    best = {}
+    best_images = {}
 
     for m in matches:
         full = "https://www.cvs.com" + m
@@ -171,10 +172,13 @@ def get_cvs_images(url):
         size_match = re.search(r'Resize=\((\d+)', m)
         size = int(size_match.group(1)) if size_match else 0
 
-        if name not in best or size > best[name]["size"]:
-            best[name] = {"url": base, "size": size}
+        if name not in best_images or size > best_images[name]["size"]:
+            best_images[name] = {
+                "url": base,
+                "size": size
+            }
 
-    return [v["url"] for v in best.values()]
+    return [v["url"] for v in best_images.values()]
 
 # =========================================
 # ✅ TEXT
@@ -191,7 +195,10 @@ def get_salsify_text(url):
 
     features = re.findall(r'"generalFeature\d+":"(.*?)"', html)
 
-    return {"description": desc, "features": features[:5]}
+    return {
+        "description": desc,
+        "features": features[:5]
+    }
 
 def get_cvs_text(html):
     html = html.replace('\\"', '"')
@@ -199,6 +206,9 @@ def get_cvs_text(html):
 
     return {"description": m.group(1) if m else ""}
 
+# =========================================
+# ✅ TEXT SCORE
+# =========================================
 def normalize_text(t):
     return re.sub(r'[^a-z0-9\s]', '', str(t).lower())
 
@@ -229,7 +239,11 @@ if uploaded_file:
         c1.write(s_text["description"])
         c2.write(r_text["description"])
 
-        desc_score = keyword_score(s_text["description"], r_text["description"])
+        desc_score = keyword_score(
+            s_text["description"],
+            r_text["description"]
+        )
+
         st.write(f"✅ Description Match: {desc_score}%")
 
         # ✅ IMAGE COMPARISON
@@ -241,20 +255,19 @@ if uploaded_file:
         max_len = max(len(s_images), len(r_images))
 
         for i in range(max_len):
-
             c1, c2 = st.columns(2)
 
             if i < len(s_images):
                 c1.markdown(f"**{s_images[i]['type']}**")
                 img = load_image(s_images[i]["url"])
                 if img:
-                    c1.image(img)
+                    c1.image(img, use_container_width=True)
 
             if i < len(r_images):
                 c2.markdown(f"**CVS {i+1}**")
                 img = load_image(r_images[i])
                 if img:
-                    c2.image(img)
+                    c2.image(img, use_container_width=True)
 
         img_score = int(
             (min(len(s_images), len(r_images)) /
@@ -273,7 +286,8 @@ if uploaded_file:
 # =========================================
 # ✅ EXPORT ✅
 # =========================================
-if summary_rows:
+if 'summary_rows' in locals() and summary_rows:
+
     df = pd.DataFrame(summary_rows)
 
     file_name = "pdp_qa_results.xlsx"
