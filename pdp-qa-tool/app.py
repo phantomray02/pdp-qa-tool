@@ -132,14 +132,18 @@ def get_salsify_images(url):
         print(f"\n🔍 EXTRACTING IMAGES WITH CONDITIONAL LOGIC:\n")
         
         # Find all asset containers
-        asset_containers = soup.find_all("div", {"class": "asset-list_images__2aKCB"})
+        
+        asset_containers = soup.find_all(
+            lambda tag: tag.name == "div" and tag.get("class") and
+            any("asset-list_images__" in c for c in tag.get("class"))
+        )
         print(f"Total asset containers found: {len(asset_containers)}\n")
         
         # Build a map of property_name -> container
         property_map = {}
         for container in asset_containers:
             aria_label = container.get("aria-label", "").strip()
-            prop_name = aria_label.replace("-", "").strip() if aria_label else ""
+            prop_name = aria_label.strip() if aria_label else ""
             
             if prop_name:
                 property_map[prop_name] = container
@@ -280,7 +284,20 @@ def extract_image_from_container(container):
                 img_url = urls[-1] if urls else None
             elif src and "salsify" in src:
                 img_url = src
+                
+    if not property_map:
+        print("⚠️ No asset containers found — using gallery fallback")
     
+        imgs = soup.find_all("img")
+    
+        for img in imgs:
+            src = img.get("src", "")
+            if "salsify" in src and src not in seen_urls:
+                seen_urls.add(src)
+                images.append({
+                    "type": "Fallback Image",
+                    "url": src
+                })
     # Method 3: Look for any img tag in the container with salsify URL
     if not img_url:
         for img_tag in container.find_all("img"):
@@ -490,6 +507,11 @@ if uploaded_file:
             with st.expander("🧺 Salsify Images", expanded=True):
                 st.write("Total Salsify images:", len(s_images))
                 cols = st.columns(3)
+                
+            print("\n🧠 PROPERTY MAP KEYS:")
+            for k in property_map.keys():
+                print(f"  → {k}")
+
 
                 for i, img in enumerate(s_images):
                     cols[i % 3].image(img["url"], caption=img["type"], use_container_width=True)
