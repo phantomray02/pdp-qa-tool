@@ -45,7 +45,7 @@ def load_image(url):
     return None
 
 # =========================================
-# ✅ SALSIFY (LIMIT TO 8 ✅ CLEAN ✅)
+# ✅ ✅ SALSIFY (LARGEST RES ONLY ✅ FINAL)
 # =========================================
 def get_salsify_images(url):
     html = get_html(url)
@@ -53,37 +53,42 @@ def get_salsify_images(url):
     matches = re.findall(r'https://images\.salsify\.com[^"\s]+', html)
 
     image_map = {}
-    seen = set()
 
     for m in matches:
 
         base = m.split("?")[0]
         fname = base.split("/")[-1].lower()
 
-        # ✅ remove junk
+        # ✅ remove junk thumbnails
         if any(x in fname for x in ["thumb", "icon", "small"]):
             continue
 
-        # ✅ normalize → removes cropped versions
+        # ✅ normalize file key (REMOVE crop variants)
         fname_key = re.sub(r'(_|-)?\d+x\d+', '', fname)
 
-        if fname_key in seen:
-            continue
+        # ✅ extract resolution (CRITICAL)
+        size = 0
+        size_match = re.search(r'Resize=\((\d+)', m)
+        if size_match:
+            size = int(size_match.group(1))
 
-        seen.add(fname_key)
+        # ✅ KEEP ONLY HIGHEST RES VERSION
+        if fname_key not in image_map or size > image_map[fname_key]["size"]:
+            image_map[fname_key] = {
+                "url": base,
+                "size": size
+            }
 
-        image_map[fname_key] = base
-
-    # ✅ FINAL: LIMIT TO 8 ONLY (your rule)
+    # ✅ FINAL CLEAN LIST (LIMIT 8 ONLY)
     cleaned = list(image_map.values())[:8]
 
     return [
-        {"type": f"Salsify {i+1}", "url": u}
-        for i, u in enumerate(cleaned)
+        {"type": f"Salsify {i+1}", "url": img["url"]}
+        for i, img in enumerate(cleaned)
     ]
 
 # =========================================
-# ✅ CVS (NO LIMIT ✅ CLEAN ✅)
+# ✅ CVS (UNLIMITED BUT CLEAN ✅)
 # =========================================
 def get_cvs_images(url):
     html = get_html(url)
@@ -109,7 +114,7 @@ def get_cvs_images(url):
                 "size": size
             }
 
-    # ✅ NO LIMIT HERE
+    # ✅ NO LIMIT
     return [v["url"] for v in best_images.values()]
 
 # =========================================
@@ -169,7 +174,7 @@ if uploaded_file:
         s_text = get_salsify_text(row["salsify_url"])
         r_text = get_cvs_text(retail_html)
 
-        # ✅ COPY
+        # ✅ COPY TOP
         st.markdown("## Description")
 
         c1, c2 = st.columns(2)
@@ -191,7 +196,7 @@ if uploaded_file:
         s_images = get_salsify_images(row["salsify_url"])
         r_images = get_cvs_images(row["retail_url"])
 
-        st.write(f"Salsify: {len(s_images)} (max 8) | CVS: {len(r_images)} (unlimited)")
+        st.write(f"Salsify: {len(s_images)} | CVS: {len(r_images)}")
 
         max_len = max(len(s_images), len(r_images))
 
@@ -199,25 +204,25 @@ if uploaded_file:
 
             c1, c2 = st.columns(2)
 
-            # ✅ LEFT (Salsify)
+            # ✅ LEFT (Salsify cleaned)
             if i < len(s_images):
                 c1.markdown(f"**Salsify {i+1}**")
                 img = load_image(s_images[i]["url"])
                 if img:
-                    c1.image(img)
+                    c1.image(img, use_container_width=True)
             else:
                 c1.write("")
 
-            # ✅ RIGHT (CVS)
+            # ✅ RIGHT (CVS full)
             if i < len(r_images):
                 c2.markdown(f"**CVS {i+1}**")
                 img = load_image(r_images[i])
                 if img:
-                    c2.image(img)
+                    c2.image(img, use_container_width=True)
             else:
                 c2.write("")
 
-        # ✅ SCORING
+        # ✅ SCORE
         img_score = int(
             (min(len(s_images), len(r_images)) /
              max(len(s_images), len(r_images), 1)) * 100
