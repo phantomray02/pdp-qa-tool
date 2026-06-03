@@ -92,108 +92,90 @@ def clean_text(raw):
     return raw.strip()
 
 # =========================================
-# ✅ SALSIFY IMAGES - DEBUG VERSION
+# ✅ SALSIFY IMAGES - ROBUST VERSION
 # =========================================
 def get_salsify_images(url):
     """
-    Extract Salsify images from rendered HTML.
+    Extract ALL Salsify product images - handles both page structures.
+    
+    This function is robust and works for:
+    - Standard Salsify product pages
+    - Pages with missing image properties
+    - Pages with alternative structures
+    
+    Returns images in order they appear on the page.
     """
     html = get_html(url)
     images = []
     seen_urls = set()
     
     try:
-        # ✅ SAVE DEBUG HTML
-        with open("salsify_debug.html", "w", encoding="utf-8") as f:
-            f.write(html)
-        print(f"📄 HTML saved to salsify_debug.html ({len(html)} chars)")
-        
         soup = BeautifulSoup(html, "html.parser")
         
-        # ✅ DEBUG: Show what we're looking for
-        print("\n🔍 Looking for images...\n")
-        
-        # Try method 1: asset-list_images containers
+        # Find all asset-list_images containers (primary method)
         asset_containers = soup.find_all("div", {"class": "asset-list_images__2aKCB"})
-        print(f"Method 1 - asset-list_images__2aKCB: Found {len(asset_containers)} containers")
         
-        if len(asset_containers) > 0:
-            for idx, container in enumerate(asset_containers[:3]):  # Show first 3
-                print(f"  Container {idx + 1}:")
-                print(f"    aria-label: {container.get('aria-label', 'N/A')}")
-                noscript = container.find("noscript")
-                print(f"    Has noscript: {noscript is not None}")
-                if noscript:
-                    img = noscript.find("img")
-                    print(f"    Has img: {img is not None}")
-                    if img:
-                        srcset = img.get("srcset", "")
-                        print(f"    srcset length: {len(srcset)}")
-                        if srcset:
-                            first_url = srcset.split(",")[0].strip().split()[0]
-                            print(f"    First URL: {first_url[:80]}...")
-        
-        # Try method 2: Find all img tags with salsify URLs
-        print(f"\n\nMethod 2 - All img tags with 'salsify' in src/srcset:")
-        img_tags = soup.find_all("img")
-        print(f"Total img tags: {len(img_tags)}")
-        
-        salsify_count = 0
-        for img in img_tags:
-            src = img.get("src", "")
-            srcset = img.get("srcset", "")
-            if "salsify" in src or "salsify" in srcset:
-                salsify_count += 1
-                if salsify_count <= 5:  # Show first 5
-                    print(f"  Img {salsify_count}:")
-                    if srcset:
-                        first_url = srcset.split(",")[0].strip().split()[0]
-                        print(f"    srcset: {first_url[:80]}...")
-                    if src and src.startswith("http"):
-                        print(f"    src: {src[:80]}...")
-        
-        print(f"Total salsify imgs: {salsify_count}")
-        
-        # Now actually extract
-        print(f"\n\n✅ EXTRACTING IMAGES:\n")
+        print(f"🔍 Found {len(asset_containers)} asset containers")
         
         for idx, container in enumerate(asset_containers):
+            # Get property name from aria-label
             aria_label = container.get("aria-label", "").strip()
             prop_name = aria_label.replace("-", "").strip() if aria_label else f"Image {idx + 1}"
             
+            if not prop_name or prop_name == "":
+                continue
+            
+            # Try to find image URL in noscript (most reliable)
             noscript = container.find("noscript")
-            if not noscript:
-                continue
-            
-            img_tag = noscript.find("img")
-            if not img_tag:
-                continue
-            
-            srcset = img_tag.get("srcset", "")
-            src = img_tag.get("src", "")
-            
             img_url = None
             
-            if srcset and "salsify" in srcset:
-                urls = [u.strip().split()[0] for u in srcset.split(",") if u.strip()]
-                img_url = urls[-1] if urls else None
-            elif src and "salsify" in src:
-                img_url = src
+            if noscript:
+                # Look for img tag with srcset (highest quality)
+                img_tag = noscript.find("img")
+                if img_tag:
+                    srcset = img_tag.get("srcset", "")
+                    src = img_tag.get("src", "")
+                    
+                    # Prefer srcset (has multiple resolutions)
+                    if srcset and "salsify" in srcset:
+                        # srcSet format: "url1 1x, url2 2x, ..."
+                        # Extract all URLs and take the last one (highest quality)
+                        urls = [u.strip().split()[0] for u in srcset.split(",") if u.strip()]
+                        img_url = urls[-1] if urls else None
+                    
+                    # Fallback to src
+                    elif src and "salsify" in src:
+                        img_url = src
             
-            if img_url and img_url not in seen_urls:
+            # If no image found in noscript, check main img tags in container
+            if not img_url:
+                main_img = container.find("img", {"data-testid": "salsify-image"})
+                if main_img:
+                    srcset = main_img.get("srcset", "")
+                    src = main_img.get("src", "")
+                    
+                    if srcset and "salsify" in srcset:
+                        urls = [u.strip().split()[0] for u in srcset.split(",") if u.strip()]
+                        img_url = urls[-1] if urls else None
+                    elif src and "salsify" in src:
+                        img_url = src
+            
+            # Add valid, non-duplicate images
+            if img_url and "salsify" in img_url and img_url not in seen_urls:
                 seen_urls.add(img_url)
                 images.append({
                     "type": prop_name,
                     "url": img_url
                 })
-                print(f"✅ {prop_name}")
+                print(f"  ✅ {prop_name}")
+        
+        print(f"✅ Extracted {len(images)} images total\n")
     
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"❌ Error extracting images: {e}")
         import traceback
         traceback.print_exc()
     
-    print(f"\n📊 Total images: {len(images)}\n")
     return images
 
 # =========================================
