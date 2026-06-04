@@ -63,20 +63,6 @@ import json
 
 
 def get_salsify_images(url):
-
-    def normalize_key(k):
-        return k.lower().replace(" ", "").replace("_", "")
-
-    EXPECTED_ORDER = [
-        "onlineoptimizedimage",
-        "front2d",
-        "flatback2d",
-        "side2d",
-        "lifestyle",
-        "infographic"
-    ]
-
-
     html = get_html(url)
     soup = BeautifulSoup(html, "html.parser")
 
@@ -91,63 +77,28 @@ def get_salsify_images(url):
     except:
         return []
 
-    # ✅ REQUIRED ORDER (controls layout)
-    
-    EXPECTED_ORDER = [
-        "onlineoptimizedimage",
-        "front2d",
-        "flatback2d",
-        "side2d",
-        "lifestyle",
-        "infographic"
-    ]
+    images = []
 
-
-    # ✅ build map of existing images
-    def normalize_key(k):
-        return k.lower().replace(" ", "").replace("_", "")
-
-    image_map = {}
-    
     for prop in properties:
-        key_raw = prop.get("property", "").strip()
+
         values = prop.get("values", [])
-    
         if not values:
             continue
-    
+
         first = values[0]
         url = first.get("value", "")
-    
+
         if not url:
             continue
-    
+
         clean = url.split("?")[0]
-    
-        # ✅ normalize key
-        key = normalize_key(key_raw)
-    
-        image_map[key] = clean
 
-    # ✅ build ordered list WITH missing slots
-    ordered_images = []
-    
-    for expected in EXPECTED_ORDER:
-    
-        match_url = None
-    
-        # ✅ flexible matching (handles naming differences)
-        for actual_key in image_map:
-            if expected in actual_key:
-                match_url = image_map[actual_key]
-                break
-    
-        if match_url:
-            ordered_images.append({"url": match_url})
-        else:
-            ordered_images.append(None)
+        images.append({
+            "url": clean,
+            "type": prop.get("property", "")
+        })
 
-    return ordered_images
+    return images[:8]
 
 # =========================================
 # ✅ CVS IMAGES (UNLIMITED + BEST RES)
@@ -519,6 +470,20 @@ if uploaded_file:
         r_text = get_cvs_text(retail_html) or {"title": "", "description": "", "features": []}
 
         s_images = get_salsify_images(row["salsify_url"])
+
+        # ✅ ✅ APPLY OOI RULE HERE
+        
+        def is_ooi(img):
+            if not img:
+                return False
+            t = img.get("type", "").lower().replace(" ", "")
+            return "onlineoptimized" in t
+        
+        # ✅ check if first image is OOI
+        if not s_images or not is_ooi(s_images[0]):
+        
+            # ✅ insert Missing at top
+            s_images = [None] + s_images
         r_images = get_cvs_images(row["retail_url"])
 
         # =====================================
