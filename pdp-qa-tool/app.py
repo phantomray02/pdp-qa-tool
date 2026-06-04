@@ -263,7 +263,7 @@ def keyword_score(a, b):
     return int(SequenceMatcher(None, normalize_text(a), normalize_text(b)).ratio() * 100)
 
 # =========================================
-# ✅ HELPERS (ADD ABOVE MAIN APP)
+# ✅ HELPERS
 # =========================================
 def equal_height_block(text):
     return f"""
@@ -294,22 +294,15 @@ def equal_feature_block(text):
 if uploaded_file:
 
     df = pd.read_csv(uploaded_file)
-    summary_rows = []
 
     for _, row in df.iterrows():
 
         st.subheader(f"SKU: {row['sku']}")
 
-        # =====================================
-        # ✅ FETCH + DATA
-        # =====================================
         retail_html = get_html(row["retail_url"])
 
         s_text = get_salsify_text(row["salsify_url"])
         r_text = get_cvs_text(retail_html)
-
-        s_images = get_salsify_images(row["salsify_url"])
-        r_images = get_cvs_images(row["retail_url"])
 
         # =====================================
         # ✅ COPY COMPARISON
@@ -323,25 +316,25 @@ if uploaded_file:
 
         c1, c2 = st.columns(2)
 
-        # ✅ Salsify
         c1.markdown("**Salsify**")
-        c1.markdown(
-            equal_height_block(s_text.get("title", "")),
-            unsafe_allow_html=True
-        )
+        c1.markdown(equal_height_block(s_text.get("title", "")), unsafe_allow_html=True)
 
-        # ✅ CVS
         c2.markdown("**CVS**")
-        cv_text, cv_score = c2.columns([5, 1])
-
         cvs_title = r_text.get("title", "")
-        cv_text.markdown(
-            equal_height_block(cvs_title),
-            unsafe_allow_html=True
-        )
+        c2.markdown(equal_height_block(cvs_title), unsafe_allow_html=True)
 
-        title_score = min(100, keyword_score(s_text.get("title", ""), cvs_title))
-        cv_score.markdown(f"✅ {title_score}%")
+        title_score = min(100, keyword_score(
+            s_text.get("title", ""),
+            cvs_title
+        ))
+
+        # ✅ SCORE BAR BELOW (NEW)
+        if title_score >= 80:
+            st.success(f"✅ Strong match: {title_score}%")
+        elif title_score >= 50:
+            st.warning(f"⚠️ Moderate match: {title_score}%")
+        else:
+            st.error(f"❌ Weak match: {title_score}%")
 
         # -------------------------------------
         # ✅ DESCRIPTION
@@ -351,25 +344,27 @@ if uploaded_file:
         c1, c2 = st.columns(2)
 
         c1.markdown("**Salsify**")
-        c1.markdown(
-            equal_height_block(s_text.get("description", "")),
-            unsafe_allow_html=True
-        )
+        c1.markdown(equal_height_block(s_text.get("description", "")), unsafe_allow_html=True)
 
         c2.markdown("**CVS**")
-        cv_text, cv_score = c2.columns([5, 1])
-
         cvs_desc = r_text.get("description", "")
-        cv_text.markdown(
-            equal_height_block(cvs_desc),
-            unsafe_allow_html=True
-        )
+        c2.markdown(equal_height_block(cvs_desc), unsafe_allow_html=True)
 
-        desc_score = min(100, keyword_score(s_text.get("description", ""), cvs_desc))
-        cv_score.markdown(f"✅ {desc_score}%")
+        desc_score = min(100, keyword_score(
+            s_text.get("description", ""),
+            cvs_desc
+        ))
+
+        # ✅ SCORE BAR BELOW (NEW)
+        if desc_score >= 80:
+            st.success(f"✅ Strong match: {desc_score}%")
+        elif desc_score >= 50:
+            st.warning(f"⚠️ Moderate match: {desc_score}%")
+        else:
+            st.error(f"❌ Weak match: {desc_score}%")
 
         # =====================================
-        # ✅ FEATURE COMPARISON
+        # ✅ FEATURE COMPARISON (UNCHANGED STYLE)
         # =====================================
         st.markdown("## Feature Comparison")
 
@@ -390,16 +385,9 @@ if uploaded_file:
 
             s_val = s_text.get(key, "")
 
-            # ✅ LEFT
             col1.markdown("**Salsify**")
-            col1.markdown(
-                equal_feature_block(s_val),
-                unsafe_allow_html=True
-            )
+            col1.markdown(equal_feature_block(s_val), unsafe_allow_html=True)
 
-            # =====================================
-            # ✅ FIND BEST MATCH (STABLE)
-            # =====================================
             best_score = 0
             best_match = ""
 
@@ -407,7 +395,6 @@ if uploaded_file:
 
                 score = keyword_score(s_val, f)
 
-                # ✅ slight boost for similar phrasing
                 if any(word in f.lower() for word in s_val.lower().split()[:3]):
                     score += 5
 
@@ -415,73 +402,22 @@ if uploaded_file:
                     best_score = score
                     best_match = f
 
-            # ✅ fallback prevents missing features
             if not best_match and cvs_features:
                 best_match = cvs_features[0]
 
             best_score = min(100, best_score)
 
-            # =====================================
-            # ✅ RIGHT (CVS + INLINE SCORE)
-            # =====================================
             col2.markdown("**CVS**")
+            col2.markdown(equal_feature_block(best_match), unsafe_allow_html=True)
 
-            cv_text, cv_score = col2.columns([5, 1])
-
-            cv_text.markdown(
-                equal_feature_block(best_match),
-                unsafe_allow_html=True
-            )
-
+            # ✅ KEEP YOUR EXISTING GOOD BAR
             if best_score >= 80:
-                cv_score.markdown(f"✅ {best_score}%")
                 st.success(f"✅ Strong match: {best_score}%")
             elif best_score >= 50:
-                cv_score.markdown(f"⚠️ {best_score}%")
                 st.warning(f"⚠️ Moderate match: {best_score}%")
             else:
-                cv_score.markdown(f"❌ {best_score}%")
                 st.error(f"❌ Weak match: {best_score}%")
 
-        # =====================================
-        # ✅ IMAGE COMPARISON
-        # =====================================
-        st.markdown("## Image Comparison")
-
-        max_len = max(len(s_images), len(r_images))
-
-        for i in range(max_len):
-
-            c1, c2 = st.columns(2)
-
-            if i < len(s_images):
-                c1.markdown(f"**{s_images[i]['type']}**")
-                img = load_image(s_images[i]["url"])
-                if img:
-                    c1.image(img, use_container_width=True)
-
-            if i < len(r_images):
-                c2.markdown(f"**CVS {i+1}**")
-                img = load_image(r_images[i])
-                if img:
-                    c2.image(img, use_container_width=True)
-
-        # =====================================
-        # ✅ SCORE SUMMARY
-        # =====================================
-        img_score = int(
-            (min(len(s_images), len(r_images)) /
-             max(len(s_images), len(r_images), 1)) * 100
-        )
-
-        overall = int((img_score + desc_score) / 2)
-
-        summary_rows.append({
-            "SKU": row["sku"],
-            "Image %": img_score,
-            "Description %": desc_score,
-            "Overall %": overall
-        })
 # =========================================
 # ✅ EXPORT
 # =========================================
