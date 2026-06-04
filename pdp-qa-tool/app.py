@@ -191,7 +191,7 @@ def get_cvs_text(html_text):
     title = ""
 
     # =====================================
-    # ✅ DESCRIPTION (HANDLE $ POINTERS)
+    # ✅ DESCRIPTION (ROBUST POINTER HANDLING)
     # =====================================
     desc = ""
     
@@ -204,21 +204,34 @@ def get_cvs_text(html_text):
     
         raw_desc = desc_match.group(1)
     
-        # ✅ CASE 1: NORMAL TEXT
+        # ✅ NORMAL CASE
         if not raw_desc.startswith("$"):
             desc = html.unescape(raw_desc)
     
-        # ✅ CASE 2: POINTER (e.g., $32)
+        # ✅ POINTER CASE (LIKE $32)
         else:
             pointer = raw_desc.replace("$", "")
     
-            pointer_match = re.search(
-                rf'{pointer}:"(.*?)"',
-                combined
+            # ✅ grab EVERYTHING after pointer until next key
+            pointer_block = re.search(
+                rf'{pointer}:(.*?)(?:\n\d+:|\\"\}\])',
+                combined,
+                re.DOTALL
             )
     
-            if pointer_match:
-                desc = html.unescape(pointer_match.group(1))
+            if pointer_block:
+                raw_text = pointer_block.group(1)
+    
+                # ✅ CLEAN weird Next.js fragments
+                raw_text = raw_text.replace('\\u0026', '&')
+                raw_text = raw_text.replace('\\"', '"')
+                raw_text = raw_text.replace('\n', ' ')
+                raw_text = raw_text.strip()
+    
+                # ✅ REMOVE leading junk like T616,
+                raw_text = re.sub(r'^[A-Z0-9]+,', '', raw_text)
+    
+                desc = html.unescape(raw_text)
     # =====================================
     # ✅ FEATURES
     # =====================================
