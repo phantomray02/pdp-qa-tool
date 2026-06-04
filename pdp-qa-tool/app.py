@@ -772,41 +772,57 @@ if uploaded_file:
         # =====================================
         summary_row = {
             "SKU": row["sku"],
+            "CVS RPC": row.get("cvs_rpc", ""),   # ✅ add this
+        
             "Title %": title_score,
             "Description %": desc_score,
             "Feature %": avg_feature_score,
-            "Image Match %": avg_img_score,
-            "Overall %": overall_score
         }
         
-        # ✅ image-level detail
+        # ✅ IMAGE COLUMNS (1–8)
+        for i in range(8):
+            if i < len(image_row_scores):
+                summary_row[f"Image {i+1} %"] = image_row_scores[i]
+            else:
+                summary_row[f"Image {i+1} %"] = ""
         
-        for i, sc in enumerate(image_row_scores):
-            summary_row[f"Image {i+1} %"] = sc
-
+        summary_row["Image Match %"] = avg_img_score
+        summary_row["Overall %"] = overall_score
         
         summary_rows.append(summary_row)
         
+        # =====================================
+        # ✅ DETAIL SHEET (WITH URLS + RPC)
+        # =====================================
         
-        # =====================================
-        # ✅ DETAIL SHEET
-        # =====================================
+        def safe(val):
+            return val if val else "❌ Missing"
+        
         export_row = {
             "SKU": row["sku"],
-            "Salsify Title": s_text.get("title", ""),
-            "CVS Title": r_text.get("title", ""),
-            "Salsify Description": s_text.get("description", ""),
-            "CVS Description": r_text.get("description", "")
+            "CVS RPC": row.get("cvs_rpc", ""),              # ✅ NEW
+            "Salsify URL": row.get("salsify_url", ""),      # ✅ NEW
+            "Retail URL": row.get("retail_url", ""),        # ✅ NEW
+        
+            "Salsify Title": safe(s_text.get("title", "")),
+            "CVS Title": safe(r_text.get("title", "")),
+        
+            "Salsify Description": safe(s_text.get("description", "")),
+            "CVS Description": safe(r_text.get("description", "")),
         }
         
-        # ✅ Feature copy export (from your matched results)
-        for i in range(min(len(cvs_features), 5)):
-            export_row[f"Feature {i+1}"] = cvs_features[i]
+        # ✅ FEATURES (fixed 5 columns)
+        for i in range(5):
+        
+            c_val = cvs_features[i] if i < len(cvs_features) else ""
+        
+            if not c_val:
+                export_row[f"Feature {i+1}"] = "❌ Missing"
+            else:
+                export_row[f"Feature {i+1}"] = c_val
         
         export_rows.append(export_row)
-        
-        
-        st.divider()
+
 # =====================================
 # ✅ EXPORT FILE
 # =====================================
