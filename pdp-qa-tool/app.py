@@ -188,17 +188,21 @@ if uploaded_file:
 
         st.subheader(f"SKU: {row['sku']}")
 
+        # ✅ FIXED: correct variable name
         retail_html = get_html(row["retail_url"])
 
+        # ✅ GET DATA
         s_text = get_salsify_text(row["salsify_url"])
         r_text = get_cvs_text(retail_html)
 
-        # ✅ DESCRIPTION
-        s_text = get_salsify_text(row["salsify_url"])
-        r_text = get_cvs_text(html)
-        
+        s_images = get_salsify_images(row["salsify_url"])
+        r_images = get_cvs_images(row["retail_url"])
+
+        # =========================================
+        # ✅ COPY COMPARISON
+        # =========================================
         st.markdown("## Copy Comparison")
-        
+
         fields = [
             ("Title", "title"),
             ("Description", "description"),
@@ -207,35 +211,37 @@ if uploaded_file:
             ("Feature 4", "feature4"),
             ("Feature 5", "feature5"),
         ]
-        
+
         for label, key in fields:
-        
+
             st.markdown(f"### {label}")
-        
+
             c1, c2 = st.columns(2)
-        
+
+            # ✅ LEFT: SALSIFY
             c1.markdown("**Salsify**")
             c1.write(s_text.get(key, ""))
-        
+
+            # ✅ RIGHT: CVS (only description for now)
             c2.markdown("**CVS**")
+
             if key == "description":
                 c2.write(r_text.get("description", ""))
             else:
-                c2.write("")  # (you can expand later)
-        
+                c2.write("")
+
+            # ✅ SCORE (basic for now)
             score = keyword_score(
                 s_text.get(key, ""),
                 r_text.get("description", "")
             )
-        
+
             st.write(f"✅ Match: {score}%")
 
-
-        # ✅ IMAGES
+        # =========================================
+        # ✅ IMAGE COMPARISON
+        # =========================================
         st.markdown("## Image Comparison")
-
-        s_images = get_salsify_images(row["salsify_url"])
-        r_images = get_cvs_images(row["retail_url"])
 
         max_len = max(len(s_images), len(r_images))
 
@@ -255,10 +261,17 @@ if uploaded_file:
                 if img:
                     c2.image(img, use_container_width=True)
 
-        # ✅ SCORE
+        # =========================================
+        # ✅ SCORE SUMMARY
+        # =========================================
         img_score = int(
             (min(len(s_images), len(r_images)) /
              max(len(s_images), len(r_images), 1)) * 100
+        )
+
+        desc_score = keyword_score(
+            s_text.get("description", ""),
+            r_text.get("description", "")
         )
 
         overall = int((img_score + desc_score) / 2)
