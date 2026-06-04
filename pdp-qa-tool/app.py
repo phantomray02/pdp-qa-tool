@@ -208,35 +208,46 @@ def get_cvs_text(html_text):
         if not raw_desc.startswith("$"):
             desc = html.unescape(raw_desc)
     
-        # ✅ POINTER CASE (LIKE $32, $34, etc)
+        # ✅ POINTER CASE (LIKE $32, $33, $34)
         else:
             pointer = raw_desc.replace("$", "")
         
-            # ✅ grab full block including broken script chunks
-            pointer_block = re.search(
-                rf'{pointer}:(.*?)(?=\n\d+:|self\.__next_f\.push|\}})',
-                combined,
-                re.DOTALL
-            )
+            candidates = []
         
-            if pointer_block:
-                raw_text = pointer_block.group(1)
+            # ✅ scan nearby block range (30–39)
+            for i in range(30, 40):
         
-                # ✅ merge broken script chunks
-                raw_text = re.sub(r'self\.__next_f\.push\(\[1,"', '', raw_text)
-                raw_text = raw_text.replace('"])', '')
+                block_match = re.search(
+                    rf'{i}:(T\d+,.+)',
+                    combined
+                )
         
-                # ✅ clean encoding + escapes
-                raw_text = raw_text.replace('\\u0026', '&')
-                raw_text = raw_text.replace('\\"', '"')
-                raw_text = raw_text.replace('\n', ' ')
-                raw_text = raw_text.strip()
+                if block_match:
+                    raw_text = block_match.group(1)
         
-                # ✅ remove prefix like T492,
-                raw_text = re.sub(r'^[A-Z0-9]+,', '', raw_text)
+                    # ✅ rebuild streaming chunks
+                    continuation_matches = re.findall(
+                        r'self\.__next_f\.push\(\[1,"(.*?)"\]\)',
+                        combined,
+                        re.DOTALL
+                    )
         
-                desc = html.unescape(raw_text)
-
+                    for chunk in continuation_matches:
+                        raw_text += chunk
+        
+                    # ✅ clean
+                    cleaned = re.sub(r'^T\d+,', '', raw_text)
+                    cleaned = cleaned.replace('\\u0026', '&')
+                    cleaned = cleaned.replace('\\"', '"')
+                    cleaned = cleaned.replace('\n', ' ').strip()
+        
+                    # ✅ filter out junk (must contain real words)
+                    if len(cleaned) > 200 and "pads" in cleaned.lower():
+                        candidates.append(cleaned)
+        
+            # ✅ pick BEST candidate (longest = usually correct)
+            if candidates:
+                desc = html.unescape(max(candidates, key=len))
     # =====================================
     # ✅ FEATURES
     # =====================================
