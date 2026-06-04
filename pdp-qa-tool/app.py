@@ -166,30 +166,61 @@ def get_cvs_text(html):
     soup = BeautifulSoup(html, "html.parser")
 
     desc = ""
+    features = []
 
     # =====================================
-    # ✅ METHOD 1: JSON-LD (BEST / RELIABLE)
+    # ✅ STEP 1: FIND "DETAILS" SECTION
     # =====================================
-    scripts = soup.find_all("script", {"type": "application/ld+json"})
+    details_header = soup.find(
+        lambda tag: tag.name in ["h2", "h3", "button", "div"]
+        and tag.get_text(strip=True) == "Details"
+    )
 
-    for s in scripts:
-        try:
-            data = json.loads(s.string)
+    if details_header:
 
-            # sometimes it's a list
-            if isinstance(data, list):
-                for item in data:
-                    if item.get("@type") == "Product" and item.get("description"):
-                        desc = item["description"]
-                        break
-            else:
-                if data.get("@type") == "Product" and data.get("description"):
-                    desc = data["description"]
+        # ✅ grab next section container
+        container = details_header.find_parent().find_next_sibling()
 
-            if desc:
-                break
-        except:
-            continue
+        if container:
+            text_blocks = container.find_all(["p", "li"])
+
+            clean_paragraphs = []
+            clean_bullets = []
+
+            for el in text_blocks:
+                text = el.get_text(" ", strip=True)
+
+                # ❌ FILTER OUT JUNK
+                if any(x in text for x in [
+                    "Federal law",
+                    "ID.me",
+                    "verify your identity",
+                    "App Store",
+                    "Google Play"
+                ]):
+                    continue
+
+                if len(text) < 40:
+                    continue
+
+                # ✅ paragraph = description
+                if el.name == "p":
+                    clean_paragraphs.append(text)
+
+                # ✅ bullets = features
+                if el.name == "li":
+                    clean_bullets.append(text)
+
+            # ✅ FIRST GOOD PARAGRAPH = DESCRIPTION
+            if clean_paragraphs:
+                desc = clean_paragraphs[0]
+
+            features = clean_bullets
+
+    return {
+        "description": desc.strip(),
+        "features": features
+    }
 
     # =====================================
     # ✅ CLEAN TEXT
