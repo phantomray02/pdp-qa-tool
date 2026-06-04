@@ -165,46 +165,65 @@ def get_salsify_text(url):
 def get_cvs_text(html):
     soup = BeautifulSoup(html, "html.parser")
 
-    script = soup.find("script", {"id": "__NEXT_DATA__"})
-    if not script:
-        return {}
-
-    data = json.loads(script.string)
-
-    # ✅ safest fallback structure handling
-    try:
-        product = data["props"]["pageProps"]["product"]
-    except:
-        return {}
-
-    # ✅ CVS DESCRIPTION FIELD (varies slightly by product)
     desc = ""
 
-    # ✅ try common keys
-    for key in [
-        "description",
-        "longDescription",
-        "productDescription",
-        "overview"
-    ]:
-        if key in product and product[key]:
-            desc = product[key]
-            break
+    # =====================================
+    # ✅ METHOD 1: JSON (PRIMARY)
+    # =====================================
+    script = soup.find("script", {"id": "__NEXT_DATA__"})
 
-    # ✅ if description still empty → check nested fields
-    if not desc:
-        # sometimes inside content sections
-        sections = product.get("content", [])
+    if script:
+        data = json.loads(script.string)
 
-        for sec in sections:
-            text = sec.get("text") or sec.get("description")
-            if text:
-                desc = text
+        try:
+            product = data["props"]["pageProps"]["product"]
+        except:
+            product = {}
+
+        # ✅ try known fields
+        for key in [
+            "description",
+            "longDescription",
+            "productDescription",
+            "overview"
+        ]:
+            if product.get(key):
+                desc = product[key]
                 break
 
-    # ✅ CLEAN HTML → TEXT
-    if desc:
-        desc = BeautifulSoup(desc, "html.parser").get_text(" ")
+        # ✅ try nested content sections
+        if not desc:
+            for key in ["content", "sections", "details"]:
+                items = product.get(key, [])
+
+                for item in items:
+                    text = item.get("text") or item.get("description")
+                    if text:
+                        desc = text
+                        break
+                if desc:
+                    break
+
+        # ✅ clean HTML → text
+        if desc:
+            desc = BeautifulSoup(desc, "html.parser").get_text(" ").strip()
+
+    # =====================================
+    # ✅ METHOD 2: HTML FALLBACK (VERY IMPORTANT)
+    # =====================================
+    if not desc:
+
+        # ✅ grab visible paragraph-based content
+        paragraphs = soup.select("p[class*='pc-paragraph'], p")
+
+        clean_texts = [
+            p.get_text(" ", strip=True)
+            for p in paragraphs
+            if len(p.get_text(strip=True)) > 40
+        ]
+
+        # ✅ join into single block
+        desc = " ".join(clean_texts)
 
     return {
         "description": desc.strip()
