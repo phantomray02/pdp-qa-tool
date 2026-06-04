@@ -292,24 +292,24 @@ def equal_feature_block(text):
 # =====================================
 def match_images_visual(s_images, r_images):
 
-    matches = []
+    results = []
 
     max_len = max(len(s_images), len(r_images))
 
     for i in range(max_len):
 
-        s_img = s_images[i]["url"] if i < len(s_images) else None
-        r_img = r_images[i] if i < len(r_images) else None
+        s_url = s_images[i]["url"] if i < len(s_images) else None
+        r_url = r_images[i] if i < len(r_images) else None
 
-        # ✅ simple matching score
-        if s_img and r_img:
-            score = int(SequenceMatcher(None, s_img, r_img).ratio() * 100)
+        # ✅ ✅ USE VISUAL COMPARISON (NOT STRING MATCH)
+        if s_url and r_url:
+            score = compare_images_visually(s_url, r_url)
         else:
             score = 0
 
-        matches.append((s_img, r_img, score))
+        results.append((s_url, r_url, score))
 
-    return matches
+    return results
 # =========================================
 # ✅ MAIN APP
 # =========================================
