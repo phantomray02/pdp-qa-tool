@@ -383,33 +383,33 @@ if uploaded_file:
             c1.markdown("**Salsify**")
             c1.write(s_val if s_val else "—")
 
-# =========================================
-# ✅ FEATURE COMPARISON (FULL BLOCK)
-# =========================================
-st.markdown("## Feature Comparison")
-
-feature_fields = [
-    ("Feature 1", "feature1"),
-    ("Feature 3", "feature3"),
-    ("Feature 4", "feature4"),
-    ("Feature 5", "feature5"),
-]
-
-cvs_features = r_text.get("features", [])
-
-for label, key in feature_fields:
-
-    st.markdown(f"### {label}")
-
-    col1, col2 = st.columns(2)
-
-    s_val = s_text.get(key, "")
-
-    # =====================================
-    # ✅ LEFT: SALSIFY
-    # =====================================
-    col1.markdown("**Salsify**")
-    col1.write(s_val if s_val else "—")
+        # =========================================
+        # ✅ FEATURE COMPARISON (FULL BLOCK)
+        # =========================================
+        st.markdown("## Feature Comparison")
+        
+        feature_fields = [
+            ("Feature 1", "feature1"),
+            ("Feature 3", "feature3"),
+            ("Feature 4", "feature4"),
+            ("Feature 5", "feature5"),
+        ]
+        
+        cvs_features = r_text.get("features", [])
+        
+        for label, key in feature_fields:
+        
+            st.markdown(f"### {label}")
+        
+            col1, col2 = st.columns(2)
+        
+            s_val = s_text.get(key, "")
+        
+            # =====================================
+            # ✅ LEFT: SALSIFY
+            # =====================================
+            col1.markdown("**Salsify**")
+            col1.write(s_val if s_val else "—")
 
         # =====================================
         # ✅ FIND BEST MATCH
