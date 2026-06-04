@@ -199,55 +199,51 @@ def get_cvs_text(html_text):
     
         raw_desc = desc_match.group(1)
     
-        # ✅ NORMAL CASE (no pointer)
         if not raw_desc.startswith("$"):
             desc = html.unescape(raw_desc)
     
-        # ✅ POINTER CASE
         else:
             pointer = raw_desc.replace("$", "")
-        
+    
             pointer_match = re.search(
                 rf'{pointer}:(T\d+,.+)',
                 combined,
                 re.DOTALL
             )
-        
+    
             if pointer_match and pointer_match.lastindex:
-        
+    
                 raw_text = pointer_match.group(1)
-        
-                # ✅ rebuild streamed chunks
+    
+                # ✅ rebuild chunks
                 chunks = re.findall(
                     r'self\.__next_f\.push\(\[1,"(.*?)"\]\)',
                     combined,
                     re.DOTALL
                 )
-        
+    
                 for chunk in chunks:
                     raw_text += chunk
-        
+    
                 # ✅ clean
                 raw_text = re.sub(r'^T\d+,', '', raw_text)
-        
                 raw_text = raw_text.replace('\\u0026', '&')
                 raw_text = raw_text.replace('\\"', '"')
-        
+    
                 raw_text = raw_text.replace('"])', '')
                 raw_text = raw_text.replace('self.__next_f.push([1,"', '')
-        
+    
                 raw_text = raw_text.replace('\n', ' ')
-        
-                # ✅ FIXED STOP (escaped brace)
+    
                 raw_text = re.split(
                     rf'(?:\d+:{{|\d+:\[|"\)\d+?:)',
                     raw_text
                 )[0]
-        
+    
                 raw_text = re.sub(r'\s+', ' ', raw_text).strip()
-        
+    
                 desc = html.unescape(raw_text)
-        
+    
             else:
                 desc = ""
         
@@ -331,11 +327,6 @@ def get_cvs_text(html_text):
                     "pad" in raw_text.lower() and
                     "json" not in raw_text.lower()
                 ):
-                    candidates.append(raw_text)
-    
-            # ✅ pick best candidate (longest one)
-            if candidates:
-                desc = html.unescape(max(candidates, key=len))
         # =====================================
         # ✅ FEATURES
         # =====================================
