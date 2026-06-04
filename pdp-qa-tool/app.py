@@ -641,10 +641,10 @@ if uploaded_file:
         else:
             st.error(f"❌ Feature Match: {avg_feature_score}%")
         
-        
         # =====================================
         # ✅ IMAGE COMPARISON
         # =====================================
+        img_scores = []
         st.markdown("## Image Comparison ✅")
         
         st.write(f"Salsify Images: {len(s_images)} | CVS Images: {len(r_images)}")
@@ -680,14 +680,17 @@ if uploaded_file:
                     sc = compare_images_visually(s_url, r)
                 else:
                     sc = 0
+                
+                # ✅ store score for averaging later
+                if sc > 0:
+                    img_scores.append(min(100, sc))
+
         
                 c3.write(f"{sc}%")
         
         # =====================================
         # ✅ IMAGE SCORE
         # =====================================
-        img_scores = [min(100, sc) for _, _, sc in image_matches if sc > 0]
-        
         avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
         
         if avg_img_score >= 80:
