@@ -226,11 +226,19 @@ def get_cvs_text(html_text):
     # =====================================
     # ✅ TITLE
     # =====================================
+    title = ""
+    
     title_match = re.search(
         r'"productName":"(.*?)"',
         combined
     )
-
+    
+    if not title_match:
+        title_match = re.search(
+            r'"name":"(.*?)"',
+            combined
+        )
+    
     if title_match:
         title = title_match.group(1).strip()
 
