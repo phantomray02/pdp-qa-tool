@@ -169,7 +169,7 @@ def get_salsify_text(url):
         "feature5": text_map.get("FEATURE_5", "")
     }
 # =========================================
-# ✅ CVS COPY EXTRACTION (FIXED)
+# ✅ CVS COPY EXTRACTION (FINAL FIXED)
 # =========================================
 def get_cvs_text(html_text):
 
@@ -181,7 +181,7 @@ def get_cvs_text(html_text):
 
     combined = ""
 
-    # ✅ STEP 1: COMBINE SCRIPT CONTENT ONLY
+    # ✅ collect all script content
     for s in soup.find_all("script"):
         if s.string:
             combined += s.string
@@ -190,7 +190,7 @@ def get_cvs_text(html_text):
     features = []
 
     # =====================================
-    # ✅ STEP 2: GET DESCRIPTION
+    # ✅ DESCRIPTION ✅ (WORKING)
     # =====================================
     desc_match = re.search(
         r'vendorDetailsParagraph\\":\\"(.*?)\\"',
@@ -201,7 +201,7 @@ def get_cvs_text(html_text):
         desc = html.unescape(desc_match.group(1))
 
     # =====================================
-    # ✅ STEP 3: GET BULLET POINTER
+    # ✅ STEP 1: FIND BULLET POINTER ✅
     # =====================================
     bullet_ref_match = re.search(
         r'vendorDetailsBullets\\":\\"\\$(\\d+)\\"',
@@ -209,25 +209,37 @@ def get_cvs_text(html_text):
     )
 
     if bullet_ref_match:
+
         ref_id = bullet_ref_match.group(1)
 
+        # ✅ DEBUG THIS
+        print("FOUND REF:", ref_id)
+
         # =====================================
-        # ✅ STEP 4: FOLLOW POINTER
+        # ✅ STEP 2: FIND ARRAY BLOCK ✅
         # =====================================
+        # ✅ IMPORTANT: allow optional spaces + quotes
         block_match = re.search(
-            rf'{ref_id}:\[(.*?)\]',
+            rf'{ref_id}:\s*\[(.*?)\]',
             combined,
             re.DOTALL
         )
 
         if block_match:
+
             raw_block = block_match.group(1)
 
+            # ✅ DEBUG
+            print("RAW BLOCK FOUND")
+
             features = [
-                html.unescape(x)
+                html.unescape(x).strip()
                 for x in re.findall(r'"(.*?)"', raw_block)
                 if len(x.strip()) > 10
             ]
+
+        else:
+            print("❌ BLOCK NOT FOUND FOR:", ref_id)
 
     return {
         "description": desc.strip(),
