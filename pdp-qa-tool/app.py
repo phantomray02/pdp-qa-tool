@@ -169,35 +169,54 @@ def get_salsify_text(url):
         "feature5": text_map.get("FEATURE_5", "")
     }
 # =========================================
-# ✅ CVS COPY EXTRACTION (FINAL)
+# ✅ CVS COPY EXTRACTION (FIXED)
 # =========================================
 def get_cvs_text(html_text):
+
+    from bs4 import BeautifulSoup
+    import re
+    import html
+
+    soup = BeautifulSoup(html_text, "html.parser")
+
+    combined = ""
+
+    # ✅ STEP 1: COMBINE SCRIPT CONTENT ONLY
+    for s in soup.find_all("script"):
+        if s.string:
+            combined += s.string
 
     desc = ""
     features = []
 
-    # ✅ DESCRIPTION
+    # =====================================
+    # ✅ STEP 2: GET DESCRIPTION
+    # =====================================
     desc_match = re.search(
-        r'vendorDetailsParagraph":"(.*?)"',
-        html_text
+        r'vendorDetailsParagraph\\":\\"(.*?)\\"',
+        combined
     )
 
     if desc_match:
-        desc = html.unescape(desc_match.group(1)).strip()
+        desc = html.unescape(desc_match.group(1))
 
-    # ✅ BULLET POINTER ($32, $45, etc.)
+    # =====================================
+    # ✅ STEP 3: GET BULLET POINTER
+    # =====================================
     bullet_ref_match = re.search(
-        r'vendorDetailsBullets":"\$(\d+)"',
-        html_text
+        r'vendorDetailsBullets\\":\\"\\$(\\d+)\\"',
+        combined
     )
 
     if bullet_ref_match:
         ref_id = bullet_ref_match.group(1)
 
-        # ✅ GET THAT NUMBER BLOCK
+        # =====================================
+        # ✅ STEP 4: FOLLOW POINTER
+        # =====================================
         block_match = re.search(
             rf'{ref_id}:\[(.*?)\]',
-            html_text,
+            combined,
             re.DOTALL
         )
 
@@ -205,12 +224,13 @@ def get_cvs_text(html_text):
             raw_block = block_match.group(1)
 
             features = [
-                html.unescape(x).strip()
+                html.unescape(x)
                 for x in re.findall(r'"(.*?)"', raw_block)
+                if len(x.strip()) > 10
             ]
 
     return {
-        "description": desc,
+        "description": desc.strip(),
         "features": features
     }
 # =========================================
