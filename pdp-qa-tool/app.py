@@ -191,145 +191,145 @@ def get_cvs_text(html_text):
     title = ""
 
     # =====================================
-# ✅ DESCRIPTION (FULL PRODUCTION VERSION)
-# =====================================
-desc = ""
-
-desc_match = re.search(
-    r'vendorDetailsParagraph\\":\\"(.*?)\\"',
-    combined
-)
-
-if desc_match:
-
-    raw_desc = desc_match.group(1)
-
-    # ✅ NORMAL CASE (no pointer)
-    if not raw_desc.startswith("$"):
-        desc = html.unescape(raw_desc)
-
-    # ✅ POINTER CASE (like $32, $33, $34)
-    else:
-        pointer = raw_desc.replace("$", "")
-
-        candidates = []
-
-        # ✅ scan block range (30–39)
-        for i in range(30, 40):
-
-            match = re.search(
-                rf'{i}:(T\d+,.+)',
-                combined
-            )
-
-            if not match:
-                continue
-
-            raw_text = match.group(1)
-
-            # ✅ rebuild streamed chunks
-            continuations = re.findall(
-                r'self\.__next_f\.push\(\[1,"(.*?)"\]\)',
-                combined,
-                re.DOTALL
-            )
-
-            for chunk in continuations:
-                raw_text += chunk
-
-            # =====================================
-            # ✅ CLEANING
-            # =====================================
-
-            # remove T### prefix
-            raw_text = re.sub(r'^T\d+,', '', raw_text)
-
-            # decode escaped characters
-            raw_text = raw_text.replace('\\u0026', '&')
-            raw_text = raw_text.replace('\\"', '"')
-
-            # ✅ remove Next.js artifacts
-            raw_text = raw_text.replace('"])', '')
-            raw_text = raw_text.replace('self.__next_f.push([1,"', '')
-
-            # normalize spacing
-            raw_text = raw_text.replace('\n', ' ').strip()
-
-            # =====================================
-            # ✅ HARD STOP (CRITICAL)
-            # =====================================
-
-            raw_text = re.split(
-                r'(?:\d+:\{|\d+:\[|self\.__next_f)',
-                raw_text
-            )[0]
-
-            raw_text = raw_text.strip()
-
-            # =====================================
-            # ✅ FILTER (ONLY VALID DESCRIPTIONS)
-            # =====================================
-
-            if (
-                len(raw_text) > 200 and
-                "pad" in raw_text.lower() and
-                "json" not in raw_text.lower()
-            ):
-                candidates.append(raw_text)
-
-        # ✅ pick best candidate (longest one)
-        if candidates:
-            desc = html.unescape(max(candidates, key=len))
+    # ✅ DESCRIPTION (FULL PRODUCTION VERSION)
     # =====================================
-    # ✅ FEATURES
-    # =====================================
-    bullet_match = re.search(
-        r'vendorDetailsBullets\\":\[(.*?)\]',
-        combined,
-        re.DOTALL
-    )
-
-    if bullet_match:
-
-        raw_block = bullet_match.group(1)
-
-        for x in re.findall(r'"(.*?)"', raw_block):
-
-            clean = html.unescape(x).strip()
-            clean = clean.rstrip("\\").strip()
-            clean = clean.rstrip('"').strip()
-
-            if len(clean) > 20:
-                features.append(clean)
-
-    # =====================================
-    # ✅ TITLE
-    # =====================================
-    title = ""
+    desc = ""
     
-    title_match = re.search(
-        r'"productName":"(.*?)"',
+    desc_match = re.search(
+        r'vendorDetailsParagraph\\":\\"(.*?)\\"',
         combined
     )
     
-    if not title_match:
-        title_match = re.search(
-            r'"name":"(.*?)"',
-            combined
+    if desc_match:
+    
+        raw_desc = desc_match.group(1)
+    
+        # ✅ NORMAL CASE (no pointer)
+        if not raw_desc.startswith("$"):
+            desc = html.unescape(raw_desc)
+    
+        # ✅ POINTER CASE (like $32, $33, $34)
+        else:
+            pointer = raw_desc.replace("$", "")
+    
+            candidates = []
+    
+            # ✅ scan block range (30–39)
+            for i in range(30, 40):
+    
+                match = re.search(
+                    rf'{i}:(T\d+,.+)',
+                    combined
+                )
+    
+                if not match:
+                    continue
+    
+                raw_text = match.group(1)
+    
+                # ✅ rebuild streamed chunks
+                continuations = re.findall(
+                    r'self\.__next_f\.push\(\[1,"(.*?)"\]\)',
+                    combined,
+                    re.DOTALL
+                )
+    
+                for chunk in continuations:
+                    raw_text += chunk
+    
+                # =====================================
+                # ✅ CLEANING
+                # =====================================
+    
+                # remove T### prefix
+                raw_text = re.sub(r'^T\d+,', '', raw_text)
+    
+                # decode escaped characters
+                raw_text = raw_text.replace('\\u0026', '&')
+                raw_text = raw_text.replace('\\"', '"')
+    
+                # ✅ remove Next.js artifacts
+                raw_text = raw_text.replace('"])', '')
+                raw_text = raw_text.replace('self.__next_f.push([1,"', '')
+    
+                # normalize spacing
+                raw_text = raw_text.replace('\n', ' ').strip()
+    
+                # =====================================
+                # ✅ HARD STOP (CRITICAL)
+                # =====================================
+    
+                raw_text = re.split(
+                    r'(?:\d+:\{|\d+:\[|self\.__next_f)',
+                    raw_text
+                )[0]
+    
+                raw_text = raw_text.strip()
+    
+                # =====================================
+                # ✅ FILTER (ONLY VALID DESCRIPTIONS)
+                # =====================================
+    
+                if (
+                    len(raw_text) > 200 and
+                    "pad" in raw_text.lower() and
+                    "json" not in raw_text.lower()
+                ):
+                    candidates.append(raw_text)
+    
+            # ✅ pick best candidate (longest one)
+            if candidates:
+                desc = html.unescape(max(candidates, key=len))
+        # =====================================
+        # ✅ FEATURES
+        # =====================================
+        bullet_match = re.search(
+            r'vendorDetailsBullets\\":\[(.*?)\]',
+            combined,
+            re.DOTALL
         )
     
-    if title_match:
-        title = title_match.group(1).strip()
-
-    # =====================================
-    # ✅ RETURN (MUST BE INSIDE FUNCTION)
-    # =====================================
-
-    return {
-        "title": title,
-        "description": desc.strip(),
-        "features": features,
-    }
+        if bullet_match:
+    
+            raw_block = bullet_match.group(1)
+    
+            for x in re.findall(r'"(.*?)"', raw_block):
+    
+                clean = html.unescape(x).strip()
+                clean = clean.rstrip("\\").strip()
+                clean = clean.rstrip('"').strip()
+    
+                if len(clean) > 20:
+                    features.append(clean)
+    
+        # =====================================
+        # ✅ TITLE
+        # =====================================
+        title = ""
+        
+        title_match = re.search(
+            r'"productName":"(.*?)"',
+            combined
+        )
+        
+        if not title_match:
+            title_match = re.search(
+                r'"name":"(.*?)"',
+                combined
+            )
+        
+        if title_match:
+            title = title_match.group(1).strip()
+    
+        # =====================================
+        # ✅ RETURN (MUST BE INSIDE FUNCTION)
+        # =====================================
+    
+        return {
+            "title": title,
+            "description": desc.strip(),
+            "features": features,
+        }
 
 
 # =========================================
