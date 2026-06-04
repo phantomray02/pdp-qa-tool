@@ -304,7 +304,7 @@ if uploaded_file:
         c1.write(s_text.get("title", ""))
 
         c2.markdown("**CVS**")
-        cv_text_col, cv_score_col = c2.columns([4, 1])
+        cv_text_col, cv_score_col = c2.columns([6, 1])
 
         cvs_title = r_text.get("title", "")
         cv_text_col.write(cvs_title)
@@ -327,7 +327,7 @@ if uploaded_file:
         c1.write(s_text.get("description", ""))
 
         c2.markdown("**CVS**")
-        cv_text_col, cv_score_col = c2.columns([4, 1])
+        cv_text_col, cv_score_col = c2.columns([6, 1])
 
         cvs_desc = r_text.get("description", "")
         cv_text_col.write(cvs_desc)
@@ -391,7 +391,7 @@ if uploaded_file:
             # =====================================
             col2.markdown("**CVS**")
 
-            cv_text_col, cv_score_col = col2.columns([4, 1])
+            cv_text_col, cv_score_col = col2.columns([6, 1])
 
             cv_text_col.write(best_match if best_match else "❌ Missing")
 
