@@ -477,50 +477,46 @@ if uploaded_file:
         r_images = get_cvs_images(row["retail_url"])
 
         # =====================================
-        # ✅ ENFORCE TOP 3 SLOTS (FIXED + SAFE)
+        # ✅ IMAGE LOGIC (FINAL FIX — NO SHIFT BUG)
         # =====================================
 
-        def matches_type(img, keyword):
+        def is_ooi(img):
             if not img:
                 return False
             t = img.get("type", "").lower().replace(" ", "")
-            return keyword in t
+            return "onlineoptimized" in t
 
-        remaining = s_images.copy()
         adjusted = []
+        remaining = s_images.copy()
 
-        def pull_match(keyword):
-            for i, img in enumerate(remaining):
-                if matches_type(img, keyword):
-                    return remaining.pop(i)
-            return None
+        # ✅ SLOT 1 ONLY — enforce OOI
+        if remaining and is_ooi(remaining[0]):
+            adjusted.append(remaining.pop(0))
+        else:
+            adjusted.append(None)
 
-        # ✅ REQUIRED SLOTS
-        adjusted.append(pull_match("onlineoptimized"))  # slot 1 (OOI)
-        adjusted.append(pull_match("front"))            # slot 2
-        adjusted.append(pull_match("flatback"))         # slot 3
+        # ✅ KEEP NATURAL ORDER (DO NOT FORCE SLOT 2/3)
+        # This prevents your "2nd image shifting incorrectly" bug
+        adjusted.extend(remaining)
 
         # ✅ REMOVE DUPLICATES
         seen_urls = set()
-        clean_remaining = []
+        final_images = []
 
-        for img in remaining:
-            if not img:
+        for img in adjusted:
+            if img is None:
+                final_images.append(None)
                 continue
 
             url = img.get("url")
 
             if url and url not in seen_urls:
-                clean_remaining.append(img)
+                final_images.append(img)
                 seen_urls.add(url)
 
-        # ✅ LIMIT TOTAL IMAGES
+        # ✅ CAP LIST
         MAX_IMAGES = 8
-
-        adjusted.extend(clean_remaining)
-
-        # ✅ FINAL LIST
-        s_images = adjusted[:MAX_IMAGES]
+        s_images = final_images[:MAX_IMAGES]
 
         # =====================================
         # ✅ COPY COMPARISON
