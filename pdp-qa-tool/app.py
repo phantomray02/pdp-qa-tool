@@ -212,28 +212,24 @@ def get_cvs_text(html_text):
         else:
             pointer = raw_desc.replace("$", "")
     
-        # ✅ grab EVERYTHING after pointer until next key
-        # ✅ POINTER CASE (LIKE $32)
-        else:
-            pointer = raw_desc.replace("$", "")
-        
             pointer_block = re.search(
                 rf'{pointer}:(.*?)(?=\n\d+:)',
                 combined,
                 re.DOTALL
             )
-        
+    
             if pointer_block:
                 raw_text = pointer_block.group(1)
-        
+    
+                # ✅ CLEAN Next.js artifacts
                 raw_text = raw_text.replace('\\u0026', '&')
                 raw_text = raw_text.replace('\\"', '"')
                 raw_text = raw_text.replace('\n', ' ')
                 raw_text = raw_text.strip()
-        
-                # ✅ remove junk prefix like T616,
+    
+                # ✅ REMOVE junk prefix like T616,
                 raw_text = re.sub(r'^[A-Z0-9]+,', '', raw_text)
-        
+    
                 desc = html.unescape(raw_text)
 
     # =====================================
