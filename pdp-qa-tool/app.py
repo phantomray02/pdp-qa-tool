@@ -472,7 +472,7 @@ if uploaded_file:
         s_images = get_salsify_images(row["salsify_url"])
 
         # =====================================
-        # ✅ ENFORCE TOP 3 IMAGE SLOTS
+        # ✅ ENFORCE TOP 3 IMAGE SLOTS (FIXED)
         # =====================================
         
         def matches_type(img, keyword):
@@ -481,26 +481,29 @@ if uploaded_file:
             t = img.get("type", "").lower().replace(" ", "")
             return keyword in t
         
-        adjusted = []
         remaining = s_images.copy()
+        adjusted = []
         
-        # ✅ SLOT 1 — ONLINE OPTIMIZED IMAGE (OOI)
-        if remaining and matches_type(remaining[0], "onlineoptimized"):
-            adjusted.append(remaining.pop(0))
-        else:
-            adjusted.append(None)
+        def pull_match(keyword):
+            for i, img in enumerate(remaining):
+                if matches_type(img, keyword):
+                    return remaining.pop(i)
+            return None
+        
+        # ✅ SLOT 1 — OOI
+        adjusted.append(pull_match("onlineoptimized"))
         
         # ✅ SLOT 2 — FRONT
-        if remaining and matches_type(remaining[0], "front"):
-            adjusted.append(remaining.pop(0))
-        else:
-            adjusted.append(None)
+        adjusted.append(pull_match("front"))
         
         # ✅ SLOT 3 — FLAT BACK
-        if remaining and matches_type(remaining[0], "flatback"):
-            adjusted.append(remaining.pop(0))
-        else:
-            adjusted.append(None)
+        adjusted.append(pull_match("flatback"))
+        
+        # ✅ fill remaining slots
+        adjusted.extend(remaining)
+        
+        # ✅ final assignment
+        s_images = adjusted
         
         # ✅ ADD EVERYTHING ELSE (NO LOSS OF IMAGES)
         adjusted.extend(remaining)
