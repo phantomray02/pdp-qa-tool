@@ -213,25 +213,23 @@ def get_cvs_text(html_text):
             pointer = raw_desc.replace("$", "")
     
             # ✅ grab EVERYTHING after pointer until next key
-            pointer_block = re.search(
-                rf'{pointer}:(.*?)(?:\n\d+:|\\"\}\])',
-                combined,
-                re.DOTALL
-            )
-    
-            if pointer_block:
-                raw_text = pointer_block.group(1)
-    
-                # ✅ CLEAN weird Next.js fragments
-                raw_text = raw_text.replace('\\u0026', '&')
-                raw_text = raw_text.replace('\\"', '"')
-                raw_text = raw_text.replace('\n', ' ')
-                raw_text = raw_text.strip()
-    
-                # ✅ REMOVE leading junk like T616,
-                raw_text = re.sub(r'^[A-Z0-9]+,', '', raw_text)
-    
-                desc = html.unescape(raw_text)
+        pointer_block = re.search(pointer_block = re.searchpointer}:(.*?)(?=\n\d+:)',
+            combined,
+            re.DOTALL
+        )
+        
+        if pointer_block:
+            raw_text = pointer_block.group(1)
+        
+            raw_text = raw_text.replace('\\u0026', '&')
+            raw_text = raw_text.replace('\\"', '"')
+            raw_text = raw_text.replace('\n', ' ')
+            raw_text = raw_text.strip()
+        
+            raw_text = re.sub(r'^[A-Z0-9]+,', '', raw_text)
+        
+            desc = html.unescape(raw_text)
+
     # =====================================
     # ✅ FEATURES
     # =====================================
