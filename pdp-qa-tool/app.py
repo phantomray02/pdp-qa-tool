@@ -313,11 +313,13 @@ def match_images_visual(s_images, r_images):
 # =========================================
 # ✅ MAIN APP
 # =========================================
-if uploaded_file:
+    if uploaded_file:
+    
         summary_rows = []
         export_rows = []
     
-    df = pd.read_csv(uploaded_file)
+        df = pd.read_csv(uploaded_file)
+
 
     for _, row in df.iterrows():
 
@@ -407,76 +409,100 @@ if uploaded_file:
         # ✅ FEATURE COMPARISON
         # =====================================
         st.markdown("## Feature Comparison")
-
+        
         feature_fields = [
             ("Feature 1", "feature1"),
             ("Feature 3", "feature3"),
             ("Feature 4", "feature4"),
             ("Feature 5", "feature5"),
         ]
-
+        
         cvs_features = r_text.get("features", [])
-
+        
+        # ✅ INIT FEATURE SCORES
+        feature_scores = []
+        
         for label, key in feature_fields:
-
+        
             st.markdown(f"### {label}")
-
+        
             col1, col2 = st.columns(2)
-
+        
             s_val = s_text.get(key, "")
-
-            # ✅ LEFT
+        
+            # ✅ LEFT (Salsify)
             col1.markdown("**Salsify**")
             col1.markdown(
                 equal_feature_block(s_val),
                 unsafe_allow_html=True
             )
-
+        
             # ✅ MATCHING
             best_score = 0
             best_match = ""
-
+        
             for f in cvs_features:
-
                 score = keyword_score(s_val, f)
-
+        
                 if any(word in f.lower() for word in s_val.lower().split()[:3]):
                     score += 5
-
+        
                 if score > best_score:
                     best_score = score
                     best_match = f
-
-            # ✅ fallback prevents blanks
+        
+            # ✅ FALLBACK
             if not best_match and cvs_features:
                 best_match = cvs_features[0]
-
+        
             best_score = min(100, best_score)
-
-            # ✅ RIGHT
+        
+            # ✅ STORE SCORE
+            feature_scores.append(best_score)
+        
+            # ✅ RIGHT (CVS)
             col2.markdown("**CVS**")
             col2.markdown(
                 equal_feature_block(best_match),
                 unsafe_allow_html=True
             )
-
-            # ✅ KEEP GREEN BAR STYLE
+        
+            # ✅ SCORE BAR
             if best_score >= 80:
                 st.success(f"✅ Strong match: {best_score}%")
             elif best_score >= 50:
                 st.warning(f"⚠️ Moderate match: {best_score}%")
             else:
                 st.error(f"❌ Weak match: {best_score}%")
-
+        
+        # =====================================
+        # ✅ FEATURE SCORE (AVG)
+        # =====================================
+        if feature_scores:
+            avg_feature_score = int(sum(feature_scores) / len(feature_scores))
+        else:
+            avg_feature_score = 0
+        
+        avg_feature_score = min(100, avg_feature_score)
+        
+        # ✅ DISPLAY FEATURE SCORE
+        st.markdown("### ✅ Feature Score Summary")
+        
+        if avg_feature_score >= 80:
+            st.success(f"✅ Feature Match: {avg_feature_score}%")
+        elif avg_feature_score >= 50:
+            st.warning(f"⚠️ Feature Match: {avg_feature_score}%")
+        else:
+            st.error(f"❌ Feature Match: {avg_feature_score}%")
+        
+        
         # =====================================
         # ✅ IMAGE COMPARISON
         # =====================================
         st.markdown("## Image Comparison ✅")
         
-        # ✅ DEBUG COUNTS (helps QA)
         st.write(f"Salsify Images: {len(s_images)} | CVS Images: {len(r_images)}")
         
-        # ✅ IMAGE MATCHING
         image_matches = match_images_visual(s_images, r_images)
         
         if not image_matches:
@@ -485,13 +511,13 @@ if uploaded_file:
             for s, r, sc in image_matches:
                 c1, c2, c3 = st.columns([4, 4, 1])
         
-                # ✅ Salsify Image
+                # ✅ Salsify image
                 if s:
                     c1.image(s, use_container_width=True)
                 else:
                     c1.write("Missing")
         
-                # ✅ CVS Image
+                # ✅ CVS image
                 if r:
                     c2.image(r, use_container_width=True)
                 else:
