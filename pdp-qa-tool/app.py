@@ -62,10 +62,21 @@ def normalize_filename(fname):
 import json
 
 def get_salsify_images(url):
+
+    
+    # ✅ ✅ ✅ 🔥 STEP 1 — DEFINE REQUIRED ORDER HERE
+    EXPECTED_ORDER = [
+        "ONLINE_OPTIMIZED_IMAGE",
+        "FRONT_2D",
+        "FLAT_BACK_2D",
+        "SIDE_2D",
+        "LIFESTYLE",
+        "INFOGRAPHIC"
+    ]
+
     html = get_html(url)
     soup = BeautifulSoup(html, "html.parser")
 
-    # ✅ grab Next.js data
     script = soup.find("script", {"id": "__NEXT_DATA__"})
     if not script:
         return []
@@ -77,36 +88,48 @@ def get_salsify_images(url):
     except:
         return []
 
-    images = []
+    # ✅ REQUIRED ORDER (controls layout)
+    EXPECTED_ORDER = [
+        "ONLINE_OPTIMIZED_IMAGE",
+        "FRONT_2D",
+        "FLAT_BACK_2D",
+        "SIDE_2D",
+        "LIFESTYLE",
+        "INFOGRAPHIC"
+    ]
+
+    # ✅ build map of existing images
+    image_map = {}
 
     for prop in properties:
-    
-        prop_name = prop.get("property", "").strip()
+        key = prop.get("property", "").strip()
         values = prop.get("values", [])
-    
+
         if not values:
             continue
-    
+
         first = values[0]
         url = first.get("value", "")
-    
-        
+
         if not url:
             continue
 
-    
         clean = url.split("?")[0]
-    
-        # ✅ EXTRA FILTER — skip placeholder/invalid images
-        if "placeholder" in clean.lower():
-            continue
-    
-        images.append({
-            "url": clean
-        })
-    
-    # ✅ THIS LINE IS KEY — removes gaps automatically
-    return images[:8]
+        image_map[key] = clean
+
+    # ✅ build ordered list WITH missing slots
+    ordered_images = []
+
+    for key in EXPECTED_ORDER:
+        if key in image_map:
+            ordered_images.append({
+                "url": image_map[key],
+                "type": key
+            })
+        else:
+            ordered_images.append(None)  # ✅ THIS CREATES "Missing"
+
+    return ordered_images
 
 # =========================================
 # ✅ CVS IMAGES (UNLIMITED + BEST RES)
@@ -664,11 +687,13 @@ if uploaded_file:
                 c1, c2, c3 = st.columns([4, 4, 1])
         
                 # ✅ Salsify (already cleaned → no gaps)
+                
                 if s:
-                    s_url = s.get("url") if isinstance(s, dict) else s
+                    s_url = s["url"]
                     c1.image(s_url, use_container_width=True)
                 else:
-                    c1.write("")
+                    c1.markdown("**Missing**")
+
         
                 # ✅ CVS
                 if r:
