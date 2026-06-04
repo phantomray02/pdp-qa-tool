@@ -170,13 +170,16 @@ def get_salsify_text(url):
 # =========================================
 def get_cvs_text(html_text):
 
+    import re
     import html
+    from bs4 import BeautifulSoup
+
+    if not html_text:
+        return {"title": "", "description": "", "features": []}
 
     soup = BeautifulSoup(html_text, "html.parser")
 
     combined = ""
-
-    # ✅ collect script content
     for s in soup.find_all("script"):
         if s.string:
             combined += s.string
@@ -186,181 +189,199 @@ def get_cvs_text(html_text):
     title = ""
 
     # =====================================
-    # ✅ DESCRIPTION (FULL PRODUCTION VERSION)
+    # ✅ DESCRIPTION
     # =====================================
-    desc = ""
-    features = []
-    title = ""
-    
+
     desc_match = re.search(
         r'vendorDetailsParagraph\\":\\"(.*?)\\"',
         combined
     )
-    
+
     if desc_match:
-    
+
         raw_desc = desc_match.group(1)
-    
-        # =========================
-        # ✅ DESCRIPTION LOGIC
-        # =========================
-    
-        if not raw_desc.startswith("$"):
-            desc = html.unescape(raw_desc)
-    
-        else:
+
+        # =====================================
+        # ✅ HANDLE NESTED POINTERS ($32 → $34)
+        # =====================================
+        if raw_desc.startswith("$"):
+
             pointer = raw_desc.replace("$", "")
-    
+
+            nested_match = re.search(
+                rf'{pointer}:\{{.*?"vendorDetailsParagraph":"\$(\d+)".*?\}}',
+                combined,
+                re.DOTALL
+            )
+
+            if nested_match:
+                pointer = nested_match.group(1)
+                raw_desc = f"${pointer}"
+
+        # =====================================
+        # ✅ POINTER CASE
+        # =====================================
+        if raw_desc.startswith("$"):
+
+            pointer = raw_desc.replace("$", "")
+
             pointer_match = re.search(
                 rf'{pointer}:(T\d+,.+)',
                 combined,
                 re.DOTALL
             )
-    
+
             if pointer_match and pointer_match.lastindex:
-    
+
                 raw_text = pointer_match.group(1)
-    
-                # ✅ rebuild chunks
+
+                # ✅ rebuild streaming chunks
                 chunks = re.findall(
                     r'self\.__next_f\.push\(\[1,"(.*?)"\]\)',
                     combined,
                     re.DOTALL
                 )
-    
+
                 for chunk in chunks:
                     raw_text += chunk
-    
-                # ✅ clean
+
+                # ✅ remove prefix
                 raw_text = re.sub(r'^T\d+,', '', raw_text)
+
+                # ✅ decode characters
                 raw_text = raw_text.replace('\\u0026', '&')
                 raw_text = raw_text.replace('\\"', '"')
+
+                # ✅ remove stream artifacts
                 raw_text = raw_text.replace('"])', '')
                 raw_text = raw_text.replace('self.__next_f.push([1,"', '')
+                raw_text = re.sub(r'</?script>', '', raw_text)
+
                 raw_text = raw_text.replace('\n', ' ')
-    
+
+                # ✅ stop before JSON blocks
                 raw_text = re.split(
-                    rf'(?:\d+:{{|\d+:\[|"\)\d+?:)',
+                    rf'(?:\d+:{{|\d+:\[)',
                     raw_text
                 )[0]
-    
+
+                # ✅ FIX broken word joins (CRITICAL)
+                raw_text = re.sub(r'([A-Za-z])\s+([a-z])', r'\1\2', raw_text)
+                raw_text = re.sub(r'\b([A-Za-z])\s+([A-Za-z]{2,})\b', r'\1\2', raw_text)
+
+                # ✅ normalize spacing
                 raw_text = re.sub(r'\s+', ' ', raw_text).strip()
-    
+
                 desc = html.unescape(raw_text)
-                # =====================================
-                # ✅ FALLBACK: SCAN BLOCKS IF DESC EMPTY
-                # =====================================
-                
-                if not desc or len(desc) < 100:
-                
-                    fallback_candidates = []
-                
-                    for i in range(20, 41):
-                
-                        m = re.search(
-                            rf'{i}:(T\d+,.+)',
-                            combined,
-                            re.DOTALL
-                        )
-                
-                        if not m:
-                            continue
-                
-                        raw_text = m.group(1)
-                
-                        # ✅ rebuild chunks
-                        chunks = re.findall(
-                            r'self\.__next_f\.push\(\[1,"(.*?)"\]\)',
-                            combined,
-                            re.DOTALL
-                        )
-                
-                        for chunk in chunks:
-                            raw_text += chunk
-                
-                        # ✅ clean (same as main logic)
-                        raw_text = re.sub(r'^T\d+,', '', raw_text)
-                        raw_text = raw_text.replace('\\u0026', '&')
-                        raw_text = raw_text.replace('\\"', '"')
-                
-                        raw_text = raw_text.replace('"])', '')
-                        raw_text = raw_text.replace('self.__next_f.push([1,"', '')
-                        raw_text = re.sub(r'</?script>', '', raw_text)
-                
-                        raw_text = raw_text.replace('\n', ' ')
-                
-                        raw_text = re.split(
-                            rf'(?:\d+:{{|\d+:\[)',
-                            raw_text
-                        )[0]
-                
-                        # ✅ FIX WORD SPLITS
-                        raw_text = re.sub(r'([A-Za-z])\s+([a-z])', r'\1\2', raw_text)
-                
-                        raw_text = re.sub(r'\s+', ' ', raw_text).strip()
-                
-                        # ✅ VALIDATE DESCRIPTION
-                        if (
-                            len(raw_text) > 200 and
-                            "pad" in raw_text.lower()
-                        ):
-                            fallback_candidates.append(raw_text)
-                
-                    if fallback_candidates:
-                        desc = html.unescape(max(fallback_candidates, key=len))
-    
-            else:
-                desc = ""
-    
-        # =========================
-        # ✅ FEATURES (MUST STAY INDENTED)
-        # =========================
-    
-        bullet_match = re.search(
-            r'vendorDetailsBullets\\":\[(.*?)\]',
-            combined,
-            re.DOTALL
-        )
-    
-        if bullet_match:
-    
-            raw_block = bullet_match.group(1)
-    
-            for x in re.findall(r'"(.*?)"', raw_block):
-                clean = html.unescape(x).strip()
-                if len(clean) > 20:
-                    features.append(clean)
-    
-        # =========================
-        # ✅ TITLE (MUST STAY INDENTED)
-        # =========================
-    
+
+        # =====================================
+        # ✅ NON-POINTER CASE
+        # =====================================
+        else:
+            desc = html.unescape(raw_desc)
+
+    # =====================================
+    # ✅ FALLBACK SCAN (CRITICAL EDGE CASE FIX)
+    # =====================================
+
+    if not desc or len(desc) < 100:
+
+        fallback_candidates = []
+
+        for i in range(20, 41):
+
+            m = re.search(
+                rf'{i}:(T\d+,.+)',
+                combined,
+                re.DOTALL
+            )
+
+            if not m:
+                continue
+
+            raw_text = m.group(1)
+
+            chunks = re.findall(
+                r'self\.__next_f\.push\(\[1,"(.*?)"\]\)',
+                combined,
+                re.DOTALL
+            )
+
+            for chunk in chunks:
+                raw_text += chunk
+
+            raw_text = re.sub(r'^T\d+,', '', raw_text)
+            raw_text = raw_text.replace('\\u0026', '&')
+            raw_text = raw_text.replace('\\"', '"')
+
+            raw_text = raw_text.replace('"])', '')
+            raw_text = raw_text.replace('self.__next_f.push([1,"', '')
+            raw_text = re.sub(r'</?script>', '', raw_text)
+
+            raw_text = raw_text.replace('\n', ' ')
+
+            raw_text = re.split(
+                rf'(?:\d+:{{|\d+:\[)',
+                raw_text
+            )[0]
+
+            # ✅ fix broken words
+            raw_text = re.sub(r'([A-Za-z])\s+([a-z])', r'\1\2', raw_text)
+
+            raw_text = re.sub(r'\s+', ' ', raw_text).strip()
+
+            if len(raw_text) > 200:
+                fallback_candidates.append(raw_text)
+
+        if fallback_candidates:
+            desc = html.unescape(max(fallback_candidates, key=len))
+
+    # =====================================
+    # ✅ FEATURES
+    # =====================================
+
+    bullet_match = re.search(
+        r'vendorDetailsBullets\\":\[(.*?)\]',
+        combined,
+        re.DOTALL
+    )
+
+    if bullet_match:
+
+        raw_block = bullet_match.group(1)
+
+        for x in re.findall(r'"(.*?)"', raw_block):
+            clean = html.unescape(x).strip()
+            if len(clean) > 20:
+                features.append(clean)
+
+    # =====================================
+    # ✅ TITLE
+    # =====================================
+
+    title_match = re.search(
+        r'"productName":"(.*?)"',
+        combined
+    )
+
+    if not title_match:
         title_match = re.search(
-            r'"productName":"(.*?)"',
+            r'"name":"(.*?)"',
             combined
         )
-    
-        if not title_match:
-            title_match = re.search(
-                r'"name":"(.*?)"',
-                combined
-            )
-    
-        if title_match:
-            title = title_match.group(1).strip()
-    
-    # =========================
-    # ✅ RETURN (OUTSIDE IF BLOCK)
-    # =========================
-    
+
+    if title_match:
+        title = title_match.group(1).strip()
+
+    # =====================================
+    # ✅ FINAL SAFE RETURN
+    # =====================================
+
     return {
-        "title": title,
-        "description": desc.strip(),
-        "features": features,
+        "title": title if isinstance(title, str) else "",
+        "description": desc.strip() if isinstance(desc, str) else "",
+        "features": features if isinstance(features, list) else []
     }
-
-
-
 # =========================================
 # ✅ SCORE
 # =========================================
