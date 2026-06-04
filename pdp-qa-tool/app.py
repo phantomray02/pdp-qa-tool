@@ -645,6 +645,8 @@ if uploaded_file:
         # ✅ IMAGE COMPARISON
         # =====================================
         img_scores = []
+        image_row_scores = []   # ✅ REQUIRED
+        
         st.markdown("## Image Comparison ✅")
         
         st.write(f"Salsify Images: {len(s_images)} | CVS Images: {len(r_images)}")
