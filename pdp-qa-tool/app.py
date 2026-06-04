@@ -169,19 +169,19 @@ def get_salsify_text(url):
         "feature5": text_map.get("FEATURE_5", "")
     }
 # =========================================
-# ✅ CVS EXTRACTION (REAL FINAL - TARGETED)
+# ✅ CVS COPY EXTRACTION (SAFE FINAL)
 # =========================================
 def get_cvs_text(html_text):
 
     from bs4 import BeautifulSoup
     import re
-    import json
+    import html
 
     soup = BeautifulSoup(html_text, "html.parser")
 
     combined = ""
 
-    # ✅ STEP 1: COLLECT SCRIPT CONTENT
+    # ✅ keep this (already working)
     for s in soup.find_all("script"):
         if s.string:
             combined += s.string
@@ -190,27 +190,34 @@ def get_cvs_text(html_text):
     features = []
 
     # =====================================
-    # ✅ STEP 2: EXTRACT vendorContent BLOCK
+    # ✅ DESCRIPTION (DO NOT TOUCH)
     # =====================================
-    match = re.search(
-        r'"vendorContent":({.*?"vendorDirection":{.*?}})',
+    desc_match = re.search(
+        r'vendorDetailsParagraph\\":\\"(.*?)\\"',
+        combined
+    )
+
+    if desc_match:
+        desc = html.unescape(desc_match.group(1))
+
+    # =====================================
+    # ✅ FEATURES (NEW — TARGET SAME STRUCTURE)
+    # =====================================
+    bullet_match = re.search(
+        r'vendorDetailsBullets\\":\\\[(.*?)\\\]',
         combined,
         re.DOTALL
     )
 
-    if match:
-        raw = match.group(1)
+    if bullet_match:
 
-        try:
-            data = json.loads(raw)
+        raw_block = bullet_match.group(1)
 
-            details = data.get("vendorDetails", {})
-
-            desc = details.get("vendorDetailsParagraph", "")
-            features = details.get("vendorDetailsBullets", [])
-
-        except Exception as e:
-            print("JSON parse error:", e)
+        features = [
+            html.unescape(x).strip()
+            for x in re.findall(r'"(.*?)"', raw_block)
+            if len(x.strip()) > 20
+        ]
 
     return {
         "description": desc.strip(),
