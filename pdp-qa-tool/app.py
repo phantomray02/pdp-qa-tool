@@ -208,7 +208,7 @@ def get_cvs_text(html_text):
             pointer = raw_desc.replace("$", "")
         
             pointer_match = re.search(
-                rf'{pointer}:(?:\d+:\{|\d+:\[|"\)\d+?:)',
+                rf'(?:\d+:{{|\d+:\[|"\)\d+?:)',
                 combined,
                 re.DOTALL
             )
