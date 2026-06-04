@@ -263,7 +263,33 @@ def keyword_score(a, b):
     return int(SequenceMatcher(None, normalize_text(a), normalize_text(b)).ratio() * 100)
 
 # =========================================
-# ✅ MAIN APP (FINAL CLEAN VERSION)
+# ✅ HELPERS (ADD ABOVE MAIN APP)
+# =========================================
+def equal_height_block(text):
+    return f"""
+    <div style="
+        min-height: 180px;
+        display: flex;
+        align-items: flex-start;
+    ">
+        {text}
+    </div>
+    """
+
+def equal_feature_block(text):
+    return f"""
+    <div style="
+        min-height: 70px;
+        display: flex;
+        align-items: flex-start;
+    ">
+        {text}
+    </div>
+    """
+
+
+# =========================================
+# ✅ MAIN APP
 # =========================================
 if uploaded_file:
 
@@ -275,13 +301,10 @@ if uploaded_file:
         st.subheader(f"SKU: {row['sku']}")
 
         # =====================================
-        # ✅ FETCH HTML
+        # ✅ FETCH + DATA
         # =====================================
         retail_html = get_html(row["retail_url"])
 
-        # =====================================
-        # ✅ GET DATA
-        # =====================================
         s_text = get_salsify_text(row["salsify_url"])
         r_text = get_cvs_text(retail_html)
 
@@ -300,21 +323,25 @@ if uploaded_file:
 
         c1, c2 = st.columns(2)
 
+        # ✅ Salsify
         c1.markdown("**Salsify**")
-        c1.write(s_text.get("title", ""))
-
-        c2.markdown("**CVS**")
-        cv_text_col, cv_score_col = c2.columns([6, 1])
-
-        cvs_title = r_text.get("title", "")
-        cv_text_col.write(cvs_title)
-
-        title_score = keyword_score(
-            s_text.get("title", ""),
-            cvs_title
+        c1.markdown(
+            equal_height_block(s_text.get("title", "")),
+            unsafe_allow_html=True
         )
 
-        cv_score_col.markdown(f"✅ {title_score}%")
+        # ✅ CVS
+        c2.markdown("**CVS**")
+        cv_text, cv_score = c2.columns([5, 1])
+
+        cvs_title = r_text.get("title", "")
+        cv_text.markdown(
+            equal_height_block(cvs_title),
+            unsafe_allow_html=True
+        )
+
+        title_score = min(100, keyword_score(s_text.get("title", ""), cvs_title))
+        cv_score.markdown(f"✅ {title_score}%")
 
         # -------------------------------------
         # ✅ DESCRIPTION
@@ -324,23 +351,25 @@ if uploaded_file:
         c1, c2 = st.columns(2)
 
         c1.markdown("**Salsify**")
-        c1.write(s_text.get("description", ""))
-
-        c2.markdown("**CVS**")
-        cv_text_col, cv_score_col = c2.columns([6, 1])
-
-        cvs_desc = r_text.get("description", "")
-        cv_text_col.write(cvs_desc)
-
-        desc_score = keyword_score(
-            s_text.get("description", ""),
-            cvs_desc
+        c1.markdown(
+            equal_height_block(s_text.get("description", "")),
+            unsafe_allow_html=True
         )
 
-        cv_score_col.markdown(f"✅ {desc_score}%")
+        c2.markdown("**CVS**")
+        cv_text, cv_score = c2.columns([5, 1])
+
+        cvs_desc = r_text.get("description", "")
+        cv_text.markdown(
+            equal_height_block(cvs_desc),
+            unsafe_allow_html=True
+        )
+
+        desc_score = min(100, keyword_score(s_text.get("description", ""), cvs_desc))
+        cv_score.markdown(f"✅ {desc_score}%")
 
         # =====================================
-        # ✅ FEATURE COMPARISON (FINAL)
+        # ✅ FEATURE COMPARISON
         # =====================================
         st.markdown("## Feature Comparison")
 
@@ -361,9 +390,12 @@ if uploaded_file:
 
             s_val = s_text.get(key, "")
 
-            # ✅ LEFT: SALSIFY
+            # ✅ LEFT
             col1.markdown("**Salsify**")
-            col1.write(s_val if s_val else "—")
+            col1.markdown(
+                equal_feature_block(s_val),
+                unsafe_allow_html=True
+            )
 
             # =====================================
             # ✅ FIND BEST MATCH (STABLE)
@@ -372,9 +404,10 @@ if uploaded_file:
             best_match = ""
 
             for f in cvs_features:
+
                 score = keyword_score(s_val, f)
 
-                # ✅ small boost for similar phrasing
+                # ✅ slight boost for similar phrasing
                 if any(word in f.lower() for word in s_val.lower().split()[:3]):
                     score += 5
 
@@ -382,27 +415,32 @@ if uploaded_file:
                     best_score = score
                     best_match = f
 
-            # ✅ fallback (prevents missing)
+            # ✅ fallback prevents missing features
             if not best_match and cvs_features:
                 best_match = cvs_features[0]
 
+            best_score = min(100, best_score)
+
             # =====================================
-            # ✅ RIGHT: CVS + INLINE SCORE
+            # ✅ RIGHT (CVS + INLINE SCORE)
             # =====================================
             col2.markdown("**CVS**")
 
-            cv_text_col, cv_score_col = col2.columns([6, 1])
+            cv_text, cv_score = col2.columns([5, 1])
 
-            cv_text_col.write(best_match if best_match else "❌ Missing")
+            cv_text.markdown(
+                equal_feature_block(best_match),
+                unsafe_allow_html=True
+            )
 
             if best_score >= 80:
-                cv_score_col.markdown(f"✅ {best_score}%")
+                cv_score.markdown(f"✅ {best_score}%")
                 st.success(f"✅ Strong match: {best_score}%")
             elif best_score >= 50:
-                cv_score_col.markdown(f"⚠️ {best_score}%")
+                cv_score.markdown(f"⚠️ {best_score}%")
                 st.warning(f"⚠️ Moderate match: {best_score}%")
             else:
-                cv_score_col.markdown(f"❌ {best_score}%")
+                cv_score.markdown(f"❌ {best_score}%")
                 st.error(f"❌ Weak match: {best_score}%")
 
         # =====================================
