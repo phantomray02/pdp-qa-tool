@@ -80,25 +80,32 @@ def get_salsify_images(url):
     images = []
 
     for prop in properties:
-
+    
         prop_name = prop.get("property", "").strip()
-
         values = prop.get("values", [])
-
+    
         if not values:
             continue
-
-        # ✅ CRITICAL FIX: ONLY FIRST IMAGE
+    
         first = values[0]
-
         url = first.get("value", "")
-        clean = url.split("?")[0]
+    
+        
+        if not url:
+            continue
 
+    
+        clean = url.split("?")[0]
+    
+        # ✅ EXTRA FILTER — skip placeholder/invalid images
+        if "placeholder" in clean.lower():
+            continue
+    
         images.append({
-            "type": prop_name,
             "url": clean
         })
-
+    
+    # ✅ THIS LINE IS KEY — removes gaps automatically
     return images[:8]
 
 # =========================================
@@ -642,28 +649,38 @@ if uploaded_file:
         
         st.write(f"Salsify Images: {len(s_images)} | CVS Images: {len(r_images)}")
         
-        image_matches = match_images_visual(s_images, r_images)
+        from itertools import zip_longest
+
+        # ✅ shift-based pairing (no index dependency)
+        image_pairs = list(zip_longest(s_images, r_images, fillvalue=None))
         
-        if not image_matches:
+        if not image_pairs:
             st.warning("No images found to compare.")
         else:
-            for s, r, sc in image_matches:
+            for s, r in image_pairs:
+        
                 c1, c2, c3 = st.columns([4, 4, 1])
         
-                # ✅ Salsify image
+                # ✅ Salsify (already cleaned → no gaps)
                 if s:
-                    c1.image(s, use_container_width=True)
+                    s_url = s["url"] if isinstance(s, dict) else s
+                    c1.image(s_url, use_container_width=True)
                 else:
-                    c1.write("Missing")
+                    c1.write("")
         
-                # ✅ CVS image
+                # ✅ CVS
                 if r:
                     c2.image(r, use_container_width=True)
                 else:
-                    c2.write("Missing")
+                    c2.write("")
         
-                # ✅ Score
-                sc = min(100, sc)
+                # ✅ score (optional, keeps your logic intact)
+                if s and r:
+                    s_url = s["url"] if isinstance(s, dict) else s
+                    sc = compare_images_visually(s_url, r)
+                else:
+                    sc = 0
+        
                 c3.write(f"{sc}%")
         
         # =====================================
