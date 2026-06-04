@@ -215,11 +215,18 @@ def get_cvs_text(html_text):
 
         raw_block = bullet_match.group(1)
 
-        features = [
-            html.unescape(x).strip()
-            for x in re.findall(r'"(.*?)"', raw_block)
-            if len(x.strip()) > 20
-        ]
+        features = []
+        
+        for x in re.findall(r'"(.*?)"', raw_block):
+        
+            clean = html.unescape(x).strip()
+        
+            # ✅ remove trailing junk
+            clean = clean.rstrip("\\").strip()
+            clean = clean.rstrip('"').strip()
+        
+            if len(clean) > 20:
+                features.append(clean)
 
     return {
         "description": desc.strip(),
