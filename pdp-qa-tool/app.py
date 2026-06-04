@@ -168,73 +168,49 @@ import html
 # =========================================
 # ✅ CVS COPY EXTRACTION (FINAL)
 # =========================================
-from bs4 import BeautifulSoup
 import re
 import html
 
+# =========================================
+# ✅ CVS COPY EXTRACTION (FINAL)
+# =========================================
 def get_cvs_text(html_text):
-
-    soup = BeautifulSoup(html_text, "html.parser")
 
     desc = ""
     features = []
 
-    # =====================================
-    # ✅ STEP 1: COLLECT ALL SCRIPT TEXT
-    # =====================================
-    scripts = soup.find_all("script")
-
-    combined = ""
-
-    for s in scripts:
-        if s.string:
-            combined += s.string
-
-    # =====================================
-    # ✅ STEP 2: EXTRACT DESCRIPTION
-    # =====================================
-    desc_matches = re.findall(
+    # ✅ 1. GET DESCRIPTION
+    desc_match = re.search(
         r'vendorDetailsParagraph":"(.*?)"',
-        combined
+        html_text
     )
 
-    clean_desc = [
-        html.unescape(d).strip()
-        for d in desc_matches
-        if len(d) > 200
-    ]
+    if desc_match:
+        desc = html.unescape(desc_match.group(1)).strip()
 
-    if clean_desc:
-        desc = max(clean_desc, key=len)
-
-    # =====================================
-    # ✅ STEP 3: EXTRACT BULLETS
-    # =====================================
-    bullet_matches = re.findall(
-        r'vendorDetailsBullets":\[(.*?)\]',
-        combined,
-        re.DOTALL
+    # ✅ 2. FIND BULLET POINTER (example: "$32")
+    bullet_ref_match = re.search(
+        r'vendorDetailsBullets":"\$(\d+)"',
+        html_text
     )
 
-    all_bullets = []
+    if bullet_ref_match:
+        ref_id = bullet_ref_match.group(1)
 
-    for block in bullet_matches:
+        # ✅ 3. FIND THE ACTUAL BULLET ARRAY (example: 32:[ ... ])
+        pattern = rf'{ref_id}:\[(.*?)\]'
+        block_match = re.search(pattern, html_text, re.DOTALL)
 
-        bullets = re.findall(r'"(.*?)"', block)
+        if block_match:
+            raw_block = block_match.group(1)
 
-        clean = [
-            html.unescape(b).strip()
-            for b in bullets
-            if len(b) > 20
-        ]
+            # ✅ 4. CLEAN BULLETS
+            features = [
+                html.unescape(x).strip()
+                for x in re.findall(r'"(.*?)"', raw_block)
+                if len(x.strip()) > 10
+            ]
 
-        if len(clean) >= 3:
-            all_bullets.append(clean)
-
-    if all_bullets:
-        features = max(all_bullets, key=len)
-
-    # =====================================
     return {
         "description": desc,
         "features": features
@@ -260,7 +236,7 @@ if uploaded_file:
 
         st.subheader(f"SKU: {row['sku']}")
 
-        # ✅ FIXED: correct variable name
+        # ✅ GET HTML
         retail_html = get_html(row["retail_url"])
 
         # ✅ GET DATA
@@ -275,43 +251,89 @@ if uploaded_file:
         # =========================================
         st.markdown("## Copy Comparison")
 
-        fields = [
-            ("Title", "title"),
-            ("Description", "description"),
+        # -----------------------------------------
+        # ✅ TITLE
+        # -----------------------------------------
+        st.markdown("### Title")
+        c1, c2 = st.columns(2)
+
+        c1.markdown("**Salsify**")
+        c1.write(s_text.get("title", ""))
+
+        c2.markdown("**CVS**")
+        c2.write("")
+
+        # -----------------------------------------
+        # ✅ DESCRIPTION (FIXED)
+        # -----------------------------------------
+        st.markdown("### Description")
+        c1, c2 = st.columns(2)
+
+        c1.markdown("**Salsify**")
+        c1.write(s_text.get("description", ""))
+
+        c2.markdown("**CVS**")
+        c2.write(r_text.get("description", ""))
+
+        desc_score = keyword_score(
+            s_text.get("description", ""),
+            r_text.get("description", "")
+        )
+
+        st.write(f"✅ Match: {desc_score}%")
+
+        # =========================================
+        # ✅ FEATURES (THIS WAS MISSING)
+        # =========================================
+        st.markdown("## Feature Comparison")
+
+        feature_fields = [
             ("Feature 1", "feature1"),
             ("Feature 3", "feature3"),
             ("Feature 4", "feature4"),
             ("Feature 5", "feature5"),
         ]
 
-        for label, key in fields:
+        cvs_features = r_text.get("features", [])
+
+        for label, key in feature_fields:
 
             st.markdown(f"### {label}")
-
             c1, c2 = st.columns(2)
+
+            s_val = s_text.get(key, "")
 
             # ✅ LEFT: SALSIFY
             c1.markdown("**Salsify**")
-            c1.write(s_text.get(key, ""))
+            c1.write(s_val if s_val else "—")
 
-            # ✅ RIGHT: CVS (only description for now)
+            # ✅ FIND BEST MATCH IN CVS BULLETS
+            best_score = 0
+            best_match = ""
+
+            for f in cvs_features:
+                score = keyword_score(s_val, f)
+                if score > best_score:
+                    best_score = score
+                    best_match = f
+
+            # ✅ RIGHT: CVS
             c2.markdown("**CVS**")
+            c2.write(best_match if best_match else "❌ Missing")
 
-            if key == "description":
-                c2.write(r_text.get("description", ""))
+            # ✅ SCORE DISPLAY
+            if best_match:
+                if best_score >= 80:
+                    st.success(f"✅ Strong match: {best_score}%")
+                elif best_score >= 50:
+                    st.warning(f"⚠️ Medium match: {best_score}%")
+                else:
+                    st.error(f"❌ Weak match: {best_score}%")
             else:
-                c2.write("")
-
-            # ✅ SCORE (basic for now)
-            score = keyword_score(
-                s_text.get(key, ""),
-                r_text.get("description", "")
-            )
-
-            st.write(f"✅ Match: {score}%")
+                st.error("❌ No matching feature found")
 
         # =========================================
-        # ✅ IMAGE COMPARISON
+        # ✅ IMAGE COMPARISON (unchanged)
         # =========================================
         st.markdown("## Image Comparison")
 
@@ -341,11 +363,6 @@ if uploaded_file:
              max(len(s_images), len(r_images), 1)) * 100
         )
 
-        desc_score = keyword_score(
-            s_text.get("description", ""),
-            r_text.get("description", "")
-        )
-
         overall = int((img_score + desc_score) / 2)
 
         summary_rows.append({
@@ -354,7 +371,6 @@ if uploaded_file:
             "Description %": desc_score,
             "Overall %": overall
         })
-
 # =========================================
 # ✅ EXPORT
 # =========================================
