@@ -252,6 +252,7 @@ def keyword_score(a, b):
 # =========================================
 # ✅ MAIN APP
 # =========================================
+
 if uploaded_file:
 
     df = pd.read_csv(uploaded_file)
@@ -261,47 +262,44 @@ if uploaded_file:
 
         st.subheader(f"SKU: {row['sku']}")
 
-        # ✅ GET HTML
+        # =====================================
+        # ✅ FETCH HTML
+        # =====================================
         retail_html = get_html(row["retail_url"])
 
+        # =====================================
         # ✅ GET DATA
+        # =====================================
         s_text = get_salsify_text(row["salsify_url"])
         r_text = get_cvs_text(retail_html)
-        # =========================================
-        # ✅ CVS DEBUGGER (TEMPORARY)
-        # =========================================
-        st.markdown("## 🧪 CVS DEBUG")
-        
-        st.write("CVS DATA:", r_text)
-        
-        st.write("HTML length:", len(retail_html))
-        
-        if "vendorDetailsParagraph" in retail_html:
-            st.success("✅ FOUND vendorDetailsParagraph")
-        else:
-            st.error("❌ NOT FOUND vendorDetailsParagraph")
-        
-        if "vendorDetailsBullets" in retail_html:
-            st.success("✅ FOUND vendorDetailsBullets")
-        
-        # ✅ show bullet pointer
-        match = re.search(r'vendorDetailsBullets":"\$(\d+)"', retail_html)
-        if match:
-            st.write("Bullet pointer:", match.group(1))
-
 
         s_images = get_salsify_images(row["salsify_url"])
         r_images = get_cvs_images(row["retail_url"])
 
-        # =========================================
+        # =====================================
+        # ✅ CVS DEBUGGER
+        # =====================================
+        st.markdown("## 🧪 CVS DEBUG")
+
+        st.write("CVS DATA:", r_text)
+        st.write("HTML length:", len(retail_html))
+
+        if "vendorDetailsParagraph" in retail_html:
+            st.success("✅ FOUND vendorDetailsParagraph")
+
+        if "vendorDetailsBullets" in retail_html:
+            st.success("✅ FOUND vendorDetailsBullets")
+
+        # =====================================
         # ✅ COPY COMPARISON
-        # =========================================
+        # =====================================
         st.markdown("## Copy Comparison")
 
-        # -----------------------------------------
+        # -------------------------------------
         # ✅ TITLE
-        # -----------------------------------------
+        # -------------------------------------
         st.markdown("### Title")
+
         c1, c2 = st.columns(2)
 
         c1.markdown("**Salsify**")
@@ -310,10 +308,11 @@ if uploaded_file:
         c2.markdown("**CVS**")
         c2.write("")
 
-        # -----------------------------------------
-        # ✅ DESCRIPTION (FIXED)
-        # -----------------------------------------
+        # -------------------------------------
+        # ✅ DESCRIPTION
+        # -------------------------------------
         st.markdown("### Description")
+
         c1, c2 = st.columns(2)
 
         c1.markdown("**Salsify**")
@@ -329,59 +328,67 @@ if uploaded_file:
 
         st.write(f"✅ Match: {desc_score}%")
 
-# =========================================
-# ✅ FEATURE COMPARISON (FIXED)
-# =========================================
-st.markdown("## Feature Comparison")
+        # =====================================
+        # ✅ FEATURE COMPARISON (UPDATED)
+        # =====================================
+        st.markdown("## Feature Comparison")
 
-feature_fields = [
-    ("Feature 1", "feature1"),
-    ("Feature 3", "feature3"),
-    ("Feature 4", "feature4"),
-    ("Feature 5", "feature5"),
-]
+        feature_fields = [
+            ("Feature 1", "feature1"),
+            ("Feature 3", "feature3"),
+            ("Feature 4", "feature4"),
+            ("Feature 5", "feature5"),
+        ]
 
-cvs_features = r_text.get("features", [])
+        cvs_features = r_text.get("features", [])
 
-for label, key in feature_fields:
+        for label, key in feature_fields:
 
-    st.markdown(f"### {label}")
+            st.markdown(f"### {label}")
 
-    c1, c2 = st.columns(2)
+            c1, c2 = st.columns(2)
 
-    s_val = s_text.get(key, "")
+            s_val = s_text.get(key, "")
 
-    # ✅ LEFT
-    c1.markdown("**Salsify**")
-    c1.write(s_val)
+            # ✅ LEFT: SALSIFY
+            c1.markdown("**Salsify**")
+            c1.write(s_val if s_val else "—")
 
-    # ✅ FIND BEST MATCH
-    best_score = 0
-    best_match = ""
+            # =====================================
+            # ✅ FIND BEST MATCH
+            # =====================================
+            best_score = 0
+            best_match = ""
 
-    for f in cvs_features:
-        score = keyword_score(s_val, f)
-        if score > best_score:
-            best_score = score
-            best_match = f
+            for f in cvs_features:
+                score = keyword_score(s_val, f)
 
-    # ✅ RIGHT
-    c2.markdown("**CVS**")
+                if score > best_score:
+                    best_score = score
+                    best_match = f
 
-    if best_match:
-        c2.write(best_match)
-    else:
-        c2.write("❌ Missing")
+            # ✅ RIGHT: CVS
+            c2.markdown("**CVS**")
 
-    # ✅ SCORE
-    if best_match:
-        st.write(f"Match: {best_score}%")
-    else:
-        st.error("No matching feature found")
+            if best_match:
+                c2.write(best_match)
+            else:
+                c2.write("❌ Missing")
 
-        # =========================================
-        # ✅ IMAGE COMPARISON (unchanged)
-        # =========================================
+            # ✅ SCORE DISPLAY
+            if best_match:
+                if best_score >= 80:
+                    st.success(f"✅ Strong match: {best_score}%")
+                elif best_score >= 50:
+                    st.warning(f"⚠️ Medium match: {best_score}%")
+                else:
+                    st.error(f"❌ Weak match: {best_score}%")
+            else:
+                st.error("❌ No matching feature found")
+
+        # =====================================
+        # ✅ IMAGE COMPARISON
+        # =====================================
         st.markdown("## Image Comparison")
 
         max_len = max(len(s_images), len(r_images))
@@ -402,9 +409,9 @@ for label, key in feature_fields:
                 if img:
                     c2.image(img, use_container_width=True)
 
-        # =========================================
+        # =====================================
         # ✅ SCORE SUMMARY
-        # =========================================
+        # =====================================
         img_score = int(
             (min(len(s_images), len(r_images)) /
              max(len(s_images), len(r_images), 1)) * 100
@@ -418,6 +425,7 @@ for label, key in feature_fields:
             "Description %": desc_score,
             "Overall %": overall
         })
+
 # =========================================
 # ✅ EXPORT
 # =========================================
