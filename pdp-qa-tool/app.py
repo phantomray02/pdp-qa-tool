@@ -299,10 +299,14 @@ if uploaded_file:
 
         st.subheader(f"SKU: {row['sku']}")
 
+        # ✅ Load data
         retail_html = get_html(row["retail_url"])
 
         s_text = get_salsify_text(row["salsify_url"])
         r_text = get_cvs_text(retail_html)
+
+        s_images = get_salsify_images(row["salsify_url"])
+        r_images = get_cvs_images(row["retail_url"])
 
         # =====================================
         # ✅ COPY COMPARISON
@@ -317,18 +321,24 @@ if uploaded_file:
         c1, c2 = st.columns(2)
 
         c1.markdown("**Salsify**")
-        c1.markdown(equal_height_block(s_text.get("title", "")), unsafe_allow_html=True)
+        c1.markdown(
+            equal_height_block(s_text.get("title", "")),
+            unsafe_allow_html=True
+        )
 
         c2.markdown("**CVS**")
         cvs_title = r_text.get("title", "")
-        c2.markdown(equal_height_block(cvs_title), unsafe_allow_html=True)
+        c2.markdown(
+            equal_height_block(cvs_title),
+            unsafe_allow_html=True
+        )
 
         title_score = min(100, keyword_score(
             s_text.get("title", ""),
             cvs_title
         ))
 
-        # ✅ SCORE BAR BELOW (NEW)
+        # ✅ SCORE BAR BELOW
         if title_score >= 80:
             st.success(f"✅ Strong match: {title_score}%")
         elif title_score >= 50:
@@ -344,18 +354,24 @@ if uploaded_file:
         c1, c2 = st.columns(2)
 
         c1.markdown("**Salsify**")
-        c1.markdown(equal_height_block(s_text.get("description", "")), unsafe_allow_html=True)
+        c1.markdown(
+            equal_height_block(s_text.get("description", "")),
+            unsafe_allow_html=True
+        )
 
         c2.markdown("**CVS**")
         cvs_desc = r_text.get("description", "")
-        c2.markdown(equal_height_block(cvs_desc), unsafe_allow_html=True)
+        c2.markdown(
+            equal_height_block(cvs_desc),
+            unsafe_allow_html=True
+        )
 
         desc_score = min(100, keyword_score(
             s_text.get("description", ""),
             cvs_desc
         ))
 
-        # ✅ SCORE BAR BELOW (NEW)
+        # ✅ SCORE BAR BELOW
         if desc_score >= 80:
             st.success(f"✅ Strong match: {desc_score}%")
         elif desc_score >= 50:
@@ -364,7 +380,7 @@ if uploaded_file:
             st.error(f"❌ Weak match: {desc_score}%")
 
         # =====================================
-        # ✅ FEATURE COMPARISON (UNCHANGED STYLE)
+        # ✅ FEATURE COMPARISON
         # =====================================
         st.markdown("## Feature Comparison")
 
@@ -385,9 +401,14 @@ if uploaded_file:
 
             s_val = s_text.get(key, "")
 
+            # ✅ LEFT
             col1.markdown("**Salsify**")
-            col1.markdown(equal_feature_block(s_val), unsafe_allow_html=True)
+            col1.markdown(
+                equal_feature_block(s_val),
+                unsafe_allow_html=True
+            )
 
+            # ✅ MATCHING
             best_score = 0
             best_match = ""
 
@@ -402,46 +423,49 @@ if uploaded_file:
                     best_score = score
                     best_match = f
 
+            # ✅ fallback prevents blanks
             if not best_match and cvs_features:
                 best_match = cvs_features[0]
 
             best_score = min(100, best_score)
 
+            # ✅ RIGHT
             col2.markdown("**CVS**")
-            col2.markdown(equal_feature_block(best_match), unsafe_allow_html=True)
+            col2.markdown(
+                equal_feature_block(best_match),
+                unsafe_allow_html=True
+            )
 
-            # ✅ KEEP YOUR EXISTING GOOD BAR
+            # ✅ KEEP GREEN BAR STYLE
             if best_score >= 80:
                 st.success(f"✅ Strong match: {best_score}%")
             elif best_score >= 50:
                 st.warning(f"⚠️ Moderate match: {best_score}%")
             else:
                 st.error(f"❌ Weak match: {best_score}%")
+
         # =====================================
-        # ✅ IMAGE COMPARISON (RESTORE THIS)
+        # ✅ IMAGE COMPARISON (RESTORED ✅)
         # =====================================
         st.markdown("## Image Comparison")
-        
+
         max_len = max(len(s_images), len(r_images))
-        
+
         for i in range(max_len):
-        
+
             c1, c2 = st.columns(2)
-        
-            # ✅ Salsify images
+
             if i < len(s_images):
                 c1.markdown(f"**{s_images[i]['type']}**")
                 img = load_image(s_images[i]["url"])
                 if img:
                     c1.image(img, use_container_width=True)
-        
-            # ✅ CVS images
+
             if i < len(r_images):
                 c2.markdown(f"**CVS {i+1}**")
                 img = load_image(r_images[i])
                 if img:
                     c2.image(img, use_container_width=True)
-
 # =========================================
 # ✅ EXPORT
 # =========================================
