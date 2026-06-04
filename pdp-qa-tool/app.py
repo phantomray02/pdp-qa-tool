@@ -168,62 +168,34 @@ def get_cvs_text(html):
     desc = ""
 
     # =====================================
-    # ✅ METHOD 1: JSON (PRIMARY)
+    # ✅ METHOD 1: JSON-LD (BEST / RELIABLE)
     # =====================================
-    script = soup.find("script", {"id": "__NEXT_DATA__"})
+    scripts = soup.find_all("script", {"type": "application/ld+json"})
 
-    if script:
-        data = json.loads(script.string)
-
+    for s in scripts:
         try:
-            product = data["props"]["pageProps"]["product"]
-        except:
-            product = {}
+            data = json.loads(s.string)
 
-        # ✅ try known fields
-        for key in [
-            "description",
-            "longDescription",
-            "productDescription",
-            "overview"
-        ]:
-            if product.get(key):
-                desc = product[key]
-                break
-
-        # ✅ try nested content sections
-        if not desc:
-            for key in ["content", "sections", "details"]:
-                items = product.get(key, [])
-
-                for item in items:
-                    text = item.get("text") or item.get("description")
-                    if text:
-                        desc = text
+            # sometimes it's a list
+            if isinstance(data, list):
+                for item in data:
+                    if item.get("@type") == "Product" and item.get("description"):
+                        desc = item["description"]
                         break
-                if desc:
-                    break
+            else:
+                if data.get("@type") == "Product" and data.get("description"):
+                    desc = data["description"]
 
-        # ✅ clean HTML → text
-        if desc:
-            desc = BeautifulSoup(desc, "html.parser").get_text(" ").strip()
+            if desc:
+                break
+        except:
+            continue
 
     # =====================================
-    # ✅ METHOD 2: HTML FALLBACK (VERY IMPORTANT)
+    # ✅ CLEAN TEXT
     # =====================================
-    if not desc:
-
-        # ✅ grab visible paragraph-based content
-        paragraphs = soup.select("p[class*='pc-paragraph'], p")
-
-        clean_texts = [
-            p.get_text(" ", strip=True)
-            for p in paragraphs
-            if len(p.get_text(strip=True)) > 40
-        ]
-
-        # ✅ join into single block
-        desc = " ".join(clean_texts)
+    if desc:
+        desc = BeautifulSoup(desc, "html.parser").get_text(" ")
 
     return {
         "description": desc.strip()
