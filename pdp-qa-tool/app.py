@@ -169,19 +169,19 @@ def get_salsify_text(url):
         "feature5": text_map.get("FEATURE_5", "")
     }
 # =========================================
-# ✅ CVS COPY EXTRACTION (ABSOLUTE FINAL)
+# ✅ CVS EXTRACTION (REAL FINAL - TARGETED)
 # =========================================
 def get_cvs_text(html_text):
 
     from bs4 import BeautifulSoup
     import re
-    import html
+    import json
 
     soup = BeautifulSoup(html_text, "html.parser")
 
     combined = ""
 
-    # ✅ STEP 1: COLLECT ALL SCRIPT DATA
+    # ✅ STEP 1: COLLECT SCRIPT CONTENT
     for s in soup.find_all("script"):
         if s.string:
             combined += s.string
@@ -190,51 +190,27 @@ def get_cvs_text(html_text):
     features = []
 
     # =====================================
-    # ✅ DESCRIPTION
+    # ✅ STEP 2: EXTRACT vendorContent BLOCK
     # =====================================
-    desc_match = re.search(
-        r'vendorDetailsParagraph\\":\\"(.*?)\\"',
-        combined
+    match = re.search(
+        r'"vendorContent":({.*?"vendorDirection":{.*?}})',
+        combined,
+        re.DOTALL
     )
 
-    if desc_match:
-        desc = html.unescape(desc_match.group(1))
+    if match:
+        raw = match.group(1)
 
-    # =====================================
-    # ✅ FIND POINTER (e.g. $32)
-    # =====================================
-    ref_match = re.search(
-        r'vendorDetailsBullets\\":\\"\\$(\\d+)\\"',
-        combined
-    )
+        try:
+            data = json.loads(raw)
 
-    if ref_match:
-        ref_id = ref_match.group(1)
+            details = data.get("vendorDetails", {})
 
-        # ✅ DEBUG
-        # st.write("REF:", ref_id)
+            desc = details.get("vendorDetailsParagraph", "")
+            features = details.get("vendorDetailsBullets", [])
 
-        # =====================================
-        # ✅ GLOBAL SEARCH FOR ARRAY
-        # =====================================
-        block_match = re.search(
-            rf'{ref_id}:\[(.*?)\]',
-            combined,
-            re.DOTALL
-        )
-
-        if block_match:
-
-            raw_block = block_match.group(1)
-
-            features = [
-                html.unescape(x).strip()
-                for x in re.findall(r'"(.*?)"', raw_block)
-                if len(x.strip()) > 15
-            ]
-
-        else:
-            print("❌ Could not find block for:", ref_id)
+        except Exception as e:
+            print("JSON parse error:", e)
 
     return {
         "description": desc.strip(),
