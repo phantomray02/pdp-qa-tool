@@ -54,48 +54,47 @@ def normalize_filename(fname):
 # =========================================
 # ✅ ✅ SALSIFY (FINAL CORRECT ENGINE)
 # =========================================
+import json
 from bs4 import BeautifulSoup
 
 def get_salsify_images(url):
     html = get_html(url)
     soup = BeautifulSoup(html, "html.parser")
 
-    images = []
-
-    # ✅ find ONLY main image bullet list
-    bullets = soup.find("ul", class_=re.compile("imageBulletsList"))
-
-    if not bullets:
+    # ✅ grab Next.js data
+    script = soup.find("script", {"id": "__NEXT_DATA__"})
+    if not script:
         return []
 
-    items = bullets.find_all("li")
+    data = json.loads(script.string)
 
-    for item in items:
+    try:
+        properties = data["props"]["pageProps"]["product"]["digitalAssets"]["properties"]
+    except:
+        return []
 
-        # ✅ find main img tag
-        img = item.find("img")
-        if not img:
+    images = []
+
+    for prop in properties:
+
+        prop_name = prop.get("property", "").strip()
+
+        values = prop.get("values", [])
+
+        if not values:
             continue
 
-        src = img.get("src") or ""
+        # ✅ CRITICAL FIX: ONLY FIRST IMAGE
+        first = values[0]
 
-        # ✅ fallback to srcset (higher res)
-        srcset = img.get("srcset")
-        if srcset:
-            urls = [u.split()[0] for u in srcset.split(",")]
-            src = urls[-1]
-
-        if "images.salsify.com" not in src:
-            continue
-
-        clean = src.split("?")[0]
+        url = first.get("value", "")
+        clean = url.split("?")[0]
 
         images.append({
-            "type": f"Salsify {len(images)+1}",
+            "type": prop_name,
             "url": clean
         })
 
-    # ✅ LIMIT to 8
     return images[:8]
 
 # =========================================
