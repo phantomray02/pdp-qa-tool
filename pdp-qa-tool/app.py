@@ -203,34 +203,60 @@ def get_cvs_text(html_text):
         if not raw_desc.startswith("$"):
             desc = html.unescape(raw_desc)
     
-        # ✅ POINTER CASE (like $32, $33, $34)
+        # ✅ POINTER CASE (LIKE $32, $33, $34)
         else:
             pointer = raw_desc.replace("$", "")
-    
-            candidates = []
-    
-            # ✅ scan block range (30–39)
-            for i in range(30, 40):
-    
-                match = re.search(
-                    rf'{i}:(T\d+,.+)',
-                    combined
-                )
-    
-                if not match:
-                    continue
-    
-                raw_text = match.group(1)
-    
-                # ✅ rebuild streamed chunks
-                continuations = re.findall(
+        
+            pointer_match = re.search(
+                rf'{pointer}:(?:\d+:\{|\d+:\[|"\)\d+?:)',
+                combined,
+                re.DOTALL
+            )
+        
+            if pointer_match:
+                raw_text = pointer_match.group(1)
+        
+                # =====================================
+                # ✅ REBUILD STREAMED CHUNKS (CRITICAL)
+                # =====================================
+        
+                chunks = re.findall(
                     r'self\.__next_f\.push\(\[1,"(.*?)"\]\)',
                     combined,
                     re.DOTALL
                 )
-    
-                for chunk in continuations:
+        
+                for chunk in chunks:
                     raw_text += chunk
+        
+                # =====================================
+                # ✅ CLEAN ALL ARTIFACTS
+                # =====================================
+        
+                raw_text = re.sub(r'^T\d+,', '', raw_text)
+        
+                raw_text = raw_text.replace('\\u0026', '&')
+                raw_text = raw_text.replace('\\"', '"')
+        
+                # ✅ REMOVE STREAM BREAKS
+                raw_text = raw_text.replace('"])', '')
+                raw_text = raw_text.replace('self.__next_f.push([1,"', '')
+        
+                raw_text = raw_text.replace('\n', ' ').strip()
+        
+                # =====================================
+                # ✅ HARD STOP BEFORE JSON (MOST IMPORTANT)
+                # =====================================
+        
+                raw_text = re.split(
+                    r'(?:\d+:\{|\d+:\[|"\)\d+?:)',
+                    raw_text
+                )[0]
+        
+                # ✅ FINAL CLEAN
+                raw_text = re.sub(r'\s+', ' ', raw_text).strip()
+        
+                desc = html.unescape(raw_text)
     
                 # =====================================
                 # ✅ CLEANING
