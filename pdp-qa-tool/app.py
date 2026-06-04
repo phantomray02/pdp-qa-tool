@@ -106,7 +106,10 @@ def get_salsify_images(url):
 # =========================================
 # ✅ CVS IMAGES (UNLIMITED + BEST RES)
 # =========================================
-def get_cvs_images(url):
+def get_cvs_text(html_text):
+
+    if not html_text:
+        return {"title": "", "description": "", "features": []}
     html = get_html(url)
 
     matches = re.findall(
@@ -325,11 +328,14 @@ def get_cvs_text(html_text):
         # ✅ RETURN (MUST BE INSIDE FUNCTION)
         # =====================================
     
+        
+        # ✅ ALWAYS RETURN SAFE STRUCTURE
         return {
-            "title": title,
-            "description": desc.strip(),
-            "features": features,
+            "title": title if isinstance(title, str) else "",
+            "description": desc.strip() if isinstance(desc, str) else "",
+            "features": features if isinstance(features, list) else []
         }
+
 
 
 # =========================================
@@ -469,7 +475,7 @@ if uploaded_file:
         retail_html = get_html(row["retail_url"])
 
         s_text = get_salsify_text(row["salsify_url"])
-        r_text = get_cvs_text(retail_html)
+        r_text = get_cvs_text(retail_html) or {"title": "", "description": "", "features": []}
 
         s_images = get_salsify_images(row["salsify_url"])
         r_images = get_cvs_images(row["retail_url"])
