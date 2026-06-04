@@ -471,6 +471,43 @@ if uploaded_file:
 
         s_images = get_salsify_images(row["salsify_url"])
 
+        # =====================================
+        # ✅ ENFORCE TOP 3 IMAGE SLOTS
+        # =====================================
+        
+        def matches_type(img, keyword):
+            if not img:
+                return False
+            t = img.get("type", "").lower().replace(" ", "")
+            return keyword in t
+        
+        adjusted = []
+        remaining = s_images.copy()
+        
+        # ✅ SLOT 1 — ONLINE OPTIMIZED IMAGE (OOI)
+        if remaining and matches_type(remaining[0], "onlineoptimized"):
+            adjusted.append(remaining.pop(0))
+        else:
+            adjusted.append(None)
+        
+        # ✅ SLOT 2 — FRONT
+        if remaining and matches_type(remaining[0], "front"):
+            adjusted.append(remaining.pop(0))
+        else:
+            adjusted.append(None)
+        
+        # ✅ SLOT 3 — FLAT BACK
+        if remaining and matches_type(remaining[0], "flatback"):
+            adjusted.append(remaining.pop(0))
+        else:
+            adjusted.append(None)
+        
+        # ✅ ADD EVERYTHING ELSE (NO LOSS OF IMAGES)
+        adjusted.extend(remaining)
+        
+        # ✅ FINAL OUTPUT
+        s_images = adjusted
+
         # ✅ ✅ APPLY OOI RULE HERE
         
         def is_ooi(img):
