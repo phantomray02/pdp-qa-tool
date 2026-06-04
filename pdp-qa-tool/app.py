@@ -163,41 +163,45 @@ def get_salsify_text(url):
         "feature5": text_map.get("FEATURE_5", "")
     }
 import re
-import json
-from bs4 import BeautifulSoup
+import html
 
-def get_cvs_text(html):
+def get_cvs_text(html_text):
 
     desc = ""
     features = []
 
     # =====================================
-    # ✅ STEP 1: ISOLATE vendorContent BLOCK
+    # ✅ DESCRIPTION (LOCK THIS EXACT KEY)
     # =====================================
-    match = re.search(r'"vendorContent":({.*?"vendorPrdWeight":.*?})', html)
+    desc_match = re.search(
+        r'vendorDetailsParagraph":"(.*?)"',
+        html_text
+    )
 
-    if match:
-        raw_json = match.group(1)
-
-        try:
-            data = json.loads(raw_json)
-
-            details = data.get("vendorDetails", {})
-
-            # ✅ DESCRIPTION
-            desc = details.get("vendorDetailsParagraph", "")
-
-            # ✅ FEATURES
-            features = details.get("vendorDetailsBullets", [])
-
-        except Exception as e:
-            pass
+    if desc_match:
+        desc = html.unescape(desc_match.group(1))
 
     # =====================================
-    # ✅ CLEAN TEXT
+    # ✅ BULLETS (MULTI-LINE SAFE)
     # =====================================
-    if desc:
-        desc = BeautifulSoup(desc, "html.parser").get_text(" ").strip()
+    bullet_match = re.search(
+        r'vendorDetailsBullets":\[(.*?)\]',
+        html_text,
+        re.DOTALL
+    )
+
+    if bullet_match:
+        raw = bullet_match.group(1)
+
+        features = [
+            html.unescape(x)
+            for x in re.findall(r'"(.*?)"', raw)
+        ]
+
+    # =====================================
+    # ✅ FINAL CLEANUP
+    # =====================================
+    desc = desc.strip()
 
     return {
         "description": desc,
