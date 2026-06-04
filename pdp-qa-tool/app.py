@@ -189,6 +189,8 @@ def get_cvs_text(html_text):
     # ✅ DESCRIPTION (FULL PRODUCTION VERSION)
     # =====================================
     desc = ""
+    features = []
+    title = ""
     
     desc_match = re.search(
         r'vendorDetailsParagraph\\":\\"(.*?)\\"',
@@ -198,6 +200,10 @@ def get_cvs_text(html_text):
     if desc_match:
     
         raw_desc = desc_match.group(1)
+    
+        # =========================
+        # ✅ DESCRIPTION LOGIC
+        # =========================
     
         if not raw_desc.startswith("$"):
             desc = html.unescape(raw_desc)
@@ -229,10 +235,8 @@ def get_cvs_text(html_text):
                 raw_text = re.sub(r'^T\d+,', '', raw_text)
                 raw_text = raw_text.replace('\\u0026', '&')
                 raw_text = raw_text.replace('\\"', '"')
-    
                 raw_text = raw_text.replace('"])', '')
                 raw_text = raw_text.replace('self.__next_f.push([1,"', '')
-    
                 raw_text = raw_text.replace('\n', ' ')
     
                 raw_text = re.split(
@@ -246,90 +250,11 @@ def get_cvs_text(html_text):
     
             else:
                 desc = ""
-        
-                # =====================================
-                # ✅ REBUILD STREAMED CHUNKS (CRITICAL)
-                # =====================================
-        
-                chunks = re.findall(
-                    r'self\.__next_f\.push\(\[1,"(.*?)"\]\)',
-                    combined,
-                    re.DOTALL
-                )
-        
-                for chunk in chunks:
-                    raw_text += chunk
-        
-                # =====================================
-                # ✅ CLEAN ALL ARTIFACTS
-                # =====================================
-        
-                raw_text = re.sub(r'^T\d+,', '', raw_text)
-        
-                raw_text = raw_text.replace('\\u0026', '&')
-                raw_text = raw_text.replace('\\"', '"')
-        
-                # ✅ REMOVE STREAM BREAKS
-                raw_text = raw_text.replace('"])', '')
-                raw_text = raw_text.replace('self.__next_f.push([1,"', '')
-        
-                raw_text = raw_text.replace('\n', ' ').strip()
-        
-                # =====================================
-                # ✅ HARD STOP BEFORE JSON (MOST IMPORTANT)
-                # =====================================
-        
-                raw_text = re.split(
-                    r'(?:\d+:\{|\d+:\[|"\)\d+?:)',
-                    raw_text
-                )[0]
-        
-                # ✅ FINAL CLEAN
-                raw_text = re.sub(r'\s+', ' ', raw_text).strip()
-        
-                desc = html.unescape(raw_text)
     
-                # =====================================
-                # ✅ CLEANING
-                # =====================================
+        # =========================
+        # ✅ FEATURES (MUST STAY INDENTED)
+        # =========================
     
-                # remove T### prefix
-                raw_text = re.sub(r'^T\d+,', '', raw_text)
-    
-                # decode escaped characters
-                raw_text = raw_text.replace('\\u0026', '&')
-                raw_text = raw_text.replace('\\"', '"')
-    
-                # ✅ remove Next.js artifacts
-                raw_text = raw_text.replace('"])', '')
-                raw_text = raw_text.replace('self.__next_f.push([1,"', '')
-    
-                # normalize spacing
-                raw_text = raw_text.replace('\n', ' ').strip()
-    
-                # =====================================
-                # ✅ HARD STOP (CRITICAL)
-                # =====================================
-    
-                raw_text = re.split(
-                    r'(?:\d+:\{|\d+:\[|self\.__next_f)',
-                    raw_text
-                )[0]
-    
-                raw_text = raw_text.strip()
-    
-                # =====================================
-                # ✅ FILTER (ONLY VALID DESCRIPTIONS)
-                # =====================================
-    
-                if (
-                    len(raw_text) > 200 and
-                    "pad" in raw_text.lower() and
-                    "json" not in raw_text.lower()
-                ):
-        # =====================================
-        # ✅ FEATURES
-        # =====================================
         bullet_match = re.search(
             r'vendorDetailsBullets\\":\[(.*?)\]',
             combined,
@@ -341,44 +266,37 @@ def get_cvs_text(html_text):
             raw_block = bullet_match.group(1)
     
             for x in re.findall(r'"(.*?)"', raw_block):
-    
                 clean = html.unescape(x).strip()
-                clean = clean.rstrip("\\").strip()
-                clean = clean.rstrip('"').strip()
-    
                 if len(clean) > 20:
                     features.append(clean)
     
-        # =====================================
-        # ✅ TITLE
-        # =====================================
-        title = ""
-        
+        # =========================
+        # ✅ TITLE (MUST STAY INDENTED)
+        # =========================
+    
         title_match = re.search(
             r'"productName":"(.*?)"',
             combined
         )
-        
+    
         if not title_match:
             title_match = re.search(
                 r'"name":"(.*?)"',
                 combined
             )
-        
+    
         if title_match:
             title = title_match.group(1).strip()
     
-        # =====================================
-        # ✅ RETURN (MUST BE INSIDE FUNCTION)
-        # =====================================
+    # =========================
+    # ✅ RETURN (OUTSIDE IF BLOCK)
+    # =========================
     
-        
-        # ✅ ALWAYS RETURN SAFE STRUCTURE
-        return {
-            "title": title if isinstance(title, str) else "",
-            "description": desc.strip() if isinstance(desc, str) else "",
-            "features": features if isinstance(features, list) else []
-        }
+    return {
+        "title": title,
+        "description": desc.strip(),
+        "features": features,
+    }
 
 
 
