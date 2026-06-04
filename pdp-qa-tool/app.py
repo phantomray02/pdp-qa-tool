@@ -65,14 +65,16 @@ def get_salsify_images(url):
 
     
     # ✅ ✅ ✅ 🔥 STEP 1 — DEFINE REQUIRED ORDER HERE
+    
     EXPECTED_ORDER = [
-        "ONLINE_OPTIMIZED_IMAGE",
-        "FRONT_2D",
-        "FLAT_BACK_2D",
-        "SIDE_2D",
-        "LIFESTYLE",
-        "INFOGRAPHIC"
+        "onlineoptimizedimage",
+        "front2d",
+        "flatback2d",
+        "side2d",
+        "lifestyle",
+        "infographic"
     ]
+
 
     html = get_html(url)
     soup = BeautifulSoup(html, "html.parser")
@@ -89,45 +91,60 @@ def get_salsify_images(url):
         return []
 
     # ✅ REQUIRED ORDER (controls layout)
+    
     EXPECTED_ORDER = [
-        "ONLINE_OPTIMIZED_IMAGE",
-        "FRONT_2D",
-        "FLAT_BACK_2D",
-        "SIDE_2D",
-        "LIFESTYLE",
-        "INFOGRAPHIC"
+        "onlineoptimizedimage",
+        "front2d",
+        "flatback2d",
+        "side2d",
+        "lifestyle",
+        "infographic"
     ]
 
+
     # ✅ build map of existing images
+    def normalize_key(k):
+    return k.lower().replace(" ", "").replace("_", "")
+
     image_map = {}
-
+    
     for prop in properties:
-        key = prop.get("property", "").strip()
+        key_raw = prop.get("property", "").strip()
         values = prop.get("values", [])
-
+    
         if not values:
             continue
-
+    
         first = values[0]
         url = first.get("value", "")
-
+    
         if not url:
             continue
-
+    
         clean = url.split("?")[0]
+    
+        # ✅ normalize key
+        key = normalize_key(key_raw)
+    
         image_map[key] = clean
 
     # ✅ build ordered list WITH missing slots
     ordered_images = []
-
-    for key in EXPECTED_ORDER:
-        if key in image_map:
-            ordered_images.append({
-                "url": image_map[key],
-                "type": key
-            })
+    
+    for expected in EXPECTED_ORDER:
+    
+        match_url = None
+    
+        # ✅ flexible matching (handles naming differences)
+        for actual_key in image_map:
+            if expected in actual_key:
+                match_url = image_map[actual_key]
+                break
+    
+        if match_url:
+            ordered_images.append({"url": match_url})
         else:
-            ordered_images.append(None)  # ✅ THIS CREATES "Missing"
+            ordered_images.append(None)
 
     return ordered_images
 
