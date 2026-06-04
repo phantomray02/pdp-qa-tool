@@ -7,7 +7,6 @@ from bs4 import BeautifulSoup
 import streamlit as st
 import pandas as pd
 import requests
-import re
 from difflib import SequenceMatcher
 from PIL import Image
 from io import BytesIO
@@ -61,7 +60,6 @@ def normalize_filename(fname):
 # ✅ ✅ SALSIFY (FINAL CORRECT ENGINE)
 # =========================================
 import json
-from bs4 import BeautifulSoup
 
 def get_salsify_images(url):
     html = get_html(url)
@@ -106,10 +104,8 @@ def get_salsify_images(url):
 # =========================================
 # ✅ CVS IMAGES (UNLIMITED + BEST RES)
 # =========================================
-def get_cvs_text(html_text):
+def get_cvs_images(url):
 
-    if not html_text:
-        return {"title": "", "description": "", "features": []}
     html = get_html(url)
 
     matches = re.findall(
@@ -134,7 +130,6 @@ def get_cvs_text(html_text):
             }
 
     return [v["url"] for v in best_images.values()]
-
 # =========================================
 # ✅ TEXT EXTRACTION
 # =========================================
@@ -176,8 +171,6 @@ def get_salsify_text(url):
 # =========================================
 def get_cvs_text(html_text):
 
-    from bs4 import BeautifulSoup
-    import re
     import html
 
     soup = BeautifulSoup(html_text, "html.parser")
