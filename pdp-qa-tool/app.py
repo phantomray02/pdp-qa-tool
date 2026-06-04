@@ -286,7 +286,68 @@ def equal_feature_block(text):
         {text}
     </div>
     """
+# =========================================
+# ✅ TRUE IMAGE VISUAL COMPARISON
+# =========================================
+image_cache = {}
 
+def load_image_with_white_bg(img_data):
+    img = Image.open(BytesIO(img_data)).convert("RGBA")
+
+    white_bg = Image.new("RGBA", img.size, (255, 255, 255, 255))
+
+    if img.mode == "RGBA":
+        white_bg.paste(img, mask=img.split()[3])
+    else:
+        white_bg.paste(img)
+
+    return white_bg.convert("L")
+
+
+def compare_images_visually(s_url, r_url):
+    try:
+        # ✅ CACHE DOWNLOAD
+        if s_url in image_cache:
+            s_img_data = image_cache[s_url]
+        else:
+            s_img_data = requests.get(s_url, timeout=5).content
+            image_cache[s_url] = s_img_data
+
+        if r_url in image_cache:
+            r_img_data = image_cache[r_url]
+        else:
+            r_img_data = requests.get(r_url, timeout=5).content
+            image_cache[r_url] = r_img_data
+
+        from PIL import ImageFilter
+
+        # ✅ normalize + blur
+        s_img = load_image_with_white_bg(s_img_data).resize((64, 64)).filter(ImageFilter.GaussianBlur(2))
+        r_img = load_image_with_white_bg(r_img_data).resize((64, 64)).filter(ImageFilter.GaussianBlur(2))
+
+        diff = sum(
+            abs(a - b)
+            for a, b in zip(s_img.getdata(), r_img.getdata())
+        ) / (64 * 64)
+
+        # ✅ scoring buckets
+        if diff < 5:
+            return 100
+        elif diff < 15:
+            return 90
+        elif diff < 30:
+            return 75
+        elif diff < 45:
+            return 60
+        elif diff < 60:
+            return 45
+        elif diff < 80:
+            return 30
+        else:
+            return 15
+
+    except:
+        return 0
 # =====================================
 # ✅ IMAGE MATCHING
 # =====================================
