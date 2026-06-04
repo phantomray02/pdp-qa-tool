@@ -169,67 +169,68 @@ def get_cvs_text(html):
     features = []
 
     # =====================================
-    # ✅ STEP 1: FIND "DETAILS" SECTION
+    # ✅ METHOD 1: JSON-LD (BEST SOURCE)
     # =====================================
-    details_header = soup.find(
-        lambda tag: tag.name in ["h2", "h3", "button", "div"]
-        and tag.get_text(strip=True) == "Details"
-    )
+    scripts = soup.find_all("script", {"type": "application/ld+json"})
 
-    if details_header:
+    for s in scripts:
+        try:
+            data = json.loads(s.string)
 
-        # ✅ grab next section container
-        container = details_header.find_parent().find_next_sibling()
+            if isinstance(data, list):
+                for item in data:
+                    if item.get("@type") == "Product" and item.get("description"):
+                        desc = item["description"]
+                        break
+            else:
+                if data.get("@type") == "Product" and data.get("description"):
+                    desc = data["description"]
 
-        if container:
-            text_blocks = container.find_all(["p", "li"])
+            if desc:
+                break
+        except:
+            continue
 
-            clean_paragraphs = []
-            clean_bullets = []
+    # =====================================
+    # ✅ METHOD 2: STRICT "DETAILS" MATCH
+    # =====================================
+    if not desc:
 
-            for el in text_blocks:
-                text = el.get_text(" ", strip=True)
+        paragraphs = soup.find_all("p")
 
-                # ❌ FILTER OUT JUNK
-                if any(x in text for x in [
-                    "Federal law",
-                    "ID.me",
-                    "verify your identity",
-                    "App Store",
-                    "Google Play"
-                ]):
-                    continue
+        for p in paragraphs:
+            text = p.get_text(" ", strip=True)
 
-                if len(text) < 40:
-                    continue
+            # ✅ strong signal this is real product copy
+            if (
+                "Poise" in text and
+                "liners" in text and
+                len(text) > 250 and
+                "Federal law" not in text
+            ):
+                desc = text
+                break
 
-                # ✅ paragraph = description
-                if el.name == "p":
-                    clean_paragraphs.append(text)
+    # =====================================
+    # ✅ CLEAN FEATURES FROM SAME AREA
+    # =====================================
+    if desc:
+        all_li = soup.find_all("li")
 
-                # ✅ bullets = features
-                if el.name == "li":
-                    clean_bullets.append(text)
+        for li in all_li:
+            text = li.get_text(" ", strip=True)
 
-            # ✅ FIRST GOOD PARAGRAPH = DESCRIPTION
-            if clean_paragraphs:
-                desc = clean_paragraphs[0]
-
-            features = clean_bullets
+            if (
+                len(text) > 40 and
+                any(x in text for x in [
+                    "LINERS", "ABSORBENT", "ODOR", "WETNESS", "COMFORT"
+                ])
+            ):
+                features.append(text)
 
     return {
         "description": desc.strip(),
         "features": features
-    }
-
-    # =====================================
-    # ✅ CLEAN TEXT
-    # =====================================
-    if desc:
-        desc = BeautifulSoup(desc, "html.parser").get_text(" ")
-
-    return {
-        "description": desc.strip()
     }
 # =========================================
 # ✅ SCORE
