@@ -208,28 +208,33 @@ def get_cvs_text(html_text):
         if not raw_desc.startswith("$"):
             desc = html.unescape(raw_desc)
     
-        # ✅ POINTER CASE (LIKE $32)
+        # ✅ POINTER CASE (LIKE $32, $34, etc)
         else:
             pointer = raw_desc.replace("$", "")
-    
+        
+            # ✅ grab full block including broken script chunks
             pointer_block = re.search(
-                rf'{pointer}:(.*?)(?=\n\d+:)',
+                rf'{pointer}:(.*?)(?=\n\d+:|self\.__next_f\.push|\}})',
                 combined,
                 re.DOTALL
             )
-    
+        
             if pointer_block:
                 raw_text = pointer_block.group(1)
-    
-                # ✅ CLEAN Next.js artifacts
+        
+                # ✅ merge broken script chunks
+                raw_text = re.sub(r'self\.__next_f\.push\(\[1,"', '', raw_text)
+                raw_text = raw_text.replace('"])', '')
+        
+                # ✅ clean encoding + escapes
                 raw_text = raw_text.replace('\\u0026', '&')
                 raw_text = raw_text.replace('\\"', '"')
                 raw_text = raw_text.replace('\n', ' ')
                 raw_text = raw_text.strip()
-    
-                # ✅ REMOVE junk prefix like T616,
+        
+                # ✅ remove prefix like T492,
                 raw_text = re.sub(r'^[A-Z0-9]+,', '', raw_text)
-    
+        
                 desc = html.unescape(raw_text)
 
     # =====================================
