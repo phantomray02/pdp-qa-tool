@@ -169,7 +169,7 @@ def get_salsify_text(url):
         "feature5": text_map.get("FEATURE_5", "")
     }
 # =========================================
-# ✅ CVS COPY EXTRACTION (FINAL FINAL)
+# ✅ CVS COPY EXTRACTION (REAL FINAL)
 # =========================================
 def get_cvs_text(html_text):
 
@@ -181,7 +181,7 @@ def get_cvs_text(html_text):
 
     combined = ""
 
-    # ✅ collect script content
+    # ✅ STEP 1: GET SCRIPT CONTENT
     for s in soup.find_all("script"):
         if s.string:
             combined += s.string
@@ -190,7 +190,7 @@ def get_cvs_text(html_text):
     features = []
 
     # =====================================
-    # ✅ DESCRIPTION ✅
+    # ✅ DESCRIPTION ✅ (YOU ALREADY HAVE)
     # =====================================
     desc_match = re.search(
         r'vendorDetailsParagraph\\":\\"(.*?)\\"',
@@ -201,32 +201,37 @@ def get_cvs_text(html_text):
         desc = html.unescape(desc_match.group(1))
 
     # =====================================
-    # ✅ BULLETS (NEW APPROACH)
+    # ✅ STEP 2: FIND POINTER ✅
     # =====================================
-
-    # ✅ Find ALL arrays in script
-    array_blocks = re.findall(
-        r'\[(.*?)\]',
-        combined,
-        re.DOTALL
+    ref_match = re.search(
+        r'vendorDetailsBullets\\":\\"\\$(\\d+)\\"',
+        combined
     )
 
-    for block in array_blocks:
+    if ref_match:
+        ref_id = ref_match.group(1)
 
-        # ✅ extract strings inside block
-        items = re.findall(r'"(.*?)"', block)
+        # ✅ STEP 3: FIND NEARBY BLOCK (NOT GLOBAL SEARCH)
+        # search only close to where pointer exists
+        pointer_index = combined.find(f'${ref_id}')
 
-        # ✅ filter: real feature bullets are LONG and uppercase-heavy
-        cleaned = [
-            html.unescape(x).strip()
-            for x in items
-            if len(x) > 40 and ":" in x
-        ]
+        snippet = combined[pointer_index:pointer_index + 5000]
 
-        # ✅ GOOD FEATURE SET FOUND
-        if len(cleaned) >= 4:
-            features = cleaned
-            break
+        # ✅ STEP 4: find array inside that snippet
+        block_match = re.search(
+            r'\[(.*?)\]',
+            snippet,
+            re.DOTALL
+        )
+
+        if block_match:
+            raw = block_match.group(1)
+
+            features = [
+                html.unescape(x).strip()
+                for x in re.findall(r'"(.*?)"', raw)
+                if ":" in x and len(x) > 20
+            ]
 
     return {
         "description": desc.strip(),
