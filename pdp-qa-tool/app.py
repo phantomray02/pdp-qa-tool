@@ -191,63 +191,95 @@ def get_cvs_text(html_text):
     title = ""
 
     # =====================================
-    # ✅ DESCRIPTION (ROBUST POINTER HANDLING)
-    # =====================================
-    desc = ""
-    
-    desc_match = re.search(
-        r'vendorDetailsParagraph\\":\\"(.*?)\\"',
-        combined
-    )
-    
-    if desc_match:
-    
-        raw_desc = desc_match.group(1)
-    
-        # ✅ NORMAL CASE
-        if not raw_desc.startswith("$"):
-            desc = html.unescape(raw_desc)
-    
-        # ✅ POINTER CASE (LIKE $32, $33, $34)
-        else:
-            pointer = raw_desc.replace("$", "")
-        
-            candidates = []
-        
-            # ✅ scan nearby block range (30–39)
-            for i in range(30, 40):
-        
-                block_match = re.search(
-                    rf'{i}:(T\d+,.+)',
-                    combined
-                )
-        
-                if block_match:
-                    raw_text = block_match.group(1)
-        
-                    # ✅ rebuild streaming chunks
-                    continuation_matches = re.findall(
-                        r'self\.__next_f\.push\(\[1,"(.*?)"\]\)',
-                        combined,
-                        re.DOTALL
-                    )
-        
-                    for chunk in continuation_matches:
-                        raw_text += chunk
-        
-                    # ✅ clean
-                    cleaned = re.sub(r'^T\d+,', '', raw_text)
-                    cleaned = cleaned.replace('\\u0026', '&')
-                    cleaned = cleaned.replace('\\"', '"')
-                    cleaned = cleaned.replace('\n', ' ').strip()
-        
-                    # ✅ filter out junk (must contain real words)
-                    if len(cleaned) > 200 and "pads" in cleaned.lower():
-                        candidates.append(cleaned)
-        
-            # ✅ pick BEST candidate (longest = usually correct)
-            if candidates:
-                desc = html.unescape(max(candidates, key=len))
+# ✅ DESCRIPTION (FULL PRODUCTION VERSION)
+# =====================================
+desc = ""
+
+desc_match = re.search(
+    r'vendorDetailsParagraph\\":\\"(.*?)\\"',
+    combined
+)
+
+if desc_match:
+
+    raw_desc = desc_match.group(1)
+
+    # ✅ NORMAL CASE (no pointer)
+    if not raw_desc.startswith("$"):
+        desc = html.unescape(raw_desc)
+
+    # ✅ POINTER CASE (like $32, $33, $34)
+    else:
+        pointer = raw_desc.replace("$", "")
+
+        candidates = []
+
+        # ✅ scan block range (30–39)
+        for i in range(30, 40):
+
+            match = re.search(
+                rf'{i}:(T\d+,.+)',
+                combined
+            )
+
+            if not match:
+                continue
+
+            raw_text = match.group(1)
+
+            # ✅ rebuild streamed chunks
+            continuations = re.findall(
+                r'self\.__next_f\.push\(\[1,"(.*?)"\]\)',
+                combined,
+                re.DOTALL
+            )
+
+            for chunk in continuations:
+                raw_text += chunk
+
+            # =====================================
+            # ✅ CLEANING
+            # =====================================
+
+            # remove T### prefix
+            raw_text = re.sub(r'^T\d+,', '', raw_text)
+
+            # decode escaped characters
+            raw_text = raw_text.replace('\\u0026', '&')
+            raw_text = raw_text.replace('\\"', '"')
+
+            # ✅ remove Next.js artifacts
+            raw_text = raw_text.replace('"])', '')
+            raw_text = raw_text.replace('self.__next_f.push([1,"', '')
+
+            # normalize spacing
+            raw_text = raw_text.replace('\n', ' ').strip()
+
+            # =====================================
+            # ✅ HARD STOP (CRITICAL)
+            # =====================================
+
+            raw_text = re.split(
+                r'(?:\d+:\{|\d+:\[|self\.__next_f)',
+                raw_text
+            )[0]
+
+            raw_text = raw_text.strip()
+
+            # =====================================
+            # ✅ FILTER (ONLY VALID DESCRIPTIONS)
+            # =====================================
+
+            if (
+                len(raw_text) > 200 and
+                "pad" in raw_text.lower() and
+                "json" not in raw_text.lower()
+            ):
+                candidates.append(raw_text)
+
+        # ✅ pick best candidate (longest one)
+        if candidates:
+            desc = html.unescape(max(candidates, key=len))
     # =====================================
     # ✅ FEATURES
     # =====================================
