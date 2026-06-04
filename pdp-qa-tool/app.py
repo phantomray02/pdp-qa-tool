@@ -292,6 +292,18 @@ if uploaded_file:
 
         if "vendorDetailsBullets" in retail_html:
             st.success("✅ FOUND vendorDetailsBullets")
+        # =========================================
+        # ✅ TITLE DEBUGGER
+        # =========================================
+        st.markdown("### 🧪 TITLE DEBUG")
+        
+        title_candidates = re.findall(
+            r'"(productName|name)":"(.*?)"',
+            combined
+        )
+        
+        for t in title_candidates[:10]:
+            st.write(t)
 
         # =====================================
         # ✅ COPY COMPARISON
