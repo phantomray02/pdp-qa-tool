@@ -263,9 +263,8 @@ def keyword_score(a, b):
     return int(SequenceMatcher(None, normalize_text(a), normalize_text(b)).ratio() * 100)
 
 # =========================================
-# ✅ MAIN APP
+# ✅ MAIN APP (FINAL CLEAN VERSION)
 # =========================================
-
 if uploaded_file:
 
     df = pd.read_csv(uploaded_file)
@@ -290,20 +289,6 @@ if uploaded_file:
         r_images = get_cvs_images(row["retail_url"])
 
         # =====================================
-        # ✅ CVS DEBUGGER
-        # =====================================
-        st.markdown("## 🧪 CVS DEBUG")
-
-        st.write("CVS DATA:", r_text)
-        st.write("HTML length:", len(retail_html))
-
-        if "vendorDetailsParagraph" in retail_html:
-            st.success("✅ FOUND vendorDetailsParagraph")
-
-        if "vendorDetailsBullets" in retail_html:
-            st.success("✅ FOUND vendorDetailsBullets")
-
-        # =====================================
         # ✅ COPY COMPARISON
         # =====================================
         st.markdown("## Copy Comparison")
@@ -318,20 +303,18 @@ if uploaded_file:
         c1.markdown("**Salsify**")
         c1.write(s_text.get("title", ""))
 
-
         c2.markdown("**CVS**")
-        
-        cv_text_col, cv_score_col = c2.columns([6, 1])
-        
-        cv_text_col.write(r_text.get("title", ""))
-        
-        score = keyword_score(
-            s_text.get("title", ""),
-            r_text.get("title", "")
-        )
-        
-        cv_score_col.markdown(f"✅ {score}%")
+        cv_text_col, cv_score_col = c2.columns([5, 1])
 
+        cvs_title = r_text.get("title", "")
+        cv_text_col.write(cvs_title)
+
+        title_score = keyword_score(
+            s_text.get("title", ""),
+            cvs_title
+        )
+
+        cv_score_col.markdown(f"✅ {title_score}%")
 
         # -------------------------------------
         # ✅ DESCRIPTION
@@ -344,21 +327,20 @@ if uploaded_file:
         c1.write(s_text.get("description", ""))
 
         c2.markdown("**CVS**")
-        
-        cv_text_col, cv_score_col = c2.columns([6, 1])
-        
-        cv_text_col.write(r_text.get("description", ""))
-        
+        cv_text_col, cv_score_col = c2.columns([5, 1])
+
+        cvs_desc = r_text.get("description", "")
+        cv_text_col.write(cvs_desc)
+
         desc_score = keyword_score(
             s_text.get("description", ""),
-            r_text.get("description", "")
+            cvs_desc
         )
-        
+
         cv_score_col.markdown(f"✅ {desc_score}%")
 
-
         # =====================================
-        # ✅ FEATURE COMPARISON (UPDATED)
+        # ✅ FEATURE COMPARISON (FINAL)
         # =====================================
         st.markdown("## Feature Comparison")
 
@@ -375,75 +357,53 @@ if uploaded_file:
 
             st.markdown(f"### {label}")
 
-            c1, c2 = st.columns(2)
-
-            s_val = s_text.get(key, "")
-
-            # ✅ LEFT: SALSIFY
-            c1.markdown("**Salsify**")
-            c1.write(s_val if s_val else "—")
-
-        # =========================================
-        # ✅ FEATURE COMPARISON (FULL BLOCK)
-        # =========================================
-        st.markdown("## Feature Comparison")
-        
-        feature_fields = [
-            ("Feature 1", "feature1"),
-            ("Feature 3", "feature3"),
-            ("Feature 4", "feature4"),
-            ("Feature 5", "feature5"),
-        ]
-        
-        cvs_features = r_text.get("features", [])
-        
-        for label, key in feature_fields:
-        
-            st.markdown(f"### {label}")
-        
             col1, col2 = st.columns(2)
-        
+
             s_val = s_text.get(key, "")
-        
-            # =====================================
+
             # ✅ LEFT: SALSIFY
-            # =====================================
             col1.markdown("**Salsify**")
             col1.write(s_val if s_val else "—")
 
-        # =====================================
-        # ✅ FIND BEST MATCH
-        # =====================================
-        best_score = 0
-        best_match = ""
-    
-        for f in cvs_features:
-            score = keyword_score(s_val, f)
-    
-            if score > best_score:
-                best_score = score
-                best_match = f
-    
-        # =====================================
-        # ✅ RIGHT: CVS + INLINE SCORE
-        # =====================================
-        col2.markdown("**CVS**")
-    
-        cv_text_col, cv_score_col = col2.columns([6, 1])
-    
-        if best_match:
-            cv_text_col.write(best_match)
-    
+            # =====================================
+            # ✅ FIND BEST MATCH (STABLE)
+            # =====================================
+            best_score = 0
+            best_match = ""
+
+            for f in cvs_features:
+                score = keyword_score(s_val, f)
+
+                # ✅ small boost for similar phrasing
+                if any(word in f.lower() for word in s_val.lower().split()[:3]):
+                    score += 5
+
+                if score > best_score:
+                    best_score = score
+                    best_match = f
+
+            # ✅ fallback (prevents missing)
+            if not best_match and cvs_features:
+                best_match = cvs_features[0]
+
+            # =====================================
+            # ✅ RIGHT: CVS + INLINE SCORE
+            # =====================================
+            col2.markdown("**CVS**")
+
+            cv_text_col, cv_score_col = col2.columns([5, 1])
+
+            cv_text_col.write(best_match if best_match else "❌ Missing")
+
             if best_score >= 80:
                 cv_score_col.markdown(f"✅ {best_score}%")
+                st.success(f"✅ Strong match: {best_score}%")
             elif best_score >= 50:
                 cv_score_col.markdown(f"⚠️ {best_score}%")
+                st.warning(f"⚠️ Moderate match: {best_score}%")
             else:
                 cv_score_col.markdown(f"❌ {best_score}%")
-    
-        else:
-            cv_text_col.write("❌ Missing")
-            cv_score_col.markdown("❌")
+                st.error(f"❌ Weak match: {best_score}%")
 
         # =====================================
         # ✅ IMAGE COMPARISON
@@ -484,7 +444,6 @@ if uploaded_file:
             "Description %": desc_score,
             "Overall %": overall
         })
-
 # =========================================
 # ✅ EXPORT
 # =========================================
