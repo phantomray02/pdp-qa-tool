@@ -169,7 +169,7 @@ def get_salsify_text(url):
         "feature5": text_map.get("FEATURE_5", "")
     }
 # =========================================
-# ✅ CVS COPY EXTRACTION (FINAL FIXED)
+# ✅ CVS COPY EXTRACTION (FINAL FINAL)
 # =========================================
 def get_cvs_text(html_text):
 
@@ -181,7 +181,7 @@ def get_cvs_text(html_text):
 
     combined = ""
 
-    # ✅ collect all script content
+    # ✅ collect script content
     for s in soup.find_all("script"):
         if s.string:
             combined += s.string
@@ -190,7 +190,7 @@ def get_cvs_text(html_text):
     features = []
 
     # =====================================
-    # ✅ DESCRIPTION ✅ (WORKING)
+    # ✅ DESCRIPTION ✅
     # =====================================
     desc_match = re.search(
         r'vendorDetailsParagraph\\":\\"(.*?)\\"',
@@ -201,45 +201,32 @@ def get_cvs_text(html_text):
         desc = html.unescape(desc_match.group(1))
 
     # =====================================
-    # ✅ STEP 1: FIND BULLET POINTER ✅
+    # ✅ BULLETS (NEW APPROACH)
     # =====================================
-    bullet_ref_match = re.search(
-        r'vendorDetailsBullets\\":\\"\\$(\\d+)\\"',
-        combined
+
+    # ✅ Find ALL arrays in script
+    array_blocks = re.findall(
+        r'\[(.*?)\]',
+        combined,
+        re.DOTALL
     )
 
-    if bullet_ref_match:
+    for block in array_blocks:
 
-        ref_id = bullet_ref_match.group(1)
+        # ✅ extract strings inside block
+        items = re.findall(r'"(.*?)"', block)
 
-        # ✅ DEBUG THIS
-        print("FOUND REF:", ref_id)
+        # ✅ filter: real feature bullets are LONG and uppercase-heavy
+        cleaned = [
+            html.unescape(x).strip()
+            for x in items
+            if len(x) > 40 and ":" in x
+        ]
 
-        # =====================================
-        # ✅ STEP 2: FIND ARRAY BLOCK ✅
-        # =====================================
-        # ✅ IMPORTANT: allow optional spaces + quotes
-        block_match = re.search(
-            rf'{ref_id}:\s*\[(.*?)\]',
-            combined,
-            re.DOTALL
-        )
-
-        if block_match:
-
-            raw_block = block_match.group(1)
-
-            # ✅ DEBUG
-            print("RAW BLOCK FOUND")
-
-            features = [
-                html.unescape(x).strip()
-                for x in re.findall(r'"(.*?)"', raw_block)
-                if len(x.strip()) > 10
-            ]
-
-        else:
-            print("❌ BLOCK NOT FOUND FOR:", ref_id)
+        # ✅ GOOD FEATURE SET FOUND
+        if len(cleaned) >= 4:
+            features = cleaned
+            break
 
     return {
         "description": desc.strip(),
