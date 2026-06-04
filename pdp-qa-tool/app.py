@@ -168,55 +168,73 @@ import html
 # =========================================
 # ✅ CVS COPY EXTRACTION (FINAL)
 # =========================================
+from bs4 import BeautifulSoup
 import re
 import html
 
 def get_cvs_text(html_text):
 
-    descriptions = []
-    bullet_sets = []
+    soup = BeautifulSoup(html_text, "html.parser")
+
+    desc = ""
+    features = []
 
     # =====================================
-    # ✅ FIND ALL DESCRIPTIONS
+    # ✅ STEP 1: COLLECT ALL SCRIPT TEXT
+    # =====================================
+    scripts = soup.find_all("script")
+
+    combined = ""
+
+    for s in scripts:
+        if s.string:
+            combined += s.string
+
+    # =====================================
+    # ✅ STEP 2: EXTRACT DESCRIPTION
     # =====================================
     desc_matches = re.findall(
         r'vendorDetailsParagraph":"(.*?)"',
-        html_text
+        combined
     )
 
-    for d in desc_matches:
-        clean = html.unescape(d).strip()
+    clean_desc = [
+        html.unescape(d).strip()
+        for d in desc_matches
+        if len(d) > 200
+    ]
 
-        # ✅ filter real descriptions only
-        if len(clean) > 200:
-            descriptions.append(clean)
-
-    # ✅ pick longest (most complete)
-    desc = max(descriptions, key=len) if descriptions else ""
+    if clean_desc:
+        desc = max(clean_desc, key=len)
 
     # =====================================
-    # ✅ FIND ALL BULLET SETS
+    # ✅ STEP 3: EXTRACT BULLETS
     # =====================================
     bullet_matches = re.findall(
         r'vendorDetailsBullets":\[(.*?)\]',
-        html_text,
+        combined,
         re.DOTALL
     )
 
-    for match in bullet_matches:
+    all_bullets = []
 
-        bullets = [
-            html.unescape(x).strip()
-            for x in re.findall(r'"(.*?)"', match)
+    for block in bullet_matches:
+
+        bullets = re.findall(r'"(.*?)"', block)
+
+        clean = [
+            html.unescape(b).strip()
+            for b in bullets
+            if len(b) > 20
         ]
 
-        # ✅ only keep real feature lists
-        if len(bullets) >= 3:
-            bullet_sets.append(bullets)
+        if len(clean) >= 3:
+            all_bullets.append(clean)
 
-    # ✅ pick largest bullet set
-    features = max(bullet_sets, key=len) if bullet_sets else []
+    if all_bullets:
+        features = max(all_bullets, key=len)
 
+    # =====================================
     return {
         "description": desc,
         "features": features
