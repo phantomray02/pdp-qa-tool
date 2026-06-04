@@ -165,43 +165,57 @@ def get_salsify_text(url):
 import re
 import html
 
+# =========================================
+# ✅ CVS COPY EXTRACTION (FINAL)
+# =========================================
+import re
+import html
+
 def get_cvs_text(html_text):
 
-    desc = ""
-    features = []
+    descriptions = []
+    bullet_sets = []
 
     # =====================================
-    # ✅ DESCRIPTION (LOCK THIS EXACT KEY)
+    # ✅ FIND ALL DESCRIPTIONS
     # =====================================
-    desc_match = re.search(
+    desc_matches = re.findall(
         r'vendorDetailsParagraph":"(.*?)"',
         html_text
     )
 
-    if desc_match:
-        desc = html.unescape(desc_match.group(1))
+    for d in desc_matches:
+        clean = html.unescape(d).strip()
+
+        # ✅ filter real descriptions only
+        if len(clean) > 200:
+            descriptions.append(clean)
+
+    # ✅ pick longest (most complete)
+    desc = max(descriptions, key=len) if descriptions else ""
 
     # =====================================
-    # ✅ BULLETS (MULTI-LINE SAFE)
+    # ✅ FIND ALL BULLET SETS
     # =====================================
-    bullet_match = re.search(
+    bullet_matches = re.findall(
         r'vendorDetailsBullets":\[(.*?)\]',
         html_text,
         re.DOTALL
     )
 
-    if bullet_match:
-        raw = bullet_match.group(1)
+    for match in bullet_matches:
 
-        features = [
-            html.unescape(x)
-            for x in re.findall(r'"(.*?)"', raw)
+        bullets = [
+            html.unescape(x).strip()
+            for x in re.findall(r'"(.*?)"', match)
         ]
 
-    # =====================================
-    # ✅ FINAL CLEANUP
-    # =====================================
-    desc = desc.strip()
+        # ✅ only keep real feature lists
+        if len(bullets) >= 3:
+            bullet_sets.append(bullets)
+
+    # ✅ pick largest bullet set
+    features = max(bullet_sets, key=len) if bullet_sets else []
 
     return {
         "description": desc,
