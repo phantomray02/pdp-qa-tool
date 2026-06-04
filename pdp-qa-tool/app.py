@@ -169,7 +169,7 @@ def get_salsify_text(url):
         "feature5": text_map.get("FEATURE_5", "")
     }
 # =========================================
-# ✅ CVS COPY EXTRACTION (SAFE FINAL)
+# ✅ CVS COPY EXTRACTION (FINAL WITH TITLE)
 # =========================================
 def get_cvs_text(html_text):
 
@@ -181,16 +181,17 @@ def get_cvs_text(html_text):
 
     combined = ""
 
-    # ✅ keep this (already working)
+    # ✅ collect script content
     for s in soup.find_all("script"):
         if s.string:
             combined += s.string
 
     desc = ""
     features = []
+    title = ""
 
     # =====================================
-    # ✅ DESCRIPTION (DO NOT TOUCH)
+    # ✅ DESCRIPTION
     # =====================================
     desc_match = re.search(
         r'vendorDetailsParagraph\\":\\"(.*?)\\"',
@@ -201,52 +202,46 @@ def get_cvs_text(html_text):
         desc = html.unescape(desc_match.group(1))
 
     # =====================================
-    # ✅ FEATURES (NEW — TARGET SAME STRUCTURE)
+    # ✅ FEATURES
     # =====================================
-
     bullet_match = re.search(
         r'vendorDetailsBullets\\":\[(.*?)\]',
         combined,
         re.DOTALL
     )
 
-
     if bullet_match:
 
         raw_block = bullet_match.group(1)
 
-        features = []
-        
         for x in re.findall(r'"(.*?)"', raw_block):
-        
+
             clean = html.unescape(x).strip()
-        
-            # ✅ remove trailing junk
             clean = clean.rstrip("\\").strip()
             clean = clean.rstrip('"').strip()
-        
+
             if len(clean) > 20:
                 features.append(clean)
 
     # =====================================
     # ✅ TITLE
     # =====================================
-    title = ""
-
     title_match = re.search(
         r'"productName":"(.*?)"',
         combined
     )
 
     if title_match:
-        title = title_match.group(1)
+        title = title_match.group(1).strip()
 
-
-return {
-    "title": title.strip(),
-    "description": desc.strip(),
-    "features": features
-}
+    # =====================================
+    # ✅ RETURN (MUST BE INSIDE FUNCTION)
+    # =====================================
+    return {
+        "title": title,
+        "description": desc.strip(),
+        "features": features
+    }
 
 # =========================================
 # ✅ SCORE
