@@ -320,7 +320,17 @@ if uploaded_file:
 
 
         c2.markdown("**CVS**")
-        c2.write(r_text.get("title", ""))
+        
+        cv_text_col, cv_score_col = c2.columns([6, 1])
+        
+        cv_text_col.write(r_text.get("title", ""))
+        
+        score = keyword_score(
+            s_text.get("title", ""),
+            r_text.get("title", "")
+        )
+        
+        cv_score_col.markdown(f"✅ {score}%")
 
 
         # -------------------------------------
@@ -334,14 +344,18 @@ if uploaded_file:
         c1.write(s_text.get("description", ""))
 
         c2.markdown("**CVS**")
-        c2.write(r_text.get("description", ""))
-
+        
+        cv_text_col, cv_score_col = c2.columns([6, 1])
+        
+        cv_text_col.write(r_text.get("description", ""))
+        
         desc_score = keyword_score(
             s_text.get("description", ""),
             r_text.get("description", "")
         )
+        
+        cv_score_col.markdown(f"✅ {desc_score}%")
 
-        st.write(f"✅ Match: {desc_score}%")
 
         # =====================================
         # ✅ FEATURE COMPARISON (UPDATED)
@@ -369,37 +383,67 @@ if uploaded_file:
             c1.markdown("**Salsify**")
             c1.write(s_val if s_val else "—")
 
-            # =====================================
-            # ✅ FIND BEST MATCH
-            # =====================================
-            best_score = 0
-            best_match = ""
+# =========================================
+# ✅ FEATURE COMPARISON (FULL BLOCK)
+# =========================================
+st.markdown("## Feature Comparison")
 
-            for f in cvs_features:
-                score = keyword_score(s_val, f)
+feature_fields = [
+    ("Feature 1", "feature1"),
+    ("Feature 3", "feature3"),
+    ("Feature 4", "feature4"),
+    ("Feature 5", "feature5"),
+]
 
-                if score > best_score:
-                    best_score = score
-                    best_match = f
+cvs_features = r_text.get("features", [])
 
-            # ✅ RIGHT: CVS
-            c2.markdown("**CVS**")
+for label, key in feature_fields:
 
-            if best_match:
-                c2.write(best_match)
+    st.markdown(f"### {label}")
+
+    col1, col2 = st.columns(2)
+
+    s_val = s_text.get(key, "")
+
+    # =====================================
+    # ✅ LEFT: SALSIFY
+    # =====================================
+    col1.markdown("**Salsify**")
+    col1.write(s_val if s_val else "—")
+
+        # =====================================
+        # ✅ FIND BEST MATCH
+        # =====================================
+        best_score = 0
+        best_match = ""
+    
+        for f in cvs_features:
+            score = keyword_score(s_val, f)
+    
+            if score > best_score:
+                best_score = score
+                best_match = f
+    
+        # =====================================
+        # ✅ RIGHT: CVS + INLINE SCORE
+        # =====================================
+        col2.markdown("**CVS**")
+    
+        cv_text_col, cv_score_col = col2.columns([6, 1])
+    
+        if best_match:
+            cv_text_col.write(best_match)
+    
+            if best_score >= 80:
+                cv_score_col.markdown(f"✅ {best_score}%")
+            elif best_score >= 50:
+                cv_score_col.markdown(f"⚠️ {best_score}%")
             else:
-                c2.write("❌ Missing")
-
-            # ✅ SCORE DISPLAY
-            if best_match:
-                if best_score >= 80:
-                    st.success(f"✅ Strong match: {best_score}%")
-                elif best_score >= 50:
-                    st.warning(f"⚠️ Medium match: {best_score}%")
-                else:
-                    st.error(f"❌ Weak match: {best_score}%")
-            else:
-                st.error("❌ No matching feature found")
+                cv_score_col.markdown(f"❌ {best_score}%")
+    
+        else:
+            cv_text_col.write("❌ Missing")
+            cv_score_col.markdown("❌")
 
         # =====================================
         # ✅ IMAGE COMPARISON
