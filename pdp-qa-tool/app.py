@@ -1,3 +1,9 @@
+# =========================================
+# ✅ IMPORTS (TOP OF FILE)
+# =========================================
+import re
+import html
+from bs4 import BeautifulSoup
 import streamlit as st
 import pandas as pd
 import requests
@@ -162,15 +168,6 @@ def get_salsify_text(url):
         "feature4": text_map.get("FEATURE_4", ""),
         "feature5": text_map.get("FEATURE_5", "")
     }
-import re
-import html
-
-# =========================================
-# ✅ CVS COPY EXTRACTION (FINAL)
-# =========================================
-import re
-import html
-
 # =========================================
 # ✅ CVS COPY EXTRACTION (FINAL)
 # =========================================
@@ -179,7 +176,7 @@ def get_cvs_text(html_text):
     desc = ""
     features = []
 
-    # ✅ 1. GET DESCRIPTION
+    # ✅ DESCRIPTION
     desc_match = re.search(
         r'vendorDetailsParagraph":"(.*?)"',
         html_text
@@ -188,7 +185,7 @@ def get_cvs_text(html_text):
     if desc_match:
         desc = html.unescape(desc_match.group(1)).strip()
 
-    # ✅ 2. FIND BULLET POINTER (example: "$32")
+    # ✅ BULLET POINTER ($32, $45, etc.)
     bullet_ref_match = re.search(
         r'vendorDetailsBullets":"\$(\d+)"',
         html_text
@@ -197,18 +194,19 @@ def get_cvs_text(html_text):
     if bullet_ref_match:
         ref_id = bullet_ref_match.group(1)
 
-        # ✅ 3. FIND THE ACTUAL BULLET ARRAY (example: 32:[ ... ])
-        pattern = rf'{ref_id}:\[(.*?)\]'
-        block_match = re.search(pattern, html_text, re.DOTALL)
+        # ✅ GET THAT NUMBER BLOCK
+        block_match = re.search(
+            rf'{ref_id}:\[(.*?)\]',
+            html_text,
+            re.DOTALL
+        )
 
         if block_match:
             raw_block = block_match.group(1)
 
-            # ✅ 4. CLEAN BULLETS
             features = [
                 html.unescape(x).strip()
                 for x in re.findall(r'"(.*?)"', raw_block)
-                if len(x.strip()) > 10
             ]
 
     return {
@@ -242,6 +240,28 @@ if uploaded_file:
         # ✅ GET DATA
         s_text = get_salsify_text(row["salsify_url"])
         r_text = get_cvs_text(retail_html)
+        # =========================================
+        # ✅ CVS DEBUGGER (TEMPORARY)
+        # =========================================
+        st.markdown("## 🧪 CVS DEBUG")
+        
+        st.write("CVS DATA:", r_text)
+        
+        st.write("HTML length:", len(retail_html))
+        
+        if "vendorDetailsParagraph" in retail_html:
+            st.success("✅ FOUND vendorDetailsParagraph")
+        else:
+            st.error("❌ NOT FOUND vendorDetailsParagraph")
+        
+        if "vendorDetailsBullets" in retail_html:
+            st.success("✅ FOUND vendorDetailsBullets")
+        
+        # ✅ show bullet pointer
+        match = re.search(r'vendorDetailsBullets":"\$(\d+)"', retail_html)
+        if match:
+            st.write("Bullet pointer:", match.group(1))
+
 
         s_images = get_salsify_images(row["salsify_url"])
         r_images = get_cvs_images(row["retail_url"])
@@ -282,55 +302,55 @@ if uploaded_file:
 
         st.write(f"✅ Match: {desc_score}%")
 
-        # =========================================
-        # ✅ FEATURES (THIS WAS MISSING)
-        # =========================================
-        st.markdown("## Feature Comparison")
+# =========================================
+# ✅ FEATURE COMPARISON (FIXED)
+# =========================================
+st.markdown("## Feature Comparison")
 
-        feature_fields = [
-            ("Feature 1", "feature1"),
-            ("Feature 3", "feature3"),
-            ("Feature 4", "feature4"),
-            ("Feature 5", "feature5"),
-        ]
+feature_fields = [
+    ("Feature 1", "feature1"),
+    ("Feature 3", "feature3"),
+    ("Feature 4", "feature4"),
+    ("Feature 5", "feature5"),
+]
 
-        cvs_features = r_text.get("features", [])
+cvs_features = r_text.get("features", [])
 
-        for label, key in feature_fields:
+for label, key in feature_fields:
 
-            st.markdown(f"### {label}")
-            c1, c2 = st.columns(2)
+    st.markdown(f"### {label}")
 
-            s_val = s_text.get(key, "")
+    c1, c2 = st.columns(2)
 
-            # ✅ LEFT: SALSIFY
-            c1.markdown("**Salsify**")
-            c1.write(s_val if s_val else "—")
+    s_val = s_text.get(key, "")
 
-            # ✅ FIND BEST MATCH IN CVS BULLETS
-            best_score = 0
-            best_match = ""
+    # ✅ LEFT
+    c1.markdown("**Salsify**")
+    c1.write(s_val)
 
-            for f in cvs_features:
-                score = keyword_score(s_val, f)
-                if score > best_score:
-                    best_score = score
-                    best_match = f
+    # ✅ FIND BEST MATCH
+    best_score = 0
+    best_match = ""
 
-            # ✅ RIGHT: CVS
-            c2.markdown("**CVS**")
-            c2.write(best_match if best_match else "❌ Missing")
+    for f in cvs_features:
+        score = keyword_score(s_val, f)
+        if score > best_score:
+            best_score = score
+            best_match = f
 
-            # ✅ SCORE DISPLAY
-            if best_match:
-                if best_score >= 80:
-                    st.success(f"✅ Strong match: {best_score}%")
-                elif best_score >= 50:
-                    st.warning(f"⚠️ Medium match: {best_score}%")
-                else:
-                    st.error(f"❌ Weak match: {best_score}%")
-            else:
-                st.error("❌ No matching feature found")
+    # ✅ RIGHT
+    c2.markdown("**CVS**")
+
+    if best_match:
+        c2.write(best_match)
+    else:
+        c2.write("❌ Missing")
+
+    # ✅ SCORE
+    if best_match:
+        st.write(f"Match: {best_score}%")
+    else:
+        st.error("No matching feature found")
 
         # =========================================
         # ✅ IMAGE COMPARISON (unchanged)
