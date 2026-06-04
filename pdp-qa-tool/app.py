@@ -54,123 +54,49 @@ def normalize_filename(fname):
 # =========================================
 # ✅ ✅ SALSIFY (FINAL CORRECT ENGINE)
 # =========================================
+from bs4 import BeautifulSoup
+
 def get_salsify_images(url):
     html = get_html(url)
+    soup = BeautifulSoup(html, "html.parser")
 
-    # -------------------------------------
-    # ✅ STEP 1: HERO IMAGES (TOP 3)
-    # -------------------------------------
-    hero_matches = re.findall(r'https://images\.salsify\.com[^"\s]+', html)
+    images = []
 
-    hero_map = {}
+    # ✅ find ONLY main image bullet list
+    bullets = soup.find("ul", class_=re.compile("imageBulletsList"))
 
-    for m in hero_matches[:15]:
-        base = m.split("?")[0]
-        fname = base.split("/")[-1]
+    if not bullets:
+        return []
 
-        if any(x in fname.lower() for x in ["thumb", "icon", "small"]):
+    items = bullets.find_all("li")
+
+    for item in items:
+
+        # ✅ find main img tag
+        img = item.find("img")
+        if not img:
             continue
 
-        key = normalize_filename(fname)
+        src = img.get("src") or ""
 
-        size = 0
-        size_match = re.search(r'Resize=\((\d+)', m)
-        if size_match:
-            size = int(size_match.group(1))
+        # ✅ fallback to srcset (higher res)
+        srcset = img.get("srcset")
+        if srcset:
+            urls = [u.split()[0] for u in srcset.split(",")]
+            src = urls[-1]
 
-        if key not in hero_map or size > hero_map[key]["size"]:
-            hero_map[key] = {"url": base, "size": size}
-
-    hero_images = list(hero_map.values())[:3]
-
-    # -------------------------------------
-    # ✅ STEP 2: PROPERTY EXTRACTION
-    # -------------------------------------
-    matches = re.findall(
-        r'"property":"([^"]+)".*?"value":"(https://images\.salsify\.com[^"]+)"',
-        html,
-        re.DOTALL
-    )
-
-    seen_props = set()
-    seen_assets = set()
-    property_images = []
-
-    for prop, img_url in matches:
-
-        prop = prop.strip()
-
-        # ✅ ONLY FIRST ENTRY PER PROPERTY
-        if prop in seen_props:
+        if "images.salsify.com" not in src:
             continue
 
-        base = img_url.split("?")[0]
-        fname = base.split("/")[-1]
+        clean = src.split("?")[0]
 
-        asset_key = normalize_filename(fname)
-
-        # ✅ REMOVE SAME IMAGE ACROSS MULTIPLE PROPERTIES
-        if asset_key in seen_assets:
-            continue
-
-        seen_props.add(prop)
-        seen_assets.add(asset_key)
-
-        property_images.append({
-            "type": prop,
-            "url": base
+        images.append({
+            "type": f"Salsify {len(images)+1}",
+            "url": clean
         })
 
-    # -------------------------------------
-    # ✅ STEP 3: FORCE ORDER
-    # -------------------------------------
-    TARGET_ORDER = [
-        "Online Optimized Image",
-        "Flat Back_2D",
-        "Flat Left_2D",
-        "ATF I/O-Generic",
-        "ATF 2-Generic",
-        "ATF 3-Generic",
-        "ATF 4-Generic",
-        "ATF 5-Generic",
-        "ATF 6-Generic"
-    ]
-
-    ordered = []
-    for prop in TARGET_ORDER:
-        for img in property_images:
-            if img["type"] == prop:
-                ordered.append(img)
-                break
-
-    # -------------------------------------
-    # ✅ STEP 4: MERGE HERO + PROPERTY
-    # -------------------------------------
-    final = []
-    used_assets = set()
-
-    # ✅ HERO FIRST
-    for i, img in enumerate(hero_images):
-        fname = img["url"].split("/")[-1]
-        key = normalize_filename(fname)
-
-        if key not in used_assets:
-            final.append({
-                "type": f"Hero {i+1}",
-                "url": img["url"]
-            })
-            used_assets.add(key)
-
-    # ✅ PROPERTY NEXT
-    for img in ordered:
-        fname = img["url"].split("/")[-1]
-        key = normalize_filename(fname)
-
-        if key not in used_assets:
-            final.append(img)
-            used_assets.add(key)
-
-    return final[:8]
+    # ✅ LIMIT to 8
+    return images[:8]
 
 # =========================================
 # ✅ CVS IMAGES (UNLIMITED + BEST RES)
