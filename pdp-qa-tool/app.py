@@ -663,7 +663,7 @@ if uploaded_file:
         
                 # ✅ Salsify (already cleaned → no gaps)
                 if s:
-                    s_url = s["url"] if isinstance(s, dict) else s
+                    s_url = s.get("url") if isinstance(s, dict) else s
                     c1.image(s_url, use_container_width=True)
                 else:
                     c1.write("")
@@ -676,14 +676,22 @@ if uploaded_file:
         
                 # ✅ score (optional, keeps your logic intact)
                 if s and r:
-                    s_url = s["url"] if isinstance(s, dict) else s
+                    s_url = s.get("url") if isinstance(s, dict) else s
                     sc = compare_images_visually(s_url, r)
                 else:
                     sc = 0
                 
                 # ✅ store score for averaging later
+                
+                sc = min(100, sc)
+                
+                # ✅ store for avg
                 if sc > 0:
-                    img_scores.append(min(100, sc))
+                    img_scores.append(sc)
+                
+                # ✅ store for export (row-level)
+                image_row_scores.append(sc)
+
 
         
                 c3.write(f"{sc}%")
@@ -730,8 +738,10 @@ if uploaded_file:
         }
         
         # ✅ image-level detail
-        for i, (_, _, sc) in enumerate(image_matches):
-            summary_row[f"Image {i+1} %"] = min(100, sc)
+        
+        for i, sc in enumerate(image_row_scores):
+            summary_row[f"Image {i+1} %"] = sc
+
         
         summary_rows.append(summary_row)
         
