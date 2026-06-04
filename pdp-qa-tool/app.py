@@ -131,18 +131,37 @@ def get_cvs_images(url):
 # =========================================
 def get_salsify_text(url):
     html = get_html(url)
+    soup = BeautifulSoup(html, "html.parser")
 
-    desc = ""
-    features = []
+    script = soup.find("script", {"id": "__NEXT_DATA__"})
+    if not script:
+        return {}
 
-    d = re.search(r'"generalDescription":"(.*?)"', html)
-    if d:
-        desc = d.group(1)
+    data = json.loads(script.string)
 
-    features = re.findall(r'"generalFeature\d+":"(.*?)"', html)
+    try:
+        props = data["props"]["pageProps"]["product"]["propertySets"][0]["properties"]
+    except:
+        return {}
 
-    return {"description": desc, "features": features[:5]}
+    text_map = {}
 
+    for p in props:
+        key = p.get("property")
+        values = p.get("values", [])
+
+        if values:
+            text_map[key] = values[0]
+
+    # ✅ RETURN EXACT FIELDS YOU WANT
+    return {
+        "title": text_map.get("PRODUCT_TITLE", ""),
+        "description": text_map.get("DESCRIPTION", ""),
+        "feature1": text_map.get("FEATURE_1", ""),
+        "feature3": text_map.get("FEATURE_3", ""),
+        "feature4": text_map.get("FEATURE_4", ""),
+        "feature5": text_map.get("FEATURE_5", "")
+    }
 def get_cvs_text(html):
     html = html.replace('\\"', '"')
     m = re.search(r'vendorDetailsParagraph":"(.*?)"', html)
@@ -175,18 +194,42 @@ if uploaded_file:
         r_text = get_cvs_text(retail_html)
 
         # ✅ DESCRIPTION
-        st.markdown("## Description")
+        s_text = get_salsify_text(row["salsify_url"])
+        r_text = get_cvs_text(html)
+        
+        st.markdown("## Copy Comparison")
+        
+        fields = [
+            ("Title", "title"),
+            ("Description", "description"),
+            ("Feature 1", "feature1"),
+            ("Feature 3", "feature3"),
+            ("Feature 4", "feature4"),
+            ("Feature 5", "feature5"),
+        ]
+        
+        for label, key in fields:
+        
+            st.markdown(f"### {label}")
+        
+            c1, c2 = st.columns(2)
+        
+            c1.markdown("**Salsify**")
+            c1.write(s_text.get(key, ""))
+        
+            c2.markdown("**CVS**")
+            if key == "description":
+                c2.write(r_text.get("description", ""))
+            else:
+                c2.write("")  # (you can expand later)
+        
+            score = keyword_score(
+                s_text.get(key, ""),
+                r_text.get("description", "")
+            )
+        
+            st.write(f"✅ Match: {score}%")
 
-        c1, c2 = st.columns(2)
-        c1.write(s_text["description"])
-        c2.write(r_text["description"])
-
-        desc_score = keyword_score(
-            s_text["description"],
-            r_text["description"]
-        )
-
-        st.write(f"✅ Description Match: {desc_score}%")
 
         # ✅ IMAGES
         st.markdown("## Image Comparison")
