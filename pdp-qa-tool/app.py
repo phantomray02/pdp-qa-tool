@@ -417,6 +417,30 @@ if uploaded_file:
                 st.warning(f"⚠️ Moderate match: {best_score}%")
             else:
                 st.error(f"❌ Weak match: {best_score}%")
+        # =====================================
+        # ✅ IMAGE COMPARISON (RESTORE THIS)
+        # =====================================
+        st.markdown("## Image Comparison")
+        
+        max_len = max(len(s_images), len(r_images))
+        
+        for i in range(max_len):
+        
+            c1, c2 = st.columns(2)
+        
+            # ✅ Salsify images
+            if i < len(s_images):
+                c1.markdown(f"**{s_images[i]['type']}**")
+                img = load_image(s_images[i]["url"])
+                if img:
+                    c1.image(img, use_container_width=True)
+        
+            # ✅ CVS images
+            if i < len(r_images):
+                c2.markdown(f"**CVS {i+1}**")
+                img = load_image(r_images[i])
+                if img:
+                    c2.image(img, use_container_width=True)
 
 # =========================================
 # ✅ EXPORT
