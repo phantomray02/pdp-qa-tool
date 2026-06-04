@@ -162,71 +162,45 @@ def get_salsify_text(url):
         "feature4": text_map.get("FEATURE_4", ""),
         "feature5": text_map.get("FEATURE_5", "")
     }
-def get_cvs_text(html):
-    soup = BeautifulSoup(html, "html.parser")
+import re
+import json
+from bs4 import BeautifulSoup
 
+def get_cvs_text(html):
     desc = ""
     features = []
 
     # =====================================
-    # ✅ METHOD 1: JSON-LD (BEST SOURCE)
+    # ✅ STEP 1: FIND __next_f SCRIPT
     # =====================================
-    scripts = soup.find_all("script", {"type": "application/ld+json"})
+    match = re.search(r'vendorDetailsParagraph":"(.*?)"', html)
 
-    for s in scripts:
-        try:
-            data = json.loads(s.string)
-
-            if isinstance(data, list):
-                for item in data:
-                    if item.get("@type") == "Product" and item.get("description"):
-                        desc = item["description"]
-                        break
-            else:
-                if data.get("@type") == "Product" and data.get("description"):
-                    desc = data["description"]
-
-            if desc:
-                break
-        except:
-            continue
+    if match:
+        desc = match.group(1)
 
     # =====================================
-    # ✅ METHOD 2: STRICT "DETAILS" MATCH
-    # =====================================
-    if not desc:
-
-        paragraphs = soup.find_all("p")
-
-        for p in paragraphs:
-            text = p.get_text(" ", strip=True)
-
-            # ✅ strong signal this is real product copy
-            if (
-                "Poise" in text and
-                "liners" in text and
-                len(text) > 250 and
-                "Federal law" not in text
-            ):
-                desc = text
-                break
-
-    # =====================================
-    # ✅ CLEAN FEATURES FROM SAME AREA
+    # ✅ STEP 2: CLEAN DESCRIPTION
     # =====================================
     if desc:
-        all_li = soup.find_all("li")
+        desc = desc.encode("utf-8").decode("unicode_escape")
 
-        for li in all_li:
-            text = li.get_text(" ", strip=True)
+    # =====================================
+    # ✅ STEP 3: GET BULLETS
+    # =====================================
+    bullet_match = re.search(
+        r'vendorDetailsBullets":\[(.*?)\]',
+        html
+    )
 
-            if (
-                len(text) > 40 and
-                any(x in text for x in [
-                    "LINERS", "ABSORBENT", "ODOR", "WETNESS", "COMFORT"
-                ])
-            ):
-                features.append(text)
+    if bullet_match:
+        raw = bullet_match.group(1)
+
+        bullets = re.findall(r'"(.*?)"', raw)
+
+        features = [
+            b.encode("utf-8").decode("unicode_escape")
+            for b in bullets
+        ]
 
     return {
         "description": desc.strip(),
