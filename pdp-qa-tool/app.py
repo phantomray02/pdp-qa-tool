@@ -313,13 +313,13 @@ def match_images_visual(s_images, r_images):
 # =========================================
 # ✅ MAIN APP
 # =========================================
-    if uploaded_file:
-    
-        summary_rows = []
-        export_rows = []
-    
-        df = pd.read_csv(uploaded_file)
 
+summary_rows = []
+export_rows = []
+
+if uploaded_file:
+
+    df = pd.read_csv(uploaded_file)
 
     for _, row in df.iterrows():
 
