@@ -467,64 +467,60 @@ if uploaded_file:
         retail_html = get_html(row["retail_url"])
 
         s_text = get_salsify_text(row["salsify_url"])
-        r_text = get_cvs_text(retail_html) or {"title": "", "description": "", "features": []}
+        r_text = get_cvs_text(retail_html) or {
+            "title": "",
+            "description": "",
+            "features": []
+        }
 
         s_images = get_salsify_images(row["salsify_url"])
+        r_images = get_cvs_images(row["retail_url"])
 
         # =====================================
-        # ✅ ENFORCE TOP 3 IMAGE SLOTS (FIXED)
+        # ✅ ENFORCE TOP 3 SLOTS (FIXED + SAFE)
         # =====================================
-        
+
         def matches_type(img, keyword):
             if not img:
                 return False
             t = img.get("type", "").lower().replace(" ", "")
             return keyword in t
-        
+
         remaining = s_images.copy()
         adjusted = []
-        
+
         def pull_match(keyword):
             for i, img in enumerate(remaining):
                 if matches_type(img, keyword):
                     return remaining.pop(i)
             return None
-        
-        # ✅ SLOT 1 — OOI
-        adjusted.append(pull_match("onlineoptimized"))
-        
-        # ✅ SLOT 2 — FRONT
-        adjusted.append(pull_match("front"))
-        
-        # ✅ SLOT 3 — FLAT BACK
-        adjusted.append(pull_match("flatback"))
-        
-        # ✅ fill remaining slots
-        adjusted.extend(remaining)
-        
-        # ✅ final assignment
-        s_images = adjusted
-        
-        # ✅ ADD EVERYTHING ELSE (NO LOSS OF IMAGES)
-        adjusted.extend(remaining)
-        
-        # ✅ FINAL OUTPUT
-        s_images = adjusted
 
-        # ✅ ✅ APPLY OOI RULE HERE
-        
-        def is_ooi(img):
+        # ✅ REQUIRED SLOTS
+        adjusted.append(pull_match("onlineoptimized"))  # slot 1 (OOI)
+        adjusted.append(pull_match("front"))            # slot 2
+        adjusted.append(pull_match("flatback"))         # slot 3
+
+        # ✅ REMOVE DUPLICATES
+        seen_urls = set()
+        clean_remaining = []
+
+        for img in remaining:
             if not img:
-                return False
-            t = img.get("type", "").lower().replace(" ", "")
-            return "onlineoptimized" in t
-        
-        # ✅ check if first image is OOI
-        if not s_images or not is_ooi(s_images[0]):
-        
-            # ✅ insert Missing at top
-            s_images = [None] + s_images
-        r_images = get_cvs_images(row["retail_url"])
+                continue
+
+            url = img.get("url")
+
+            if url and url not in seen_urls:
+                clean_remaining.append(img)
+                seen_urls.add(url)
+
+        # ✅ LIMIT TOTAL IMAGES
+        MAX_IMAGES = 8
+
+        adjusted.extend(clean_remaining)
+
+        # ✅ FINAL LIST
+        s_images = adjusted[:MAX_IMAGES]
 
         # =====================================
         # ✅ COPY COMPARISON
