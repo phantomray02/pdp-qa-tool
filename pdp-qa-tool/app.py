@@ -228,10 +228,26 @@ def get_cvs_text(html_text):
             if len(clean) > 20:
                 features.append(clean)
 
-    return {
-        "description": desc.strip(),
-        "features": features
-    }
+    # =====================================
+    # ✅ TITLE
+    # =====================================
+    title = ""
+
+    title_match = re.search(
+        r'"productName":"(.*?)"',
+        combined
+    )
+
+    if title_match:
+        title = title_match.group(1)
+
+
+return {
+    "title": title.strip(),
+    "description": desc.strip(),
+    "features": features
+}
+
 # =========================================
 # ✅ SCORE
 # =========================================
@@ -297,8 +313,10 @@ if uploaded_file:
         c1.markdown("**Salsify**")
         c1.write(s_text.get("title", ""))
 
+
         c2.markdown("**CVS**")
-        c2.write("")
+        c2.write(r_text.get("title", ""))
+
 
         # -------------------------------------
         # ✅ DESCRIPTION
