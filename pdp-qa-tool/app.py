@@ -265,9 +265,8 @@ def get_cvs_text(html_text):
                     raw_text
                 )[0]
 
-                # ✅ FIX broken word joins (CRITICAL)
-                raw_text = re.sub(r'([A-Za-z])\s+([a-z])', r'\1\2', raw_text)
-                raw_text = re.sub(r'\b([A-Za-z])\s+([A-Za-z]{2,})\b', r'\1\2', raw_text)
+                # ✅ FIX ONLY TRUE BROKEN WORD SPLITS (SAFE)
+                raw_text = re.sub(r'\b([A-Za-z])\s([a-z]{2,})\b', r'\1\2', raw_text)
 
                 # ✅ normalize spacing
                 raw_text = re.sub(r'\s+', ' ', raw_text).strip()
@@ -325,8 +324,10 @@ def get_cvs_text(html_text):
                 raw_text
             )[0]
 
-            # ✅ fix broken words
-            raw_text = re.sub(r'([A-Za-z])\s+([a-z])', r'\1\2', raw_text)
+            
+            # ✅ FIX ONLY TRUE BROKEN WORD SPLITS (SAFE)
+            raw_text = re.sub(r'\b([A-Za-z])\s([a-z]{2,})\b', r'\1\2', raw_text)
+
 
             raw_text = re.sub(r'\s+', ' ', raw_text).strip()
 
