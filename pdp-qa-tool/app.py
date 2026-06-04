@@ -191,16 +191,34 @@ def get_cvs_text(html_text):
     title = ""
 
     # =====================================
-    # ✅ DESCRIPTION
+    # ✅ DESCRIPTION (HANDLE $ POINTERS)
     # =====================================
+    desc = ""
+    
     desc_match = re.search(
         r'vendorDetailsParagraph\\":\\"(.*?)\\"',
         combined
     )
-
+    
     if desc_match:
-        desc = html.unescape(desc_match.group(1))
-
+    
+        raw_desc = desc_match.group(1)
+    
+        # ✅ CASE 1: NORMAL TEXT
+        if not raw_desc.startswith("$"):
+            desc = html.unescape(raw_desc)
+    
+        # ✅ CASE 2: POINTER (e.g., $32)
+        else:
+            pointer = raw_desc.replace("$", "")
+    
+            pointer_match = re.search(
+                rf'{pointer}:"(.*?)"',
+                combined
+            )
+    
+            if pointer_match:
+                desc = html.unescape(pointer_match.group(1))
     # =====================================
     # ✅ FEATURES
     # =====================================
