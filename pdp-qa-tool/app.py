@@ -167,43 +167,40 @@ import json
 from bs4 import BeautifulSoup
 
 def get_cvs_text(html):
+
     desc = ""
     features = []
 
     # =====================================
-    # ✅ STEP 1: FIND __next_f SCRIPT
+    # ✅ STEP 1: ISOLATE vendorContent BLOCK
     # =====================================
-    match = re.search(r'vendorDetailsParagraph":"(.*?)"', html)
+    match = re.search(r'"vendorContent":({.*?"vendorPrdWeight":.*?})', html)
 
     if match:
-        desc = match.group(1)
+        raw_json = match.group(1)
+
+        try:
+            data = json.loads(raw_json)
+
+            details = data.get("vendorDetails", {})
+
+            # ✅ DESCRIPTION
+            desc = details.get("vendorDetailsParagraph", "")
+
+            # ✅ FEATURES
+            features = details.get("vendorDetailsBullets", [])
+
+        except Exception as e:
+            pass
 
     # =====================================
-    # ✅ STEP 2: CLEAN DESCRIPTION
+    # ✅ CLEAN TEXT
     # =====================================
     if desc:
-        desc = desc.encode("utf-8").decode("unicode_escape")
-
-    # =====================================
-    # ✅ STEP 3: GET BULLETS
-    # =====================================
-    bullet_match = re.search(
-        r'vendorDetailsBullets":\[(.*?)\]',
-        html
-    )
-
-    if bullet_match:
-        raw = bullet_match.group(1)
-
-        bullets = re.findall(r'"(.*?)"', raw)
-
-        features = [
-            b.encode("utf-8").decode("unicode_escape")
-            for b in bullets
-        ]
+        desc = BeautifulSoup(desc, "html.parser").get_text(" ").strip()
 
     return {
-        "description": desc.strip(),
+        "description": desc,
         "features": features
     }
 # =========================================
