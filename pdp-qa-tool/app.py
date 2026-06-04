@@ -12,7 +12,7 @@ uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 download_placeholder = st.empty()
 
 # =========================================
-# ✅ CACHE
+# ✅ CACHE HTML
 # =========================================
 html_cache = {}
 
@@ -43,43 +43,49 @@ def load_image(url):
     return None
 
 # =========================================
-# ✅ ✅ SALSIFY FINAL (ROOT FIX ✅)
+# ✅ NORMALIZE FILE NAME (DEDUP CORE)
+# =========================================
+def normalize_filename(fname):
+    fname = fname.lower()
+    fname = re.sub(r'(_|-)?\d+x\d+', '', fname)
+    fname = re.sub(r'(_|-)?\d+', '', fname)
+    return fname
+
+# =========================================
+# ✅ ✅ SALSIFY (FINAL CORRECT ENGINE)
 # =========================================
 def get_salsify_images(url):
     html = get_html(url)
 
-    # =========================================
-    # ✅ STEP 1: HERO (TOP 3 FIX ✅)
-    # =========================================
+    # -------------------------------------
+    # ✅ STEP 1: HERO IMAGES (TOP 3)
+    # -------------------------------------
     hero_matches = re.findall(r'https://images\.salsify\.com[^"\s]+', html)
 
     hero_map = {}
 
     for m in hero_matches[:15]:
         base = m.split("?")[0]
-        fname = base.split("/")[-1].lower()
+        fname = base.split("/")[-1]
 
-        # remove UI junk
-        if any(x in fname for x in ["thumb", "icon", "small"]):
+        if any(x in fname.lower() for x in ["thumb", "icon", "small"]):
             continue
 
-        # normalize for crop variants
-        key = re.sub(r'(_|-)?\d+x\d+', '', fname)
+        key = normalize_filename(fname)
 
         size = 0
         size_match = re.search(r'Resize=\((\d+)', m)
         if size_match:
             size = int(size_match.group(1))
 
-        # keep highest res
         if key not in hero_map or size > hero_map[key]["size"]:
             hero_map[key] = {"url": base, "size": size}
 
     hero_images = list(hero_map.values())[:3]
 
-    # =========================================
-    # ✅ STEP 2: PROPERTY PARSE (REAL FIX ✅)
-    # =========================================
+    # -------------------------------------
+    # ✅ STEP 2: PROPERTY EXTRACTION
+    # -------------------------------------
     matches = re.findall(
         r'"property":"([^"]+)".*?"value":"(https://images\.salsify\.com[^"]+)"',
         html,
@@ -87,27 +93,37 @@ def get_salsify_images(url):
     )
 
     seen_props = set()
+    seen_assets = set()
     property_images = []
 
     for prop, img_url in matches:
 
         prop = prop.strip()
 
-        # ✅ CRITICAL FIX:
-        # Only take FIRST image per property
+        # ✅ ONLY FIRST ENTRY PER PROPERTY
         if prop in seen_props:
             continue
 
+        base = img_url.split("?")[0]
+        fname = base.split("/")[-1]
+
+        asset_key = normalize_filename(fname)
+
+        # ✅ REMOVE SAME IMAGE ACROSS MULTIPLE PROPERTIES
+        if asset_key in seen_assets:
+            continue
+
         seen_props.add(prop)
+        seen_assets.add(asset_key)
 
         property_images.append({
             "type": prop,
-            "url": img_url.split("?")[0]
+            "url": base
         })
 
-    # =========================================
-    # ✅ STEP 3: ORDER PROPERTIES
-    # =========================================
+    # -------------------------------------
+    # ✅ STEP 3: FORCE ORDER
+    # -------------------------------------
     TARGET_ORDER = [
         "Online Optimized Image",
         "Flat Back_2D",
@@ -120,39 +136,44 @@ def get_salsify_images(url):
         "ATF 6-Generic"
     ]
 
-    ordered_props = []
-
+    ordered = []
     for prop in TARGET_ORDER:
         for img in property_images:
             if img["type"] == prop:
-                ordered_props.append(img)
+                ordered.append(img)
                 break
 
-    # =========================================
-    # ✅ STEP 4: MERGE HERO + PROPERTIES
-    # =========================================
+    # -------------------------------------
+    # ✅ STEP 4: MERGE HERO + PROPERTY
+    # -------------------------------------
     final = []
-    used_urls = set()
+    used_assets = set()
 
-    # add hero images first
+    # ✅ HERO FIRST
     for i, img in enumerate(hero_images):
-        if img["url"] not in used_urls:
+        fname = img["url"].split("/")[-1]
+        key = normalize_filename(fname)
+
+        if key not in used_assets:
             final.append({
                 "type": f"Hero {i+1}",
                 "url": img["url"]
             })
-            used_urls.add(img["url"])
+            used_assets.add(key)
 
-    # then property images
-    for img in ordered_props:
-        if img["url"] not in used_urls:
+    # ✅ PROPERTY NEXT
+    for img in ordered:
+        fname = img["url"].split("/")[-1]
+        key = normalize_filename(fname)
+
+        if key not in used_assets:
             final.append(img)
-            used_urls.add(img["url"])
+            used_assets.add(key)
 
     return final[:8]
 
 # =========================================
-# ✅ CVS (UNLIMITED + BEST RES ✅)
+# ✅ CVS IMAGES (UNLIMITED + BEST RES)
 # =========================================
 def get_cvs_images(url):
     html = get_html(url)
@@ -181,7 +202,7 @@ def get_cvs_images(url):
     return [v["url"] for v in best_images.values()]
 
 # =========================================
-# ✅ TEXT
+# ✅ TEXT EXTRACTION
 # =========================================
 def get_salsify_text(url):
     html = get_html(url)
@@ -195,19 +216,15 @@ def get_salsify_text(url):
 
     features = re.findall(r'"generalFeature\d+":"(.*?)"', html)
 
-    return {
-        "description": desc,
-        "features": features[:5]
-    }
+    return {"description": desc, "features": features[:5]}
 
 def get_cvs_text(html):
     html = html.replace('\\"', '"')
     m = re.search(r'vendorDetailsParagraph":"(.*?)"', html)
-
     return {"description": m.group(1) if m else ""}
 
 # =========================================
-# ✅ TEXT SCORE
+# ✅ SCORE
 # =========================================
 def normalize_text(t):
     return re.sub(r'[^a-z0-9\s]', '', str(t).lower())
@@ -216,7 +233,7 @@ def keyword_score(a, b):
     return int(SequenceMatcher(None, normalize_text(a), normalize_text(b)).ratio() * 100)
 
 # =========================================
-# ✅ MAIN
+# ✅ MAIN APP
 # =========================================
 if uploaded_file:
 
@@ -227,10 +244,10 @@ if uploaded_file:
 
         st.subheader(f"SKU: {row['sku']}")
 
-        html = get_html(row["retail_url"])
+        retail_html = get_html(row["retail_url"])
 
         s_text = get_salsify_text(row["salsify_url"])
-        r_text = get_cvs_text(html)
+        r_text = get_cvs_text(retail_html)
 
         # ✅ DESCRIPTION
         st.markdown("## Description")
@@ -246,7 +263,7 @@ if uploaded_file:
 
         st.write(f"✅ Description Match: {desc_score}%")
 
-        # ✅ IMAGE COMPARISON
+        # ✅ IMAGES
         st.markdown("## Image Comparison")
 
         s_images = get_salsify_images(row["salsify_url"])
@@ -255,6 +272,7 @@ if uploaded_file:
         max_len = max(len(s_images), len(r_images))
 
         for i in range(max_len):
+
             c1, c2 = st.columns(2)
 
             if i < len(s_images):
@@ -269,6 +287,7 @@ if uploaded_file:
                 if img:
                     c2.image(img, use_container_width=True)
 
+        # ✅ SCORE
         img_score = int(
             (min(len(s_images), len(r_images)) /
              max(len(s_images), len(r_images), 1)) * 100
@@ -284,7 +303,7 @@ if uploaded_file:
         })
 
 # =========================================
-# ✅ EXPORT ✅
+# ✅ EXPORT
 # =========================================
 if 'summary_rows' in locals() and summary_rows:
 
