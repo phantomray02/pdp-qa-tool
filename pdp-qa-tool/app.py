@@ -287,12 +287,36 @@ def equal_feature_block(text):
     </div>
     """
 
+# =====================================
+# ✅ IMAGE MATCHING
+# =====================================
+def match_images_visual(s_images, r_images):
 
+    matches = []
+
+    max_len = max(len(s_images), len(r_images))
+
+    for i in range(max_len):
+
+        s_img = s_images[i]["url"] if i < len(s_images) else None
+        r_img = r_images[i] if i < len(r_images) else None
+
+        # ✅ simple matching score
+        if s_img and r_img:
+            score = int(SequenceMatcher(None, s_img, r_img).ratio() * 100)
+        else:
+            score = 0
+
+        matches.append((s_img, r_img, score))
+
+    return matches
 # =========================================
 # ✅ MAIN APP
 # =========================================
 if uploaded_file:
-
+        summary_rows = []
+        export_rows = []
+    
     df = pd.read_csv(uploaded_file)
 
     for _, row in df.iterrows():
@@ -490,118 +514,6 @@ if uploaded_file:
             st.warning(f"⚠️ Image Match: {avg_img_score}%")
         else:
             st.error(f"❌ Image Match: {avg_img_score}%")
-        
-        
-        # =====================================
-        # ✅ FEATURE COMPARISON + SCORING (FULL)
-        # =====================================
-        st.markdown("## Feature Comparison")
-        
-        feature_fields = [
-            ("Feature 1", "feature1"),
-            ("Feature 3", "feature3"),
-            ("Feature 4", "feature4"),
-            ("Feature 5", "feature5"),
-        ]
-        
-        cvs_features = r_text.get("features", [])
-        
-        # ✅ INIT scoring tracker
-        feature_scores = []
-        
-        for label, key in feature_fields:
-        
-            st.markdown(f"### {label}")
-        
-            col1, col2 = st.columns(2)
-        
-            s_val = s_text.get(key, "")
-        
-            # ---------------------------------
-            # ✅ LEFT: SALSIFY
-            # ---------------------------------
-            col1.markdown("**Salsify**")
-            col1.markdown(
-                f"""
-                <div style="min-height:70px;">
-                    {s_val if s_val else "—"}
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-        
-            # ---------------------------------
-            # ✅ MATCHING LOGIC
-            # ---------------------------------
-            best_score = 0
-            best_match = ""
-        
-            for f in cvs_features:
-        
-                score = keyword_score(s_val, f)
-        
-                # ✅ boost similar phrasing
-                if any(word in f.lower() for word in s_val.lower().split()[:3]):
-                    score += 5
-        
-                if score > best_score:
-                    best_score = score
-                    best_match = f
-        
-            # ✅ fallback prevents missing features
-            if not best_match and cvs_features:
-                best_match = cvs_features[0]
-        
-            # ✅ cap score
-            best_score = min(100, best_score)
-        
-            # ✅ track score for average
-            feature_scores.append(best_score)
-        
-            # ---------------------------------
-            # ✅ RIGHT: CVS
-            # ---------------------------------
-            col2.markdown("**CVS**")
-            col2.markdown(
-                f"""
-                <div style="min-height:70px;">
-                    {best_match if best_match else "❌ Missing"}
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-        
-            # ---------------------------------
-            # ✅ SCORE BAR BELOW
-            # ---------------------------------
-            if best_score >= 80:
-                st.success(f"✅ Strong match: {best_score}%")
-            elif best_score >= 50:
-                st.warning(f"⚠️ Moderate match: {best_score}%")
-            else:
-                st.error(f"❌ Weak match: {best_score}%")
-        
-        
-        # =====================================
-        # ✅ FEATURE SCORE (AVG)
-        # =====================================
-        if feature_scores:
-            avg_feature_score = int(sum(feature_scores) / len(feature_scores))
-        else:
-            avg_feature_score = 0
-        
-        # ✅ cap at 100
-        avg_feature_score = min(100, avg_feature_score)
-        
-        # ✅ DISPLAY FINAL FEATURE SCORE
-        st.markdown("### ✅ Feature Score Summary")
-        
-        if avg_feature_score >= 80:
-            st.success(f"✅ Feature Match: {avg_feature_score}%")
-        elif avg_feature_score >= 50:
-            st.warning(f"⚠️ Feature Match: {avg_feature_score}%")
-        else:
-            st.error(f"❌ Feature Match: {avg_feature_score}%")
         
         # =====================================
         # ✅ OVERALL SCORE
