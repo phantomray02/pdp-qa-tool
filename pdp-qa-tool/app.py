@@ -445,42 +445,238 @@ if uploaded_file:
                 st.error(f"❌ Weak match: {best_score}%")
 
         # =====================================
-        # ✅ IMAGE COMPARISON (RESTORED ✅)
+        # ✅ IMAGE COMPARISON
         # =====================================
-        st.markdown("## Image Comparison")
+        st.markdown("## Image Comparison ✅")
+        
+        # ✅ DEBUG COUNTS (helps QA)
+        st.write(f"Salsify Images: {len(s_images)} | CVS Images: {len(r_images)}")
+        
+        # ✅ IMAGE MATCHING
+        image_matches = match_images_visual(s_images, r_images)
+        
+        if not image_matches:
+            st.warning("No images found to compare.")
+        else:
+            for s, r, sc in image_matches:
+                c1, c2, c3 = st.columns([4, 4, 1])
+        
+                # ✅ Salsify Image
+                if s:
+                    c1.image(s, use_container_width=True)
+                else:
+                    c1.write("Missing")
+        
+                # ✅ CVS Image
+                if r:
+                    c2.image(r, use_container_width=True)
+                else:
+                    c2.write("Missing")
+        
+                # ✅ Score
+                sc = min(100, sc)
+                c3.write(f"{sc}%")
+        
+        # =====================================
+        # ✅ IMAGE SCORE
+        # =====================================
+        img_scores = [min(100, sc) for _, _, sc in image_matches if sc > 0]
+        
+        avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
+        
+        if avg_img_score >= 80:
+            st.success(f"✅ Image Match: {avg_img_score}%")
+        elif avg_img_score >= 50:
+            st.warning(f"⚠️ Image Match: {avg_img_score}%")
+        else:
+            st.error(f"❌ Image Match: {avg_img_score}%")
+        
+        
+        # =====================================
+        # ✅ FEATURE COMPARISON + SCORING (FULL)
+        # =====================================
+        st.markdown("## Feature Comparison")
+        
+        feature_fields = [
+            ("Feature 1", "feature1"),
+            ("Feature 3", "feature3"),
+            ("Feature 4", "feature4"),
+            ("Feature 5", "feature5"),
+        ]
+        
+        cvs_features = r_text.get("features", [])
+        
+        # ✅ INIT scoring tracker
+        feature_scores = []
+        
+        for label, key in feature_fields:
+        
+            st.markdown(f"### {label}")
+        
+            col1, col2 = st.columns(2)
+        
+            s_val = s_text.get(key, "")
+        
+            # ---------------------------------
+            # ✅ LEFT: SALSIFY
+            # ---------------------------------
+            col1.markdown("**Salsify**")
+            col1.markdown(
+                f"""
+                <div style="min-height:70px;">
+                    {s_val if s_val else "—"}
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+        
+            # ---------------------------------
+            # ✅ MATCHING LOGIC
+            # ---------------------------------
+            best_score = 0
+            best_match = ""
+        
+            for f in cvs_features:
+        
+                score = keyword_score(s_val, f)
+        
+                # ✅ boost similar phrasing
+                if any(word in f.lower() for word in s_val.lower().split()[:3]):
+                    score += 5
+        
+                if score > best_score:
+                    best_score = score
+                    best_match = f
+        
+            # ✅ fallback prevents missing features
+            if not best_match and cvs_features:
+                best_match = cvs_features[0]
+        
+            # ✅ cap score
+            best_score = min(100, best_score)
+        
+            # ✅ track score for average
+            feature_scores.append(best_score)
+        
+            # ---------------------------------
+            # ✅ RIGHT: CVS
+            # ---------------------------------
+            col2.markdown("**CVS**")
+            col2.markdown(
+                f"""
+                <div style="min-height:70px;">
+                    {best_match if best_match else "❌ Missing"}
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+        
+            # ---------------------------------
+            # ✅ SCORE BAR BELOW
+            # ---------------------------------
+            if best_score >= 80:
+                st.success(f"✅ Strong match: {best_score}%")
+            elif best_score >= 50:
+                st.warning(f"⚠️ Moderate match: {best_score}%")
+            else:
+                st.error(f"❌ Weak match: {best_score}%")
+        
+        
+        # =====================================
+        # ✅ FEATURE SCORE (AVG)
+        # =====================================
+        if feature_scores:
+            avg_feature_score = int(sum(feature_scores) / len(feature_scores))
+        else:
+            avg_feature_score = 0
+        
+        # ✅ cap at 100
+        avg_feature_score = min(100, avg_feature_score)
+        
+        # ✅ DISPLAY FINAL FEATURE SCORE
+        st.markdown("### ✅ Feature Score Summary")
+        
+        if avg_feature_score >= 80:
+            st.success(f"✅ Feature Match: {avg_feature_score}%")
+        elif avg_feature_score >= 50:
+            st.warning(f"⚠️ Feature Match: {avg_feature_score}%")
+        else:
+            st.error(f"❌ Feature Match: {avg_feature_score}%")
+        
+        # =====================================
+        # ✅ OVERALL SCORE
+        # =====================================
+        overall_score = int(
+            (title_score + desc_score + avg_feature_score + avg_img_score) / 4
+        )
+        
+        st.markdown("## ✅ Overall Score")
+        
+        if overall_score >= 80:
+            st.success(f"✅ Overall QA Score: {overall_score}%")
+        elif overall_score >= 50:
+            st.warning(f"⚠️ Overall QA Score: {overall_score}%")
+        else:
+            st.error(f"❌ Overall QA Score: {overall_score}%")
+        
+        
+        # =====================================
+        # ✅ SUMMARY SHEET
+        # =====================================
+        summary_row = {
+            "SKU": row["sku"],
+            "Title %": title_score,
+            "Description %": desc_score,
+            "Feature %": avg_feature_score,
+            "Image Match %": avg_img_score,
+            "Overall %": overall_score
+        }
+        
+        # ✅ image-level detail
+        for i, (_, _, sc) in enumerate(image_matches):
+            summary_row[f"Image {i+1} %"] = min(100, sc)
+        
+        summary_rows.append(summary_row)
+        
+        
+        # =====================================
+        # ✅ DETAIL SHEET
+        # =====================================
+        export_row = {
+            "SKU": row["sku"],
+            "Salsify Title": s_text.get("title", ""),
+            "CVS Title": r_text.get("title", ""),
+            "Salsify Description": s_text.get("description", ""),
+            "CVS Description": r_text.get("description", "")
+        }
+        
+        # ✅ Feature copy export (from your matched results)
+        for i in range(min(len(cvs_features), 5)):
+            export_row[f"Feature {i+1}"] = cvs_features[i]
+        
+        export_rows.append(export_row)
+        
+        
+        st.divider()
+        ``
+# =====================================
+# ✅ EXPORT FILE
+# =====================================
+if summary_rows:
 
-        max_len = max(len(s_images), len(r_images))
-
-        for i in range(max_len):
-
-            c1, c2 = st.columns(2)
-
-            if i < len(s_images):
-                c1.markdown(f"**{s_images[i]['type']}**")
-                img = load_image(s_images[i]["url"])
-                if img:
-                    c1.image(img, use_container_width=True)
-
-            if i < len(r_images):
-                c2.markdown(f"**CVS {i+1}**")
-                img = load_image(r_images[i])
-                if img:
-                    c2.image(img, use_container_width=True)
-# =========================================
-# ✅ EXPORT
-# =========================================
-if 'summary_rows' in locals() and summary_rows:
-
-    df = pd.DataFrame(summary_rows)
+    summary_df = pd.DataFrame(summary_rows)
+    detail_df = pd.DataFrame(export_rows)
 
     file_name = "pdp_qa_results.xlsx"
 
     with pd.ExcelWriter(file_name, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False)
+        summary_df.to_excel(writer, index=False, sheet_name="Summary")
+        detail_df.to_excel(writer, index=False, sheet_name="Details")
 
     with open(file_name, "rb") as f:
-        download_placeholder.download_button(
-            "📥 Download Excel",
-            f,
-            file_name
+        st.download_button(
+            label="📥 Download Excel Report",
+            data=f,
+            file_name=file_name,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
