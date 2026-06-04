@@ -203,11 +203,13 @@ def get_cvs_text(html_text):
     # =====================================
     # ✅ FEATURES (NEW — TARGET SAME STRUCTURE)
     # =====================================
+
     bullet_match = re.search(
-        r'vendorDetailsBullets\\":\\\[(.*?)\\\]',
+        r'vendorDetailsBullets\\":\[(.*?)\]',
         combined,
         re.DOTALL
     )
+
 
     if bullet_match:
 
