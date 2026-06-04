@@ -279,63 +279,77 @@ def get_cvs_text(html_text):
         else:
             desc = html.unescape(raw_desc)
 
-    # =====================================
-    # ✅ FALLBACK SCAN (CRITICAL EDGE CASE FIX)
-    # =====================================
-
-    if not desc or len(desc) < 100:
-
+        # =====================================
+        # ✅ FALLBACK SCAN (CRITICAL EDGE CASE FIX)
+        # =====================================
+    
+        if not desc or len(desc) < 100:
+    
         fallback_candidates = []
-
+    
         for i in range(20, 41):
-
+    
             m = re.search(
                 rf'{i}:(T\d+,.+)',
                 combined,
                 re.DOTALL
             )
-
+    
             if not m:
                 continue
-
+    
             raw_text = m.group(1)
-
+    
+            # ✅ rebuild chunks
             chunks = re.findall(
                 r'self\.__next_f\.push\(\[1,"(.*?)"\]\)',
                 combined,
                 re.DOTALL
             )
-
+    
             for chunk in chunks:
                 raw_text += chunk
-
+    
+            # ✅ clean
             raw_text = re.sub(r'^T\d+,', '', raw_text)
             raw_text = raw_text.replace('\\u0026', '&')
             raw_text = raw_text.replace('\\"', '"')
-
+    
             raw_text = raw_text.replace('"])', '')
             raw_text = raw_text.replace('self.__next_f.push([1,"', '')
             raw_text = re.sub(r'</?script>', '', raw_text)
-
+    
             raw_text = raw_text.replace('\n', ' ')
-
+    
             raw_text = re.split(
                 rf'(?:\d+:{{|\d+:\[)',
                 raw_text
             )[0]
-
-            
-            # ✅ FIX ONLY TRUE BROKEN WORD SPLITS (SAFE)
-            raw_text = re.sub(r'\b([A-Za-z])\s([a-z]{2,})\b', r'\1\2', raw_text)
-
-
+    
             raw_text = re.sub(r'\s+', ' ', raw_text).strip()
-
-            if len(raw_text) > 200:
+    
+            # ✅ 🚨 FILTER BAD BLOCKS
+            if (
+                "<div" in raw_text or
+                "class=" in raw_text or
+                "icon." in raw_text or
+                "jojyo" in raw_text or
+                "react" in raw_text.lower()
+            ):
+                continue
+    
+            # ✅ ✅ ACCEPT ONLY REAL PDP TEXT
+            if (
+                len(raw_text) > 200 and
+                any(k in raw_text.lower() for k in [
+                    "pad", "pads", "incontinence", "absorb", "protection", "leak"
+                ])
+            ):
                 fallback_candidates.append(raw_text)
-
+    
         if fallback_candidates:
             desc = html.unescape(max(fallback_candidates, key=len))
+                        
 
     # =====================================
     # ✅ FEATURES
