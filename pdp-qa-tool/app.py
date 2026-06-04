@@ -61,11 +61,12 @@ def normalize_filename(fname):
 # =========================================
 import json
 
+
 def get_salsify_images(url):
 
-    
-    # ✅ ✅ ✅ 🔥 STEP 1 — DEFINE REQUIRED ORDER HERE
-    
+    def normalize_key(k):
+        return k.lower().replace(" ", "").replace("_", "")
+
     EXPECTED_ORDER = [
         "onlineoptimizedimage",
         "front2d",
@@ -104,7 +105,7 @@ def get_salsify_images(url):
 
     # ✅ build map of existing images
     def normalize_key(k):
-    return k.lower().replace(" ", "").replace("_", "")
+        return k.lower().replace(" ", "").replace("_", "")
 
     image_map = {}
     
