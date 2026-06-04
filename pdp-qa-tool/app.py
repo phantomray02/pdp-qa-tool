@@ -245,11 +245,14 @@ def get_cvs_text(html_text):
     # =====================================
     # ✅ RETURN (MUST BE INSIDE FUNCTION)
     # =====================================
+
     return {
         "title": title,
         "description": desc.strip(),
-        "features": features
+        "features": features,
+        "raw_script": combined  # ✅ add this
     }
+
 
 # =========================================
 # ✅ SCORE
@@ -301,9 +304,11 @@ if uploaded_file:
         if "vendorDetailsBullets" in retail_html:
             st.success("✅ FOUND vendorDetailsBullets")
         # =========================================
-        # ✅ TITLE DEBUGGER
+        # ✅ TITLE DEBUGGER (FIXED)
         # =========================================
         st.markdown("### 🧪 TITLE DEBUG")
+        
+        combined = r_text.get("raw_script", "")
         
         title_candidates = re.findall(
             r'"(productName|name)":"(.*?)"',
@@ -312,6 +317,7 @@ if uploaded_file:
         
         for t in title_candidates[:10]:
             st.write(t)
+
 
         # =====================================
         # ✅ COPY COMPARISON
