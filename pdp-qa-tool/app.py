@@ -169,7 +169,7 @@ def get_salsify_text(url):
         "feature5": text_map.get("FEATURE_5", "")
     }
 # =========================================
-# ✅ CVS COPY EXTRACTION (REAL FINAL)
+# ✅ CVS COPY EXTRACTION (ABSOLUTE FINAL)
 # =========================================
 def get_cvs_text(html_text):
 
@@ -181,7 +181,7 @@ def get_cvs_text(html_text):
 
     combined = ""
 
-    # ✅ STEP 1: GET SCRIPT CONTENT
+    # ✅ STEP 1: COLLECT ALL SCRIPT DATA
     for s in soup.find_all("script"):
         if s.string:
             combined += s.string
@@ -190,7 +190,7 @@ def get_cvs_text(html_text):
     features = []
 
     # =====================================
-    # ✅ DESCRIPTION ✅ (YOU ALREADY HAVE)
+    # ✅ DESCRIPTION
     # =====================================
     desc_match = re.search(
         r'vendorDetailsParagraph\\":\\"(.*?)\\"',
@@ -201,7 +201,7 @@ def get_cvs_text(html_text):
         desc = html.unescape(desc_match.group(1))
 
     # =====================================
-    # ✅ STEP 2: FIND POINTER ✅
+    # ✅ FIND POINTER (e.g. $32)
     # =====================================
     ref_match = re.search(
         r'vendorDetailsBullets\\":\\"\\$(\\d+)\\"',
@@ -211,27 +211,30 @@ def get_cvs_text(html_text):
     if ref_match:
         ref_id = ref_match.group(1)
 
-        # ✅ STEP 3: FIND NEARBY BLOCK (NOT GLOBAL SEARCH)
-        # search only close to where pointer exists
-        pointer_index = combined.find(f'${ref_id}')
+        # ✅ DEBUG
+        # st.write("REF:", ref_id)
 
-        snippet = combined[pointer_index:pointer_index + 5000]
-
-        # ✅ STEP 4: find array inside that snippet
+        # =====================================
+        # ✅ GLOBAL SEARCH FOR ARRAY
+        # =====================================
         block_match = re.search(
-            r'\[(.*?)\]',
-            snippet,
+            rf'{ref_id}:\[(.*?)\]',
+            combined,
             re.DOTALL
         )
 
         if block_match:
-            raw = block_match.group(1)
+
+            raw_block = block_match.group(1)
 
             features = [
                 html.unescape(x).strip()
-                for x in re.findall(r'"(.*?)"', raw)
-                if ":" in x and len(x) > 20
+                for x in re.findall(r'"(.*?)"', raw_block)
+                if len(x.strip()) > 15
             ]
+
+        else:
+            print("❌ Could not find block for:", ref_id)
 
     return {
         "description": desc.strip(),
