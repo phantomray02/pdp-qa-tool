@@ -742,8 +742,7 @@ if uploaded_file:
             img_scores = []
             image_row_scores = []
 
-            from itertools import zip_longest
-            image_pairs = list(zip_longest(s_images, r_images, fillvalue=None))[:8]
+            max_len = max(len(s_images), len(r_images))
 
             for s, r in image_pairs:
 
@@ -792,30 +791,55 @@ if uploaded_file:
                 "Overall %": overall_score
             }
 
-            for idx in range(8):
-                summary_row[f"Image {idx+1} %"] = image_row_scores[idx] if idx < len(image_row_scores) else ""
-
-            st.session_state.summary_rows.append(summary_row)
-
-            export_row = {
-                "SKU": row.get("sku", ""),
-                "CVS RPC": row.get("cvs_rpc") or row.get("CVS RPC") or "",
-                "Salsify URL": row.get("salsify_url", ""),
-                "Retail URL": row.get("retail_url", ""),
-                "Salsify Title": s_text.get("title", ""),
-                "CVS Title": r_text.get("title", ""),
-                "Salsify Description": s_text.get("description", ""),
-                "CVS Description": r_text.get("description", "")
-            }
-
-            st.session_state.export_rows.append(export_row)
-
-            # ✅ PROGRESS
-            progress_bar.progress((i + 1) / total)
-
-        except Exception as e:
-            st.error(f"❌ Error processing SKU: {row.get('sku','')}")
-            continue
+            for i, (_, row) in enumerate(batch_df.iterrows()):
+                try:
+            
+                    status_text.write(f"Processing SKU {row.get('sku','')} ({i+1}/{total})")
+            
+                    # ✅ ALL YOUR EXISTING LOGIC
+                    # ----------------------------------
+                    # get_html
+                    # get_salsify_text
+                    # get_cvs_text
+                    # image comparison
+                    # title_score
+                    # desc_score
+                    # avg_feature_score
+                    # avg_img_score
+                    # overall_score
+                    # image_row_scores
+                    # ----------------------------------
+            
+                    # =====================================
+                    # ✅ SAVE RESULTS (PUT YOUR CODE HERE ✅)
+                    # =====================================
+            
+                    for idx in range(8):
+                        summary_row[f"Image {idx+1} %"] = (
+                            image_row_scores[idx] if idx < len(image_row_scores) else ""
+                        )
+            
+                    st.session_state.summary_rows.append(summary_row)
+            
+                    export_row = {
+                        "SKU": row.get("sku", ""),
+                        "CVS RPC": row.get("cvs_rpc") or row.get("CVS RPC") or "",
+                        "Salsify URL": row.get("salsify_url", ""),
+                        "Retail URL": row.get("retail_url", ""),
+                        "Salsify Title": s_text.get("title", ""),
+                        "CVS Title": r_text.get("title", ""),
+                        "Salsify Description": s_text.get("description", ""),
+                        "CVS Description": r_text.get("description", "")
+                    }
+            
+                    st.session_state.export_rows.append(export_row)
+            
+                    # ✅ PROGRESS (LAST LINE INSIDE TRY ✅)
+                    progress_bar.progress((i + 1) / total)
+            
+                except Exception as e:
+                    st.error(f"❌ Error processing SKU: {row.get('sku','')}")
+                    continue
 
     # =====================================
     # ✅ AUTO-BATCH NEXT
