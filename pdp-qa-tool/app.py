@@ -909,51 +909,39 @@ else:
         
             col1, col2, col3 = st.columns([4,4,1])
         
-            # ✅ IMPORTANT: handle None properly
+            # ✅ HANDLE NONE CORRECTLY
             s_url = s_images[i]["url"] if i < len(s_images) and s_images[i] else None
             r_url = r_images[i] if i < len(r_images) else None
         
-            # ✅ SALSIFY DISPLAY
+            # ✅ SALSIFY DISPLAY (KEEP THIS FLAG ✅)
             if s_url:
                 col1.image(s_url)
             else:
                 col1.write("❌ Missing")
                 col1.markdown("🚨 Missing Salsify Asset")
         
-            # ✅ CVS DISPLAY
+            # ✅ CVS DISPLAY (CLEAN — NO FLAGS ✅)
             if r_url:
                 col2.image(r_url)
             else:
                 col2.write("❌ Missing")
-                col2.markdown("🚨 Missing CVS Asset")
         
-            # ✅ SCORE CALCULATION
+            # ✅ SCORE
             if s_url and r_url:
                 sc = compare_images_visually(s_url, r_url)
             else:
                 sc = 0
         
-            # ✅ COLOR-CODED SCORE
+            # ✅ COLOR ONLY (NO FLAGS)
             if sc >= 80:
                 col3.markdown(f"✅ {sc}%")
             elif sc >= 50:
                 col3.markdown(f"🟡 {sc}%")
             else:
                 col3.markdown(f"🔴 {sc}%")
+                
         
-            # ✅ FLAG BAD MATCHES
-            if s_url and r_url and sc < 50:
-                col1.markdown("🚨 Misaligned / Wrong Image")
-        
-            # ✅ FLAG EXTRA IMAGES
-            if s_url and not r_url:
-                col1.markdown("🚨 Extra Salsify Image")
-        
-            if r_url and not s_url:
-                col2.markdown("🚨 Extra CVS Image")
-        
-        
-        # ✅ IMAGE AVERAGE
+        # ✅ IMAGE AVG
         valid_img_scores = []
         
         for i in range(max_images):
