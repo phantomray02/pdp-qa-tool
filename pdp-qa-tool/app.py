@@ -705,6 +705,13 @@ if uploaded_file:
                     )
 
                 
+                export_row = {
+                    "SKU": row.get("sku", ""),
+                    "CVS RPC": row.get("cvs_rpc") or row.get("CVS RPC") or "",
+                    "Salsify URL": row.get("salsify_url", ""),
+                    "Retail URL": row.get("retail_url", "")
+                }
+
                 # ✅ PREVENT DUPLICATE SKUs
                 existing_skus = {r["SKU"] for r in st.session_state.summary_rows}
                 
@@ -734,19 +741,20 @@ if uploaded_file:
                 continue
                 
             # =====================================
-            # ✅ AUTO-BATCH NEXT
+            # ✅ AUTO-BATCH NEXT (CORRECT ✅)
             # =====================================
             if st.session_state.start_idx + BATCH_SIZE < len(df):
                 st.session_state.start_idx += BATCH_SIZE
-                time.sleep(0.5)
+                time.sleep(0.3)
                 st.rerun()
             else:
                 st.session_state.processing_done = True
-                
-            # ✅ DEBUG: COUNT RESULTS
-            skus = [r["SKU"] for r in st.session_state.summary_rows]
-            st.write("Unique SKUs:", len(set(skus)))
 
+
+     # ✅ DEBUG: COUNT RESULTS
+    skus = [r["SKU"] for r in st.session_state.summary_rows]
+    st.write("Unique SKUs:", len(set(skus)))
+    
     # =====================================
     # ✅ FULL VISUAL MODE (CORRECT & COMPLETE ✅)
     # =====================================
