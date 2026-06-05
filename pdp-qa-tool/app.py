@@ -589,9 +589,9 @@ if uploaded_file:
 
     for i, (_, row) in enumerate(batch_df.iterrows()):
         try:
-
+            
             status_text.write(f"Processing SKU {row.get('sku','')} ({i+1}/{total})")
-            with st.expander(f"SKU: {row['sku']}", expanded=False):
+            st.subheader(f"SKU: {row['sku']}")
 
             # ✅ LOAD DATA
             retail_html = get_html(row.get("retail_url", ""))
