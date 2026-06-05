@@ -16,6 +16,21 @@ st.title("PDP QA Tool ✅")
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 download_placeholder = st.empty()
 
+if "start_idx" not in st.session_state:
+    st.session_state.start_idx = 0
+
+if "summary_rows" not in st.session_state:
+    st.session_state.summary_rows = []
+
+if "export_rows" not in st.session_state:
+    st.session_state.export_rows = []
+    
+if "processing_done" not in st.session_state:
+    st.session_state.processing_done = False
+    
+if st.session_state.processing_done:
+    st.success("✅ All SKUs processed")
+
 # =========================================
 # ✅ CACHE HTML
 # =========================================
@@ -561,409 +576,450 @@ export_rows = []
 if uploaded_file:
 
     df = pd.read_csv(uploaded_file)
+    
+    BATCH_SIZE = 20
+    
+    start = st.session_state.start_idx
+    end = start + BATCH_SIZE
+    
+    batch_df = df.iloc[start:end]
+    
+    st.write(f"Processing SKUs {start+1} to {min(end, len(df))} of {len(df)}")
+    
+    progress_bar = st.progress(0)
+    total = len(batch_df)
 
-    for _, row in df.iterrows():
-
-        st.subheader(f"SKU: {row['sku']}")
-
-        # ✅ Load data
-        retail_html = get_html(row.get("retail_url", ""))
-
-        s_text = get_salsify_text(row.get("salsify_url", ""))
-        r_text = get_cvs_text(retail_html) or {
-            "title": "",
-            "description": "",
-            "features": []
-        }
-
-        s_images = get_salsify_images(row.get("salsify_url", ""))
-        r_images = get_cvs_images(row.get("retail_url", ""))
-
-        
-        # ✅ SAFETY FIX — prevent crashes from bad image data
-        if not isinstance(s_images, list):
-            s_images = []
-        
-        if not isinstance(r_images, list):
-            r_images = []
+    
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    total = len(batch_df)
 
 
-        # =====================================
-        # ✅ IMAGE LOGIC (FINAL FIX — NO SHIFT BUG)
-        # =====================================
+    
+    for i, (_, row) in enumerate(batch_df.iterrows()):
 
-        def is_ooi(img):
-            if not img:
-                return False
-            t = img.get("type", "").lower().replace(" ", "")
-            return "onlineoptimized" in t
-
-        adjusted = []
-        remaining = s_images.copy()
-
-        # ✅ SLOT 1 ONLY — enforce OOI
-        if remaining and is_ooi(remaining[0]):
-            adjusted.append(remaining.pop(0))
-        else:
-            adjusted.append(None)
-
-        # ✅ KEEP NATURAL ORDER (DO NOT FORCE SLOT 2/3)
-        # This prevents your "2nd image shifting incorrectly" bug
-        adjusted.extend(remaining)
-
-        # ✅ REMOVE DUPLICATES
-        seen_urls = set()
-        final_images = []
-
-        for img in adjusted:
-            if img is None:
-                final_images.append(None)
-                continue
-
-            url = img.get("url")
-
-            if url and url not in seen_urls:
-                final_images.append(img)
-                seen_urls.add(url)
-
-        # ✅ CAP LIST
-        MAX_IMAGES = 8
-        s_images = final_images[:MAX_IMAGES]
-
-        # =====================================
-        # ✅ COPY COMPARISON
-        # =====================================
-        st.markdown("## Copy Comparison")
-
-        # -------------------------------------
-        # ✅ TITLE
-        # -------------------------------------
-        st.markdown("### Title")
-
-        c1, c2 = st.columns(2)
-
-        c1.markdown("**Salsify**")
-        c1.markdown(
-            equal_height_block(s_text.get("title", "")),
-            unsafe_allow_html=True
-        )
-
-        c2.markdown("**CVS**")
-        cvs_title = r_text.get("title", "")
-        
-        if "<" in cvs_title:
-            c2.write(cvs_title)
-        else:
-            try:
-                c2.markdown(
-                    equal_height_block(cvs_title),
-                    unsafe_allow_html=True
-                )
-            except:
-                c2.write(cvs_title)
-
-
-
-        title_score = min(100, keyword_score(
-            s_text.get("title", ""),
-            cvs_title
-        ))
-
-        # ✅ SCORE BAR BELOW
-        if title_score >= 80:
-            st.success(f"✅ Strong match: {title_score}%")
-        elif title_score >= 50:
-            st.warning(f"⚠️ Moderate match: {title_score}%")
-        else:
-            st.error(f"❌ Weak match: {title_score}%")
-
-        # -------------------------------------
-        # ✅ DESCRIPTION
-        # -------------------------------------
-        st.markdown("### Description")
-
-        c1, c2 = st.columns(2)
-
-        c1.markdown("**Salsify**")
-        c1.markdown(
-            equal_height_block(s_text.get("description", "")),
-            unsafe_allow_html=True
-        )
-        
-        c2.markdown("**CVS**")
-        cvs_desc = r_text.get("description", "")
-        
-        if "<" in cvs_desc:
-            c2.write(cvs_desc)
-        else:
-            try:
-                c2.markdown(
-                    equal_height_block(cvs_desc),
-                    unsafe_allow_html=True
-                )
-            except:
-                c2.write(cvs_desc)
-
-        desc_score = min(100, keyword_score(
-            s_text.get("description", ""),
-            cvs_desc
-        ))
-
-        # ✅ SCORE BAR BELOW
-        if desc_score >= 80:
-            st.success(f"✅ Strong match: {desc_score}%")
-        elif desc_score >= 50:
-            st.warning(f"⚠️ Moderate match: {desc_score}%")
-        else:
-            st.error(f"❌ Weak match: {desc_score}%")
-
-        # =====================================
-        # ✅ FEATURE COMPARISON
-        # =====================================
-        st.markdown("## Feature Comparison")
-        
-        feature_fields = [
-            ("Feature 1", "feature1"),
-            ("Feature 3", "feature3"),
-            ("Feature 4", "feature4"),
-            ("Feature 5", "feature5"),
-        ]
-        
-        cvs_features = r_text.get("features") or []
-        
-        # ✅ INIT FEATURE SCORES
-        feature_scores = []
-        
-        for label, key in feature_fields:
-        
-            st.markdown(f"### {label}")
-        
-            col1, col2 = st.columns(2)
-        
-            s_val = s_text.get(key, "")
-        
-            # ✅ LEFT (Salsify)
-            col1.markdown("**Salsify**")
-            col1.markdown(
-                equal_feature_block(s_val),
+        try:
+            
+            # ✅ UPDATE STATUS TEXT
+            status_text.write(f"Processing SKU {i+1} of {total}")
+            
+            st.subheader(f"SKU: {row['sku']}")
+    
+            # ✅ Load data
+            retail_html = get_html(row.get("retail_url", ""))
+    
+            s_text = get_salsify_text(row.get("salsify_url", ""))
+            r_text = get_cvs_text(retail_html) or {
+                "title": "",
+                "description": "",
+                "features": []
+            }
+    
+            s_images = get_salsify_images(row.get("salsify_url", ""))
+            r_images = get_cvs_images(row.get("retail_url", ""))
+    
+            
+            # ✅ SAFETY FIX — prevent crashes from bad image data
+            if not isinstance(s_images, list):
+                s_images = []
+            
+            if not isinstance(r_images, list):
+                r_images = []
+    
+    
+            # =====================================
+            # ✅ IMAGE LOGIC (FINAL FIX — NO SHIFT BUG)
+            # =====================================
+    
+            def is_ooi(img):
+                if not img:
+                    return False
+                t = img.get("type", "").lower().replace(" ", "")
+                return "onlineoptimized" in t
+    
+            adjusted = []
+            remaining = s_images.copy()
+    
+            # ✅ SLOT 1 ONLY — enforce OOI
+            if remaining and is_ooi(remaining[0]):
+                adjusted.append(remaining.pop(0))
+            else:
+                adjusted.append(None)
+    
+            # ✅ KEEP NATURAL ORDER (DO NOT FORCE SLOT 2/3)
+            # This prevents your "2nd image shifting incorrectly" bug
+            adjusted.extend(remaining)
+    
+            # ✅ REMOVE DUPLICATES
+            seen_urls = set()
+            final_images = []
+    
+            for img in adjusted:
+                if img is None:
+                    final_images.append(None)
+                    continue
+    
+                url = img.get("url")
+    
+                if url and url not in seen_urls:
+                    final_images.append(img)
+                    seen_urls.add(url)
+    
+            # ✅ CAP LIST
+            MAX_IMAGES = 8
+            s_images = final_images[:MAX_IMAGES]
+    
+            # =====================================
+            # ✅ COPY COMPARISON
+            # =====================================
+            st.markdown("## Copy Comparison")
+    
+            # -------------------------------------
+            # ✅ TITLE
+            # -------------------------------------
+            st.markdown("### Title")
+    
+            c1, c2 = st.columns(2)
+    
+            c1.markdown("**Salsify**")
+            c1.markdown(
+                equal_height_block(s_text.get("title", "")),
                 unsafe_allow_html=True
             )
-        
-            # ✅ MATCHING
-            best_score = 0
-            best_match = ""
-        
-            for f in cvs_features:
-                score = keyword_score(s_val, f)
-        
-                if any(word in f.lower() for word in s_val.lower().split()[:3]):
-                    score += 5
-        
-                if score > best_score:
-                    best_score = score
-                    best_match = f
-        
-            # ✅ FALLBACK
-            if not best_match and cvs_features:
-                best_match = cvs_features[0]
-        
-            best_score = min(100, best_score)
-        
-            # ✅ STORE SCORE
-            feature_scores.append(best_score)
-        
-            # ✅ RIGHT (CVS)
-            col2.markdown("**CVS**")
-            if "<" in best_match:
-                col2.write(best_match)
+    
+            c2.markdown("**CVS**")
+            cvs_title = r_text.get("title", "")
+            
+            if "<" in cvs_title:
+                c2.write(cvs_title)
             else:
                 try:
-                    col2.markdown(
-                        equal_feature_block(best_match),
+                    c2.markdown(
+                        equal_height_block(cvs_title),
                         unsafe_allow_html=True
                     )
                 except:
+                    c2.write(cvs_title)
+    
+    
+    
+            title_score = min(100, keyword_score(
+                s_text.get("title", ""),
+                cvs_title
+            ))
+    
+            # ✅ SCORE BAR BELOW
+            if title_score >= 80:
+                st.success(f"✅ Strong match: {title_score}%")
+            elif title_score >= 50:
+                st.warning(f"⚠️ Moderate match: {title_score}%")
+            else:
+                st.error(f"❌ Weak match: {title_score}%")
+    
+            # -------------------------------------
+            # ✅ DESCRIPTION
+            # -------------------------------------
+            st.markdown("### Description")
+    
+            c1, c2 = st.columns(2)
+    
+            c1.markdown("**Salsify**")
+            c1.markdown(
+                equal_height_block(s_text.get("description", "")),
+                unsafe_allow_html=True
+            )
+            
+            c2.markdown("**CVS**")
+            cvs_desc = r_text.get("description", "")
+            
+            if "<div" in cvs_desc or "class=" in cvs_desc:
+                c2.write(cvs_desc)
+            else:
+                try:
+                    c2.markdown(
+                        equal_height_block(cvs_desc),
+                        unsafe_allow_html=True
+                    )
+                except:
+                    c2.write(cvs_desc)
+    
+            desc_score = min(100, keyword_score(
+                s_text.get("description", ""),
+                cvs_desc
+            ))
+    
+            # ✅ SCORE BAR BELOW
+            if desc_score >= 80:
+                st.success(f"✅ Strong match: {desc_score}%")
+            elif desc_score >= 50:
+                st.warning(f"⚠️ Moderate match: {desc_score}%")
+            else:
+                st.error(f"❌ Weak match: {desc_score}%")
+    
+            # =====================================
+            # ✅ FEATURE COMPARISON
+            # =====================================
+            st.markdown("## Feature Comparison")
+            
+            feature_fields = [
+                ("Feature 1", "feature1"),
+                ("Feature 2", "feature2"),
+                ("Feature 3", "feature3"),
+                ("Feature 4", "feature4"),
+                ("Feature 5", "feature5"),
+            ]
+            
+            cvs_features = r_text.get("features") or []
+            
+            # ✅ INIT FEATURE SCORES
+            feature_scores = []
+            
+            for label, key in feature_fields:
+            
+                st.markdown(f"### {label}")
+            
+                col1, col2 = st.columns(2)
+            
+                s_val = s_text.get(key, "")
+            
+                # ✅ LEFT (Salsify)
+                col1.markdown("**Salsify**")
+                col1.markdown(
+                    equal_feature_block(s_val),
+                    unsafe_allow_html=True
+                )
+            
+                # ✅ MATCHING
+                best_score = 0
+                best_match = ""
+            
+                for f in cvs_features:
+                    score = keyword_score(s_val, f)
+            
+                    if any(word in f.lower() for word in s_val.lower().split()[:3]):
+                        score += 5
+            
+                    if score > best_score:
+                        best_score = score
+                        best_match = f
+            
+                # ✅ FALLBACK
+                if not best_match and cvs_features:
+                    best_match = cvs_features[0]
+            
+                best_score = min(100, best_score)
+            
+                # ✅ STORE SCORE
+                feature_scores.append(best_score)
+            
+                # ✅ RIGHT (CVS)
+                col2.markdown("**CVS**")
+                if "<" in best_match:
                     col2.write(best_match)
+                else:
+                    try:
+                        col2.markdown(
+                            equal_feature_block(best_match),
+                            unsafe_allow_html=True
+                        )
+                    except:
+                        col2.write(best_match)
+                        
+                # ✅ SCORE BAR
+                if best_score >= 80:
+                    st.success(f"✅ Strong match: {best_score}%")
+                elif best_score >= 50:
+                    st.warning(f"⚠️ Moderate match: {best_score}%")
+                else:
+                    st.error(f"❌ Weak match: {best_score}%")
+            
+            # =====================================
+            # ✅ FEATURE SCORE (AVG)
+            # =====================================
+            if feature_scores:
+                avg_feature_score = int(sum(feature_scores) / len(feature_scores))
+            else:
+                avg_feature_score = 0
+            
+            avg_feature_score = min(100, avg_feature_score)
+            
+            # ✅ DISPLAY FEATURE SCORE
+            st.markdown("### ✅ Feature Score Summary")
+            
+            if avg_feature_score >= 80:
+                st.success(f"✅ Feature Match: {avg_feature_score}%")
+            elif avg_feature_score >= 50:
+                st.warning(f"⚠️ Feature Match: {avg_feature_score}%")
+            else:
+                st.error(f"❌ Feature Match: {avg_feature_score}%")
+            
+            # =====================================
+            # ✅ IMAGE COMPARISON
+            # =====================================
+            img_scores = []
+            image_row_scores = []   # ✅ REQUIRED
+            
+            st.markdown("## Image Comparison ✅")
+            
+            st.write(f"Salsify Images: {len(s_images)} | CVS Images: {len(r_images)}")
+            
+            from itertools import zip_longest
+    
+            # ✅ shift-based pairing (no index dependency)
+            image_pairs = list(zip_longest(s_images, r_images, fillvalue=None))
+            
+            if not image_pairs:
+                st.warning("No images found to compare.")
+            else:
+                for s, r in image_pairs:
+            
+                    c1, c2, c3 = st.columns([4, 4, 1])
+            
+                    # ✅ Salsify (already cleaned → no gaps)
                     
-            # ✅ SCORE BAR
-            if best_score >= 80:
-                st.success(f"✅ Strong match: {best_score}%")
-            elif best_score >= 50:
-                st.warning(f"⚠️ Moderate match: {best_score}%")
+                    if s:
+                        s_url = s["url"]
+                        c1.image(s_url, use_container_width=True)
+                    else:
+                        c1.markdown("**Missing**")
+    
+            
+                    # ✅ CVS
+                    if r:
+                        c2.image(r, use_container_width=True)
+                    else:
+                        c2.write("")
+            
+                    # ✅ score (optional, keeps your logic intact)
+                    if s and r:
+                        s_url = s.get("url") if isinstance(s, dict) else s
+                        sc = compare_images_visually(s_url, r)
+                    else:
+                        sc = 0
+                    
+                    # ✅ store score for averaging later
+                    
+                    sc = min(100, sc)
+                    
+                    # ✅ store for avg
+                    if sc > 0:
+                        img_scores.append(sc)
+                    
+                    # ✅ store for export (row-level)
+                    image_row_scores.append(sc)
+    
+    
+            
+                    c3.write(f"{sc}%")
+            
+            # =====================================
+            # ✅ IMAGE SCORE
+            # =====================================
+            avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
+            
+            if avg_img_score >= 80:
+                st.success(f"✅ Image Match: {avg_img_score}%")
+            elif avg_img_score >= 50:
+                st.warning(f"⚠️ Image Match: {avg_img_score}%")
             else:
-                st.error(f"❌ Weak match: {best_score}%")
-        
-        # =====================================
-        # ✅ FEATURE SCORE (AVG)
-        # =====================================
-        if feature_scores:
-            avg_feature_score = int(sum(feature_scores) / len(feature_scores))
-        else:
-            avg_feature_score = 0
-        
-        avg_feature_score = min(100, avg_feature_score)
-        
-        # ✅ DISPLAY FEATURE SCORE
-        st.markdown("### ✅ Feature Score Summary")
-        
-        if avg_feature_score >= 80:
-            st.success(f"✅ Feature Match: {avg_feature_score}%")
-        elif avg_feature_score >= 50:
-            st.warning(f"⚠️ Feature Match: {avg_feature_score}%")
-        else:
-            st.error(f"❌ Feature Match: {avg_feature_score}%")
-        
-        # =====================================
-        # ✅ IMAGE COMPARISON
-        # =====================================
-        img_scores = []
-        image_row_scores = []   # ✅ REQUIRED
-        
-        st.markdown("## Image Comparison ✅")
-        
-        st.write(f"Salsify Images: {len(s_images)} | CVS Images: {len(r_images)}")
-        
-        from itertools import zip_longest
-
-        # ✅ shift-based pairing (no index dependency)
-        image_pairs = list(zip_longest(s_images, r_images, fillvalue=None))
-        
-        if not image_pairs:
-            st.warning("No images found to compare.")
-        else:
-            for s, r in image_pairs:
-        
-                c1, c2, c3 = st.columns([4, 4, 1])
-        
-                # ✅ Salsify (already cleaned → no gaps)
-                
-                if s:
-                    s_url = s["url"]
-                    c1.image(s_url, use_container_width=True)
-                else:
-                    c1.markdown("**Missing**")
-
-        
-                # ✅ CVS
-                if r:
-                    c2.image(r, use_container_width=True)
-                else:
-                    c2.write("")
-        
-                # ✅ score (optional, keeps your logic intact)
-                if s and r:
-                    s_url = s.get("url") if isinstance(s, dict) else s
-                    sc = compare_images_visually(s_url, r)
-                else:
-                    sc = 0
-                
-                # ✅ store score for averaging later
-                
-                sc = min(100, sc)
-                
-                # ✅ store for avg
-                if sc > 0:
-                    img_scores.append(sc)
-                
-                # ✅ store for export (row-level)
-                image_row_scores.append(sc)
-
-
-        
-                c3.write(f"{sc}%")
-        
-        # =====================================
-        # ✅ IMAGE SCORE
-        # =====================================
-        avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
-        
-        if avg_img_score >= 80:
-            st.success(f"✅ Image Match: {avg_img_score}%")
-        elif avg_img_score >= 50:
-            st.warning(f"⚠️ Image Match: {avg_img_score}%")
-        else:
-            st.error(f"❌ Image Match: {avg_img_score}%")
-        
-        # =====================================
-        # ✅ OVERALL SCORE
-        # =====================================
-        overall_score = int(
-            (title_score + desc_score + avg_feature_score + avg_img_score) / 4
-        )
-        
-        st.markdown("## ✅ Overall Score")
-        
-        if overall_score >= 80:
-            st.success(f"✅ Overall QA Score: {overall_score}%")
-        elif overall_score >= 50:
-            st.warning(f"⚠️ Overall QA Score: {overall_score}%")
-        else:
-            st.error(f"❌ Overall QA Score: {overall_score}%")
-        
-        
-        # =====================================
-        # ✅ SUMMARY SHEET
-        # =====================================
-        summary_row = {
-            "SKU": row.get("sku", ""),
-            "CVS RPC": row.get("cvs_rpc", ""),   # ✅ add this
-        
-            "Title %": title_score,
-            "Description %": desc_score,
-            "Feature %": avg_feature_score,
-        }
-        
-        # ✅ IMAGE COLUMNS (1–8)
-        for i in range(8):
-            if i < len(image_row_scores):
-                summary_row[f"Image {i+1} %"] = image_row_scores[i]
+                st.error(f"❌ Image Match: {avg_img_score}%")
+            
+            # =====================================
+            # ✅ OVERALL SCORE
+            # =====================================
+            overall_score = int(
+                (title_score + desc_score + avg_feature_score + avg_img_score) / 4
+            )
+            
+            st.markdown("## ✅ Overall Score")
+            
+            if overall_score >= 80:
+                st.success(f"✅ Overall QA Score: {overall_score}%")
+            elif overall_score >= 50:
+                st.warning(f"⚠️ Overall QA Score: {overall_score}%")
             else:
-                summary_row[f"Image {i+1} %"] = ""
-        
-        summary_row["Image Match %"] = avg_img_score
-        summary_row["Overall %"] = overall_score
-        
-        summary_rows.append(summary_row)
-        
-        # =====================================
-        # ✅ DETAIL SHEET (WITH URLS + RPC)
-        # =====================================
-        
-        def safe(val):
-            return val if val else "❌ Missing"
-        
-        export_row = {
-            "SKU": row.get("sku", ""),
-            "CVS RPC": row.get("cvs_rpc", ""),              # ✅ NEW
-            "Salsify URL": row.get("salsify_url", ""),      # ✅ NEW
-            "Retail URL": row.get("retail_url", ""),        # ✅ NEW
-        
-            "Salsify Title": safe(s_text.get("title", "")),
-            "CVS Title": safe(r_text.get("title", "")),
-        
-            "Salsify Description": safe(s_text.get("description", "")),
-            "CVS Description": safe(r_text.get("description", "")),
-        }
-        
-        # ✅ FEATURES (fixed 5 columns)
-        for i in range(5):
-        
-            c_val = cvs_features[i] if i < len(cvs_features) else ""
-        
-            if not c_val:
-                export_row[f"Feature {i+1}"] = "❌ Missing"
+                st.error(f"❌ Overall QA Score: {overall_score}%")
+            
+            
+            # =====================================
+            # ✅ SUMMARY SHEET
+            # =====================================
+            summary_row = {
+                "SKU": row.get("sku", ""),
+                "CVS RPC": row.get("cvs_rpc", ""),   # ✅ add this
+            
+                "Title %": title_score,
+                "Description %": desc_score,
+                "Feature %": avg_feature_score,
+            }
+            
+            # ✅ IMAGE COLUMNS (1–8)
+            for i in range(8):
+                if i < len(image_row_scores):
+                    summary_row[f"Image {i+1} %"] = image_row_scores[i]
+                else:
+                    summary_row[f"Image {i+1} %"] = ""
+            
+            summary_row["Image Match %"] = avg_img_score
+            summary_row["Overall %"] = overall_score
+            
+            st.session_state.summary_rows.append(summary_row)
+            
+            # =====================================
+            # ✅ DETAIL SHEET (WITH URLS + RPC)
+            # =====================================
+            
+            def safe(val):
+                return val if val else "❌ Missing"
+            
+            export_row = {
+                "SKU": row.get("sku", ""),
+                "CVS RPC": row.get("cvs_rpc", ""),              # ✅ NEW
+                "Salsify URL": row.get("salsify_url", ""),      # ✅ NEW
+                "Retail URL": row.get("retail_url", ""),        # ✅ NEW
+            
+                "Salsify Title": safe(s_text.get("title", "")),
+                "CVS Title": safe(r_text.get("title", "")),
+            
+                "Salsify Description": safe(s_text.get("description", "")),
+                "CVS Description": safe(r_text.get("description", "")),
+            }
+            
+            # ✅ FEATURES (fixed 5 columns)
+            for i in range(5):
+            
+                c_val = cvs_features[i] if i < len(cvs_features) else ""
+            
+                if not c_val:
+                    export_row[f"Feature {i+1}"] = "❌ Missing"
+                else:
+                    export_row[f"Feature {i+1}"] = c_val
+            
+            st.session_state.export_rows.append(export_row)
+            
+            except Exception as e:
+                    st.error(f"❌ Error processing SKU: {row.get('sku','')}")
+                    continue
+                
+            # ✅ AUTO-ADVANCE NEXT BATCH (FINAL SAFE VERSION)
+            if st.session_state.start_idx + BATCH_SIZE < len(df):
+                st.session_state.start_idx += BATCH_SIZE
+                st.rerun()
             else:
-                export_row[f"Feature {i+1}"] = c_val
-        
-        export_rows.append(export_row)
+                st.session_state.processing_done = True
+                
+            # ✅ UPDATE PROGRESS
+            progress_bar.progress((i + 1) / total)
 
 # =====================================
 # ✅ EXPORT FILE
 # =====================================
 if summary_rows:
+    
+    if st.session_state.summary_rows:
+        summary_df = pd.DataFrame(st.session_state.summary_rows)
+        detail_df = pd.DataFrame(st.session_state.export_rows)
 
-    summary_df = pd.DataFrame(summary_rows)
-    detail_df = pd.DataFrame(export_rows)
 
     file_name = "pdp_qa_results.xlsx"
 
