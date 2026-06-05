@@ -29,7 +29,8 @@ if "processing_done" not in st.session_state:
     st.session_state.processing_done = False
     
 if st.session_state.processing_done:
-    st.success("✅ All SKUs processed")
+    pass  # stops loop from re-running
+    st.info("✅ Processing complete")
 
 # =========================================
 # ✅ CACHE HTML
@@ -571,6 +572,12 @@ def match_images_visual(s_images, r_images):
 # =========================================
 
 if uploaded_file:
+    if "last_file" not in st.session_state or st.session_state.last_file != uploaded_file.name:
+        st.session_state.summary_rows = []
+        st.session_state.export_rows = []
+        st.session_state.start_idx = 0
+        st.session_state.processing_done = False
+        st.session_state.last_file = uploaded_file.name
 
     df = pd.read_csv(uploaded_file)
 
@@ -697,14 +704,20 @@ if uploaded_file:
                         image_row_scores[idx] if idx < len(image_row_scores) else ""
                     )
 
-                st.session_state.summary_rows.append(summary_row)
+                
+                # ✅ PREVENT DUPLICATE SKUs
+                existing_skus = {r["SKU"] for r in st.session_state.summary_rows}
+                
+                if summary_row["SKU"] not in existing_skus:
+                    st.session_state.summary_rows.append(summary_row)
 
-                st.session_state.export_rows.append({
-                    "SKU": row.get("sku", ""),
-                    "CVS RPC": row.get("cvs_rpc") or row.get("CVS RPC") or "",
-                    "Salsify URL": row.get("salsify_url", ""),
-                    "Retail URL": row.get("retail_url", "")
-                })
+
+                
+                existing_export = {r["SKU"] for r in st.session_state.export_rows}
+                
+                if export_row["SKU"] not in existing_export:
+                    st.session_state.export_rows.append(export_row)
+
                 
                 import time
                 time.sleep(0.1)
@@ -729,6 +742,10 @@ if uploaded_file:
                 st.rerun()
             else:
                 st.session_state.processing_done = True
+                
+            # ✅ DEBUG: COUNT RESULTS
+            skus = [r["SKU"] for r in st.session_state.summary_rows]
+            st.write("Unique SKUs:", len(set(skus)))
 
     # =====================================
     # ✅ FULL VISUAL MODE (CORRECT & COMPLETE ✅)
