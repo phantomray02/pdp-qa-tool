@@ -557,12 +557,14 @@ def compare_images_visually(s_url, r_url):
         
         except:
             return 0
+            
+        import numpy as np
+        
+        s_arr = np.array(s_img)
+        r_arr = np.array(r_img)
+        
+        diff = float(np.mean(np.abs(s_arr.astype("float32") - r_arr.astype("float32"))))
 
-
-        diff = sum(
-            abs(a - b)
-            for a, b in zip(s_img.getdata(), r_img.getdata())
-        ) / (64 * 64)
 
         # ✅ scoring buckets
         if diff < 5:
