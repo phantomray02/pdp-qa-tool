@@ -706,14 +706,14 @@ if uploaded_file:
                 st.error(f"❌ Error processing SKU: {row.get('sku','')}")
                 continue
                 
-    # =====================================
-    # ✅ AUTO-BATCH NEXT
-    # =====================================
-    if st.session_state.start_idx + BATCH_SIZE < len(df):
-        st.session_state.start_idx += BATCH_SIZE
-        st.rerun()
-    else:
-        st.session_state.processing_done = True
+            # =====================================
+            # ✅ AUTO-BATCH NEXT
+            # =====================================
+            if st.session_state.start_idx + BATCH_SIZE < len(df):
+                st.session_state.start_idx += BATCH_SIZE
+                st.rerun()
+            else:
+                st.session_state.processing_done = True
 
     # =====================================
     # ✅ FULL VISUAL MODE (NO RERUN ISSUES)
