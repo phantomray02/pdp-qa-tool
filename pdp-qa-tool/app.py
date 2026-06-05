@@ -27,10 +27,10 @@ if "export_rows" not in st.session_state:
     
 if "processing_done" not in st.session_state:
     st.session_state.processing_done = False
-    
-if st.session_state.processing_done and not st.session_state.get("view_mode", False):
-    st.success("✅ Processing complete")
 
+# AFTER view_mode is defined ✅# AFTER view_mode is.processing_done and not view_mode:
+    st.success("✅ Processing complete")
+    
 # =========================================
 # ✅ CACHE HTML
 # =========================================
@@ -619,6 +619,9 @@ view_mode = st.checkbox(
     key="view_mode"
 )
 
+if st.session_state.get("processing_done", False) and not view_mode:
+    st.success("✅ Processing complete")
+
 show_only_issues = st.checkbox(
     "❌ Show ONLY Issues",
     key="show_issues"
@@ -652,6 +655,8 @@ if uploaded_file:
     
         start = st.session_state.start_idx
         end = start + BATCH_SIZE
+        if start >= len(df):
+            st.session_state.processing_done = True
         batch_df = df.iloc[start:end]
     
     
