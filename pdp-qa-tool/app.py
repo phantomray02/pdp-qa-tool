@@ -10,6 +10,9 @@ import requests
 from difflib import SequenceMatcher
 from PIL import Image
 from io import BytesIO
+import traceback
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 st.title("PDP QA Tool ✅")
 
@@ -28,22 +31,27 @@ if "export_rows" not in st.session_state:
 if "processing_done" not in st.session_state:
     st.session_state.processing_done = False
 
-# AFTER view_mode is defined ✅# AFTER view_mode is.processing_done and not view_mode:
-    st.success("✅ Processing complete")
     
 # =========================================
 # ✅ CACHE HTML
 # =========================================
 html_cache = {}
+MAX_CACHE = 100
 
 def get_html(url):
     if url in html_cache:
+        html_cache[url] = html_cache.pop(url)  # refresh order
         return html_cache[url]
 
     try:
         r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
         if r.status_code == 200:
             html_cache[url] = r.text
+
+            # ✅ enforce cache limit AFTER insert
+            while len(html_cache) > MAX_CACHE:
+                html_cache.pop(next(iter(html_cache)))
+
             return r.text
     except:
         pass
@@ -496,6 +504,7 @@ def equal_feature_block(text):
 # ✅ TRUE IMAGE VISUAL COMPARISON
 # =========================================
 image_cache = {}
+MAX_IMG_CACHE = 200
 
 def load_image_with_white_bg(img_data):
     
@@ -516,55 +525,58 @@ def load_image_with_white_bg(img_data):
 
 def compare_images_visually(s_url, r_url):
     try:
-        # ✅ SAFE CACHE DOWNLOAD — SALSIFY
-        if s_url in image_cache:
-            s_img_data = image_cache[s_url]
-        else:
+
+        def fetch_and_cache(url):
+            time.sleep(0.02)
+            if url in image_cache:
+                return image_cache[url]
+
             try:
-                resp = requests.get(s_url, timeout=5)
-                if resp.status_code != 200 or "image" not in resp.headers.get("Content-Type", ""):
-                    return 0
-                s_img_data = resp.content
-                image_cache[s_url] = s_img_data
+                resp = requests.get(url, timeout=5)
+                if resp.status_code == 200 and "image" in resp.headers.get("Content-Type", ""):
+                    image_cache[url] = resp.content
+
+                    while len(image_cache) > MAX_IMG_CACHE:
+                        image_cache.pop(next(iter(image_cache)))
+
+                    return resp.content
             except:
-                return 0
-        
-        # ✅ SAFE CACHE DOWNLOAD — CVS
-        if r_url in image_cache:
-            r_img_data = image_cache[r_url]
-        else:
-            try:
-                resp = requests.get(r_url, timeout=5)
-                if resp.status_code != 200 or "image" not in resp.headers.get("Content-Type", ""):
-                    return 0
-                r_img_data = resp.content
-                image_cache[r_url] = r_img_data
-            except:
-                return 0
-                
+                pass
+
+            return None
+
+        # ✅ FETCH BOTH
+        s_img_data = fetch_and_cache(s_url)
+        r_img_data = fetch_and_cache(r_url)
+
+        if not s_img_data or not r_img_data:
+            return 0
+
         from PIL import ImageFilter
 
-        # ✅ normalize + blur (SAFE)
+        # ✅ normalize + blur
         try:
             s_img = load_image_with_white_bg(s_img_data)
             r_img = load_image_with_white_bg(r_img_data)
-        
+
             if s_img is None or r_img is None:
                 return 0
-        
+
             s_img = s_img.resize((64, 64)).filter(ImageFilter.GaussianBlur(2))
             r_img = r_img.resize((64, 64)).filter(ImageFilter.GaussianBlur(2))
-        
+
         except:
             return 0
-            
+
         import numpy as np
-        
+
         s_arr = np.array(s_img)
         r_arr = np.array(r_img)
-        
-        diff = float(np.mean(np.abs(s_arr.astype("float32") - r_arr.astype("float32"))))
 
+        if s_arr.shape != r_arr.shape:
+            return 0
+
+        diff = float(np.mean(np.abs(s_arr.astype("float32") - r_arr.astype("float32"))))
 
         # ✅ scoring buckets
         if diff < 5:
@@ -595,8 +607,17 @@ def match_images_visual(s_images, r_images):
 
     for i in range(max_len):
 
-        s_url = s_images[i]["url"] if i < len(s_images) else None
-        r_url = r_images[i] if i < len(r_images) else None
+        s_url = (
+            s_images[i].get("url")
+            if i < len(s_images) and isinstance(s_images[i], dict)
+            else None
+        )
+        
+        r_url = (
+            r_images[i]
+            if i < len(r_images) and isinstance(r_images[i], str)
+            else None
+        )
 
         # ✅ ✅ USE VISUAL COMPARISON (NOT STRING MATCH)
         if s_url and r_url:
@@ -607,6 +628,72 @@ def match_images_visual(s_images, r_images):
         results.append((s_url, r_url, score))
 
     return results
+    
+def process_row(row):
+
+    try:
+        retail_html = get_html(row.get("retail_url", ""))
+        s_text = get_salsify_text(row.get("salsify_url", ""))
+        r_text = get_cvs_text(retail_html) or {}
+
+        s_images = get_salsify_images(row.get("salsify_url", ""))
+        r_images = get_cvs_images(row.get("retail_url", ""))
+
+        if not isinstance(s_images, list):
+            s_images = []
+
+        if not isinstance(r_images, list):
+            r_images = []
+
+        # ✅ SCORES
+        title_score = keyword_score(s_text.get("title", ""), r_text.get("title", ""))
+        desc_score = keyword_score(s_text.get("description", ""), r_text.get("description", ""))
+
+        cvs_features = r_text.get("features") if isinstance(r_text, dict) else []
+        if not isinstance(cvs_features, list):
+            cvs_features = []
+
+        feature_scores = []
+
+        for f_key in ["feature1","feature2","feature3","feature4","feature5"]:
+            s_val = s_text.get(f_key, "")
+
+            scores = [keyword_score(s_val, f) for f in cvs_features if isinstance(f, str)]
+            feature_scores.append(max(scores) if scores else 0)
+
+        avg_feature_score = int(sum(feature_scores)/len(feature_scores)) if feature_scores else 0
+
+        # ✅ IMAGE SCORE
+        img_scores = []
+
+        for i in range(max(len(s_images), len(r_images))):
+            s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else None
+            r_url = r_images[i] if i < len(r_images) else None
+
+            if s_url and r_url:
+                sc = compare_images_visually(s_url, r_url)
+                if sc > 0:
+                    img_scores.append(sc)
+
+        avg_img_score = int(sum(img_scores)/len(img_scores)) if img_scores else 0
+
+        overall = int((title_score + desc_score + avg_feature_score + avg_img_score)/4)
+
+        return {
+            "SKU": row.get("sku", ""),
+            "CVS RPC": row.get("cvs_rpc") or row.get("CVS RPC") or "",
+            "Salsify URL": row.get("salsify_url", ""),
+            "Retail URL": row.get("retail_url", ""),
+            "Title %": title_score,
+            "Description %": desc_score,
+            "Feature %": avg_feature_score,
+            "Image Match %": avg_img_score,
+            "Overall %": overall
+        }
+        
+    except:
+        return None
+        
 # =========================================
 # ✅ MAIN APP
 # =========================================
@@ -639,6 +726,7 @@ hide_good = st.checkbox(
 # ✅ FILE + PROCESSING
 # =====================================
 if uploaded_file:
+    try:
 
         # ✅ RESET STATE ON NEW FILE
         if (
@@ -652,6 +740,28 @@ if uploaded_file:
             st.session_state.last_file = uploaded_file.name
     
         df = pd.read_csv(uploaded_file)
+        
+        df.columns = [c.strip().lower() for c in df.columns]
+        
+        column_map = {
+            "salsify url": "salsify_url",
+            "retail url": "retail_url",
+            "sku id": "sku",
+            "product sku": "sku"
+        }
+        
+        df.rename(columns=column_map, inplace=True)
+
+
+        required_cols = ["sku", "salsify_url", "retail_url"]
+
+        missing = [c for c in required_cols if c not in df.columns]
+        
+        if missing:
+            st.error(f"❌ Missing required columns: {missing}")
+            st.write("Detected columns:", list(df.columns))
+            st.stop()
+
     
         BATCH_SIZE = 20
     
@@ -685,119 +795,51 @@ if uploaded_file:
         # =====================================
         if not view_mode and not st.session_state.processing_done:
         
-            for i, (_, row) in enumerate(batch_df.iterrows()):
-                try:
-                    
-                    status_text.markdown(
-                        f"**Processing SKU:** {row.get('sku','')}  \n"
-                        f"**Batch Progress:** {i+1}/{total}  \n"
-                        f"**Overall Progress:** {start + i + 1}/{len(df)}"
-                    )
-        
-                    # ✅ LOAD DATA
-                    retail_html = get_html(row.get("retail_url", ""))
-                    s_text = get_salsify_text(row.get("salsify_url", ""))
-                    r_text = get_cvs_text(retail_html) or {}
-        
-                    s_images = get_salsify_images(row.get("salsify_url", ""))
-                    r_images = get_cvs_images(row.get("retail_url", ""))
-        
-                    # ✅ SCORES
-                    title_score = keyword_score(s_text.get("title", ""), r_text.get("title", ""))
-                    desc_score = keyword_score(s_text.get("description", ""), r_text.get("description", ""))
-        
-                    cvs_features = r_text.get("features") or []
-                    feature_scores = []
-        
-                    for f_key in ["feature1","feature2","feature3","feature4","feature5"]:
-                        s_val = s_text.get(f_key, "")
-                        best = max([keyword_score(s_val, f) for f in cvs_features], default=0)
-                        feature_scores.append(best)
-        
-                    avg_feature_score = int(sum(feature_scores) / len(feature_scores)) if feature_scores else 0
-        
-                    # ✅ IMAGE SCORE
-                    img_scores = []
-                    image_row_scores = []
-        
-                    max_len = max(len(s_images), len(r_images))
-        
-                    for idx in range(max_len):
-        
-                        s_url = s_images[idx]["url"] if idx < len(s_images) and s_images[idx] else None
-                        r_url = r_images[idx] if idx < len(r_images) else None
-        
-                        if s_url and r_url:
-                            sc = compare_images_visually(s_url, r_url)
-                        else:
-                            sc = 0
-        
-                        if sc > 0:
-                            img_scores.append(sc)
-        
-                        image_row_scores.append(sc)
-        
-                    avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
-        
-                    overall_score = int(
-                        (title_score + desc_score + avg_feature_score + avg_img_score) / 4
-                    )
-        
-                    # ✅ RESULT ROWS
-                    summary_row = {
-                        "SKU": row.get("sku", ""),
-                        "CVS RPC": row.get("cvs_rpc") or row.get("CVS RPC") or "",
-                        "Title %": title_score,
-                        "Description %": desc_score,
-                        "Feature %": avg_feature_score,
-                        "Image Match %": avg_img_score,
-                        "Overall %": overall_score
-                    }
-        
-                    for idx in range(8):
-                        summary_row[f"Image {idx+1} %"] = (
-                            image_row_scores[idx] if idx < len(image_row_scores) else ""
-                        )
-        
-                    export_row = {
-                        "SKU": row.get("sku", ""),
-                        "CVS RPC": row.get("cvs_rpc") or row.get("CVS RPC") or "",
-                        "Salsify URL": row.get("salsify_url", ""),
-                        "Retail URL": row.get("retail_url", "")
-                    }
-        
-                    # ✅ DEDUPE
-                    existing_skus = {r["SKU"] for r in st.session_state.summary_rows}
-                    if summary_row["SKU"] not in existing_skus:
-                        st.session_state.summary_rows.append(summary_row)
-        
-                    existing_export = {r["SKU"] for r in st.session_state.export_rows}
-                    if export_row["SKU"] not in existing_export:
-                        st.session_state.export_rows.append(export_row)
-        
-                    # ✅ PROGRESS
+            results = []
+
+            with ThreadPoolExecutor(max_workers=5) as executor:
+
+                futures = [
+                    executor.submit(process_row, row)
+                    for _, row in batch_df.iterrows()
+                ]
+            
+                for i, future in enumerate(as_completed(futures)):
+                    result = future.result()
+            
+                    if result:
+                        results.append(result)
+            
+                        # ✅ summary
+                        existing = {r["SKU"] for r in st.session_state.summary_rows}
+                        if result["SKU"] not in existing:
+                            st.session_state.summary_rows.append(result)
+            
+                        # ✅ export
+                        existing_export = {r["SKU"] for r in st.session_state.export_rows}
+                        if result["SKU"] not in existing_export:
+                            st.session_state.export_rows.append({
+                                "SKU": result["SKU"],
+                                "CVS RPC": result["CVS RPC"],
+                                "Salsify URL": result["Salsify URL"],
+                                "Retail URL": result["Retail URL"]
+                            })
+            
                     progress_bar.progress((i + 1) / total)
-        
+                    status_text.markdown(f"Processed {i+1}/{total}")
+                    
                     overall_progress = (start + i + 1) / len(df)
                     overall_progress_bar.progress(overall_progress)
-        
-                except Exception as e:
-                    st.error(f"❌ Error processing SKU: {row.get('sku','')}")
-                    continue
-        
-            # ✅ AUTO-BATCH (CORRECT ✅)
+
+            st.write(f"✅ Rows processed so far: {len(st.session_state.summary_rows)}")
+            
+            # ✅ AUTO-BATCH (REQUIRED)
             if st.session_state.start_idx + BATCH_SIZE < len(df):
                 st.session_state.start_idx += BATCH_SIZE
-                import time
                 time.sleep(0.3)
                 st.rerun()
             else:
                 st.session_state.processing_done = True
-        
-            # ✅ DEBUG
-            skus = [r["SKU"] for r in st.session_state.summary_rows]
-            st.write("✅ Unique SKUs:", len(set(skus)))
-
 
         # =====================================
         # ✅ FULL VISUAL MODE (COMPLETE PDP QA ✅)
@@ -815,13 +857,20 @@ if uploaded_file:
         
                 s_images = get_salsify_images(row.get("salsify_url", ""))
                 r_images = get_cvs_images(row.get("retail_url", ""))
+
+                if not isinstance(s_images, list):
+                    s_images = []
+                        
+                if not isinstance(r_images, list):
+                    r_images = []
         
                 # ✅ SAFE TEXT
-                s_title = s_text.get("title") or ""
-                r_title = r_text.get("title") or ""
-        
-                s_desc = s_text.get("description") or ""
-                r_desc = r_text.get("description") or ""
+                s_title = s_text.get("title") if isinstance(s_text, dict) else ""
+                r_title = r_text.get("title") if isinstance(r_text, dict) else ""
+                
+                s_desc = s_text.get("description") if isinstance(s_text, dict) else ""
+                r_desc = r_text.get("description") if isinstance(r_text, dict) else ""
+
         
                 cvs_features = r_text.get("features") or []
                 feature_fields = ["feature1","feature2","feature3","feature4","feature5"]
@@ -841,9 +890,19 @@ if uploaded_file:
                 max_images = max(len(s_images), len(r_images))
         
                 for i in range(max_images):
-                    s_url = s_images[i]["url"] if i < len(s_images) else None
-                    r_url = r_images[i] if i < len(r_images) else None
-        
+                    
+                    s_url = (
+                        s_images[i].get("url")
+                        if i < len(s_images) and isinstance(s_images[i], dict)
+                        else None
+                    )
+                    
+                    r_url = (
+                        r_images[i]
+                        if i < len(r_images) and isinstance(r_images[i], str)
+                        else None
+                    )
+
                     if s_url and r_url:
                         sc = compare_images_visually(s_url, r_url)
                         img_scores.append(sc)
@@ -925,8 +984,18 @@ if uploaded_file:
                     col1, col2, col3 = st.columns([4,4,1])
                 
                     # ✅ HANDLE NONE CORRECTLY
-                    s_url = s_images[i]["url"] if i < len(s_images) and s_images[i] else None
-                    r_url = r_images[i] if i < len(r_images) else None
+                    
+                    s_url = (
+                        s_images[i].get("url")
+                        if i < len(s_images) and isinstance(s_images[i], dict)
+                        else None
+                    )
+                    
+                    r_url = (
+                        r_images[i]
+                        if i < len(r_images) and isinstance(r_images[i], str)
+                        else None
+                    )
                 
                     # ✅ SALSIFY DISPLAY (KEEP THIS FLAG ✅)
                     if s_url:
@@ -960,9 +1029,19 @@ if uploaded_file:
                 valid_img_scores = []
                 
                 for i in range(max_images):
-                    s_url = s_images[i]["url"] if i < len(s_images) and s_images[i] else None
-                    r_url = r_images[i] if i < len(r_images) else None
-                
+                    
+                    s_url = (
+                        s_images[i].get("url")
+                        if i < len(s_images) and isinstance(s_images[i], dict)
+                        else None
+                    )
+                    
+                    r_url = (
+                        r_images[i]
+                        if i < len(r_images) and isinstance(r_images[i], str)
+                        else None
+                    )
+
                     if s_url and r_url:
                         valid_img_scores.append(compare_images_visually(s_url, r_url))
                 
@@ -976,6 +1055,11 @@ if uploaded_file:
                 # --------------------
                 st.success(f"✅ Overall Score: {overall_score}%")
                 st.divider()
+                
+    except Exception as e:
+        st.error("🔥 CRITICAL APP ERROR")
+        st.text(str(e))
+        st.text(traceback.format_exc())
 
 # =====================================
 # ✅ EXPORT FILE
