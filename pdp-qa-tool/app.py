@@ -868,11 +868,11 @@ if st.session_state.summary_rows:
     wb.save(file_name)
     
     with open(file_name, "rb") as f:
-    download_placeholder.download_button(
-        label="📥 Download Excel Report",
-        data=f,
-        file_name=file_name,
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+        download_placeholder.download_button(
+            label="📥 Download Excel Report",
+            data=f,
+            file_name=file_name,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
 
 
