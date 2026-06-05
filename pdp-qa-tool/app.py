@@ -866,13 +866,13 @@ if st.session_state.summary_rows:
                     cell.fill = red
 
     wb.save(file_name)
-
+    
     with open(file_name, "rb") as f:
-        st.download_button(   
-        download_placeholder.download_button(download_placeholder.download label="📥 Download Excel Report",
-            data=f,
-            file_name=file_name,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+    download_placeholder.download_button(
+        label="📥 Download Excel Report",
+        data=f,
+        file_name=file_name,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
 
 
