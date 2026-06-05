@@ -716,123 +716,135 @@ if uploaded_file:
                 st.session_state.processing_done = True
 
     # =====================================
-    # ✅ FULL VISUAL MODE (NO RERUN ISSUES)
+    # ✅ FULL VISUAL MODE (CORRECT & COMPLETE ✅)
     # =====================================
     else:
-
+    
         st.markdown("## 👁️ Full Visual QA Review")
-
-        for row in st.session_state.summary_rows:
-
+    
+        for _, row in df.iterrows():
+    
+            sku = row.get("sku", "Missing SKU")
+    
             retail_html = get_html(row.get("retail_url", ""))
             s_text = get_salsify_text(row.get("salsify_url", ""))
             r_text = get_cvs_text(retail_html) or {}
-
+    
             s_images = get_salsify_images(row.get("salsify_url", ""))
             r_images = get_cvs_images(row.get("retail_url", ""))
-
-            # ✅ SCORES
-            title_score = keyword_score(s_text.get("title", ""), r_text.get("title", ""))
-            desc_score = keyword_score(s_text.get("description", ""), r_text.get("description", ""))
-
+    
+            # ✅ SAFE FALLBACKS
+            s_title = s_text.get("title") or ""
+            r_title = r_text.get("title") or ""
+    
+            s_desc = s_text.get("description") or ""
+            r_desc = r_text.get("description") or ""
+    
             cvs_features = r_text.get("features") or []
+    
+            # ✅ SCORES
+            title_score = keyword_score(s_title, r_title)
+            desc_score = keyword_score(s_desc, r_desc)
+    
             feature_scores = []
-
-            for f_key in ["feature1","feature2","feature3","feature4","feature5"]:
+            feature_fields = ["feature1","feature2","feature3","feature4","feature5"]
+    
+            for f_key in feature_fields:
                 s_val = s_text.get(f_key, "")
                 best = max([keyword_score(s_val, f) for f in cvs_features], default=0)
                 feature_scores.append(best)
-
-            avg_feature_score = int(sum(feature_scores) / len(feature_scores)) if feature_scores else 0
-
-            # ✅ IMAGE SCORE
+    
+            avg_feature_score = int(sum(feature_scores)/len(feature_scores)) if feature_scores else 0
+    
+            # ✅ IMAGE SCORES
             img_scores = []
             max_len = max(len(s_images), len(r_images))
-
+    
             for i in range(max_len):
+    
                 s_url = s_images[i]["url"] if i < len(s_images) and s_images[i] else None
                 r_url = r_images[i] if i < len(r_images) else None
-
+    
                 if s_url and r_url:
                     sc = compare_images_visually(s_url, r_url)
-                else:
-                    sc = 0
-
-                if sc > 0:
                     img_scores.append(sc)
-
-            avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
-
-            overall_score = int(
-                (title_score + desc_score + avg_feature_score + avg_img_score) / 4
-            )
-
-            # ✅ FILTER LOGIC
-            is_issue = (
-                overall_score < 80 or
-                title_score < 80 or
-                desc_score < 80 or
-                avg_feature_score < 80 or
-                avg_img_score < 80
-            )
-
+    
+            avg_img_score = int(sum(img_scores)/len(img_scores)) if img_scores else 0
+    
+            overall_score = int((title_score + desc_score + avg_feature_score + avg_img_score)/4)
+    
+            # ✅ FILTERS
+            is_issue = overall_score < 80
+    
             if show_only_issues and not is_issue:
                 continue
-
+    
             if hide_good and overall_score >= 80:
                 continue
-
+    
             # =====================================
-            # ✅ FULL UI RENDER (NO COLLAPSE)
+            # ✅ RENDER FULL UI
             # =====================================
-            st.subheader(f"SKU: {row.get('sku')}")
-
-            # ✅ COPY
-            st.markdown("### Copy Comparison")
+    
+            st.subheader(f"SKU: {sku}")
+    
+            # ✅ TITLE
+            st.markdown("### Title")
             c1, c2 = st.columns(2)
-
-            c1.markdown("**Salsify Title**")
-            c1.write(s_text.get("title"))
-
-            c2.markdown("**CVS Title**")
-            c2.write(r_text.get("title"))
-
+    
+            c1.markdown("**Salsify**")
+            c1.write(s_title or "❌ Missing")
+    
+            c2.markdown("**CVS**")
+            c2.write(r_title or "❌ Missing")
+    
+            st.write(f"Score: {title_score}%")
+    
+            # ✅ DESCRIPTION
             st.markdown("### Description")
             c1, c2 = st.columns(2)
-
-            c1.write(s_text.get("description"))
-            c2.write(r_text.get("description"))
-
+    
+            c1.write(s_desc or "❌ Missing")
+            c2.write(r_desc or "❌ Missing")
+    
+            st.write(f"Score: {desc_score}%")
+    
             # ✅ FEATURES
             st.markdown("### Features")
-
-            for i, f_key in enumerate(["feature1","feature2","feature3","feature4","feature5"]):
+    
+            for idx, f_key in enumerate(feature_fields):
                 s_val = s_text.get(f_key, "")
-                best = max([keyword_score(s_val, f) for f in cvs_features], default=0)
-                st.write(f"Feature {i+1}: {best}%")
-
+                score = feature_scores[idx]
+    
+                st.write(f"Feature {idx+1}: {score}%")
+                st.write(s_val or "❌ Missing")
+    
+            st.write(f"Feature Avg: {avg_feature_score}%")
+    
             # ✅ IMAGES
             st.markdown("### Image Comparison")
-
+    
             for i in range(max_len):
-
+    
                 col1, col2, col3 = st.columns([4,4,1])
-
+    
                 if i < len(s_images) and s_images[i]:
                     col1.image(s_images[i]["url"])
                 else:
-                    col1.write("Missing")
-
+                    col1.write("❌ Missing")
+    
                 if i < len(r_images):
                     col2.image(r_images[i])
-
+                else:
+                    col2.write("")
+    
                 if i < len(s_images) and i < len(r_images):
                     sc = compare_images_visually(s_images[i]["url"], r_images[i])
                 else:
                     sc = 0
-
+    
                 col3.write(f"{sc}%")
-
+    
             st.success(f"✅ Overall Score: {overall_score}%")
             st.divider()
         
