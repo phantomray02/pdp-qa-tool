@@ -615,6 +615,8 @@ if uploaded_file:
     progress_bar = st.progress(0)
     status_text = st.empty()
     total = len(batch_df)
+    st.write("### Overall Progress")
+    overall_progress_bar = st.progress(0)
     
     # =====================================
     # ✅ PROCESSING LOOP (FAST MODE)
@@ -623,8 +625,12 @@ if uploaded_file:
 
         for i, (_, row) in enumerate(batch_df.iterrows()):
             try:
-
-                status_text.write(f"Processing SKU {row.get('sku','')} ({i+1}/{total})")
+                
+                status_text.markdown(
+                    f"**Processing SKU:** {row.get('sku','')}  \n"
+                    f"**Batch Progress:** {i+1}/{total}  \n"
+                    f"**Overall Progress:** {start + i + 1}/{len(df)}"
+                )
 
                 # ✅ LOAD DATA
                 retail_html = get_html(row.get("retail_url", ""))
@@ -699,8 +705,16 @@ if uploaded_file:
                     "Salsify URL": row.get("salsify_url", ""),
                     "Retail URL": row.get("retail_url", "")
                 })
-
+                
+                import time
+                time.sleep(0.1)
+                
                 progress_bar.progress((i + 1) / total)
+                
+                # ✅ GLOBAL PROGRESS
+                overall_progress = (start + i + 1) / len(df)
+                overall_progress_bar.progress(overall_progress)
+
 
             except Exception as e:
                 st.error(f"❌ Error processing SKU: {row.get('sku','')}")
@@ -711,6 +725,7 @@ if uploaded_file:
             # =====================================
             if st.session_state.start_idx + BATCH_SIZE < len(df):
                 st.session_state.start_idx += BATCH_SIZE
+                time.sleep(0.5)
                 st.rerun()
             else:
                 st.session_state.processing_done = True
