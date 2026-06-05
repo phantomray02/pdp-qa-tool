@@ -78,8 +78,8 @@ def normalize_filename(fname):
 # =========================================
 import json
 
-
 def get_salsify_images(url):
+
     html = get_html(url)
     soup = BeautifulSoup(html, "html.parser")
 
@@ -94,28 +94,54 @@ def get_salsify_images(url):
     except:
         return []
 
-    images = []
+    asset_map = {}
 
+    # ✅ BUILD PROPERTY MAP
     for prop in properties:
-
+        name = prop.get("property", "").lower()
         values = prop.get("values", [])
-        if not values:
-            continue
 
-        first = values[0]
-        url = first.get("value", "")
+        if values:
+            val = values[0].get("value", "")
+            if val:
+                asset_map[name] = val.split("?")[0]
 
-        if not url:
-            continue
+    def find(keyword):
+        for k, v in asset_map.items():
+            if keyword in k:
+                return v
+        return None
 
-        clean = url.split("?")[0]
+    # ✅ BASE IMAGES (1–3 ALWAYS)
+    ordered = [
+        find("online"),    # 1
+        find("back"),      # 2
+        find("left"),      # 3
+    ]
 
-        images.append({
-            "url": clean,
-            "type": prop.get("property", "")
-        })
+    # ✅ CHECK FOR ATF I/O
+    atf_io = find("atf io")
 
-    return images[:8]
+    if atf_io:
+        # ✅ USE ATF I/O IN SLOT 4
+        ordered.append(atf_io)
+
+        # ✅ THEN ADD ALL ATFs
+        for k in ["atf 2", "atf 3", "atf 4", "atf 5", "atf 6"]:
+            ordered.append(find(k))
+
+    else:
+        # ✅ SHIFT UP — KEEP ALL ATFs INCLUDING 6 ✅
+        for k in ["atf 2", "atf 3", "atf 4", "atf 5", "atf 6"]:
+            ordered.append(find(k))
+
+    # ✅ REMOVE NONE BUT KEEP ORDER
+    ordered = [x for x in ordered if x]
+
+    # ✅ LIMIT TO 8 SLOTS
+    ordered = ordered[:8]
+
+    return [{"url": img} for img in ordered]
 
 # =========================================
 # ✅ CVS IMAGES (UNLIMITED + BEST RES)
@@ -130,22 +156,35 @@ def get_cvs_images(url):
     )
 
     best_images = {}
+    order = []
 
     for m in matches:
         full = "https://www.cvs.com" + m
         base = full.split("?")[0]
         name = base.split("/")[-1]
 
+        # ✅ extract resolution
         size_match = re.search(r'Resize=\((\d+)', m)
         size = int(size_match.group(1)) if size_match else 0
 
-        if name not in best_images or size > best_images[name]["size"]:
+        # ✅ first time seen → preserve order
+        if name not in best_images:
+            order.append(name)
             best_images[name] = {
                 "url": base,
                 "size": size
             }
+        else:
+            # ✅ keep highest resolution
+            if size > best_images[name]["size"]:
+                best_images[name] = {
+                    "url": base,
+                    "size": size
+                }
 
-    return [v["url"] for v in best_images.values()]
+    # ✅ return in original PDP order
+    return [best_images[name]["url"] for name in order]
+    
 # =========================================
 # ✅ TEXT EXTRACTION
 # =========================================
