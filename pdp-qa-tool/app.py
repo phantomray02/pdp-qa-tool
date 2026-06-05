@@ -746,7 +746,7 @@ if not view_mode:
 
 
 # =====================================
-# ✅ FULL VISUAL MODE
+# ✅ FULL VISUAL MODE (COMPLETE PDP QA ✅)
 # =====================================
 else:
     st.markdown("## 👁️ Full Visual QA Review")
@@ -762,6 +762,7 @@ else:
         s_images = get_salsify_images(row.get("salsify_url", ""))
         r_images = get_cvs_images(row.get("retail_url", ""))
 
+        # ✅ SAFE TEXT
         s_title = s_text.get("title") or ""
         r_title = r_text.get("title") or ""
 
@@ -769,25 +770,24 @@ else:
         r_desc = r_text.get("description") or ""
 
         cvs_features = r_text.get("features") or []
-
-        title_score = keyword_score(s_title, r_title)
-        desc_score = keyword_score(s_desc, r_desc)
-
-        feature_scores = []
         feature_fields = ["feature1","feature2","feature3","feature4","feature5"]
 
-        for f_key in feature_fields:
-            s_val = s_text.get(f_key, "")
-            best = max([keyword_score(s_val, f) for f in cvs_features], default=0)
-            feature_scores.append(best)
+        # ✅ TITLE SCORE
+        title_score = keyword_score(s_title, r_title)
 
-        avg_feature_score = int(sum(feature_scores)/len(feature_scores)) if feature_scores else 0
+        # ✅ DESCRIPTION SCORE
+        desc_score = keyword_score(s_desc, r_desc)
 
+        # ✅ FEATURES (POSITIONAL)
+        feature_scores = []
+        max_features = max(len(feature_fields), len(cvs_features))
+
+        # ✅ IMAGE CALC
         img_scores = []
-        max_len = max(len(s_images), len(r_images))
+        max_images = max(len(s_images), len(r_images))
 
-        for i in range(max_len):
-            s_url = s_images[i]["url"] if i < len(s_images) and s_images[i] else None
+        for i in range(max_images):
+            s_url = s_images[i]["url"] if i < len(s_images) else None
             r_url = r_images[i] if i < len(r_images) else None
 
             if s_url and r_url:
@@ -796,26 +796,104 @@ else:
 
         avg_img_score = int(sum(img_scores)/len(img_scores)) if img_scores else 0
 
+        # ✅ FEATURE SCORE
+        for i in range(max_features):
+            s_val = s_text.get(feature_fields[i], "") if i < len(feature_fields) else ""
+            r_val = cvs_features[i] if i < len(cvs_features) else ""
+
+            feature_scores.append(keyword_score(s_val, r_val))
+
+        avg_feature_score = int(sum(feature_scores)/len(feature_scores)) if feature_scores else 0
+
+        # ✅ OVERALL
         overall_score = int((title_score + desc_score + avg_feature_score + avg_img_score)/4)
 
+        # ✅ FILTERS
         is_issue = overall_score < 80
-
         if show_only_issues and not is_issue:
             continue
-
         if hide_good and overall_score >= 80:
             continue
 
+        # =====================================
+        # ✅ RENDER UI
+        # =====================================
         st.subheader(f"SKU: {sku}")
 
-        st.write(f"Title Score: {title_score}%")
-        st.write(f"Description Score: {desc_score}%")
-        st.write(f"Feature Avg: {avg_feature_score}%")
-        st.write(f"Image Avg: {avg_img_score}%")
+        # --------------------
+        # ✅ TITLE
+        # --------------------
+        st.markdown("### 🏷️ Title")
+        c1, c2 = st.columns(2)
+        c1.write(s_title or "❌ Missing")
+        c2.write(r_title or "❌ Missing")
+        st.write(f"Score: {title_score}%")
 
+        # --------------------
+        # ✅ DESCRIPTION
+        # --------------------
+        st.markdown("### 📄 Description")
+        c1, c2 = st.columns(2)
+        c1.write(s_desc or "❌ Missing")
+        c2.write(r_desc or "❌ Missing")
+        st.write(f"Score: {desc_score}%")
+
+        # --------------------
+        # ✅ FEATURES (SIDE-BY-SIDE ✅)
+        # --------------------
+        st.markdown("### 📌 Features")
+
+        for i in range(max_features):
+
+            s_val = s_text.get(feature_fields[i], "") if i < len(feature_fields) else ""
+            r_val = cvs_features[i] if i < len(cvs_features) else ""
+
+            score = keyword_score(s_val, r_val)
+
+            c1, c2 = st.columns(2)
+            c1.write(s_val or "❌ Missing")
+            c2.write(r_val or "❌ Missing")
+
+            st.write(f"Score: {score}%")
+            st.divider()
+
+        st.write(f"✅ Feature Avg: {avg_feature_score}%")
+
+        # --------------------
+        # ✅ IMAGES (ALL + SCORES ✅)
+        # --------------------
+        st.markdown("### 🖼️ Images")
+
+        for i in range(max_images):
+
+            col1, col2, col3 = st.columns([4,4,1])
+
+            s_url = s_images[i]["url"] if i < len(s_images) else None
+            r_url = r_images[i] if i < len(r_images) else None
+
+            if s_url:
+                col1.image(s_url)
+            else:
+                col1.write("❌ Missing")
+
+            if r_url:
+                col2.image(r_url)
+
+            if s_url and r_url:
+                sc = compare_images_visually(s_url, r_url)
+            else:
+                sc = 0
+
+            col3.write(f"{sc}%")
+
+        st.write(f"✅ Image Avg: {avg_img_score}%")
+
+        # --------------------
+        # ✅ FINAL SCORE
+        # --------------------
         st.success(f"✅ Overall Score: {overall_score}%")
-        st.divider()
 
+        st.divider()
 
 # =====================================
 # ✅ EXPORT FILE
