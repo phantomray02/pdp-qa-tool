@@ -610,8 +610,37 @@ def match_images_visual(s_images, r_images):
 # ✅ MAIN APP
 # =========================================
 
+# =====================================
+# ✅ VIEW + FILTER CONTROLS (SAFE ✅)
+# =====================================
+st.markdown("## 🔎 QA Viewer Controls")
+
+view_mode = st.checkbox(
+    "👁️ View Full QA (after processing)",
+    key="view_mode"
+)
+
+show_only_issues = st.checkbox(
+    "❌ Show ONLY Issues",
+    key="show_issues"
+)
+
+hide_good = st.checkbox(
+    "✅ Hide Strong Matches (80%+)",
+    key="hide_good"
+)
+
+
+# =====================================
+# ✅ FILE + PROCESSING
+# =====================================
 if uploaded_file:
-    if "last_file" not in st.session_state or st.session_state.last_file != uploaded_file.name:
+
+    # ✅ RESET STATE ON NEW FILE
+    if (
+        "last_file" not in st.session_state or
+        st.session_state.last_file != uploaded_file.name
+    ):
         st.session_state.summary_rows = []
         st.session_state.export_rows = []
         st.session_state.start_idx = 0
@@ -626,30 +655,10 @@ if uploaded_file:
     end = start + BATCH_SIZE
     batch_df = df.iloc[start:end]
 
+
     # =====================================
-    # ✅ VIEW + FILTER CONTROLS (FIXED ✅)
+    # ✅ OPTIONAL SAFETY (VIEW MODE RESET ✅)
     # =====================================
-    st.markdown("## 🔎 QA Viewer Controls")
-
-    view_mode = st.checkbox(
-        "👁️ View Full QA (after processing)",
-        value=False,
-        key="view_mode"
-    )
-
-    show_only_issues = st.checkbox(
-        "❌ Show ONLY Issues",
-        value=False,
-        key="show_issues"
-    )
-
-    hide_good = st.checkbox(
-        "✅ Hide Strong Matches (80%+)",
-        value=False,
-        key="hide_good"
-    )
-
-    # ✅ OPTIONAL SAFETY (prevents weird rerun states)
     if view_mode:
         st.session_state.start_idx = 0
 
@@ -668,7 +677,7 @@ if uploaded_file:
 # =====================================
 # ✅ PROCESSING LOOP (FAST MODE)
 # =====================================
-if not view_mode:
+if not st.session_state.get("view_mode", False):
 
     for i, (_, row) in enumerate(batch_df.iterrows()):
         try:
