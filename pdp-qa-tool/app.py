@@ -31,6 +31,16 @@ if "processing_done" not in st.session_state:
 if st.session_state.processing_done:
     st.success("✅ All SKUs processed")
 
+# =====================================
+# ✅ VIEW MODES + FILTERS
+# =====================================
+st.markdown("## 🔎 QA Viewer Controls")
+
+view_mode = st.checkbox("👁️ View Full QA (after processing)", value=False)
+
+show_only_issues = st.checkbox("❌ Show ONLY Issues", value=False)
+hide_good = st.checkbox("✅ Hide Strong Matches (80%+)", value=False)
+
 # =========================================
 # ✅ CACHE HTML
 # =========================================
@@ -581,73 +591,135 @@ if uploaded_file:
 
     batch_df = df.iloc[start:end]
 
+    # =====================================
+    # ✅ VIEW + FILTER CONTROLS
+    # =====================================
+    st.markdown("## 🔎 QA Viewer Controls")
+
+    view_mode = st.checkbox("👁️ View Full QA (after processing)", value=False)
+    show_only_issues = st.checkbox("❌ Show ONLY Issues", value=False)
+    hide_good = st.checkbox("✅ Hide Strong Matches (80%+)", value=False)
+
     st.write(f"Processing SKUs {start+1} to {min(end, len(df))} of {len(df)}")
 
     progress_bar = st.progress(0)
     status_text = st.empty()
     total = len(batch_df)
 
-    for i, (_, row) in enumerate(batch_df.iterrows()):
-        try:
-            
-            status_text.write(f"Processing SKU {row.get('sku','')} ({i+1}/{total})")
-            st.subheader(f"SKU: {row['sku']}")
+    # =====================================
+    # ✅ PROCESSING LOOP (FAST MODE)
+    # =====================================
+    if not view_mode:
 
-            # ✅ LOAD DATA
+        for i, (_, row) in enumerate(batch_df.iterrows()):
+            try:
+
+                status_text.write(f"Processing SKU {row.get('sku','')} ({i+1}/{total})")
+
+                # ✅ LOAD DATA
+                retail_html = get_html(row.get("retail_url", ""))
+                s_text = get_salsify_text(row.get("salsify_url", ""))
+                r_text = get_cvs_text(retail_html) or {}
+
+                s_images = get_salsify_images(row.get("salsify_url", ""))
+                r_images = get_cvs_images(row.get("retail_url", ""))
+
+                # ✅ SCORES
+                title_score = keyword_score(s_text.get("title", ""), r_text.get("title", ""))
+                desc_score = keyword_score(s_text.get("description", ""), r_text.get("description", ""))
+
+                cvs_features = r_text.get("features") or []
+                feature_scores = []
+
+                for f_key in ["feature1","feature2","feature3","feature4","feature5"]:
+                    s_val = s_text.get(f_key, "")
+                    best = max([keyword_score(s_val, f) for f in cvs_features], default=0)
+                    feature_scores.append(best)
+
+                avg_feature_score = int(sum(feature_scores) / len(feature_scores)) if feature_scores else 0
+
+                # ✅ IMAGE SCORE
+                img_scores = []
+                image_row_scores = []
+
+                max_len = max(len(s_images), len(r_images))
+
+                for idx in range(max_len):
+
+                    s_url = s_images[idx]["url"] if idx < len(s_images) and s_images[idx] else None
+                    r_url = r_images[idx] if idx < len(r_images) else None
+
+                    if s_url and r_url:
+                        sc = compare_images_visually(s_url, r_url)
+                    else:
+                        sc = 0
+
+                    if sc > 0:
+                        img_scores.append(sc)
+
+                    image_row_scores.append(sc)
+
+                avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
+
+                overall_score = int(
+                    (title_score + desc_score + avg_feature_score + avg_img_score) / 4
+                )
+
+                # ✅ SAVE RESULTS
+                summary_row = {
+                    "SKU": row.get("sku", ""),
+                    "CVS RPC": row.get("cvs_rpc") or row.get("CVS RPC") or "",
+                    "Title %": title_score,
+                    "Description %": desc_score,
+                    "Feature %": avg_feature_score,
+                    "Image Match %": avg_img_score,
+                    "Overall %": overall_score
+                }
+
+                for idx in range(8):
+                    summary_row[f"Image {idx+1} %"] = (
+                        image_row_scores[idx] if idx < len(image_row_scores) else ""
+                    )
+
+                st.session_state.summary_rows.append(summary_row)
+
+                st.session_state.export_rows.append({
+                    "SKU": row.get("sku", ""),
+                    "CVS RPC": row.get("cvs_rpc") or row.get("CVS RPC") or "",
+                    "Salsify URL": row.get("salsify_url", ""),
+                    "Retail URL": row.get("retail_url", "")
+                })
+
+                progress_bar.progress((i + 1) / total)
+
+            except Exception as e:
+                st.error(f"❌ Error processing SKU: {row.get('sku','')}")
+                continue
+
+        # ✅ AUTO BATCH
+        if st.session_state.start_idx + BATCH_SIZE < len(df):
+            st.session_state.start_idx += BATCH_SIZE
+            st.rerun()
+        else:
+            st.session_state.processing_done = True
+
+    # =====================================
+    # ✅ FULL VISUAL MODE (NO RERUN ISSUES)
+    # =====================================
+    else:
+
+        st.markdown("## 👁️ Full Visual QA Review")
+
+        for _, row in df.iterrows():
+
             retail_html = get_html(row.get("retail_url", ""))
             s_text = get_salsify_text(row.get("salsify_url", ""))
-            r_text = get_cvs_text(retail_html) or {
-                "title": "",
-                "description": "",
-                "features": []
-            }
+            r_text = get_cvs_text(retail_html) or {}
 
             s_images = get_salsify_images(row.get("salsify_url", ""))
             r_images = get_cvs_images(row.get("retail_url", ""))
 
-            if not isinstance(s_images, list):
-                s_images = []
-            if not isinstance(r_images, list):
-                r_images = []
-
-            # =====================================
-            # ✅ IMAGE CLEANUP (LOCK FIRST 3)
-            # =====================================
-            def is_ooi(img):
-                if not img:
-                    return False
-                t = img.get("type", "").lower().replace(" ", "")
-                return "onlineoptimized" in t
-
-            adjusted = []
-            remaining = s_images.copy()
-
-            for slot in range(3):
-                if len(remaining) > 0 and is_ooi(remaining[0]):
-                    adjusted.append(remaining.pop(0))
-                else:
-                    adjusted.append(None)
-
-            adjusted.extend(remaining)
-
-            seen_urls = set()
-            final_images = []
-
-            for img in adjusted:
-                if img is None:
-                    final_images.append(None)
-                    continue
-
-                url = img.get("url")
-                if url and url not in seen_urls:
-                    final_images.append(img)
-                    seen_urls.add(url)
-
-            s_images = final_images[:8]
-
-            # =====================================
-            # ✅ COPY SCORES
-            # =====================================
+            # ✅ SCORES
             title_score = keyword_score(s_text.get("title", ""), r_text.get("title", ""))
             desc_score = keyword_score(s_text.get("description", ""), r_text.get("description", ""))
 
@@ -661,88 +733,96 @@ if uploaded_file:
 
             avg_feature_score = int(sum(feature_scores) / len(feature_scores)) if feature_scores else 0
 
-            # =====================================
-            # ✅ IMAGE COMPARISON (LOCK SALSIFY, FREE CVS)
-            # =====================================
-            from itertools import zip_longest
-
-            image_row_scores = []
+            # ✅ IMAGE SCORE
             img_scores = []
-
             max_len = max(len(s_images), len(r_images))
 
-            for idx in range(max_len):
-
-                if idx < len(s_images) and s_images[idx]:
-                    s_url = s_images[idx]["url"]
-                else:
-                    s_url = None
-
-                if idx < len(r_images):
-                    r_url = r_images[idx]
-                else:
-                    r_url = None
+            for i in range(max_len):
+                s_url = s_images[i]["url"] if i < len(s_images) and s_images[i] else None
+                r_url = r_images[i] if i < len(r_images) else None
 
                 if s_url and r_url:
                     sc = compare_images_visually(s_url, r_url)
                 else:
                     sc = 0
 
-                sc = min(100, sc)
-
                 if sc > 0:
                     img_scores.append(sc)
 
-                image_row_scores.append(sc)
-
             avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
 
-            # =====================================
-            # ✅ OVERALL SCORE
-            # =====================================
             overall_score = int(
                 (title_score + desc_score + avg_feature_score + avg_img_score) / 4
             )
 
+            # ✅ FILTER LOGIC
+            is_issue = (
+                overall_score < 80 or
+                title_score < 80 or
+                desc_score < 80 or
+                avg_feature_score < 80 or
+                avg_img_score < 80
+            )
+
+            if show_only_issues and not is_issue:
+                continue
+
+            if hide_good and overall_score >= 80:
+                continue
+
             # =====================================
-            # ✅ SAVE RESULTS (CORRECT PLACE ✅)
+            # ✅ FULL UI RENDER (NO COLLAPSE)
             # =====================================
-            summary_row = {
-                "SKU": row.get("sku", ""),
-                "CVS RPC": row.get("cvs_rpc") or row.get("CVS RPC") or "",
-                "Title %": title_score,
-                "Description %": desc_score,
-                "Feature %": avg_feature_score,
-                "Image Match %": avg_img_score,
-                "Overall %": overall_score
-            }
+            st.subheader(f"SKU: {row.get('sku')}")
 
-            for idx in range(8):
-                summary_row[f"Image {idx+1} %"] = (
-                    image_row_scores[idx] if idx < len(image_row_scores) else ""
-                )
+            # ✅ COPY
+            st.markdown("### Copy Comparison")
+            c1, c2 = st.columns(2)
 
-            st.session_state.summary_rows.append(summary_row)
+            c1.markdown("**Salsify Title**")
+            c1.write(s_text.get("title"))
 
-            export_row = {
-                "SKU": row.get("sku", ""),
-                "CVS RPC": row.get("cvs_rpc") or row.get("CVS RPC") or "",
-                "Salsify URL": row.get("salsify_url", ""),
-                "Retail URL": row.get("retail_url", ""),
-                "Salsify Title": s_text.get("title", ""),
-                "CVS Title": r_text.get("title", ""),
-                "Salsify Description": s_text.get("description", ""),
-                "CVS Description": r_text.get("description", "")
-            }
+            c2.markdown("**CVS Title**")
+            c2.write(r_text.get("title"))
 
-            st.session_state.export_rows.append(export_row)
+            st.markdown("### Description")
+            c1, c2 = st.columns(2)
 
-            # ✅ PROGRESS
-            progress_bar.progress((i + 1) / total)
+            c1.write(s_text.get("description"))
+            c2.write(r_text.get("description"))
 
-        except Exception as e:
-            st.error(f"❌ Error processing SKU: {row.get('sku','')}")
-            continue
+            # ✅ FEATURES
+            st.markdown("### Features")
+
+            for i, f_key in enumerate(["feature1","feature2","feature3","feature4","feature5"]):
+                s_val = s_text.get(f_key, "")
+                best = max([keyword_score(s_val, f) for f in cvs_features], default=0)
+                st.write(f"Feature {i+1}: {best}%")
+
+            # ✅ IMAGES
+            st.markdown("### Image Comparison")
+
+            for i in range(max_len):
+
+                col1, col2, col3 = st.columns([4,4,1])
+
+                if i < len(s_images) and s_images[i]:
+                    col1.image(s_images[i]["url"])
+                else:
+                    col1.write("Missing")
+
+                if i < len(r_images):
+                    col2.image(r_images[i])
+
+                if i < len(s_images) and i < len(r_images):
+                    sc = compare_images_visually(s_images[i]["url"], r_images[i])
+                else:
+                    sc = 0
+
+                col3.write(f"{sc}%")
+
+            st.success(f"✅ Overall Score: {overall_score}%")
+            st.divider()
 
     # =====================================
     # ✅ AUTO-BATCH NEXT (OUTSIDE LOOP ✅)
