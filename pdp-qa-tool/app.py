@@ -591,7 +591,7 @@ if uploaded_file:
         try:
 
             status_text.write(f"Processing SKU {row.get('sku','')} ({i+1}/{total})")
-            st.subheader(f"SKU: {row['sku']}")
+            with st.expander(f"SKU: {row['sku']}", expanded=False):
 
             # ✅ LOAD DATA
             retail_html = get_html(row.get("retail_url", ""))
