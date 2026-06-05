@@ -38,12 +38,13 @@ def get_html(url):
 # =========================================
 # ✅ LOAD IMAGE
 # =========================================
+
 def load_image(url):
     try:
-        r = requests.get(url, timeout=10)
+        r = requests.get(url, timeout=8)
         if r.status_code == 200:
             return Image.open(BytesIO(r.content))
-    except:
+    except Exception as e:
         return None
     return None
 
@@ -161,9 +162,11 @@ def get_salsify_text(url):
         "title": text_map.get("PRODUCT_TITLE", ""),
         "description": text_map.get("DESCRIPTION", ""),
         "feature1": text_map.get("FEATURE_1", ""),
+        "feature2": text_map.get("FEATURE_2", ""),
         "feature3": text_map.get("FEATURE_3", ""),
         "feature4": text_map.get("FEATURE_4", ""),
         "feature5": text_map.get("FEATURE_5", "")
+
     }
 # =========================================
 # ✅ CVS COPY EXTRACTION (FINAL WITH TITLE)
@@ -329,6 +332,7 @@ def get_cvs_text(html_text):
             raw_text = re.sub(r'\s+', ' ', raw_text).strip()
     
             # ✅ 🚨 FILTER BAD BLOCKS
+            
             if (
                 "<div" in raw_text or
                 "class=" in raw_text or
@@ -337,6 +341,7 @@ def get_cvs_text(html_text):
                 "react" in raw_text.lower()
             ):
                 continue
+
     
             # ✅ ✅ ACCEPT ONLY REAL PDP TEXT
             if (
@@ -393,14 +398,18 @@ def get_cvs_text(html_text):
 
     return {
         "title": title if isinstance(title, str) else "",
-        "description": desc.strip() if isinstance(desc, str) else "",
+        "description": desc if isinstance(desc, str) else "",
         "features": features if isinstance(features, list) else []
     }
+
 # =========================================
 # ✅ SCORE
 # =========================================
+
 def normalize_text(t):
-    return re.sub(r'[^a-z0-9\s]', '', str(t).lower())
+    if not isinstance(t, str):
+        return ""
+    return re.sub(r'[^a-z0-9\s]', '', t.lower())
 
 def keyword_score(a, b):
     return int(SequenceMatcher(None, normalize_text(a), normalize_text(b)).ratio() * 100)
@@ -435,7 +444,11 @@ def equal_feature_block(text):
 image_cache = {}
 
 def load_image_with_white_bg(img_data):
-    img = Image.open(BytesIO(img_data)).convert("RGBA")
+    
+    try:
+        img = Image.open(BytesIO(img_data)).convert("RGBA")
+    except:
+        return None
 
     white_bg = Image.new("RGBA", img.size, (255, 255, 255, 255))
 
@@ -449,24 +462,48 @@ def load_image_with_white_bg(img_data):
 
 def compare_images_visually(s_url, r_url):
     try:
-        # ✅ CACHE DOWNLOAD
+        # ✅ SAFE CACHE DOWNLOAD — SALSIFY
         if s_url in image_cache:
             s_img_data = image_cache[s_url]
         else:
-            s_img_data = requests.get(s_url, timeout=5).content
-            image_cache[s_url] = s_img_data
-
+            try:
+                resp = requests.get(s_url, timeout=5)
+                if resp.status_code != 200 or "image" not in resp.headers.get("Content-Type", ""):
+                    return 0
+                s_img_data = resp.content
+                image_cache[s_url] = s_img_data
+            except:
+                return 0
+        
+        # ✅ SAFE CACHE DOWNLOAD — CVS
         if r_url in image_cache:
             r_img_data = image_cache[r_url]
         else:
-            r_img_data = requests.get(r_url, timeout=5).content
-            image_cache[r_url] = r_img_data
-
+            try:
+                resp = requests.get(r_url, timeout=5)
+                if resp.status_code != 200 or "image" not in resp.headers.get("Content-Type", ""):
+                    return 0
+                r_img_data = resp.content
+                image_cache[r_url] = r_img_data
+            except:
+                return 0
+                
         from PIL import ImageFilter
 
-        # ✅ normalize + blur
-        s_img = load_image_with_white_bg(s_img_data).resize((64, 64)).filter(ImageFilter.GaussianBlur(2))
-        r_img = load_image_with_white_bg(r_img_data).resize((64, 64)).filter(ImageFilter.GaussianBlur(2))
+        # ✅ normalize + blur (SAFE)
+        try:
+            s_img = load_image_with_white_bg(s_img_data)
+            r_img = load_image_with_white_bg(r_img_data)
+        
+            if s_img is None or r_img is None:
+                return 0
+        
+            s_img = s_img.resize((64, 64)).filter(ImageFilter.GaussianBlur(2))
+            r_img = r_img.resize((64, 64)).filter(ImageFilter.GaussianBlur(2))
+        
+        except:
+            return 0
+
 
         diff = sum(
             abs(a - b)
@@ -530,17 +567,26 @@ if uploaded_file:
         st.subheader(f"SKU: {row['sku']}")
 
         # ✅ Load data
-        retail_html = get_html(row["retail_url"])
+        retail_html = get_html(row.get("retail_url", ""))
 
-        s_text = get_salsify_text(row["salsify_url"])
+        s_text = get_salsify_text(row.get("salsify_url", ""))
         r_text = get_cvs_text(retail_html) or {
             "title": "",
             "description": "",
             "features": []
         }
 
-        s_images = get_salsify_images(row["salsify_url"])
-        r_images = get_cvs_images(row["retail_url"])
+        s_images = get_salsify_images(row.get("salsify_url", ""))
+        r_images = get_cvs_images(row.get("retail_url", ""))
+
+        
+        # ✅ SAFETY FIX — prevent crashes from bad image data
+        if not isinstance(s_images, list):
+            s_images = []
+        
+        if not isinstance(r_images, list):
+            r_images = []
+
 
         # =====================================
         # ✅ IMAGE LOGIC (FINAL FIX — NO SHIFT BUG)
@@ -604,10 +650,19 @@ if uploaded_file:
 
         c2.markdown("**CVS**")
         cvs_title = r_text.get("title", "")
-        c2.markdown(
-            equal_height_block(cvs_title),
-            unsafe_allow_html=True
-        )
+        
+        if "<" in cvs_title:
+            c2.write(cvs_title)
+        else:
+            try:
+                c2.markdown(
+                    equal_height_block(cvs_title),
+                    unsafe_allow_html=True
+                )
+            except:
+                c2.write(cvs_title)
+
+
 
         title_score = min(100, keyword_score(
             s_text.get("title", ""),
@@ -634,13 +689,20 @@ if uploaded_file:
             equal_height_block(s_text.get("description", "")),
             unsafe_allow_html=True
         )
-
+        
         c2.markdown("**CVS**")
         cvs_desc = r_text.get("description", "")
-        c2.markdown(
-            equal_height_block(cvs_desc),
-            unsafe_allow_html=True
-        )
+        
+        if "<" in cvs_desc:
+            c2.write(cvs_desc)
+        else:
+            try:
+                c2.markdown(
+                    equal_height_block(cvs_desc),
+                    unsafe_allow_html=True
+                )
+            except:
+                c2.write(cvs_desc)
 
         desc_score = min(100, keyword_score(
             s_text.get("description", ""),
@@ -667,7 +729,7 @@ if uploaded_file:
             ("Feature 5", "feature5"),
         ]
         
-        cvs_features = r_text.get("features", [])
+        cvs_features = r_text.get("features") or []
         
         # ✅ INIT FEATURE SCORES
         feature_scores = []
@@ -712,11 +774,17 @@ if uploaded_file:
         
             # ✅ RIGHT (CVS)
             col2.markdown("**CVS**")
-            col2.markdown(
-                equal_feature_block(best_match),
-                unsafe_allow_html=True
-            )
-        
+            if "<" in best_match:
+                col2.write(best_match)
+            else:
+                try:
+                    col2.markdown(
+                        equal_feature_block(best_match),
+                        unsafe_allow_html=True
+                    )
+                except:
+                    col2.write(best_match)
+                    
             # ✅ SCORE BAR
             if best_score >= 80:
                 st.success(f"✅ Strong match: {best_score}%")
@@ -837,7 +905,7 @@ if uploaded_file:
         # ✅ SUMMARY SHEET
         # =====================================
         summary_row = {
-            "SKU": row["sku"],
+            "SKU": row.get("sku", ""),
             "CVS RPC": row.get("cvs_rpc", ""),   # ✅ add this
         
             "Title %": title_score,
@@ -865,7 +933,7 @@ if uploaded_file:
             return val if val else "❌ Missing"
         
         export_row = {
-            "SKU": row["sku"],
+            "SKU": row.get("sku", ""),
             "CVS RPC": row.get("cvs_rpc", ""),              # ✅ NEW
             "Salsify URL": row.get("salsify_url", ""),      # ✅ NEW
             "Retail URL": row.get("retail_url", ""),        # ✅ NEW
