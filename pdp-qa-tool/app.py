@@ -940,76 +940,79 @@ if uploaded_file:
             else:
                 st.error(f"❌ Overall QA Score: {overall_score}%")
             
-            
-            # =====================================
-            # ✅ SUMMARY SHEET
-            # =====================================
-            summary_row = {
-                "SKU": row.get("sku", ""),
-                "CVS RPC": row.get("cvs_rpc", ""),   # ✅ add this
-            
-                "Title %": title_score,
-                "Description %": desc_score,
-                "Feature %": avg_feature_score,
-            }
-            
-            # ✅ IMAGE COLUMNS (1–8)
-            for i in range(8):
-                if i < len(image_row_scores):
-                    summary_row[f"Image {i+1} %"] = image_row_scores[i]
-                else:
-                    summary_row[f"Image {i+1} %"] = ""
-            
-            summary_row["Image Match %"] = avg_img_score
-            summary_row["Overall %"] = overall_score
-            
-            st.session_state.summary_rows.append(summary_row)
-            
-            # =====================================
-            # ✅ DETAIL SHEET (WITH URLS + RPC)
-            # =====================================
-            
-            def safe(val):
-                return val if val else "❌ Missing"
-            
-            export_row = {
-                "SKU": row.get("sku", ""),
-                "CVS RPC": row.get("cvs_rpc", ""),              # ✅ NEW
-                "Salsify URL": row.get("salsify_url", ""),      # ✅ NEW
-                "Retail URL": row.get("retail_url", ""),        # ✅ NEW
-            
-                "Salsify Title": safe(s_text.get("title", "")),
-                "CVS Title": safe(r_text.get("title", "")),
-            
-                "Salsify Description": safe(s_text.get("description", "")),
-                "CVS Description": safe(r_text.get("description", "")),
-            }
-            
-            # ✅ FEATURES (fixed 5 columns)
-            for i in range(5):
-            
-                c_val = cvs_features[i] if i < len(cvs_features) else ""
-            
-                if not c_val:
-                    export_row[f"Feature {i+1}"] = "❌ Missing"
-                else:
-                    export_row[f"Feature {i+1}"] = c_val
-            
-            st.session_state.export_rows.append(export_row)
-            
-            except Exception as e:
-                    st.error(f"❌ Error processing SKU: {row.get('sku','')}")
-                    continue
-                
-            # ✅ AUTO-ADVANCE NEXT BATCH (FINAL SAFE VERSION)
-            if st.session_state.start_idx + BATCH_SIZE < len(df):
-                st.session_state.start_idx += BATCH_SIZE
-                st.rerun()
+# =====================================
+# ✅ SUMMARY + DETAIL (INSIDE LOOP)
+# =====================================
+for i, (_, row) in enumerate(batch_df.iterrows()):
+    try:
+
+        status_text.write(f"Processing SKU {i+1} of {total}")
+
+        # =====================================
+        # ✅ SUMMARY SHEET
+        # =====================================
+        summary_row = {
+            "SKU": row.get("sku", ""),
+            "CVS RPC": row.get("cvs_rpc", ""),
+            "Title %": title_score,
+            "Description %": desc_score,
+            "Feature %": avg_feature_score,
+        }
+
+        # ✅ IMAGE COLUMNS (1–8)
+        for img_i in range(8):
+            if img_i < len(image_row_scores):
+                summary_row[f"Image {img_i+1} %"] = image_row_scores[img_i]
             else:
-                st.session_state.processing_done = True
-                
-            # ✅ UPDATE PROGRESS
-            progress_bar.progress((i + 1) / total)
+                summary_row[f"Image {img_i+1} %"] = ""
+
+        summary_row["Image Match %"] = avg_img_score
+        summary_row["Overall %"] = overall_score
+
+        st.session_state.summary_rows.append(summary_row)
+
+        # =====================================
+        # ✅ DETAIL SHEET
+        # =====================================
+        def safe(val):
+            return val if val else "❌ Missing"
+
+        export_row = {
+            "SKU": row.get("sku", ""),
+            "CVS RPC": row.get("cvs_rpc", ""),
+            "Salsify URL": row.get("salsify_url", ""),
+            "Retail URL": row.get("retail_url", ""),
+            "Salsify Title": safe(s_text.get("title", "")),
+            "CVS Title": safe(r_text.get("title", "")),
+            "Salsify Description": safe(s_text.get("description", "")),
+            "CVS Description": safe(r_text.get("description", "")),
+        }
+
+        for feat_i in range(5):
+            c_val = cvs_features[feat_i] if feat_i < len(cvs_features) else ""
+            if not c_val:
+                export_row[f"Feature {feat_i+1}"] = "❌ Missing"
+            else:
+                export_row[f"Feature {feat_i+1}"] = c_val
+
+        st.session_state.export_rows.append(export_row)
+
+        # ✅ UPDATE PROGRESS (INSIDE LOOP)
+        progress_bar.progress((i + 1) / total)
+
+    except Exception as e:
+        st.error(f"❌ Error processing SKU: {row.get('sku','')}")
+        continue
+
+
+# =====================================
+# ✅ AUTO-ADVANCE (OUTSIDE LOOP ✅)
+# =====================================
+if st.session_state.start_idx + BATCH_SIZE < len(df):
+    st.session_state.start_idx += BATCH_SIZE
+    st.rerun()
+else:
+    st.session_state.processing_done = True
 
 # =====================================
 # ✅ EXPORT FILE
