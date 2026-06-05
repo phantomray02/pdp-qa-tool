@@ -624,14 +624,17 @@ if uploaded_file:
 
             adjusted = []
             remaining = s_images.copy()
-
-            if remaining and is_ooi(remaining[0]):
-                adjusted.append(remaining.pop(0))
-            else:
-                adjusted.append(None)
-
+            
+            # ✅ ENFORCE FIRST 3 SLOTS
+            for slot in range(3):
+            
+                if len(remaining) > 0 and is_ooi(remaining[0]):
+                    adjusted.append(remaining.pop(0))
+                else:
+                    adjusted.append(None)
+            
+            # ✅ KEEP REST NATURAL ORDER
             adjusted.extend(remaining)
-
             seen_urls = set()
             final_images = []
 
@@ -646,7 +649,7 @@ if uploaded_file:
                     final_images.append(img)
                     seen_urls.add(url)
 
-            s_images = final_images[:8]
+            MAX_IMAGES = 8
 
             # =====================================
             # ✅ COPY COMPARISON
@@ -740,7 +743,7 @@ if uploaded_file:
             image_row_scores = []
 
             from itertools import zip_longest
-            image_pairs = list(zip_longest(s_images, r_images, fillvalue=None))[:5]
+            image_pairs = list(zip_longest(s_images, r_images, fillvalue=None))[:8]
 
             for s, r in image_pairs:
 
@@ -781,7 +784,7 @@ if uploaded_file:
             # =====================================
             summary_row = {
                 "SKU": row.get("sku", ""),
-                "CVS RPC": row.get("cvs_rpc", ""),
+                "CVS RPC": row.get("cvs_rpc") or row.get("CVS RPC") or "",
                 "Title %": title_score,
                 "Description %": desc_score,
                 "Feature %": avg_feature_score,
@@ -796,7 +799,7 @@ if uploaded_file:
 
             export_row = {
                 "SKU": row.get("sku", ""),
-                "CVS RPC": row.get("cvs_rpc", ""),
+                "CVS RPC": row.get("cvs_rpc") or row.get("CVS RPC") or "",
                 "Salsify URL": row.get("salsify_url", ""),
                 "Retail URL": row.get("retail_url", ""),
                 "Salsify Title": s_text.get("title", ""),
@@ -823,6 +826,9 @@ if uploaded_file:
     else:
         st.session_state.processing_done = True
         
+from openpyxl import load_workbook
+from openpyxl.styles import PatternFill
+
 # =====================================
 # ✅ EXPORT FILE
 # =====================================
@@ -837,10 +843,36 @@ if st.session_state.summary_rows:
         summary_df.to_excel(writer, index=False, sheet_name="Summary")
         detail_df.to_excel(writer, index=False, sheet_name="Details")
 
+    # ✅ APPLY COLOR FORMATTING
+    wb = load_workbook(file_name)
+    ws = wb["Summary"]
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+
+    green = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+    yellow = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
+    red = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+
+    for row in ws.iter_rows(min_row=2):
+        for cell in row:
+            val = cell.value
+
+            if isinstance(val, (int, float)):
+                if val >= 80:
+                    cell.fill = green
+                elif val >= 50:
+                    cell.fill = yellow
+                else:
+                    cell.fill = red
+
+    wb.save(file_name)
+
     with open(file_name, "rb") as f:
-        st.download_button(
-            label="📥 Download Excel Report",
+        st.download_button(   
+        download_placeholder.download_button(download_placeholder.download label="📥 Download Excel Report",
             data=f,
             file_name=file_name,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
+
+
