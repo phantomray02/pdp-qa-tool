@@ -31,16 +31,6 @@ if "processing_done" not in st.session_state:
 if st.session_state.processing_done:
     st.success("✅ All SKUs processed")
 
-# =====================================
-# ✅ VIEW MODES + FILTERS
-# =====================================
-st.markdown("## 🔎 QA Viewer Controls")
-
-view_mode = st.checkbox("👁️ View Full QA (after processing)", value=False)
-
-show_only_issues = st.checkbox("❌ Show ONLY Issues", value=False)
-hide_good = st.checkbox("✅ Hide Strong Matches (80%+)", value=False)
-
 # =========================================
 # ✅ CACHE HTML
 # =========================================
@@ -588,24 +578,44 @@ if uploaded_file:
 
     start = st.session_state.start_idx
     end = start + BATCH_SIZE
-
     batch_df = df.iloc[start:end]
 
     # =====================================
-    # ✅ VIEW + FILTER CONTROLS
+    # ✅ VIEW + FILTER CONTROLS (FIXED ✅)
     # =====================================
     st.markdown("## 🔎 QA Viewer Controls")
 
-    view_mode = st.checkbox("👁️ View Full QA (after processing)", value=False)
-    show_only_issues = st.checkbox("❌ Show ONLY Issues", value=False)
-    hide_good = st.checkbox("✅ Hide Strong Matches (80%+)", value=False)
+    view_mode = st.checkbox(
+        "👁️ View Full QA (after processing)",
+        value=False,
+        key="view_mode"
+    )
 
+    show_only_issues = st.checkbox(
+        "❌ Show ONLY Issues",
+        value=False,
+        key="show_issues"
+    )
+
+    hide_good = st.checkbox(
+        "✅ Hide Strong Matches (80%+)",
+        value=False,
+        key="hide_good"
+    )
+
+    # ✅ OPTIONAL SAFETY (prevents weird rerun states)
+    if view_mode:
+        st.session_state.start_idx = 0
+
+    # =====================================
+    # ✅ STATUS + PROGRESS
+    # =====================================
     st.write(f"Processing SKUs {start+1} to {min(end, len(df))} of {len(df)}")
 
     progress_bar = st.progress(0)
     status_text = st.empty()
     total = len(batch_df)
-
+    
     # =====================================
     # ✅ PROCESSING LOOP (FAST MODE)
     # =====================================
@@ -695,13 +705,15 @@ if uploaded_file:
             except Exception as e:
                 st.error(f"❌ Error processing SKU: {row.get('sku','')}")
                 continue
-
-        # ✅ AUTO BATCH
-        if st.session_state.start_idx + BATCH_SIZE < len(df):
-            st.session_state.start_idx += BATCH_SIZE
-            st.rerun()
-        else:
-            st.session_state.processing_done = True
+                
+    # =====================================
+    # ✅ AUTO-BATCH NEXT
+    # =====================================
+    if st.session_state.start_idx + BATCH_SIZE < len(df):
+        st.session_state.start_idx += BATCH_SIZE
+        st.rerun()
+    else:
+        st.session_state.processing_done = True
 
     # =====================================
     # ✅ FULL VISUAL MODE (NO RERUN ISSUES)
@@ -710,7 +722,7 @@ if uploaded_file:
 
         st.markdown("## 👁️ Full Visual QA Review")
 
-        for _, row in df.iterrows():
+        for row in st.session_state.summary_rows:
 
             retail_html = get_html(row.get("retail_url", ""))
             s_text = get_salsify_text(row.get("salsify_url", ""))
@@ -823,15 +835,6 @@ if uploaded_file:
 
             st.success(f"✅ Overall Score: {overall_score}%")
             st.divider()
-
-    # =====================================
-    # ✅ AUTO-BATCH NEXT (OUTSIDE LOOP ✅)
-    # =====================================
-    if st.session_state.start_idx + BATCH_SIZE < len(df):
-        st.session_state.start_idx += BATCH_SIZE
-        st.rerun()
-    else:
-        st.session_state.processing_done = True
         
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
