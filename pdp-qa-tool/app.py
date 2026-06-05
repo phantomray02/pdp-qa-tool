@@ -822,15 +822,14 @@ if uploaded_file:
         st.rerun()
     else:
         st.session_state.processing_done = True
+        
 # =====================================
 # ✅ EXPORT FILE
 # =====================================
-if summary_rows:
-    
-    if st.session_state.summary_rows:
-        summary_df = pd.DataFrame(st.session_state.summary_rows)
-        detail_df = pd.DataFrame(st.session_state.export_rows)
+if st.session_state.summary_rows:
 
+    summary_df = pd.DataFrame(st.session_state.summary_rows)
+    detail_df = pd.DataFrame(st.session_state.export_rows)
 
     file_name = "pdp_qa_results.xlsx"
 
