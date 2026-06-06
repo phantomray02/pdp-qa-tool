@@ -1101,17 +1101,21 @@ if uploaded_file:
                 # --------------------
                 # ✅ TITLE
                 # --------------------
+                st.markdown("""
+                <div style='display:flex; flex-direction:column; height:100%;'>
+                """, unsafe_allow_html=True)
+
                 with left:
                     
                     st.markdown(f"### 🏷️ Title {score_badge(title_score)}", unsafe_allow_html=True)
                     c1, c2 = st.columns(2)
                     c1.markdown(
-                        f"<div style='font-size:1.2rem'>{s_title or '❌ Missing'}</div>",
+                        f"<div style='font-size:1.4vw; line-height:1.4'>{s_title or '❌ Missing'}</div>",
                         unsafe_allow_html=True
                     )
                     
                     c2.markdown(
-                        f"<div style='font-size:1.2rem'>{r_title or '❌ Missing'}</div>",
+                        f"<div style='font-size:1.4vw; line-height:1.4'>{r_title or '❌ Missing'}</div>",
                         unsafe_allow_html=True
                     )
                     # --------------------
@@ -1120,12 +1124,12 @@ if uploaded_file:
                     st.markdown(f"### 📄 Description {score_badge(desc_score)}", unsafe_allow_html=True)
                     c1, c2 = st.columns(2)
                     c1.markdown(
-                        f"<div style='font-size:1rem; line-height:1.6'>{s_desc or '❌ Missing'}</div>",
+                        f"<div style='font-size:1.1vw; line-height:1.6'>{s_desc or '❌ Missing'}</div>",
                         unsafe_allow_html=True
                     )
                     
                     c2.markdown(
-                        f"<div style='font-size:1rem; line-height:1.6'>{r_desc or '❌ Missing'}</div>",
+                        f"<div style='font-size:1.1vw; line-height:1.6'>{r_desc or '❌ Missing'}</div>",
                         unsafe_allow_html=True
                     )
 
@@ -1144,21 +1148,29 @@ if uploaded_file:
             
                         c1, c2 = st.columns(2)
                         c1.markdown(
-                            f"<div style='font-size:0.95rem'>{s_val or '❌ Missing'}</div>",
+                            f"<div style='font-size:1.1vw; line-height:1.5'>{s_val or '❌ Missing'}</div>",
                             unsafe_allow_html=True
                         )
                         
                         c2.markdown(
-                            f"<div style='font-size:0.95rem'>{r_val or '❌ Missing'}</div>",
+                            f"<div style='font-size:1.1vw; line-height:1.5'>{r_val or '❌ Missing'}</div>",
                             unsafe_allow_html=True
                         )
-
             
                         st.markdown(score_badge(score), unsafe_allow_html=True)
                         st.divider()
             
                     st.markdown(score_bar(avg_feature_score), unsafe_allow_html=True)
                     st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+                    st.markdown("<div style='flex-grow:1'></div>", unsafe_allow_html=True)
+                    st.markdown("</div>", unsafe_allow_html=True)
+                    
+                    if len(r_images) > len(s_images):
+                        st.markdown(
+                            f"<div style='min-height:{len(r_images)*120}px'></div>",
+                            unsafe_allow_html=True
+                        )
+
         
                 # --------------------
                 # ✅ IMAGES (ALL + SCORES ✅)
