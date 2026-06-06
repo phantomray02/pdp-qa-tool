@@ -264,11 +264,11 @@ def get_cvs_text(html_text):
     try:
         import json
 
-        mmatch = re.search(r'"vendorContent":\{.*?"vendorDetails":\{.*?\}.*?\}', combined, re.DOTALL)
-
+        match = re.search(r'"vendorContent":\{.*?"vendorDetails":\{.*?\}.*?\}', combined, re.DOTALL)
+        
         if match:
             json_block = match.group(0)
-        
+
             try:
                 json_block = json_block.encode().decode("unicode_escape")
                 parsed = json.loads("{" + json_block + "}")
