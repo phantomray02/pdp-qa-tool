@@ -957,7 +957,7 @@ if uploaded_file:
         if selected_brand != "All":
             df = df[df["brand"] == selected_brand]
 
-        BATCH_SIZE = 20
+        BATCH_SIZE = 40
     
         start = st.session_state.start_idx
         end = start + BATCH_SIZE
@@ -978,7 +978,11 @@ if uploaded_file:
         # =====================================
         st.write(f"Processing SKUs {start+1} to {min(end, len(df))} of {len(df)}")
     
-        progress_bar = st.progress(0)
+        if "progress_bar" not in st.session_state:
+            st.session_state.progress_bar = st.progress(0)
+        
+        progress_bar = st.session_state.progress_bar
+
         status_text = st.empty()
         total = len(batch_df)
         st.write("### Overall Progress")
@@ -987,6 +991,8 @@ if uploaded_file:
         # =====================================
         # ✅ PROCESSING LOOP (FAST MODE)
         # =====================================
+        st.info("⚙️ Processing batch...")
+        
         if not st.session_state.processing_done:
         
             results = []
@@ -1029,9 +1035,11 @@ if uploaded_file:
         
             # ✅ AUTO-BATCH
             if st.session_state.start_idx + BATCH_SIZE < len(df):
+                status_text.markdown("Loading next batch...")
                 st.session_state.start_idx += BATCH_SIZE
-                time.sleep(0.5)
+                time.sleep(0.05)
                 st.rerun()
+
             else:
                 st.session_state.processing_done = True
 
