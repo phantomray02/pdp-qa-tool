@@ -381,31 +381,45 @@ def get_cvs_text(html_text):
         debug["desc_meta"] = desc_sources["meta"]
         debug["desc_fallback"] = desc_sources["fallback"]
         debug["desc_final"] = desc
+
         # =========================
-        # ✅ FEATURES
+        # ✅ FEATURES (FIXED + EXPANDED ✅)
         # =========================
-        bullet_match = re.search(
+        features = []
+        
+        # ✅ 1. Try multiple JSON patterns (NEW ✅)
+        patterns = [
             r'vendorDetailsBullets":\[(.*?)\]',
-            combined,
-            re.DOTALL
-        )
-
-        if bullet_match:
-            raw = bullet_match.group(1)
-            features = [
-                html.unescape(p.strip())
-                for p in re.findall(r'"(.*?)"', raw)
-                if p.strip()
-            ]
-
+            r'featureBullets":\[(.*?)\]',
+            r'"bullets":\[(.*?)\]',
+            r'"productHighlights":\[(.*?)\]
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, combined, re.DOTALL)
+            if match:
+                raw = match.group(1)
+                features = [
+                    html.unescape(p.strip())
+                    for p in re.findall(r'"(.*?)"', raw)
+                    if p.strip()
+                ]
+                if features:
+                    break
+        
+        # ✅ 2. Strong HTML fallback (FIXED ✅)
         if not features:
             soup = BeautifulSoup(html_text, "html.parser")
+        
             for li in soup.find_all("li"):
                 text = li.get_text(strip=True)
-                if len(text) > 25:
+        
+                # ✅ lowered threshold (IMPORTANT)
+                if len(text) > 10:
                     features.append(text)
-            features = features[:5]
-
+        
+        # ✅ 3. limit to 5
+        features = features[:5]
         # =========================
         # ✅ TITLE
         # =========================
@@ -438,30 +452,14 @@ def clean_cvs_text(text):
     if not text:
         return ""
 
-    # ✅ fix encoding once
-    try:
-        text = text.encode('latin1', errors='ignore').decode('utf-8', errors='ignore')
-    except:
-        pass
+    # ✅ safe cleanup only
+    text = text.replace("\\n", " ").replace("\\", "")
 
-    # ✅ decode escape sequences once
-    try:
-        text = bytes(text, "utf-8").decode("unicode_escape")
-    except:
-        pass
-
-    # ✅ remove slashes
-    text = text.replace("\\", "")
-
-    # ✅ HTML decode
     text = html.unescape(text)
 
-    # ✅ remove junk
-    text = re.sub(r'\$?\d+:\{.*?\}', '', text)
-    text = re.sub(r'\$?\d+:\[.*?\]', '', text)
-    text = re.sub(r'self\.__next_f\.push\(.*?\)', '', text)
+    # ✅ remove pointer junk ONLY
+    text = re.sub(r'\$\d+', '', text)
 
-    # ✅ normalize
     text = re.sub(r'\s+', ' ', text).strip()
 
     return text
