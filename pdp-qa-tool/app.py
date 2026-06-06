@@ -264,20 +264,19 @@ def get_cvs_text(html_text):
     try:
         import json
 
-        match = re.search(r'"vendorDetails":\{.*?"vendorPrdWeight":.*?\}', combined, re.DOTALL)
+        match = re.search(r'"vendorDetails":\{.*?\}', combined, re.DOTALL)
 
         if match:
             json_block = match.group(0)
-
-            # ✅ fix escaped characters
+        
             try:
                 json_block = json_block.encode().decode("unicode_escape")
                 parsed = json.loads("{" + json_block + "}")
             except:
                 parsed = {}
-
+        
             vendor = parsed.get("vendorDetails", {})
-
+        
             features = vendor.get("vendorDetailsBullets", [])
             desc = vendor.get("vendorDetailsParagraph", "")
 
@@ -491,22 +490,21 @@ def get_cvs_text(html_text):
                 features.append(clean)
 
     # =====================================
-    # ✅ TITLE
+    # ✅ TITLE (FIXED)
     # =====================================
-
-    title_match = re.search(
-        r'"productName":"(.*?)"',
-        combined
-    )
-
+    
+    title_match = re.search(r'"title":"(.*?)"', combined)
+    
     if not title_match:
-        title_match = re.search(
-            r'"name":"(.*?)"',
-            combined
-        )
-
+        title_match = re.search(r'"displayName":"(.*?)"', combined)
+    
+    if not title_match:
+        title_match = re.search(r'"productName":"(.*?)"', combined)
+    
     if title_match:
         title = title_match.group(1).strip()
+    else:
+        title = ""
 
     # =====================================
     # ✅ FINAL SAFE RETURN
