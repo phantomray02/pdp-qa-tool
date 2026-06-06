@@ -392,8 +392,9 @@ def get_cvs_text(html_text):
             r'vendorDetailsBullets":\[(.*?)\]',
             r'featureBullets":\[(.*?)\]',
             r'"bullets":\[(.*?)\]',
-            r'"productHighlights":\[(.*?)\]
+            r'"productHighlights":\[(.*?)\]'
         ]
+
         
         for pattern in patterns:
             match = re.search(pattern, combined, re.DOTALL)
