@@ -268,6 +268,21 @@ def get_cvs_text(html_text):
     )
 
     combined = "".join(chunks)
+    # =========================================
+    # ✅ BUILD POINTER MAP (CRITICAL 🔥)
+    # =========================================
+    
+    pointer_map = {}
+    
+    pointer_matches = re.findall(
+        r'(\d+):([^]]+?)(?=(?:\d+:)|$)',
+        combined
+    )
+    
+    for key, value in pointer_matches:
+        pointer_map[key] = value.strip()
+    
+    debug["pointer_map_count"] = len(pointer_map)
 
     # ✅ clean escape characters
     combined = combined.replace('\\"', '"')
@@ -291,11 +306,44 @@ def get_cvs_text(html_text):
             "fallback": ""
         }
         
-        # ✅ 1. vendorDetailsParagraph (BEST SOURCE IF PRESENT)
+        # ✅ 1. vendorDetailsParagraph (BEST SOURCE)
         match_vendor = re.search(r'vendorDetailsParagraph":"(.*?)"', combined)
-        if match_vendor:
-            desc_sources["vendor"] = html.unescape(match_vendor.group(1))
         
+        if match_vendor:
+        
+            raw_value = match_vendor.group(1)
+            debug["raw_vendor_pointer"] = raw_value
+        
+            ptr_match = re.match(r'\$(\d+)', raw_value)
+        
+            if ptr_match:
+                ptr_id = ptr_match.group(1)
+                debug["resolved_pointer_id"] = ptr_id
+        
+                # ✅ BASE POINTER TEXT
+                real_text = pointer_map.get(ptr_id, "")
+        
+                # ✅ ✅ MULTI-CHUNK STITCH (IMPORTANT 🔥)
+                chunk_matches = re.findall(
+                    rf'{ptr_id}:(.*?)(?=\d+:|$)',
+                    combined,
+                    re.DOTALL
+                )
+        
+                if chunk_matches:
+                    real_text = " ".join(chunk_matches)
+        
+                debug["resolved_pointer_text"] = real_text
+        
+                cleaned_text = html.unescape(real_text)
+        
+            else:
+                cleaned_text = html.unescape(raw_value)
+        
+            # ✅ ✅ FINAL CLEAN (ONLY ONCE 🔥)
+            cleaned_text = re.sub(r'^[A-Z]\d+,', '', cleaned_text)
+        
+            desc_sources["vendor"] = cleaned_text
         # ✅ 2. generic description field
         match_desc = re.search(r'"description":"(.*?)"', combined)
         if match_desc:
