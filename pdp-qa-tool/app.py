@@ -31,7 +31,9 @@ if "export_rows" not in st.session_state:
 if "processing_done" not in st.session_state:
     st.session_state.processing_done = False
 
-    
+if "download_clicked" not in st.session_state:
+    st.session_state.download_clicked = False
+
 # =========================================
 # ✅ CACHE HTML
 # =========================================
@@ -464,6 +466,50 @@ def get_cvs_text(html_text):
         "features": features if isinstance(features, list) else []
     }
 
+# =====================================
+# ✅ CVS TEXT CLEANER (FINAL)
+# =====================================
+def clean_cvs_text(text):
+
+    if not text:
+        return ""
+
+    # ✅ decode unicode (\u0026 → &)
+    try:
+        text = text.encode().decode('unicode_escape')
+    except:
+        pass
+
+    # ✅ decode HTML (&amp; → &)
+    text = html.unescape(text)
+
+    # ✅ fix escaped quotes
+    text = text.replace('\\"', '"')
+    text = text.replace("\\'", "'")
+
+    # ✅ remove all backslashes
+    text = text.replace("\\", "")
+
+    # ✅ remove JSON garbage
+    text = re.sub(r'\$?\d+:\{.*?\}', '', text)
+    text = re.sub(r'\$?\d+:\[.*?\]', '', text)
+
+    # ✅ remove streaming junk
+    text = re.sub(r'self\.__next_f\.push\(.*?\)', '', text)
+
+    # ✅ remove HTML tags
+    text = re.sub(r'<.*?>', '', text)
+    text = re.sub(r'&lt;.*?&gt;', '', text)
+    text = re.sub(r'&amp;lt;.*?&amp;gt;', '', text)
+
+    # ✅ remove weird tokens
+    text = re.sub(r'^T\d+,', '', text)
+
+    # ✅ normalize spacing
+    text = re.sub(r'\s+', ' ', text).strip()
+
+    return text
+    
 # =========================================
 # ✅ SCORE
 # =========================================
@@ -503,9 +549,6 @@ def equal_feature_block(text):
 # =========================================
 # ✅ TRUE IMAGE VISUAL COMPARISON
 # =========================================
-image_cache = {}
-MAX_IMG_CACHE = 200
-
 def load_image_with_white_bg(img_data):
     
     try:
@@ -522,28 +565,33 @@ def load_image_with_white_bg(img_data):
 
     return white_bg.convert("L")
 
-
+# =====================================
+# ✅ STREAMLIT IMAGE CACHE (BIG SPEED BOOST)
+# =====================================
+@st.cache_data(show_spinner=False)
+def process_row_cached(row_dict):
+    return process_row(row_dict)
+    
+def fetch_image_cached(url):
+    try:
+        resp = requests.get(url, timeout=5)
+        if resp.status_code == 200 and "image" in resp.headers.get("Content-Type", ""):
+            return resp.content
+    except:
+        return None
+    return None
+# =====================================
+# ✅ IMAGE PREFETCH
+# =====================================
+def prefetch_images(urls):
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        list(executor.map(fetch_image_cached, urls))
+    
 def compare_images_visually(s_url, r_url):
     try:
-
+        
         def fetch_and_cache(url):
-            time.sleep(0.02)
-            if url in image_cache:
-                return image_cache[url]
-
-            try:
-                resp = requests.get(url, timeout=5)
-                if resp.status_code == 200 and "image" in resp.headers.get("Content-Type", ""):
-                    image_cache[url] = resp.content
-
-                    while len(image_cache) > MAX_IMG_CACHE:
-                        image_cache.pop(next(iter(image_cache)))
-
-                    return resp.content
-            except:
-                pass
-
-            return None
+            return fetch_image_cached(url)
 
         # ✅ FETCH BOTH
         s_img_data = fetch_and_cache(s_url)
@@ -635,9 +683,28 @@ def process_row(row):
         retail_html = get_html(row.get("retail_url", ""))
         s_text = get_salsify_text(row.get("salsify_url", ""))
         r_text = get_cvs_text(retail_html) or {}
+        r_text["description"] = clean_cvs_text(r_text.get("description", ""))
+        
+        # ✅ FIX FEATURES TOO
+        r_text["features"] = [
+            clean_cvs_text(f) for f in r_text.get("features", [])
+        ]
 
         s_images = get_salsify_images(row.get("salsify_url", ""))
         r_images = get_cvs_images(row.get("retail_url", ""))
+    
+        # ✅ PREFETCH IMAGES
+        all_urls = []
+        
+        for img in s_images:
+            if isinstance(img, dict) and img.get("url"):
+                all_urls.append(img["url"])
+        
+        for img in r_images:
+            if isinstance(img, str):
+                all_urls.append(img)
+        
+        prefetch_images(all_urls)
 
         if not isinstance(s_images, list):
             s_images = []
@@ -800,7 +867,7 @@ if uploaded_file:
             with ThreadPoolExecutor(max_workers=5) as executor:
 
                 futures = [
-                    executor.submit(process_row, row)
+                    executor.submit(process_row_cached, row.to_dict())
                     for _, row in batch_df.iterrows()
                 ]
             
@@ -845,18 +912,30 @@ if uploaded_file:
         # ✅ FULL VISUAL MODE (COMPLETE PDP QA ✅)
         # =====================================
         else:
-            st.markdown("## 👁️ Full Visual QA Review")
-        
-            for _, row in df.iterrows():
+            if st.session_state.download_clicked:
+                st.session_state.download_clicked = False
+                st.stop()  # 🚀 prevents rerender
+            
+            for idx, (_, row) in enumerate(df.iterrows()):
         
                 sku = row.get("sku", "Missing SKU")
         
                 retail_html = get_html(row.get("retail_url", ""))
                 s_text = get_salsify_text(row.get("salsify_url", ""))
                 r_text = get_cvs_text(retail_html) or {}
+                r_text["description"] = clean_cvs_text(r_text.get("description", ""))
         
                 s_images = get_salsify_images(row.get("salsify_url", ""))
                 r_images = get_cvs_images(row.get("retail_url", ""))
+
+                # ✅ IMAGE COUNT CHECK (UI SIDE ✅)
+                image_flags = []
+                
+                if len(r_images) < len(s_images):
+                    image_flags.append(f"Missing {len(s_images) - len(r_images)} images")
+                
+                elif len(r_images) > len(s_images):
+                    image_flags.append(f"{len(r_images) - len(s_images)} extra images")
 
                 if not isinstance(s_images, list):
                     s_images = []
@@ -871,8 +950,22 @@ if uploaded_file:
                 s_desc = s_text.get("description") if isinstance(s_text, dict) else ""
                 r_desc = r_text.get("description") if isinstance(r_text, dict) else ""
 
-        
                 cvs_features = r_text.get("features") or []
+                # ✅ MISSING CONTENT FLAGS (ADD HERE ✅)
+                missing_flags = []
+                
+                if not s_title or not r_title:
+                    missing_flags.append("Title")
+                
+                if not s_desc or not r_desc:
+                    missing_flags.append("Description")
+                
+                if not cvs_features:
+                    missing_flags.append("Features")
+                
+                if not s_images or not r_images:
+                    missing_flags.append("Images")
+                    
                 feature_fields = ["feature1","feature2","feature3","feature4","feature5"]
         
                 # ✅ TITLE SCORE
@@ -920,6 +1013,9 @@ if uploaded_file:
         
                 # ✅ OVERALL
                 overall_score = int((title_score + desc_score + avg_feature_score + avg_img_score)/4)
+                
+                # ✅ HARD FAIL DETECTION (ADD HERE ✅)
+                hard_fail = title_score < 40 or desc_score < 40
         
                 # ✅ FILTERS
                 is_issue = overall_score < 80
@@ -927,11 +1023,24 @@ if uploaded_file:
                     continue
                 if hide_good and overall_score >= 80:
                     continue
+
         
                 # =====================================
                 # ✅ RENDER UI
                 # =====================================
                 st.subheader(f"SKU: {sku}")
+                if missing_flags:
+                    st.warning(f"⚠️ Missing: {', '.join(missing_flags)}")
+                    
+                if image_flags:
+                    st.warning(f"🖼️ Image Issue: {', '.join(image_flags)}")
+
+                if hard_fail:
+                    st.error("🚨 Critical content issue (possible wrong or broken PDP)")
+                    
+                elif overall_score < 50:
+                    st.warning("⚠️ Major quality issue")
+
         
                 # --------------------
                 # ✅ TITLE
@@ -998,17 +1107,20 @@ if uploaded_file:
                     )
                 
                     # ✅ SALSIFY DISPLAY (KEEP THIS FLAG ✅)
+                    
                     if s_url:
                         col1.image(s_url)
                     else:
-                        col1.write("❌ Missing")
-                        col1.markdown("🚨 Missing Salsify Asset")
+                        col1.write("")
+
                 
                     # ✅ CVS DISPLAY (CLEAN — NO FLAGS ✅)
+                    
                     if r_url:
                         col2.image(r_url)
                     else:
-                        col2.write("❌ Missing")
+                        col2.write("")
+
                 
                     # ✅ SCORE
                     if s_url and r_url:
@@ -1054,7 +1166,13 @@ if uploaded_file:
                 # ✅ FINAL SCORE
                 # --------------------
                 st.success(f"✅ Overall Score: {overall_score}%")
-                st.divider()
+                st.progress(overall_score / 100)
+                st.caption(
+                    f"Title: {title_score}% | "
+                    f"Desc: {desc_score}% | "
+                    f"Feat: {avg_feature_score}% | "
+                    f"Img: {avg_img_score}%"
+                )
                 
     except Exception as e:
         st.error("🔥 CRITICAL APP ERROR")
@@ -1099,12 +1217,14 @@ if st.session_state.summary_rows:
     wb.save(file_name)
 
     with open(file_name, "rb") as f:
-        download_placeholder.download_button(
+        if download_placeholder.download_button(
             label="📥 Download Excel Report",
             data=f,
             file_name=file_name,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+        ):
+            st.session_state.download_clicked = True
+
 
 
 
