@@ -250,346 +250,114 @@ def get_salsify_text(url):
 # =========================================
 def get_cvs_text(html_text):
 
-    import re
-    import html
-    from bs4 import BeautifulSoup
-
     if not html_text:
         return {"title": "", "description": "", "features": []}
 
-    soup = BeautifulSoup(html_text, "html.parser")
-
-    # ✅ REBUILD FULL STREAMED DATA (CRITICAL FIX)
+    # ✅ rebuild streamed content
     chunks = re.findall(
         r'self\.__next_f\.push\(\[1,"(.*?)"\]\)',
         html_text,
         re.DOTALL
     )
-    
+
     combined = "".join(chunks)
-    
-    # ✅ CLEAN ESCAPED JSON
+
+    # ✅ clean escape characters
     combined = combined.replace('\\"', '"')
     combined = combined.replace('\\u0026', '&')
     combined = combined.replace('\\n', ' ')
-    
+
     desc = ""
     features = []
     title = ""
-    
-    # =====================================
-    # ✅ DIRECT FIELD EXTRACTION (WITH POINTER RESOLUTION ✅)
-    # =====================================
+
     try:
-    
-        # -------------------------------
+        # -------------------------
         # ✅ DESCRIPTION
-        # -------------------------------
-        desc = ""
-    
+        # -------------------------
         desc_match = re.search(
             r'vendorDetailsParagraph":"(.*?)"',
             combined
         )
-    
+
         if desc_match:
             raw_desc = desc_match.group(1)
-    
-            # ✅ STEP 1 — resolve pointer ($34 → actual block)
+
+            # ✅ resolve pointer chain
             while raw_desc.startswith("$"):
                 pointer = raw_desc.replace("$", "")
-    
+
                 nested_match = re.search(
                     rf'{pointer}:\{{.*?"vendorDetailsParagraph":"\$(\d+)".*?\}}',
                     combined,
                     re.DOTALL
                 )
-    
+
                 if nested_match:
                     raw_desc = f"${nested_match.group(1)}"
                 else:
                     break
-    
-            # ✅ STEP 2 — extract real text
+
+            # ✅ extract actual text
             if raw_desc.startswith("$"):
                 pointer = raw_desc.replace("$", "")
-    
+
                 pointer_match = re.search(
                     rf'{pointer}:(T\d+,.+)',
                     combined,
                     re.DOTALL
                 )
-    
+
                 if pointer_match:
                     raw_text = pointer_match.group(1)
-    
+
                     # ✅ append streamed chunks
-                    chunks = re.findall(
-                        r'self\.__next_f\.push\(\[1,"(.*?)"\]\)',
-                        combined,
-                        re.DOTALL
-                    )
-    
                     for chunk in chunks:
                         raw_text += chunk
-    
-                    # ✅ CLEAN
+
                     raw_text = re.sub(r'^T\d+,', '', raw_text)
-                    raw_text = raw_text.replace('\\"', '"')
-                    raw_text = raw_text.replace('\\u0026', '&amp;')
-                    raw_text = raw_text.replace('\n', ' ')
-    
+
                     raw_text = raw_text.replace('"])', '')
                     raw_text = raw_text.replace('self.__next_f.push([1,"', '')
-    
-                    raw_text = re.split(r'(?:\d+:\{|\d+:\[)', raw_text)[0]
+
+                    raw_text = re.split(r'\d+:\{', raw_text)[0]
                     raw_text = re.sub(r'\s+', ' ', raw_text).strip()
-    
-                    desc = html.unescape(raw_text)
-    
-            else:
-                desc = html.unescape(raw_desc)
-    
-        # -------------------------------
+                    
+                    # ✅ SAFETY CHECK (ADD HERE ✅)
+                    if len(raw_text) >= 40:
+                        desc = html.unescape(raw_text)
+                    else:
+                        desc = ""
+                        
+        # -------------------------
         # ✅ FEATURES
-        # -------------------------------
-        features = []
-    
+        # -------------------------
         bullet_match = re.search(
             r'vendorDetailsBullets":\[(.*?)\]',
             combined,
             re.DOTALL
         )
-    
+
         if bullet_match:
             parts = bullet_match.group(1).split('","')
             features = [html.unescape(p.strip(' "')) for p in parts if p.strip()]
-    
-        # -------------------------------
+
+        # -------------------------
         # ✅ TITLE
-        # -------------------------------
+        # -------------------------
         title_match = re.search(r'"title":"(.*?)"', combined)
-        title = title_match.group(1) if title_match else ""
-    
-        # ✅ RETURN ONLY IF DATA EXISTS
-        if desc or features:
-            return {
-                "title": title.strip(),
-                "description": desc.strip(),
-                "features": features
-            }
-    
-    except Exception:
+        if title_match:
+            title = title_match.group(1)
+
+    except:
         pass
 
-        # =====================================
-        # ✅ HANDLE NESTED POINTERS ($32 → $34)
-        # =====================================
-        if raw_desc.startswith("$"):
-
-            pointer = raw_desc.replace("$", "")
-
-            nested_match = re.search(
-                rf'{pointer}:\{{.*?"vendorDetailsParagraph":"\$(\d+)".*?\}}',
-                combined,
-                re.DOTALL
-            )
-
-            if nested_match:
-                pointer = nested_match.group(1)
-                raw_desc = f"${pointer}"
-
-        # =====================================
-        # ✅ POINTER CASE
-        # =====================================
-        if raw_desc.startswith("$"):
-
-            pointer = raw_desc.replace("$", "")
-
-            pointer_match = re.search(
-                rf'{pointer}:(T\d+,.+)',
-                combined,
-                re.DOTALL
-            )
-
-            if pointer_match and pointer_match.lastindex:
-
-                raw_text = pointer_match.group(1)
-
-                # ✅ rebuild streaming chunks
-                chunks = re.findall(
-                    r'self\.__next_f\.push\(\[1,"(.*?)"\]\)',
-                    combined,
-                    re.DOTALL
-                )
-
-                for chunk in chunks:
-                    raw_text += chunk
-
-                # ✅ remove prefix
-                raw_text = re.sub(r'^T\d+,', '', raw_text)
-
-                # ✅ decode characters
-                raw_text = raw_text.replace('\\u0026', '&')
-                raw_text = raw_text.replace('\\"', '"')
-
-                # ✅ remove stream artifacts
-                raw_text = raw_text.replace('"])', '')
-                raw_text = raw_text.replace('self.__next_f.push([1,"', '')
-                raw_text = re.sub(r'</?script>', '', raw_text)
-
-                raw_text = raw_text.replace('\n', ' ')
-
-                # ✅ stop before JSON blocks
-                raw_text = re.split(
-                    rf'(?:\d+:{{|\d+:\[)',
-                    raw_text
-                )[0]
-
-                # ✅ FIX ONLY TRUE BROKEN WORD SPLITS (SAFE)
-                raw_text = re.sub(r'\b([A-Za-z])\s([a-z]{2,})\b', r'\1\2', raw_text)
-
-                # ✅ remove trailing backslashes
-                raw_text = re.sub(r'\\+$', '', raw_text)
-                
-                # ✅ normalize spacing
-                raw_text = re.sub(r'\s+', ' ', raw_text).strip()
-
-                desc = html.unescape(raw_text)
-
-        # =====================================
-        # ✅ NON-POINTER CASE
-        # =====================================
-        else:
-            desc = html.unescape(raw_desc)
-
-    # =====================================
-    # ✅ FALLBACK SCAN (CRITICAL EDGE CASE FIX)
-    # =====================================
-
-    if not desc or len(desc) < 100:
-
-        fallback_candidates = []
-    
-        for i in range(20, 41):
-    
-            m = re.search(
-                rf'{i}:(T\d+,.+)',
-                combined,
-                re.DOTALL
-            )
-    
-            if not m:
-                continue
-    
-            raw_text = m.group(1)
-    
-            # ✅ rebuild chunks
-            chunks = re.findall(
-                r'self\.__next_f\.push\(\[1,"(.*?)"\]\)',
-                combined,
-                re.DOTALL
-            )
-    
-            for chunk in chunks:
-                raw_text += chunk
-    
-            # ✅ clean
-            raw_text = re.sub(r'^T\d+,', '', raw_text)
-            raw_text = raw_text.replace('\\u0026', '&')
-            raw_text = raw_text.replace('\\"', '"')
-    
-            raw_text = raw_text.replace('"])', '')
-            raw_text = raw_text.replace('self.__next_f.push([1,"', '')
-            raw_text = re.sub(r'</?script>', '', raw_text)
-    
-            raw_text = raw_text.replace('\n', ' ')
-    
-            raw_text = re.split(
-                rf'(?:\d+:{{|\d+:\[)',
-                raw_text
-            )[0]
-    
-            raw_text = re.sub(r'\s+', ' ', raw_text).strip()
-    
-            # ✅ 🚨 FILTER BAD BLOCKS
-            
-            if (
-                "<div" in raw_text or
-                "class=" in raw_text or
-                "icon." in raw_text or
-                "jojyo" in raw_text or
-                "react" in raw_text.lower()
-            ):
-                continue
-
-    
-            # ✅ ✅ ACCEPT ONLY REAL PDP TEXT
-            if (
-                len(raw_text) > 200 and
-                any(k in raw_text.lower() for k in [
-                    "pad", "pads", "incontinence", "absorb", "protection", "leak"
-                ])
-            ):
-                fallback_candidates.append(raw_text)
-    
-        if fallback_candidates:
-            desc = html.unescape(max(fallback_candidates, key=len))
-
-    # =====================================
-    # ✅ FEATURES
-    # =====================================
-
-    bullet_match = re.search(
-        r'vendorDetailsBullets\\":\[(.*?)\]',
-        combined,
-        re.DOTALL
-    )
-    
-    if bullet_match:
-        raw_block = bullet_match.group(1)
-    
-        # ✅ decode first
-        raw_block = raw_block.encode().decode("unicode_escape")
-    
-        # ✅ split safely on ","
-        parts = raw_block.split('","')
-    
-        for p in parts:
-            clean = p.strip(' "')
-            clean = clean.replace("\\", "")
-            clean = html.unescape(clean)
-    
-            if len(clean) > 20:
-                features.append(clean)
-
-    # =====================================
-    # ✅ TITLE (FIXED)
-    # =====================================
-    
-    title_match = re.search(r'"title":"(.*?)"', combined)
-    
-    if not title_match:
-        title_match = re.search(r'"displayName":"(.*?)"', combined)
-    
-    if not title_match:
-        title_match = re.search(r'"productName":"(.*?)"', combined)
-    
-    if title_match:
-        title = title_match.group(1).strip()
-    else:
-        title = ""
-
-    # =====================================
-    # ✅ FINAL SAFE RETURN
-    # =====================================
-
     return {
-        "title": title if isinstance(title, str) else "",
-        "description": desc if isinstance(desc, str) else "",
+        "title": title.strip() if isinstance(title, str) else "",
+        "description": desc.strip() if isinstance(desc, str) else "",
         "features": features if isinstance(features, list) else []
     }
-
+    
 # =====================================
 # ✅ CVS TEXT CLEANER (FINAL)
 # =====================================
