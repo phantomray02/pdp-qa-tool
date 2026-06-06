@@ -322,7 +322,7 @@ def get_cvs_text(html_text):
                 if len(text) > 120 and "cookie" not in text.lower():
                     desc = text
                     break
-
+                    
         # -------------------------
         # ✅ FEATURES (FIXED)
         # -------------------------
@@ -375,24 +375,19 @@ def get_cvs_text(html_text):
             if desc_match:
                 desc = html.unescape(desc_match.group(1))
 
-            
         # -------------------------
         # ✅ TITLE
         # -------------------------
         title_match = re.search(r'"title":"(.*?)"', combined)
         if title_match:
             title = title_match.group(1)
-
-    except:
-        pass
         
-    return {
-        "title": title.strip() if isinstance(title, str) else "",
-        "description": desc.strip() if isinstance(desc, str) else "",
-        "features": features if isinstance(features, list) else [],
-        "debug": debug
-    }
-
+        return {
+            "title": title.strip() if isinstance(title, str) else "",
+            "description": desc.strip() if isinstance(desc, str) else "",
+            "features": features if isinstance(features, list) else [],
+            "debug": debug
+        }
 # =====================================
 # ✅ CVS TEXT CLEANER (FINAL)
 # =====================================
@@ -499,7 +494,107 @@ def score_badge(score):
     
     else:
         return f"🔴 <span style='color:#F44336; font-weight:700'>{score}% (Poor)</span>"
-        
+
+# =========================================
+# ✅ DESCRIPTION DEBUGGER (NEW 🔥)
+# =========================================
+def debug_description(desc):
+
+    if not desc:
+        return {
+            "length": 0,
+            "quality_score": 0,
+            "issues": ["Missing description"]
+        }
+
+    desc_clean = normalize_text(desc)
+    length = len(desc_clean)
+
+    # ✅ keyword detection
+    absorbency_keywords = ["absorb", "leak", "fluid", "protection"]
+    size_keywords = ["count", "ct", "pack", "roll", "sheets"]
+    benefit_keywords = ["soft", "comfort", "odor", "dry", "safe"]
+
+    has_absorbency = any(k in desc_clean for k in absorbency_keywords)
+    has_size = any(k in desc_clean for k in size_keywords)
+    has_benefits = any(k in desc_clean for k in benefit_keywords)
+
+    # ✅ truncation detection
+    is_truncated = (
+        not desc.strip().endswith((".", "!", "?"))
+        or length < 80
+    )
+
+    # ✅ repetition detection
+    words = desc_clean.split()
+    unique_ratio = len(set(words)) / len(words) if words else 0
+
+    issues = []
+
+    if length < 80:
+        issues.append("Too short")
+    if not has_absorbency:
+        issues.append("Missing absorbency info")
+    if not has_size:
+        issues.append("Missing size/count")
+    if not has_benefits:
+        issues.append("Missing benefits")
+    if is_truncated:
+        issues.append("Possible truncation")
+    if unique_ratio < 0.5:
+        issues.append("Repetitive content")
+
+    # ✅ quality score
+    quality_score = 100
+
+    if length < 80:
+        quality_score -= 20
+    if not has_absorbency:
+        quality_score -= 15
+    if not has_size:
+        quality_score -= 15
+    if not has_benefits:
+        quality_score -= 15
+    if is_truncated:
+        quality_score -= 20
+    if unique_ratio < 0.5:
+        quality_score -= 15
+
+    quality_score = max(0, quality_score)
+
+    return {
+        "length": length,
+        "quality_score": quality_score,
+        "issues": issues
+    }
+                        
+# =========================================
+# ✅ DESCRIPTION FIX SUGGESTIONS
+# =========================================
+def suggest_description_fix(debug):
+
+    suggestions = []
+
+    if "Missing absorbency info" in debug["issues"]:
+        suggestions.append("Add absorbency or protection level")
+
+    if "Missing size/count" in debug["issues"]:
+        suggestions.append("Include pack size and quantity")
+
+    if "Missing benefits" in debug["issues"]:
+        suggestions.append("Add comfort, odor or dryness benefits")
+
+    if "Too short" in debug["issues"]:
+        suggestions.append("Expand description with more detail")
+
+    if "Possible truncation" in debug["issues"]:
+        suggestions.append("Fix incomplete or cut-off sentence")
+
+    if "Repetitive content" in debug["issues"]:
+        suggestions.append("Reduce repetition and diversify wording")
+
+    return suggestions        
+    
 # =========================================
 # ✅ TRUE IMAGE VISUAL COMPARISON
 # =========================================
@@ -684,7 +779,20 @@ def process_row(row):
 
         # ✅ SCORES
         title_score = keyword_score(s_text.get("title", ""), r_text.get("title", ""))
-        desc_score = keyword_score(s_text.get("description", ""), r_text.get("description", ""))
+        # ✅ DESCRIPTION DEBUG
+        s_desc_debug = debug_description(s_text.get("description", ""))
+        r_desc_debug = debug_description(r_text.get("description", ""))
+        
+        # ✅ SIMILARITY
+        text_similarity = keyword_score(
+            s_text.get("description", ""),
+            r_text.get("description", "")
+        )
+        
+        # ✅ APPLY QUALITY PENALTY
+        quality_penalty = int((100 - r_desc_debug["quality_score"]) * 0.5)
+        
+        desc_score = max(0, text_similarity - quality_penalty)
 
         cvs_features = r_text.get("features") if isinstance(r_text, dict) else []
         if not isinstance(cvs_features, list):
@@ -739,6 +847,9 @@ def process_row(row):
                 "Chunks Used": debug_data.get("chunks_used", 0),
                 "Raw Features": debug_data.get("raw_features", ""),
                 "Final Description": r_text.get("description", ""),
+                "Desc Quality Score": r_desc_debug["quality_score"],
+                "Desc Length": r_desc_debug["length"],
+                "Desc Issues": ", ".join(r_desc_debug["issues"]),
                 "Final Features": " | ".join(r_text.get("features", []))
             }
         }
@@ -1104,7 +1215,9 @@ if uploaded_file:
                     # ✅ DESCRIPTION
                     # --------------------
                     st.markdown(f"### 📄 Description {score_badge(desc_score)}", unsafe_allow_html=True)
+                    
                     c1, c2 = st.columns(2)
+                    
                     c1.markdown(
                         f"<div style='font-size:25px; line-height:1.5'>{s_desc or '❌ Missing'}</div>",
                         unsafe_allow_html=True
@@ -1114,8 +1227,29 @@ if uploaded_file:
                         f"<div style='font-size:25px; line-height:1.5'>{r_desc or '❌ Missing'}</div>",
                         unsafe_allow_html=True
                     )
-
-            
+                    
+                    # =====================================
+                    # ✅ DESCRIPTION DEBUG UI
+                    # =====================================
+                    
+                    r_desc_debug = debug_description(r_desc)
+                    
+                    if r_desc_debug["quality_score"] < 50:
+                        st.error("🚨 Poor description quality")
+                    
+                    elif r_desc_debug["quality_score"] < 75:
+                        st.warning("⚠️ Description needs improvement")
+                    
+                    if r_desc_debug["issues"]:
+                        st.info(f"🛠 Issues: {', '.join(r_desc_debug['issues'])}")
+                    
+                    # ✅ FIXES
+                    fixes = suggest_description_fix(r_desc_debug)
+                    
+                    if fixes:
+                        st.markdown("### 💡 Suggested Fixes")
+                        for f in fixes:
+                            st.write(f"- {f}")
                     # --------------------
                     # ✅ FEATURES (SIDE-BY-SIDE ✅)
                     # --------------------
