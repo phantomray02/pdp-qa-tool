@@ -1188,7 +1188,7 @@ if uploaded_file:
                 
                     for i in range(max_images):
                 
-                        col1, col2, col3 = st.columns([4, 4, 1])
+                        col1, col2, col3 = st.columns([3, 3, 1])
                 
                         # ✅ get urls safely
                         s_url = (
