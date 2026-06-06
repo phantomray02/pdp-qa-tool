@@ -264,7 +264,7 @@ def get_cvs_text(html_text):
     try:
         import json
 
-        match = re.search(r'"vendorDetails":\{.*?\}', combined, re.DOTALL)
+        mmatch = re.search(r'"vendorContent":\{.*?"vendorDetails":\{.*?\}.*?\}', combined, re.DOTALL)
 
         if match:
             json_block = match.group(0)
@@ -275,7 +275,7 @@ def get_cvs_text(html_text):
             except:
                 parsed = {}
         
-            vendor = parsed.get("vendorDetails", {})
+            vendor = parsed.get("vendorContent", {}).get("vendorDetails", {})
         
             features = vendor.get("vendorDetailsBullets", [])
             desc = vendor.get("vendorDetailsParagraph", "")
