@@ -273,32 +273,20 @@ def get_cvs_text(html_text):
         import json
 
         match = re.search(
-            r'vendorContent":\{.*?"vendorDetailsParagraph":".*?".*?"vendorDetailsBullets":\[(.*?)\]',
+            r'vendorContent":\{.*?"vendorDetailsBullets":\[(.*?)\].*?"vendorDetailsParagraph":"(.*?)"',
             combined,
             re.DOTALL
         )
 
         if match:
-            block = match.group(0)
-        
-            desc_match = re.search(
-                r'vendorDetailsParagraph":"(.*?)"',
-                block
-            )
-            desc = desc_match.group(1) if desc_match else ""
+            bullet_block = match.group(1)
+            desc = match.group(2)
         
             desc = html.unescape(desc)
         
-            bullet_match = re.search(
-                r'vendorDetailsBullets":\[(.*?)\]',
-                block,
-                re.DOTALL
-            )
-        
-            features = []
-            if bullet_match:
-                parts = bullet_match.group(1).split('","')
-                features = [html.unescape(p.strip(' "')) for p in parts]
+            # ✅ split bullets
+            parts = bullet_block.split('","')
+            features = [html.unescape(p.strip(' "')) for p in parts]
         
             title_match = re.search(r'"title":"(.*?)"', combined)
             title = title_match.group(1) if title_match else ""
