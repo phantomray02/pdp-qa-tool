@@ -14,6 +14,8 @@ import traceback
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+st.set_page_config(layout="wide")
+
 st.title("PDP QA Tool ✅")
 
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
@@ -1043,7 +1045,11 @@ if uploaded_file:
                 # =====================================
                 # ✅ RENDER UI
                 # =====================================
-                st.subheader(f"SKU: {sku}")
+                cvs_rpc = row.get("cvs_rpc") or row.get("CVS RPC") or "N/A"
+                st.subheader(f"SKU: {sku} | CVS RPC: {cvs_rpc}")
+
+                left, right = st.columns([2, 1])
+            
                 if missing_flags:
                     st.warning(f"⚠️ Missing: {', '.join(missing_flags)}")
                     
@@ -1056,7 +1062,7 @@ if uploaded_file:
                 elif overall_score < 50:
                     st.warning("⚠️ Major quality issue")
 
-        
+                with left:
                 # --------------------
                 # ✅ TITLE
                 # --------------------
@@ -1099,6 +1105,8 @@ if uploaded_file:
                 # --------------------
                 # ✅ IMAGES (ALL + SCORES ✅)
                 # --------------------
+                with right:
+                    
                 st.markdown("### 🖼️ Images")
                 
                 max_images = max(len(s_images), len(r_images))
