@@ -939,22 +939,30 @@ hide_good = st.checkbox(
 if uploaded_file:
     try:
 
-        # ✅ RESET STATE ON NEW FILE
+        # ✅ RESET STATE ON NEW FILE (ROBUST ✅)
+        file_bytes = uploaded_file.getvalue()
+        file_id = hash(file_bytes)
+
         if (
             "last_file" not in st.session_state or
-            st.session_state.last_file != uploaded_file.name
+            st.session_state.last_file != file_id
         ):
             st.session_state.summary_rows = []
             st.session_state.export_rows = []
             st.session_state.start_idx = 0
             st.session_state.processing_done = False
-            st.session_state.last_file = uploaded_file.name
-    
+            st.session_state.last_file = file_id
+
+            # ✅ CLEAR DEBUG + UI STATE
+            st.session_state.debug_rows = []
+            st.session_state.progress_bar = None
+
+        # ✅ ✅ LOAD DATAFRAME (CRITICAL 🔥)
         df = pd.read_csv(uploaded_file)
-        
+
         # ✅ normalize columns
         df.columns = [c.strip().lower() for c in df.columns]
-        
+
         column_map = {
             "salsify url": "salsify_url",
             "retail url": "retail_url",
@@ -962,7 +970,7 @@ if uploaded_file:
             "product sku": "sku",
             "cvs rpc": "cvs_rpc"
         }
-        
+
         df.rename(columns=column_map, inplace=True)
 
         # ✅ ensure brand column exists (column E fallback)
@@ -973,13 +981,13 @@ if uploaded_file:
         required_cols = ["sku", "salsify_url", "retail_url"]
 
         missing = [c for c in required_cols if c not in df.columns]
-        
+
         if missing:
             st.error(f"❌ Missing required columns: {missing}")
             st.write("Detected columns:", list(df.columns))
             st.stop()
 
-        # ✅ BRAND FILTER (NEW)
+        # ✅ BRAND FILTER
         brands = sorted(df["brand"].dropna().unique()) if "brand" in df.columns else []
         selected_brand = st.selectbox("🏷️ Select Brand", ["All"] + brands)
 
@@ -987,7 +995,7 @@ if uploaded_file:
             df = df[df["brand"] == selected_brand]
 
         BATCH_SIZE = 40
-    
+
         start = st.session_state.start_idx
         end = start + BATCH_SIZE
 
@@ -995,34 +1003,35 @@ if uploaded_file:
             st.session_state.processing_done = True
 
         batch_df = df.iloc[start:end]
-    
-        # =====================================
-        # ✅ OPTIONAL SAFETY (VIEW MODE RESET ✅)
-        # =====================================
-        if view_mode:
-            st.session_state.start_idx = 0
-    
+
         # =====================================
         # ✅ STATUS + PROGRESS
         # =====================================
-        st.write(f"Processing SKUs {start+1} to {min(end, len(df))} of {len(df)}")
-    
-        if "progress_bar" not in st.session_state:
-            st.session_state.progress_bar = st.progress(0)
-        
-        progress_bar = st.session_state.progress_bar
+        if not st.session_state.processing_done:
 
-        status_text = st.empty()
-        total = len(batch_df)
-        st.write("### Overall Progress")
-        overall_progress_bar = st.progress(0)
+            st.write(f"Processing SKUs {start+1} to {min(end, len(df))} of {len(df)}")
+
+            if "progress_bar" not in st.session_state or st.session_state.progress_bar is None:
+                st.session_state.progress_bar = st.progress(0)
+
+            progress_bar = st.session_state.progress_bar
+
+            status_text = st.empty()
+            total = len(batch_df)
+
+            st.write("### Overall Progress")
+            overall_progress_bar = st.progress(0)
 
         # =====================================
         # ✅ PROCESSING LOOP (FAST MODE)
         # =====================================
         st.info("⚙️ Processing batch...")
         
-        if not st.session_state.processing_done:
+        if st.session_state.processing_done and not view_mode:
+            st.success("✅ Processing complete")
+            st.stop()
+        
+        if not st.session_state.processing_done and not view_mode:
         
             results = []
         
@@ -1081,10 +1090,11 @@ if uploaded_file:
                 st.session_state.start_idx += BATCH_SIZE
                 time.sleep(0.05)
                 st.rerun()
-
+                
             else:
                 st.session_state.processing_done = True
-
+                st.rerun()
+                
         # =====================================
         # ✅ FULL VISUAL MODE (COMPLETE PDP QA ✅)
         # =====================================
