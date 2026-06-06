@@ -310,18 +310,26 @@ def get_cvs_text(html_text):
             
                 if pointer_match:
                     raw_text = pointer_match.group(1)
-            
+                    
+                    raw_text = re.split(r'["\]]\)', raw_text)[0]
+
                     for chunk in chunks:
-                        raw_text += chunk
-            
+                        # ✅ only attach chunk that logically continues pointer text
+                        if raw_text[-15:] in chunk:
+                            raw_text = raw_text + chunk
+                            break
+  
+                    # ✅ clean AFTER merge
                     raw_text = re.sub(r'^T\d+,', '', raw_text)
-                    raw_text = raw_text.replace('"])', '')
-                    raw_text = raw_text.replace('self.__next_f.push([1,"', '')
-            
+                    raw_text = raw_text.replace('\\"', '"')
+                    raw_text = raw_text.replace('\\u0026', '&')
+                    raw_text = raw_text.replace('\n', ' ')
+                    raw_text = re.sub(r'\s+', ' ', raw_text).strip()
+
                     raw_text = re.split(r'\d+:\{', raw_text)[0]
                     raw_text = re.sub(r'\s+', ' ', raw_text).strip()
             
-                    if len(raw_text) >= 40:
+                    if len(raw_text) >= 80 and " " in raw_text:
                         desc = html.unescape(raw_text)
                     else:
                         desc = ""
