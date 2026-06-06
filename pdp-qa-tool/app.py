@@ -248,12 +248,20 @@ def get_cvs_text(html_text):
 
     soup = BeautifulSoup(html_text, "html.parser")
 
-    combined = ""
+    # ✅ REBUILD FULL STREAMED DATA (CRITICAL FIX)
+    chunks = re.findall(
+        r'self\.__next_f\.push\(\[1,"(.*?)"\]\)',
+        html_text,
+        re.DOTALL
+    )
     
-    script = soup.find("script", {"id": "__NEXT_DATA__"})
-    if script and script.string:
-        combined = script.string
-
+    combined = "".join(chunks)
+    
+    # ✅ CLEAN ESCAPED JSON
+    combined = combined.replace('\\"', '"')
+    combined = combined.replace('\\u0026', '&')
+    combined = combined.replace('\\n', ' ')
+    
     desc = ""
     features = []
     title = ""
@@ -265,44 +273,40 @@ def get_cvs_text(html_text):
         import json
 
         match = re.search(
-            r'vendorContent.*?vendorDetailsBullets.*?\]',
+            r'vendorContent":\{.*?"vendorDetailsParagraph":".*?".*?"vendorDetailsBullets":\[(.*?)\]',
             combined,
             re.DOTALL
         )
-        
+
         if match:
             block = match.group(0)
         
-            # ✅ extract description directly
             desc_match = re.search(
                 r'vendorDetailsParagraph":"(.*?)"',
                 block
             )
-        
             desc = desc_match.group(1) if desc_match else ""
         
-            desc = desc.replace('\\"', '"').replace('\\u0026', '&')
+            desc = html.unescape(desc)
         
-            # ✅ extract bullets
-            bullets = re.findall(
+            bullet_match = re.search(
                 r'vendorDetailsBullets":\[(.*?)\]',
                 block,
                 re.DOTALL
             )
         
             features = []
-            if bullets:
-                items = bullets[0].split('","')
-                features = [i.strip(' "').replace("\\", "") for i in items]
+            if bullet_match:
+                parts = bullet_match.group(1).split('","')
+                features = [html.unescape(p.strip(' "')) for p in parts]
         
-            # ✅ title stays global
             title_match = re.search(r'"title":"(.*?)"', combined)
             title = title_match.group(1) if title_match else ""
         
             return {
                 "title": title.strip(),
                 "description": desc.strip(),
-                "features": [f.strip() for f in features if f.strip()]
+                "features": [f for f in features if f]
             }
     
     except Exception:
