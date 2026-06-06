@@ -972,56 +972,57 @@ if uploaded_file:
         total = len(batch_df)
         st.write("### Overall Progress")
         overall_progress_bar = st.progress(0)
-    
+
         # =====================================
         # ✅ PROCESSING LOOP (FAST MODE)
         # =====================================
-        if not st.session_state.processing_done:    
+        if not st.session_state.processing_done:
+        
             results = []
-    
-                with ThreadPoolExecutor(max_workers=3) as executor:
-    
-                    futures = [
-                        executor.submit(process_row_cached, row.to_dict())
-                        for _, row in batch_df.iterrows()
-                    ]
-                
-                    for i, future in enumerate(as_completed(futures)):
-                        result = future.result()
-                
-                        if result:
-                            results.append(result)
-                
-                            # ✅ summary
-                            existing = {r["SKU"] for r in st.session_state.summary_rows}
-                            if result["SKU"] not in existing:
-                                st.session_state.summary_rows.append(result)
-                
-                            # ✅ export
-                            existing_export = {r["SKU"] for r in st.session_state.export_rows}
-                            if result["SKU"] not in existing_export:
-                                st.session_state.export_rows.append({
-                                    "SKU": result["SKU"],
-                                    "CVS RPC": result["CVS RPC"],
-                                    "Salsify URL": result["Salsify URL"],
-                                    "Retail URL": result["Retail URL"]
-                                })
-                
-                        progress_bar.progress((i + 1) / total)
-                        status_text.markdown(f"Processed {i+1}/{total}")
-                        
-                        overall_progress = (start + i + 1) / len(df)
-                        overall_progress_bar.progress(overall_progress)
-    
-                st.write(f"✅ Rows processed so far: {len(st.session_state.summary_rows)}")
-                
-                # ✅ AUTO-BATCH
-                if st.session_state.start_idx + BATCH_SIZE < len(df):
-                    st.session_state.start_idx += BATCH_SIZE
-                    time.sleep(0.3)
-                    st.rerun()
-                else:
-                    st.session_state.processing_done = True
+        
+            with ThreadPoolExecutor(max_workers=3) as executor:
+        
+                futures = [
+                    executor.submit(process_row_cached, row.to_dict())
+                    for _, row in batch_df.iterrows()
+                ]
+        
+                for i, future in enumerate(as_completed(futures)):
+                    result = future.result()
+        
+                    if result:
+                        results.append(result)
+        
+                        # ✅ summary
+                        existing = {r["SKU"] for r in st.session_state.summary_rows}
+                        if result["SKU"] not in existing:
+                            st.session_state.summary_rows.append(result)
+        
+                        # ✅ export
+                        existing_export = {r["SKU"] for r in st.session_state.export_rows}
+                        if result["SKU"] not in existing_export:
+                            st.session_state.export_rows.append({
+                                "SKU": result["SKU"],
+                                "CVS RPC": result["CVS RPC"],
+                                "Salsify URL": result["Salsify URL"],
+                                "Retail URL": result["Retail URL"]
+                            })
+        
+                    progress_bar.progress((i + 1) / total)
+                    status_text.markdown(f"Processed {i+1}/{total}")
+        
+                    overall_progress = (start + i + 1) / len(df)
+                    overall_progress_bar.progress(overall_progress)
+        
+            st.write(f"✅ Rows processed so far: {len(st.session_state.summary_rows)}")
+        
+            # ✅ AUTO-BATCH
+            if st.session_state.start_idx + BATCH_SIZE < len(df):
+                st.session_state.start_idx += BATCH_SIZE
+                time.sleep(0.3)
+                st.rerun()
+            else:
+                st.session_state.processing_done = True
 
         # =====================================
         # ✅ FULL VISUAL MODE (COMPLETE PDP QA ✅)
