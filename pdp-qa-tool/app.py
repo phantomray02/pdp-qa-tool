@@ -345,7 +345,7 @@ def get_cvs_text(html_text):
                         # ✅ append only clean fragments
                         if len(chunk.split()) >= 6:
                             raw_text += " " + chunk
-                    ``
+                            
                     # ✅ HARD STOP AFTER SAFE BUILD
                     raw_text = re.split(
                         r'"__next_f"|children":|\["prodId"|\{"buildId"|\\u003cscript',
