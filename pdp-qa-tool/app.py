@@ -552,11 +552,12 @@ def equal_feature_block(text):
 def load_image_with_white_bg(img_data):
     
     try:
-        img = Image.open(BytesIO(img_data))img = Image HARD LIMIT SIZE EARLY (prevents huge images in memory)
-        img.thumbnail((256, 256))  # ← key line
-        
-        img = img.convert("RGBA")
+        img = Image.open(BytesIO(img_data))
 
+        # ✅ shrink BEFORE heavy processing
+        img.thumbnail((256, 256))
+
+        img = img.convert("RGBA")
     except:
         return None
 
@@ -568,7 +569,6 @@ def load_image_with_white_bg(img_data):
         white_bg.paste(img)
 
     return white_bg.convert("L")
-
 # =====================================
 # ✅ STREAMLIT IMAGE CACHE (BIG SPEED BOOST)
 # =====================================
