@@ -561,16 +561,17 @@ def score_bar(score):
     return f"""
     <div style="
         background-color:{color};
-        padding:10px;
+        padding:6px 10px;   /* ✅ smaller */
         border-radius:6px;
         color:white;
         font-weight:600;
         margin-top:6px;
-        margin-bottom:12px;
+        margin-bottom:6px;  /* ✅ reduce from 12px */
     ">
         Score: {score}%
     </div>
     """
+
 def score_badge(score):
 
     if score >= 80:
@@ -1157,27 +1158,27 @@ if uploaded_file:
                         st.divider()
             
                     st.markdown(score_bar(avg_feature_score), unsafe_allow_html=True)
+                    st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
         
                 # --------------------
                 # ✅ IMAGES (ALL + SCORES ✅)
                 # --------------------
                 with right:
-                    
+                
                     st.markdown(f"### 🖼️ Images — Avg {score_badge(avg_img_score)}", unsafe_allow_html=True)
                     
                     st.markdown(score_bar(avg_img_score), unsafe_allow_html=True)
-                    st.markdown("---")
-
-
+                
+                    # ✅ controlled spacing
+                    st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+                
                     max_images = max(len(s_images), len(r_images))
-                    
-                    
+                
                     for i in range(max_images):
-                    
-                        col1, col2, col3 = st.columns([4,4,1])
-                    
-                        # ✅ HANDLE NONE CORRECTLY
-                        
+                
+                        col1, col2, col3 = st.columns([4, 4, 1])
+                
+                        # ✅ get urls safely
                         s_url = (
                             s_images[i].get("url")
                             if i < len(s_images) and isinstance(s_images[i], dict)
@@ -1189,41 +1190,30 @@ if uploaded_file:
                             if i < len(r_images) and isinstance(r_images[i], str)
                             else None
                         )
-                    
-                        # ✅ SALSIFY DISPLAY (KEEP THIS FLAG ✅)
-                        
+                
+                        # ✅ SALSIFY IMAGE
                         if s_url:
-                            
                             col1.markdown(
-                                f"<img src='{s_url}' style='width:100%; max-width:280px;'>",
+                                f"<img src='{s_url}' style='width:100%; max-width:280px; border-radius:6px;'>",
                                 unsafe_allow_html=True
                             )
-
                         else:
                             col1.write("")
-    
-                    
-                        # ✅ CVS DISPLAY (CLEAN — NO FLAGS ✅)
-                        
+                
+                        # ✅ CVS IMAGE
                         if r_url:
-                            
                             col2.markdown(
-                                f"<img src='{r_url}' style='width:100%; max-width:280px;'>",
+                                f"<img src='{r_url}' style='width:100%; max-width:280px; border-radius:6px;'>",
                                 unsafe_allow_html=True
                             )
-
                         else:
                             col2.write("")
-    
-                    
+                
                         # ✅ SCORE
-                        if s_url and r_url:
-                            sc = compare_images_visually(s_url, r_url)
-                        else:
-                            sc = 0
-                    
-                        # ✅ COLOR ONLY (NO FLAGS)
+                        sc = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
+                
                         col3.markdown(score_badge(sc), unsafe_allow_html=True)
+
 
                 # --------------------
                 # ✅ FINAL SCORE
