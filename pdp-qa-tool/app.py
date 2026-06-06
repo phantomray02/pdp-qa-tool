@@ -1166,7 +1166,6 @@ if uploaded_file:
                 # ✅ FINAL SCORE
                 # --------------------
                 st.success(f"✅ Overall Score: {overall_score}%")
-                st.progress(overall_score / 100)
                 st.caption(
                     f"Title: {title_score}% | "
                     f"Desc: {desc_score}% | "
