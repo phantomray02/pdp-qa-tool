@@ -267,38 +267,43 @@ def get_cvs_text(html_text):
     title = ""
 
     # =====================================
-    # ✅ JSON-FIRST EXTRACTION (NEW ✅)
+    # ✅ DIRECT FIELD EXTRACTION (FINAL FIX ✅)
     # =====================================
     try:
-        import json
-
-        match = re.search(
-            r'vendorContent":\{.*?"vendorDetailsBullets":\[(.*?)\].*?"vendorDetailsParagraph":"(.*?)"',
+    
+        # ✅ DESCRIPTION
+        desc_match = re.search(
+            r'vendorDetailsParagraph":"(.*?)"',
+            combined
+        )
+        desc = html.unescape(desc_match.group(1)) if desc_match else ""
+    
+        # ✅ FEATURES
+        bullet_match = re.search(
+            r'vendorDetailsBullets":\[(.*?)\]',
             combined,
             re.DOTALL
         )
-
-        if match:
-            bullet_block = match.group(1)
-            desc = match.group(2)
-        
-            desc = html.unescape(desc)
-        
-            # ✅ split bullets
-            parts = bullet_block.split('","')
-            features = [html.unescape(p.strip(' "')) for p in parts]
-        
-            title_match = re.search(r'"title":"(.*?)"', combined)
-            title = title_match.group(1) if title_match else ""
-        
+    
+        features = []
+        if bullet_match:
+            parts = bullet_match.group(1).split('","')
+            features = [html.unescape(p.strip(' "')) for p in parts if p.strip()]
+    
+        # ✅ TITLE (already working, keep it)
+        title_match = re.search(r'"title":"(.*?)"', combined)
+        title = title_match.group(1) if title_match else ""
+    
+        # ✅ ONLY RETURN IF DATA FOUND
+        if desc or features:
             return {
                 "title": title.strip(),
                 "description": desc.strip(),
-                "features": [f for f in features if f]
+                "features": features
             }
     
     except Exception:
-        pass  # ✅ THIS IS REQUIRED
+        pass
 
     # =====================================
     # ✅ DESCRIPTION
@@ -869,8 +874,9 @@ def process_row(row):
 st.markdown("## 🔎 QA Viewer Controls")
 
 view_mode = st.checkbox(
-    "👁️ View Full QA (after processing)",
-    key="view_mode"
+    "👁️ View Full QA",
+    key="view_mode",
+    disabled=not st.session_state.processing_done
 )
 
 if st.session_state.get("processing_done", False) and not view_mode:
@@ -970,8 +976,6 @@ if uploaded_file:
         # =====================================
         # ✅ PROCESSING LOOP (FAST MODE)
         # =====================================
-        if not view_mode and not st.session_state.processing_done:
-        
             results = []
 
             with ThreadPoolExecutor(max_workers=3) as executor:
@@ -1021,7 +1025,7 @@ if uploaded_file:
         # =====================================
         # ✅ FULL VISUAL MODE (COMPLETE PDP QA ✅)
         # =====================================
-        else:
+        elif view_mode:
             if st.session_state.download_clicked:
                 st.session_state.download_clicked = False
                 st.stop()  # 🚀 prevents rerender
