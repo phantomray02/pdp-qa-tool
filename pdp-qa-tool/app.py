@@ -263,38 +263,47 @@ def get_cvs_text(html_text):
     # =====================================
     try:
         import json
-    
+
         match = re.search(
-            r'vendorContent":\{.*\},"totalReviewCount"',
+            r'vendorContent.*?vendorDetailsBullets.*?\]',
             combined,
             re.DOTALL
         )
-    
+        
         if match:
-            json_block = match.group(0)
-            json_block = json_block.rsplit(',"totalReviewCount"', 1)[0]
-    
-            parsed = json.loads("{" + json_block.strip().lstrip(",") + "}")
-    
-            vendor = parsed.get("vendorContent", {}).get("vendorDetails", {})
-    
-            desc = vendor.get("vendorDetailsParagraph", "").strip()
-            features = [f.strip() for f in vendor.get("vendorDetailsBullets", []) if f.strip()]
-    
+            block = match.group(0)
+        
+            # ✅ extract description directly
+            desc_match = re.search(
+                r'vendorDetailsParagraph":"(.*?)"',
+                block
+            )
+        
+            desc = desc_match.group(1) if desc_match else ""
+        
+            desc = desc.replace('\\"', '"').replace('\\u0026', '&')
+        
+            # ✅ extract bullets
+            bullets = re.findall(
+                r'vendorDetailsBullets":\[(.*?)\]',
+                block,
+                re.DOTALL
+            )
+        
+            features = []
+            if bullets:
+                items = bullets[0].split('","')
+                features = [i.strip(' "').replace("\\", "") for i in items]
+        
+            # ✅ title stays global
             title_match = re.search(r'"title":"(.*?)"', combined)
-            if not title_match:
-                title_match = re.search(r'"displayName":"(.*?)"', combined)
-            if not title_match:
-                title_match = re.search(r'"productName":"(.*?)"', combined)
-    
-            title = title_match.group(1).strip() if title_match else ""
-    
-            if desc or features:
-                return {
-                    "title": title,
-                    "description": desc,
-                    "features": features
-                }
+            title = title_match.group(1) if title_match else ""
+        
+            return {
+                "title": title.strip(),
+                "description": desc.strip(),
+                "features": [f.strip() for f in features if f.strip()]
+            }
     
     except Exception:
         pass  # ✅ THIS IS REQUIRED
