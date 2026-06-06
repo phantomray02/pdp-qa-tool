@@ -289,7 +289,7 @@ def get_cvs_text(html_text):
 
                 nested_match = re.search(
                     rf'{pointer}:\{{.*?"vendorDetailsParagraph":"\$(\d+)".*?\}}',
-                    combined,
+                    html_text,
                     re.DOTALL
                 )
 
@@ -301,34 +301,33 @@ def get_cvs_text(html_text):
             # ✅ extract actual text
             if raw_desc.startswith("$"):
                 pointer = raw_desc.replace("$", "")
-
+            
                 pointer_match = re.search(
                     rf'{pointer}:(T\d+,.+)',
-                    combined,
+                    html_text,
                     re.DOTALL
                 )
-
+            
                 if pointer_match:
                     raw_text = pointer_match.group(1)
-
-                    # ✅ append streamed chunks
+            
                     for chunk in chunks:
                         raw_text += chunk
-
+            
                     raw_text = re.sub(r'^T\d+,', '', raw_text)
-
                     raw_text = raw_text.replace('"])', '')
                     raw_text = raw_text.replace('self.__next_f.push([1,"', '')
-
+            
                     raw_text = re.split(r'\d+:\{', raw_text)[0]
                     raw_text = re.sub(r'\s+', ' ', raw_text).strip()
-                    
-                    # ✅ SAFETY CHECK (ADD HERE ✅)
+            
                     if len(raw_text) >= 40:
                         desc = html.unescape(raw_text)
                     else:
                         desc = ""
-                        
+            
+            else:
+                desc = html.unescape(raw_desc)
         # -------------------------
         # ✅ FEATURES
         # -------------------------
