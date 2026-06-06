@@ -14,6 +14,8 @@ import traceback
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+requests.adapters.DEFAULT_RETRIES = 2
+
 st.set_page_config(layout="wide")
 
 st.title("PDP QA Tool ✅")
@@ -48,7 +50,16 @@ def get_html(url):
         return html_cache[url]
 
     try:
-        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+    
+        r = requests.get(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0",
+                "Connection": "keep-alive"
+            },
+            timeout=10
+        )
+
         if r.status_code == 200:
             html_cache[url] = r.text
 
@@ -642,7 +653,7 @@ def load_image_with_white_bg(img_data):
         img = Image.open(BytesIO(img_data))
 
         # ✅ shrink BEFORE heavy processing
-        img.thumbnail((256, 256))
+        img.thumbnail((128, 128))
 
         img = img.convert("RGBA")
     except:
@@ -675,7 +686,7 @@ def fetch_image_cached(url):
 # ✅ IMAGE PREFETCH
 # =====================================
 def prefetch_images(urls):
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    with ThreadPoolExecutor(max_workers=12) as executor:
         list(executor.map(fetch_image_cached, urls))
     
 def compare_images_visually(s_url, r_url):
@@ -701,8 +712,8 @@ def compare_images_visually(s_url, r_url):
             if s_img is None or r_img is None:
                 return 0
 
-            s_img = s_img.resize((64, 64)).filter(ImageFilter.GaussianBlur(2))
-            r_img = r_img.resize((64, 64)).filter(ImageFilter.GaussianBlur(2))
+            s_img = s_img.resize((64, 64)).filter(ImageFilter.GaussianBlur(1))
+            r_img = r_img.resize((64, 64)).filter(ImageFilter.GaussianBlur(1))
 
         except:
             return 0
@@ -1019,7 +1030,7 @@ if uploaded_file:
             # ✅ AUTO-BATCH
             if st.session_state.start_idx + BATCH_SIZE < len(df):
                 st.session_state.start_idx += BATCH_SIZE
-                time.sleep(0.3)
+                time.sleep(0.5)
                 st.rerun()
             else:
                 st.session_state.processing_done = True
