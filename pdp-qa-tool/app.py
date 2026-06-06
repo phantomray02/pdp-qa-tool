@@ -276,36 +276,102 @@ def get_cvs_text(html_text):
     desc = ""
     features = []
     title = ""
-
+    
     # =====================================
-    # ✅ DIRECT FIELD EXTRACTION (FINAL FIX ✅)
+    # ✅ DIRECT FIELD EXTRACTION (WITH POINTER RESOLUTION ✅)
     # =====================================
     try:
     
+        # -------------------------------
         # ✅ DESCRIPTION
+        # -------------------------------
+        desc = ""
+    
         desc_match = re.search(
             r'vendorDetailsParagraph":"(.*?)"',
             combined
         )
-        desc = html.unescape(desc_match.group(1)) if desc_match else ""
     
+        if desc_match:
+            raw_desc = desc_match.group(1)
+    
+            # ✅ STEP 1 — resolve pointer ($34 → actual block)
+            while raw_desc.startswith("$"):
+                pointer = raw_desc.replace("$", "")
+    
+                nested_match = re.search(
+                    rf'{pointer}:\{{.*?"vendorDetailsParagraph":"\$(\d+)".*?\}}',
+                    combined,
+                    re.DOTALL
+                )
+    
+                if nested_match:
+                    raw_desc = f"${nested_match.group(1)}"
+                else:
+                    break
+    
+            # ✅ STEP 2 — extract real text
+            if raw_desc.startswith("$"):
+                pointer = raw_desc.replace("$", "")
+    
+                pointer_match = re.search(
+                    rf'{pointer}:(T\d+,.+)',
+                    combined,
+                    re.DOTALL
+                )
+    
+                if pointer_match:
+                    raw_text = pointer_match.group(1)
+    
+                    # ✅ append streamed chunks
+                    chunks = re.findall(
+                        r'self\.__next_f\.push\(\[1,"(.*?)"\]\)',
+                        combined,
+                        re.DOTALL
+                    )
+    
+                    for chunk in chunks:
+                        raw_text += chunk
+    
+                    # ✅ CLEAN
+                    raw_text = re.sub(r'^T\d+,', '', raw_text)
+                    raw_text = raw_text.replace('\\"', '"')
+                    raw_text = raw_text.replace('\\u0026', '&amp;')
+                    raw_text = raw_text.replace('\n', ' ')
+    
+                    raw_text = raw_text.replace('"])', '')
+                    raw_text = raw_text.replace('self.__next_f.push([1,"', '')
+    
+                    raw_text = re.split(r'(?:\d+:\{|\d+:\[)', raw_text)[0]
+                    raw_text = re.sub(r'\s+', ' ', raw_text).strip()
+    
+                    desc = html.unescape(raw_text)
+    
+            else:
+                desc = html.unescape(raw_desc)
+    
+        # -------------------------------
         # ✅ FEATURES
+        # -------------------------------
+        features = []
+    
         bullet_match = re.search(
             r'vendorDetailsBullets":\[(.*?)\]',
             combined,
             re.DOTALL
         )
     
-        features = []
         if bullet_match:
             parts = bullet_match.group(1).split('","')
             features = [html.unescape(p.strip(' "')) for p in parts if p.strip()]
     
-        # ✅ TITLE (already working, keep it)
+        # -------------------------------
+        # ✅ TITLE
+        # -------------------------------
         title_match = re.search(r'"title":"(.*?)"', combined)
         title = title_match.group(1) if title_match else ""
     
-        # ✅ ONLY RETURN IF DATA FOUND
+        # ✅ RETURN ONLY IF DATA EXISTS
         if desc or features:
             return {
                 "title": title.strip(),
@@ -315,19 +381,6 @@ def get_cvs_text(html_text):
     
     except Exception:
         pass
-
-    # =====================================
-    # ✅ DESCRIPTION
-    # =====================================
-
-    desc_match = re.search(
-        r'vendorDetailsParagraph\\":\\"(.*?)\\"',
-        combined
-    )
-
-    if desc_match:
-
-        raw_desc = desc_match.group(1)
 
         # =====================================
         # ✅ HANDLE NESTED POINTERS ($32 → $34)
