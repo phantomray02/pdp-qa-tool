@@ -1084,7 +1084,7 @@ if uploaded_file:
                 cvs_rpc = row.get("cvs_rpc") or row.get("CVS RPC") or "N/A"
                 st.subheader(f"SKU: {sku} | CVS RPC: {cvs_rpc}")
 
-                left, right = st.columns([3, 1])
+                left, right = st.columns([2, 1])
             
                 if missing_flags:
                     st.warning(f"⚠️ Missing: {', '.join(missing_flags)}")
