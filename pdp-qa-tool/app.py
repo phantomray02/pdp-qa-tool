@@ -1027,74 +1027,68 @@ if uploaded_file:
         # =====================================
         st.info("⚙️ Processing batch...")
         
-        if st.session_state.processing_done and not view_mode:
-            st.success("✅ Processing complete")
-            st.stop()
+# ✅ SHOW COMPLETE MESSAGE (DO NOT BLOCK PROCESSING)
+if st.session_state.processing_done:
+    st.success("✅ Processing complete")
+
+# ✅ ACTUAL PROCESSING CONDITION (FIXED ✅)
+if not st.session_state.processing_done and not view_mode:
+
+    results = []
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+
+        futures = [
+            executor.submit(process_row_cached, row.to_dict())
+            for _, row in batch_df.iterrows()
+        ]
+
+        for i, future in enumerate(as_completed(futures)):
+            result = future.result()
+
+            if result:
+                results.append(result)
+
+                summary = result.get("summary")
+                debug = result.get("debug")
+
+                if summary:
+                    if summary["SKU"] not in {r["SKU"] for r in st.session_state.summary_rows}:
+                        st.session_state.summary_rows.append(summary)
+
+                if summary:
+                    if summary["SKU"] not in {r["SKU"] for r in st.session_state.export_rows}:
+                        st.session_state.export_rows.append({
+                            "SKU": summary["SKU"],
+                            "CVS RPC": summary["CVS RPC"],
+                            "Salsify URL": summary["Salsify URL"],
+                            "Retail URL": summary["Retail URL"]
+                        })
+
+                if "debug_rows" not in st.session_state:
+                    st.session_state.debug_rows = []
+
+                if debug:
+                    st.session_state.debug_rows.append(debug)
+
+            progress_bar.progress((i + 1) / total)
+            status_text.markdown(f"Processed {i+1}/{total}")
+
+            overall_progress = (start + i + 1) / len(df)
+            overall_progress_bar.progress(overall_progress)
+
+    st.write(f"✅ Rows processed so far: {len(st.session_state.summary_rows)}")
+
+    # ✅ AUTO-BATCH
+    if st.session_state.start_idx + BATCH_SIZE < len(df):
+        status_text.markdown("Loading next batch...")
+        st.session_state.start_idx += BATCH_SIZE
+        time.sleep(0.05)
+        st.rerun()
         
-        if not st.session_state.processing_done and not view_mode:
-        
-            results = []
-        
-            with ThreadPoolExecutor(max_workers=8) as executor:
-        
-                futures = [
-                    executor.submit(process_row_cached, row.to_dict())
-                    for _, row in batch_df.iterrows()
-                ]
-        
-                for i, future in enumerate(as_completed(futures)):
-                    result = future.result()
-        
-                    if result:
-                        results.append(result)
-        
-                        # ✅ summary
-                        if result:
-                        
-                            summary = result.get("summary")
-                            debug = result.get("debug")
-                        
-                            # ✅ SUMMARY (Sheet 1)
-                            if summary:
-                                if summary["SKU"] not in {r["SKU"] for r in st.session_state.summary_rows}:
-                                    st.session_state.summary_rows.append(summary)
-                        
-                            # ✅ DETAILS (Sheet 2)
-                            if summary:
-                                if summary["SKU"] not in {r["SKU"] for r in st.session_state.export_rows}:
-                                    st.session_state.export_rows.append({
-                                        "SKU": summary["SKU"],
-                                        "CVS RPC": summary["CVS RPC"],
-                                        "Salsify URL": summary["Salsify URL"],
-                                        "Retail URL": summary["Retail URL"]
-                                    })
-                        
-                            # ✅ DEBUG (Sheet 3)
-                            if "debug_rows" not in st.session_state:
-                                st.session_state.debug_rows = []
-                        
-                            if debug:
-                                st.session_state.debug_rows.append(debug)
-        
-                    progress_bar.progress((i + 1) / total)
-                    status_text.markdown(f"Processed {i+1}/{total}")
-        
-                    overall_progress = (start + i + 1) / len(df)
-                    overall_progress_bar.progress(overall_progress)
-        
-            st.write(f"✅ Rows processed so far: {len(st.session_state.summary_rows)}")
-        
-            # ✅ AUTO-BATCH
-            if st.session_state.start_idx + BATCH_SIZE < len(df):
-                status_text.markdown("Loading next batch...")
-                st.session_state.start_idx += BATCH_SIZE
-                time.sleep(0.05)
-                st.rerun()
-                
-            else:
-                st.session_state.processing_done = True
-                st.rerun()
-                
+    else:
+        st.session_state.processing_done = True
+        st.rerun()
         # =====================================
         # ✅ FULL VISUAL MODE (COMPLETE PDP QA ✅)
         # =====================================
@@ -1430,7 +1424,7 @@ if uploaded_file:
 # =====================================
 # ✅ EXPORT FILE
 # =====================================
-if st.session_state.summary_rows:
+if st.session_state.processing_done and st.session_state.summary_rows:
 
     summary_df = pd.DataFrame(st.session_state.summary_rows)
     detail_df = pd.DataFrame(st.session_state.export_rows)
@@ -1467,6 +1461,7 @@ if st.session_state.summary_rows:
     wb.save(file_name)
 
     with open(file_name, "rb") as f:
+        st.markdown("## 📊 Export Results")
         if download_placeholder.download_button(
             label="📥 Download Excel Report",
             data=f,
