@@ -980,7 +980,7 @@ if uploaded_file:
         
             results = []
         
-            with ThreadPoolExecutor(max_workers=3) as executor:
+            with ThreadPoolExecutor(max_workers=8) as executor:
         
                 futures = [
                     executor.submit(process_row_cached, row.to_dict())
