@@ -415,7 +415,7 @@ def get_cvs_text(html_text):
                 text = li.get_text(strip=True)
         
                 # ✅ lowered threshold (IMPORTANT)
-                if len(text) > 10:
+                if len(text) > 5 and not any(x in text.lower() for x in ["cookie", "policy", "terms"])
                     features.append(text)
         
         # ✅ 3. limit to 5
@@ -1106,7 +1106,7 @@ if uploaded_file:
 
                 # ✅ DESCRIPTION (SAFE CLEAN)
                 desc_raw = r_text.get("description", "")
-                r_text["description"] = desc_raw
+                r_text["description"] = clean_cvs_text(desc_raw)
                 
                 # ✅ FEATURES (THIS IS THE PART YOU MISSED)
                 cleaned_features = []
