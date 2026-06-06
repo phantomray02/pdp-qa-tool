@@ -276,14 +276,23 @@ def get_cvs_text(html_text):
                 parsed = {}
         
             vendor = parsed.get("vendorContent", {}).get("vendorDetails", {})
-        
-            features = vendor.get("vendorDetailsBullets", [])
-            desc = vendor.get("vendorDetailsParagraph", "")
+            
+            desc = vendor.get("vendorDetailsParagraph", "").strip()
+            features = [f.strip() for f in vendor.get("vendorDetailsBullets", []) if f.strip()]
 
-            # ✅ CLEAN TITLE FROM JSON SECTION TOO
-            title_match = re.search(r'"productName":"(.*?)"', combined)
+            # ✅ CORRECT TITLE EXTRACTION
+            title_match = re.search(r'"title":"(.*?)"', combined)
+            
+            if not title_match:
+                title_match = re.search(r'"displayName":"(.*?)"', combined)
+            
+            if not title_match:
+                title_match = re.search(r'"productName":"(.*?)"', combined)
+            
             if title_match:
                 title = title_match.group(1).strip()
+            else:
+                title = ""
 
             # ✅ ✅ RETURN EARLY (skip all regex madness ✅)
             return {
@@ -763,13 +772,25 @@ def process_row(row):
     try:
         retail_html = get_html(row.get("retail_url", ""))
         s_text = get_salsify_text(row.get("salsify_url", ""))
-        r_text = get_cvs_text(retail_html) or {}
-        r_text["description"] = clean_cvs_text(r_text.get("description", ""))
         
-        # ✅ FIX FEATURES TOO
-        r_text["features"] = [
-            clean_cvs_text(f) for f in r_text.get("features", [])
-        ]
+        r_text = get_cvs_text(retail_html) or {}
+        
+        desc_raw = r_text.get("description", "")
+        
+        if any(x in desc_raw for x in ["\\", "self.__next_f", "\\u0026", "\\n"]):
+            r_text["description"] = clean_cvs_text(desc_raw)
+        else:
+            r_text["description"] = desc_raw
+            
+        cleaned_features = []
+        
+        for f in r_text.get("features", []):
+            if any(x in f for x in ["\\", "self.__next_f", "\\u0026", "\\n"]):
+                cleaned_features.append(clean_cvs_text(f))
+            else:
+                cleaned_features.append(f)
+        
+        r_text["features"] = cleaned_features
 
         s_images = get_salsify_images(row.get("salsify_url", ""))
         r_images = get_cvs_images(row.get("retail_url", ""))
@@ -1015,9 +1036,29 @@ if uploaded_file:
         
                 retail_html = get_html(row.get("retail_url", ""))
                 s_text = get_salsify_text(row.get("salsify_url", ""))
+                
                 r_text = get_cvs_text(retail_html) or {}
-                r_text["description"] = clean_cvs_text(r_text.get("description", ""))
-        
+
+                # ✅ DESCRIPTION (SAFE CLEAN)
+                desc_raw = r_text.get("description", "")
+                
+                if any(x in desc_raw for x in ["\\", "self.__next_f", "\\u0026", "\\n"]):
+                    r_text["description"] = clean_cvs_text(desc_raw)
+                else:
+                    r_text["description"] = desc_raw
+                
+                # ✅ FEATURES (THIS IS THE PART YOU MISSED)
+                cleaned_features = []
+                
+                for f in r_text.get("features", []):
+                    if any(x in f for x in ["\\", "self.__next_f", "\\u0026", "\\n"]):
+                        cleaned_features.append(clean_cvs_text(f))
+                    else:
+                        cleaned_features.append(f)
+                
+                r_text["features"] = cleaned_features
+                
+                # ✅ THEN CONTINUE
                 s_images = get_salsify_images(row.get("salsify_url", ""))
                 r_images = get_cvs_images(row.get("retail_url", ""))
 
@@ -1050,7 +1091,7 @@ if uploaded_file:
                 if not s_title or not r_title:
                     missing_flags.append("Title")
                 
-                if not s_desc or not r_desc:
+                if not s_desc.strip() or not r_desc.strip():
                     missing_flags.append("Description")
                 
                 if not cvs_features:
