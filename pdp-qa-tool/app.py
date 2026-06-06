@@ -315,18 +315,15 @@ def get_cvs_text(html_text):
                     raw_text = re.split(r'["\]]\)', raw_text)[0]
             
                     # ✅ append ALL continuation chunks
+
                     for chunk in chunks:
-            
-                        if len(chunk.strip()) < 20:
-                            continue
-            
-                        if len(chunk.split()) < 5:
-                            continue
-            
                         raw_text += " " + chunk
-            
-                    # ✅ stop at next structure
-                    raw_text = re.split(r'\d+:\{', raw_text)[0]
+
+                    # ✅ HARD STOP at ANY JS / hydration / JSON boundary
+                    raw_text = re.split(
+                        r'"__next_f"|children":|\["prodId"|\{"buildId"|\\u003cscript',
+                        raw_text
+                    )[0]
             
                     # ✅ clean
                     raw_text = re.sub(r'^T\d+,', '', raw_text)
@@ -334,8 +331,14 @@ def get_cvs_text(html_text):
                     raw_text = raw_text.replace('\\u0026', '&')
                     raw_text = raw_text.replace('\n', ' ')
                     raw_text = re.sub(r'\s+', ' ', raw_text).strip()
-            
-                    if len(raw_text) >= 80:
+
+                    # ✅ reject if JSON-like garbage present
+                    if (
+                        len(raw_text) >= 80 and
+                        "children" not in raw_text and
+                        "prodId" not in raw_text and
+                        "__next" not in raw_text
+                    ):
                         desc = html.unescape(raw_text)
                     else:
                         desc = ""
@@ -624,8 +627,6 @@ def process_row(row):
         desc_raw = r_text.get("description", "")
         
         if any(x in desc_raw for x in ["\\", "self.__next_f", "\\u0026", "\\n"]):
-            r_text["description"] = clean_cvs_text(desc_raw)
-        else:
             r_text["description"] = desc_raw
             
         cleaned_features = []
@@ -898,7 +899,7 @@ if uploaded_file:
                 desc_raw = r_text.get("description", "")
                 
                 if any(x in desc_raw for x in ["\\", "self.__next_f", "\\u0026", "\\n"]):
-                    r_text["description"] = clean_cvs_text(desc_raw)
+                    r_text["description"] = desc_raw
                 else:
                     r_text["description"] = desc_raw
                 
