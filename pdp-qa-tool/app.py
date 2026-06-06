@@ -249,6 +249,13 @@ def get_salsify_text(url):
 # ✅ CVS COPY EXTRACTION (FINAL WITH TITLE)
 # =========================================
 def get_cvs_text(html_text):
+        
+    debug = {
+        "pointer": "",
+        "raw_pointer_text": "",
+        "chunks_used": 0,
+        "raw_features": ""
+    }
 
     if not html_text:
         return {"title": "", "description": "", "features": []}
@@ -282,6 +289,7 @@ def get_cvs_text(html_text):
             
         if desc_match:
             raw_desc = desc_match.group(1)
+            debug["pointer"] = raw_desc
 
             # ✅ resolve pointer chain
             while raw_desc.startswith("$"):
@@ -310,6 +318,7 @@ def get_cvs_text(html_text):
             
                 if pointer_match:
                     raw_text = pointer_match.group(2)
+                    debug["raw_pointer_text"] = raw_text[:750]
             
                     # ✅ remove leading marker
                     raw_text = re.sub(r'^T\d+,', '', raw_text)
@@ -341,8 +350,10 @@ def get_cvs_text(html_text):
                         if chunk.strip().startswith("{") or chunk.strip().startswith("["):
                             continue
                     
-                        raw_text += " " + chunk
-                            
+                        if len(chunk.split()) >= 5:
+                            raw_text += " " + chunk
+                            debug["chunks_used"] += 1
+
                     # ✅ HARD STOP AFTER SAFE BUILD
                     raw_text = re.split(
                         r'"__next_f"|children":|\["prodId"|\{"buildId"|\\u003cscript',
@@ -370,6 +381,7 @@ def get_cvs_text(html_text):
         
         if bullet_match:
             raw = bullet_match.group(1)
+            debug["raw_features"] = raw[:750]
         
             parts = re.findall(r'"(.*?)"', raw)
         
@@ -384,13 +396,14 @@ def get_cvs_text(html_text):
 
     except:
         pass
-
+        
     return {
         "title": title.strip() if isinstance(title, str) else "",
         "description": desc.strip() if isinstance(desc, str) else "",
-        "features": features if isinstance(features, list) else []
+        "features": features if isinstance(features, list) else [],
+        "debug": debug
     }
-    
+
 # =====================================
 # ✅ CVS TEXT CLEANER (FINAL)
 # =====================================
@@ -640,6 +653,7 @@ def process_row(row):
         s_text = get_salsify_text(row.get("salsify_url", ""))
         
         r_text = get_cvs_text(retail_html) or {}
+        debug_data = r_text.get("debug", {})
         
         desc_raw = r_text.get("description", "")
         
@@ -716,17 +730,28 @@ def process_row(row):
         overall = int((title_score + desc_score + avg_feature_score + avg_img_score)/4)
 
         return {
-            "SKU": row.get("sku", ""),
-            "CVS RPC": row.get("cvs_rpc") or row.get("CVS RPC") or "",
-            "Salsify URL": row.get("salsify_url", ""),
-            "Retail URL": row.get("retail_url", ""),
-            "Title %": title_score,
-            "Description %": desc_score,
-            "Feature %": avg_feature_score,
-            "Image Match %": avg_img_score,
-            "Overall %": overall
+            "summary": {
+                "SKU": row.get("sku", ""),
+                "CVS RPC": row.get("cvs_rpc") or row.get("CVS RPC") or "",
+                "Salsify URL": row.get("salsify_url", ""),
+                "Retail URL": row.get("retail_url", ""),
+                "Title %": title_score,
+                "Description %": desc_score,
+                "Feature %": avg_feature_score,
+                "Image Match %": avg_img_score,
+                "Overall %": overall
+            },
+            "debug": {
+                "SKU": row.get("sku", ""),
+                "Pointer": debug_data.get("pointer", ""),
+                "Raw Pointer Text": debug_data.get("raw_pointer_text", ""),
+                "Chunks Used": debug_data.get("chunks_used", 0),
+                "Raw Features": debug_data.get("raw_features", ""),
+                "Final Description": r_text.get("description", ""),
+                "Final Features": " | ".join(r_text.get("features", []))
+            }
         }
-        
+
     except:
         return None
         
@@ -866,19 +891,32 @@ if uploaded_file:
                         results.append(result)
         
                         # ✅ summary
-                        existing = {r["SKU"] for r in st.session_state.summary_rows}
-                        if result["SKU"] not in existing:
-                            st.session_state.summary_rows.append(result)
-        
-                        # ✅ export
-                        existing_export = {r["SKU"] for r in st.session_state.export_rows}
-                        if result["SKU"] not in existing_export:
-                            st.session_state.export_rows.append({
-                                "SKU": result["SKU"],
-                                "CVS RPC": result["CVS RPC"],
-                                "Salsify URL": result["Salsify URL"],
-                                "Retail URL": result["Retail URL"]
-                            })
+                        if result:
+                        
+                            summary = result.get("summary")
+                            debug = result.get("debug")
+                        
+                            # ✅ SUMMARY (Sheet 1)
+                            if summary:
+                                if summary["SKU"] not in {r["SKU"] for r in st.session_state.summary_rows}:
+                                    st.session_state.summary_rows.append(summary)
+                        
+                            # ✅ DETAILS (Sheet 2)
+                            if summary:
+                                if summary["SKU"] not in {r["SKU"] for r in st.session_state.export_rows}:
+                                    st.session_state.export_rows.append({
+                                        "SKU": summary["SKU"],
+                                        "CVS RPC": summary["CVS RPC"],
+                                        "Salsify URL": summary["Salsify URL"],
+                                        "Retail URL": summary["Retail URL"]
+                                    })
+                        
+                            # ✅ DEBUG (Sheet 3)
+                            if "debug_rows" not in st.session_state:
+                                st.session_state.debug_rows = []
+                        
+                            if debug:
+                                st.session_state.debug_rows.append(debug)
         
                     progress_bar.progress((i + 1) / total)
                     status_text.markdown(f"Processed {i+1}/{total}")
@@ -1213,12 +1251,14 @@ if st.session_state.summary_rows:
 
     summary_df = pd.DataFrame(st.session_state.summary_rows)
     detail_df = pd.DataFrame(st.session_state.export_rows)
+    debug_df = pd.DataFrame(st.session_state.get("debug_rows", []))
 
     file_name = "pdp_qa_results.xlsx"
 
     with pd.ExcelWriter(file_name, engine="openpyxl") as writer:
         summary_df.to_excel(writer, index=False, sheet_name="Summary")
         detail_df.to_excel(writer, index=False, sheet_name="Details")
+        debug_df.to_excel(writer, index=False, sheet_name="Debug")
 
     from openpyxl import load_workbook
     from openpyxl.styles import PatternFill
