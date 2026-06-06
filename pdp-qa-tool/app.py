@@ -822,6 +822,7 @@ if uploaded_file:
             "retail url": "retail_url",
             "sku id": "sku",
             "product sku": "sku"
+            "cvs rpc": "cvs_rpc"
         }
         
         df.rename(columns=column_map, inplace=True)
