@@ -1110,12 +1110,12 @@ if uploaded_file:
                     st.markdown(f"### 🏷️ Title {score_badge(title_score)}", unsafe_allow_html=True)
                     c1, c2 = st.columns(2)
                     c1.markdown(
-                        f"<div style='font-size:18px; line-height:1.5'>{s_title or '❌ Missing'}</div>",
+                        f"<div style='font-size:24px; line-height:1.5'>{s_title or '❌ Missing'}</div>",
                         unsafe_allow_html=True
                     )
                     
                     c2.markdown(
-                        f"<div style='font-size:18px; line-height:1.5'>{r_title or '❌ Missing'}</div>",
+                        f"<div style='font-size:24px; line-height:1.5'>{r_title or '❌ Missing'}</div>",
                         unsafe_allow_html=True
                     )
                     # --------------------
@@ -1124,12 +1124,12 @@ if uploaded_file:
                     st.markdown(f"### 📄 Description {score_badge(desc_score)}", unsafe_allow_html=True)
                     c1, c2 = st.columns(2)
                     c1.markdown(
-                        f"<div style='font-size:14px; line-height:1.5'>{s_desc or '❌ Missing'}</div>",
+                        f"<div style='font-size:20px; line-height:1.5'>{s_desc or '❌ Missing'}</div>",
                         unsafe_allow_html=True
                     )
                     
                     c2.markdown(
-                        f"<div style='font-size:14px; line-height:1.5'>{r_desc or '❌ Missing'}</div>",
+                        f"<div style='font-size:20px; line-height:1.5'>{r_desc or '❌ Missing'}</div>",
                         unsafe_allow_html=True
                     )
 
@@ -1148,12 +1148,12 @@ if uploaded_file:
             
                         c1, c2 = st.columns(2)
                         c1.markdown(
-                            f"<div style='font-size:14px; line-height:1.5'>{s_val or '❌ Missing'}</div>",
+                            f"<div style='font-size:20px; line-height:1.5'>{s_val or '❌ Missing'}</div>",
                             unsafe_allow_html=True
                         )
                         
                         c2.markdown(
-                            f"<div style='font-size:14px; line-height:1.5'>{r_val or '❌ Missing'}</div>",
+                            f"<div style='font-size:20px; line-height:1.5'>{r_val or '❌ Missing'}</div>",
                             unsafe_allow_html=True
                         )
             
