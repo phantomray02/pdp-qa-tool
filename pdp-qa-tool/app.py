@@ -1108,83 +1108,83 @@ if uploaded_file:
                 # --------------------
                 with right:
                     
-                st.markdown("### 🖼️ Images")
-                
-                max_images = max(len(s_images), len(r_images))
-                
-                for i in range(max_images):
-                
-                    col1, col2, col3 = st.columns([4,4,1])
-                
-                    # ✅ HANDLE NONE CORRECTLY
+                    st.markdown("### 🖼️ Images")
                     
-                    s_url = (
-                        s_images[i].get("url")
-                        if i < len(s_images) and isinstance(s_images[i], dict)
-                        else None
-                    )
+                    max_images = max(len(s_images), len(r_images))
                     
-                    r_url = (
-                        r_images[i]
-                        if i < len(r_images) and isinstance(r_images[i], str)
-                        else None
-                    )
-                
-                    # ✅ SALSIFY DISPLAY (KEEP THIS FLAG ✅)
+                    for i in range(max_images):
                     
-                    if s_url:
-                        col1.image(s_url)
-                    else:
-                        col1.write("")
-
-                
-                    # ✅ CVS DISPLAY (CLEAN — NO FLAGS ✅)
+                        col1, col2, col3 = st.columns([4,4,1])
                     
-                    if r_url:
-                        col2.image(r_url)
-                    else:
-                        col2.write("")
-
-                
-                    # ✅ SCORE
-                    if s_url and r_url:
-                        sc = compare_images_visually(s_url, r_url)
-                    else:
-                        sc = 0
-                
-                    # ✅ COLOR ONLY (NO FLAGS)
-                    if sc >= 80:
-                        col3.markdown(f"✅ {sc}%")
-                    elif sc >= 50:
-                        col3.markdown(f"🟡 {sc}%")
-                    else:
-                        col3.markdown(f"🔴 {sc}%")
+                        # ✅ HANDLE NONE CORRECTLY
                         
-                
-                # ✅ IMAGE AVG
-                valid_img_scores = []
-                
-                for i in range(max_images):
+                        s_url = (
+                            s_images[i].get("url")
+                            if i < len(s_images) and isinstance(s_images[i], dict)
+                            else None
+                        )
+                        
+                        r_url = (
+                            r_images[i]
+                            if i < len(r_images) and isinstance(r_images[i], str)
+                            else None
+                        )
                     
-                    s_url = (
-                        s_images[i].get("url")
-                        if i < len(s_images) and isinstance(s_images[i], dict)
-                        else None
-                    )
+                        # ✅ SALSIFY DISPLAY (KEEP THIS FLAG ✅)
+                        
+                        if s_url:
+                            col1.image(s_url)
+                        else:
+                            col1.write("")
+    
                     
-                    r_url = (
-                        r_images[i]
-                        if i < len(r_images) and isinstance(r_images[i], str)
-                        else None
-                    )
-
-                    if s_url and r_url:
-                        valid_img_scores.append(compare_images_visually(s_url, r_url))
-                
-                avg_img_score = int(sum(valid_img_scores)/len(valid_img_scores)) if valid_img_scores else 0
-                
-                st.write(f"✅ Image Avg: {avg_img_score}%")
-                
+                        # ✅ CVS DISPLAY (CLEAN — NO FLAGS ✅)
+                        
+                        if r_url:
+                            col2.image(r_url)
+                        else:
+                            col2.write("")
+    
+                    
+                        # ✅ SCORE
+                        if s_url and r_url:
+                            sc = compare_images_visually(s_url, r_url)
+                        else:
+                            sc = 0
+                    
+                        # ✅ COLOR ONLY (NO FLAGS)
+                        if sc >= 80:
+                            col3.markdown(f"✅ {sc}%")
+                        elif sc >= 50:
+                            col3.markdown(f"🟡 {sc}%")
+                        else:
+                            col3.markdown(f"🔴 {sc}%")
+                            
+                    
+                    # ✅ IMAGE AVG
+                    valid_img_scores = []
+                    
+                    for i in range(max_images):
+                        
+                        s_url = (
+                            s_images[i].get("url")
+                            if i < len(s_images) and isinstance(s_images[i], dict)
+                            else None
+                        )
+                        
+                        r_url = (
+                            r_images[i]
+                            if i < len(r_images) and isinstance(r_images[i], str)
+                            else None
+                        )
+    
+                        if s_url and r_url:
+                            valid_img_scores.append(compare_images_visually(s_url, r_url))
+                    
+                    avg_img_score = int(sum(valid_img_scores)/len(valid_img_scores)) if valid_img_scores else 0
+                    
+                    st.write(f"✅ Image Avg: {avg_img_score}%")
+                    
                 
                 # --------------------
                 # ✅ FINAL SCORE
