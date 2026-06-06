@@ -323,6 +323,13 @@ def get_cvs_text(html_text):
                     desc = text
                     break
                     
+    return {
+        "title": title.strip() if isinstance(title, str) else "",
+        "description": desc.strip() if isinstance(desc, str) else "",
+        "features": features if isinstance(features, list) else [],
+        "debug": debug
+    }
+
         # -------------------------
         # ✅ FEATURES (FIXED)
         # -------------------------
