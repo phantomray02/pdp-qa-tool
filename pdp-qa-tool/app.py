@@ -357,6 +357,25 @@ def get_cvs_text(html_text):
         
             features = features[:5]
             
+        # ✅ NEW FALLBACK (NEXT.JS ALT STRUCTURE)
+        if not desc:
+            desc_match = re.search(
+                r'"productDescription":"(.*?)"',
+                combined
+            )
+            if desc_match:
+                desc = html.unescape(desc_match.group(1))
+
+        # ✅ ANOTHER COMMON FIELD
+        if not desc:
+            desc_match = re.search(
+                r'"longDescription":"(.*?)"',
+                combined
+            )
+            if desc_match:
+                desc = html.unescape(desc_match.group(1))
+
+            
         # -------------------------
         # ✅ TITLE
         # -------------------------
@@ -1107,8 +1126,9 @@ if uploaded_file:
                         s_val = s_text.get(feature_fields[i], "") if i < len(feature_fields) else ""
                         r_val = cvs_features[i] if i < len(cvs_features) else ""
             
-                        score = keyword_score(s_val, r_val)
-            
+                        scores = [keyword_score(s_val, f) for f in cvs_features]
+                        score = max(scores) if scores else 0
+
                         c1, c2 = st.columns(2)
                         c1.markdown(
                             f"<div style='font-size:25px; line-height:1.5'>{s_val or '❌ Missing'}</div>",
