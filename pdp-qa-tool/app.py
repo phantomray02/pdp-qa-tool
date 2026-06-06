@@ -279,114 +279,84 @@ def get_cvs_text(html_text):
     title = ""
 
     try:
+        
         # -------------------------
-        # ✅ DESCRIPTION
+        # ✅ DESCRIPTION (FIXED)
         # -------------------------
+        desc = ""
+        
+        # ✅ PRIMARY OLD METHOD
         desc_match = re.search(
             r'vendorDetailsParagraph":"(.*?)"',
-            html_text
+            combined
         )
-            
+        
         if desc_match:
-            raw_desc = desc_match.group(1)
-            debug["pointer"] = raw_desc
-
-            # ✅ resolve pointer chain
-            while raw_desc.startswith("$"):
-                pointer = raw_desc.replace("$", "")
-
-                nested_match = re.search(
-                    rf'{pointer}:\{{.*?"vendorDetailsParagraph":"\$(\d+)".*?\}}',
-                    html_text,
-                    re.DOTALL
-                )
-
-                if nested_match:
-                    raw_desc = f"${nested_match.group(1)}"
-                else:
+            desc = html.unescape(desc_match.group(1))
+        
+        # ✅ ✅ FALLBACK 1 — MODERN CVS JSON
+        if not desc:
+            desc_match = re.search(
+                r'"description":"(.*?)"',
+                combined
+            )
+            if desc_match:
+                desc = html.unescape(desc_match.group(1))
+        
+        # ✅ ✅ FALLBACK 2 — META TAG
+        if not desc:
+            meta_match = re.search(
+                r'<meta name="description" content="(.*?)"',
+                html_text
+            )
+            if meta_match:
+                desc = html.unescape(meta_match.group(1))
+        
+        # ✅ ✅ FALLBACK 3 — VISIBLE HTML
+        if not desc:
+            soup = BeautifulSoup(html_text, "html.parser")
+        
+            for tag in soup.find_all(["p", "div"]):
+                text = tag.get_text(strip=True)
+        
+                if len(text) > 120 and "cookie" not in text.lower():
+                    desc = text
                     break
 
-            # ✅ extract actual text
-            if raw_desc.startswith("$"):
-                pointer = raw_desc.replace("$", "")
-            
-                pointer_match = re.search(
-                    rf'{pointer}:(T\d+,)?(.*?)(?=\d+:|$)',
-                    html_text,
-                    re.DOTALL
-                )
-            
-                if pointer_match:
-                    raw_text = pointer_match.group(2)
-                    debug["raw_pointer_text"] = raw_text[:750]
-            
-                    # ✅ remove leading marker
-                    raw_text = re.sub(r'^T\d+,', '', raw_text)
-            
-                    # ✅ CLEAN FIRST (before chunking)
-                    raw_text = raw_text.replace('\\"', '"')
-                    raw_text = raw_text.replace('\\u0026', '&')
-                    raw_text = raw_text.replace('\n', ' ')
-                    raw_text = re.sub(r'\s+', ' ', raw_text).strip()
-
-                    # ✅ append ONLY reasonable continuation chunks
-                    for chunk in chunks:
-                    
-                        # skip obvious non-content
-                        if any(x in chunk for x in [
-                            "prodId",
-                            "vendorDetailsBullets",
-                            "buildId",
-                            "imageName",
-                            "dynamicMediaUrl"
-                        ]):
-                            continue
-                    
-                        # must have real words
-                        if len(chunk.split()) < 5:
-                            continue
-                    
-                        # must not look like JSON
-                        if chunk.strip().startswith("{") or chunk.strip().startswith("["):
-                            continue
-                    
-                        if len(chunk.split()) >= 5:
-                            raw_text += " " + chunk
-                            debug["chunks_used"] += 1
-
-                    # ✅ HARD STOP AFTER SAFE BUILD
-                    raw_text = re.split(
-                        r'"__next_f"|children":|\["prodId"|\{"buildId"|\\u003cscript',
-                        raw_text
-                    )[0]
-            
-                    raw_text = re.sub(r'\s+', ' ', raw_text).strip()
-            
-                    if len(raw_text) >= 40:
-                        desc = html.unescape(raw_text)
-
-                    else:
-                        desc = ""
-
-            else:
-                desc = html.unescape(raw_desc)
         # -------------------------
-        # ✅ FEATURES
+        # ✅ FEATURES (FIXED)
         # -------------------------
+        features = []
+        
+        # ✅ PRIMARY OLD METHOD
         bullet_match = re.search(
             r'vendorDetailsBullets":\[(.*?)\]',
-            html_text,
+            combined,
             re.DOTALL
         )
         
         if bullet_match:
             raw = bullet_match.group(1)
-            debug["raw_features"] = raw[:750]
+            features = [
+                html.unescape(p.strip())
+                for p in re.findall(r'"(.*?)"', raw)
+                if p.strip()
+            ]
         
-            parts = re.findall(r'"(.*?)"', raw)
+        # ✅ ✅ FALLBACK — HTML <li>
+        if not features:
+            soup = BeautifulSoup(html_text, "html.parser")
         
-            features = [html.unescape(p.strip()) for p in parts if p.strip()]
-
+            li_tags = soup.find_all("li")
+        
+            for li in li_tags:
+                text = li.get_text(strip=True)
+        
+                if len(text) > 25:
+                    features.append(text)
+        
+            features = features[:5]
+            
         # -------------------------
         # ✅ TITLE
         # -------------------------
@@ -655,10 +625,12 @@ def process_row(row):
         r_text = get_cvs_text(retail_html) or {}
         debug_data = r_text.get("debug", {})
         
+        # ✅ CLEAN DESCRIPTION (NEW FIX)
         desc_raw = r_text.get("description", "")
         
-        r_text["description"] = desc_raw
-            
+        # ✅ ALWAYS CLEAN (BEST VERSION)
+        r_text["description"] = clean_cvs_text(desc_raw)
+
         cleaned_features = []
         
         for f in r_text.get("features", []):
