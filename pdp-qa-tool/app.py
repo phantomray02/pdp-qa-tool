@@ -310,30 +310,36 @@ def get_cvs_text(html_text):
             
                 if pointer_match:
                     raw_text = pointer_match.group(1)
-                    
+            
+                    # ✅ remove broken tail
                     raw_text = re.split(r'["\]]\)', raw_text)[0]
-
+            
+                    # ✅ append ALL continuation chunks
                     for chunk in chunks:
-                        # ✅ only attach chunk that logically continues pointer text
-                        if raw_text[-15:] in chunk:
-                            raw_text = raw_text + chunk
-                            break
-  
-                    # ✅ clean AFTER merge
+            
+                        if len(chunk.strip()) < 20:
+                            continue
+            
+                        if len(chunk.split()) < 5:
+                            continue
+            
+                        raw_text += " " + chunk
+            
+                    # ✅ stop at next structure
+                    raw_text = re.split(r'\d+:\{', raw_text)[0]
+            
+                    # ✅ clean
                     raw_text = re.sub(r'^T\d+,', '', raw_text)
                     raw_text = raw_text.replace('\\"', '"')
                     raw_text = raw_text.replace('\\u0026', '&')
                     raw_text = raw_text.replace('\n', ' ')
                     raw_text = re.sub(r'\s+', ' ', raw_text).strip()
-
-                    raw_text = re.split(r'\d+:\{', raw_text)[0]
-                    raw_text = re.sub(r'\s+', ' ', raw_text).strip()
             
-                    if len(raw_text) >= 80 and " " in raw_text:
+                    if len(raw_text) >= 80:
                         desc = html.unescape(raw_text)
                     else:
                         desc = ""
-            
+
             else:
                 desc = html.unescape(raw_desc)
         # -------------------------
