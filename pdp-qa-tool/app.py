@@ -548,6 +548,40 @@ def equal_feature_block(text):
         {text}
     </div>
     """
+    
+def score_bar(score):
+
+    if score >= 80:
+        color = "#2E7D32"
+    elif score >= 50:
+        color = "#F9A825"
+    else:
+        color = "#C62828"
+
+    return f"""
+    <div style="
+        background-color:{color};
+        padding:10px;
+        border-radius:6px;
+        color:white;
+        font-weight:600;
+        margin-top:6px;
+        margin-bottom:12px;
+    ">
+        Score: {score}%
+    </div>
+    """
+def score_badge(score):
+
+    if score >= 80:
+        return f"✅ <span style='color:#4CAF50; font-weight:700'>{score}% (Strong)</span>"
+    
+    elif score >= 50:
+        return f"🟡 <span style='color:#FFC107; font-weight:700'>{score}% (Review)</span>"
+    
+    else:
+        return f"🔴 <span style='color:#F44336; font-weight:700'>{score}% (Poor)</span>"
+        
 # =========================================
 # ✅ TRUE IMAGE VISUAL COMPARISON
 # =========================================
@@ -1068,25 +1102,23 @@ if uploaded_file:
                 # --------------------
                 with left:
                     
-                    st.markdown("### 🏷️ Title")
+                    st.markdown(f"### 🏷️ Title {score_badge(title_score)}", unsafe_allow_html=True)
                     c1, c2 = st.columns(2)
                     c1.write(s_title or "❌ Missing")
                     c2.write(r_title or "❌ Missing")
-                    st.write(f"Score: {title_score}%")
-            
+                    
                     # --------------------
                     # ✅ DESCRIPTION
                     # --------------------
-                    st.markdown("### 📄 Description")
+                    st.markdown(f"### 📄 Description {score_badge(desc_score)}", unsafe_allow_html=True)
                     c1, c2 = st.columns(2)
                     c1.write(s_desc or "❌ Missing")
                     c2.write(r_desc or "❌ Missing")
-                    st.write(f"Score: {desc_score}%")
             
                     # --------------------
                     # ✅ FEATURES (SIDE-BY-SIDE ✅)
                     # --------------------
-                    st.markdown("### 📌 Features")
+                    st.markdown(f"### 📌 Features {score_badge(avg_feature_score)}", unsafe_allow_html=True)
             
                     for i in range(max_features):
             
@@ -1099,19 +1131,24 @@ if uploaded_file:
                         c1.write(s_val or "❌ Missing")
                         c2.write(r_val or "❌ Missing")
             
-                        st.write(f"Score: {score}%")
+                        st.markdown(score_badge(score), unsafe_allow_html=True)
                         st.divider()
             
-                    st.write(f"✅ Feature Avg: {avg_feature_score}%")
+                    st.markdown(score_bar(avg_feature_score), unsafe_allow_html=True)
         
                 # --------------------
                 # ✅ IMAGES (ALL + SCORES ✅)
                 # --------------------
                 with right:
                     
-                    st.markdown("### 🖼️ Images")
+                    st.markdown(f"### 🖼️ Images — Avg {score_badge(avg_img_score)}", unsafe_allow_html=True)
                     
+                    st.markdown(score_bar(avg_img_score), unsafe_allow_html=True)
+                    st.markdown("---")
+
+
                     max_images = max(len(s_images), len(r_images))
+                    
                     
                     for i in range(max_images):
                     
@@ -1154,43 +1191,22 @@ if uploaded_file:
                             sc = 0
                     
                         # ✅ COLOR ONLY (NO FLAGS)
-                        if sc >= 80:
-                            col3.markdown(f"✅ {sc}%")
-                        elif sc >= 50:
-                            col3.markdown(f"🟡 {sc}%")
-                        else:
-                            col3.markdown(f"🔴 {sc}%")
-                            
-                    
-                    # ✅ IMAGE AVG
-                    valid_img_scores = []
-                    
-                    for i in range(max_images):
-                        
-                        s_url = (
-                            s_images[i].get("url")
-                            if i < len(s_images) and isinstance(s_images[i], dict)
-                            else None
-                        )
-                        
-                        r_url = (
-                            r_images[i]
-                            if i < len(r_images) and isinstance(r_images[i], str)
-                            else None
-                        )
-    
-                        if s_url and r_url:
-                            valid_img_scores.append(compare_images_visually(s_url, r_url))
-                    
-                    avg_img_score = int(sum(valid_img_scores)/len(valid_img_scores)) if valid_img_scores else 0
-                    
-                    st.write(f"✅ Image Avg: {avg_img_score}%")
-                    
-                
+                        col3.markdown(score_badge(sc), unsafe_allow_html=True)
+
                 # --------------------
                 # ✅ FINAL SCORE
                 # --------------------
-                st.success(f"✅ Overall Score: {overall_score}%")
+                if overall_score >= 80:
+                    st.markdown(score_bar(overall_score), unsafe_allow_html=True)
+                    st.success(f"✅ Strong Match: {overall_score}%")
+                
+                elif overall_score >= 50:
+                    st.markdown(score_bar(overall_score), unsafe_allow_html=True)
+                    st.warning(f"🟡 Needs Review: {overall_score}%")
+                
+                else:
+                    st.markdown(score_bar(overall_score), unsafe_allow_html=True)
+                    st.error(f"🔴 Critical Issue: {overall_score}%")
                 st.caption(
                     f"Title: {title_score}% | "
                     f"Desc: {desc_score}% | "
