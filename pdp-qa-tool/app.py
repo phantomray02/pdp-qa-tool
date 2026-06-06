@@ -279,34 +279,60 @@ def get_cvs_text(html_text):
     title = ""
 
     try:
+        
         # =========================
-        # ✅ DESCRIPTION
+        # ✅ DESCRIPTION DEBUG CAPTURE (NEW 🔥)
         # =========================
-        desc_match = re.search(r'vendorDetailsParagraph":"(.*?)"', combined)
-        if desc_match:
-            desc = html.unescape(desc_match.group(1))
-
-        if not desc:
-            desc_match = re.search(r'"description":"(.*?)"', combined)
-            if desc_match:
-                desc = html.unescape(desc_match.group(1))
-
-        if not desc:
-            meta_match = re.search(
-                r'<meta name="description" content="(.*?)"',
-                html_text
-            )
-            if meta_match:
-                desc = html.unescape(meta_match.group(1))
-
-        if not desc:
-            soup = BeautifulSoup(html_text, "html.parser")
-            for tag in soup.find_all(["p", "div"]):
-                text = tag.get_text(strip=True)
-                if len(text) > 120 and "cookie" not in text.lower():
-                    desc = text
-                    break
-
+        
+        desc_sources = {
+            "vendor": "",
+            "description_field": "",
+            "meta": "",
+            "fallback": ""
+        }
+        
+        # ✅ 1. vendorDetailsParagraph (BEST SOURCE IF PRESENT)
+        match_vendor = re.search(r'vendorDetailsParagraph":"(.*?)"', combined)
+        if match_vendor:
+            desc_sources["vendor"] = html.unescape(match_vendor.group(1))
+        
+        # ✅ 2. generic description field
+        match_desc = re.search(r'"description":"(.*?)"', combined)
+        if match_desc:
+            desc_sources["description_field"] = html.unescape(match_desc.group(1))
+        
+        # ✅ 3. meta tag (FIXED VERSION ✅)
+        meta_match = re.search(
+            r'<meta name="description" content="(.*?)"',
+            html_text
+        )
+        if meta_match:
+            desc_sources["meta"] = html.unescape(meta_match.group(1))
+        
+        # ✅ 4. fallback HTML scrape
+        soup = BeautifulSoup(html_text, "html.parser")
+        for tag in soup.find_all(["p", "div"]):
+            text = tag.get_text(strip=True)
+            if len(text) > 120 and "cookie" not in text.lower():
+                desc_sources["fallback"] = text
+                break
+        
+        # =========================
+        # ✅ FINAL CHOICE (STRICT ORDER ✅ NO GUESSING)
+        # =========================
+        desc = (
+            desc_sources["vendor"]
+            or desc_sources["description_field"]
+            or desc_sources["meta"]
+            or desc_sources["fallback"]
+        )
+        
+        # ✅ DEBUG STORE
+        debug["desc_vendor"] = desc_sources["vendor"]
+        debug["desc_description_field"] = desc_sources["description_field"]
+        debug["desc_meta"] = desc_sources["meta"]
+        debug["desc_fallback"] = desc_sources["fallback"]
+        debug["desc_final"] = desc
         # =========================
         # ✅ FEATURES
         # =========================
@@ -347,7 +373,14 @@ def get_cvs_text(html_text):
         "title": title.strip() if isinstance(title, str) else "",
         "description": desc.strip() if isinstance(desc, str) else "",
         "features": features if isinstance(features, list) else [],
-        "debug": debug
+        "debug": {
+            **debug,
+            "Desc Vendor": debug.get("desc_vendor", ""),
+            "Desc Description Field": debug.get("desc_description_field", ""),
+            "Desc Meta": debug.get("desc_meta", ""),
+            "Desc Fallback": debug.get("desc_fallback", ""),
+            "Desc Final": debug.get("desc_final", "")
+        }
     }
 # =====================================
 # ✅ CVS TEXT CLEANER (FINAL)
@@ -801,13 +834,18 @@ def process_row(row):
                 "Image Match %": avg_img_score,
                 "Overall %": overall
             },
+            
             "debug": {
                 "SKU": row.get("sku", ""),
-                "Pointer": debug_data.get("pointer", ""),
-                "Raw Pointer Text": debug_data.get("raw_pointer_text", ""),
-                "Chunks Used": debug_data.get("chunks_used", 0),
-                "Raw Features": debug_data.get("raw_features", ""),
-                "Final Description": r_text.get("description", ""),
+                
+                # ✅ NEW DESCRIPTION SOURCE DEBUG
+                "Desc Vendor": debug_data.get("Desc Vendor", ""),
+                "Desc Description Field": debug_data.get("Desc Description Field", ""),
+                "Desc Meta": debug_data.get("Desc Meta", ""),
+                "Desc Fallback": debug_data.get("Desc Fallback", ""),
+                "Desc Final": r_text.get("description", ""),
+                
+                # ✅ EXISTING DEBUG
                 "Desc Quality Score": r_desc_debug["quality_score"],
                 "Desc Length": r_desc_debug["length"],
                 "Desc Issues": ", ".join(r_desc_debug["issues"]),
