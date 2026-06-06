@@ -337,6 +337,9 @@ def get_cvs_text(html_text):
                 # ✅ FIX ONLY TRUE BROKEN WORD SPLITS (SAFE)
                 raw_text = re.sub(r'\b([A-Za-z])\s([a-z]{2,})\b', r'\1\2', raw_text)
 
+                # ✅ remove trailing backslashes
+                text = re.sub(r'\\+$', '', text)
+                
                 # ✅ normalize spacing
                 raw_text = re.sub(r'\s+', ' ', raw_text).strip()
 
