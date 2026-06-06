@@ -1133,7 +1133,7 @@ if uploaded_file:
                         # ✅ SALSIFY DISPLAY (KEEP THIS FLAG ✅)
                         
                         if s_url:
-                            col1.image(s_url)
+                            col1.image(s_url, width=250)
                         else:
                             col1.write("")
     
@@ -1141,7 +1141,7 @@ if uploaded_file:
                         # ✅ CVS DISPLAY (CLEAN — NO FLAGS ✅)
                         
                         if r_url:
-                            col2.image(r_url)
+                            col2.image(r_url, width=250)
                         else:
                             col2.write("")
     
