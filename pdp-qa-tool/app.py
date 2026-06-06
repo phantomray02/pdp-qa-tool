@@ -1062,45 +1062,46 @@ if uploaded_file:
                 elif overall_score < 50:
                     st.warning("⚠️ Major quality issue")
 
-                with left:
                 # --------------------
                 # ✅ TITLE
                 # --------------------
-                st.markdown("### 🏷️ Title")
-                c1, c2 = st.columns(2)
-                c1.write(s_title or "❌ Missing")
-                c2.write(r_title or "❌ Missing")
-                st.write(f"Score: {title_score}%")
-        
-                # --------------------
-                # ✅ DESCRIPTION
-                # --------------------
-                st.markdown("### 📄 Description")
-                c1, c2 = st.columns(2)
-                c1.write(s_desc or "❌ Missing")
-                c2.write(r_desc or "❌ Missing")
-                st.write(f"Score: {desc_score}%")
-        
-                # --------------------
-                # ✅ FEATURES (SIDE-BY-SIDE ✅)
-                # --------------------
-                st.markdown("### 📌 Features")
-        
-                for i in range(max_features):
-        
-                    s_val = s_text.get(feature_fields[i], "") if i < len(feature_fields) else ""
-                    r_val = cvs_features[i] if i < len(cvs_features) else ""
-        
-                    score = keyword_score(s_val, r_val)
-        
+                with left:
+                    
+                    st.markdown("### 🏷️ Title")
                     c1, c2 = st.columns(2)
-                    c1.write(s_val or "❌ Missing")
-                    c2.write(r_val or "❌ Missing")
-        
-                    st.write(f"Score: {score}%")
-                    st.divider()
-        
-                st.write(f"✅ Feature Avg: {avg_feature_score}%")
+                    c1.write(s_title or "❌ Missing")
+                    c2.write(r_title or "❌ Missing")
+                    st.write(f"Score: {title_score}%")
+            
+                    # --------------------
+                    # ✅ DESCRIPTION
+                    # --------------------
+                    st.markdown("### 📄 Description")
+                    c1, c2 = st.columns(2)
+                    c1.write(s_desc or "❌ Missing")
+                    c2.write(r_desc or "❌ Missing")
+                    st.write(f"Score: {desc_score}%")
+            
+                    # --------------------
+                    # ✅ FEATURES (SIDE-BY-SIDE ✅)
+                    # --------------------
+                    st.markdown("### 📌 Features")
+            
+                    for i in range(max_features):
+            
+                        s_val = s_text.get(feature_fields[i], "") if i < len(feature_fields) else ""
+                        r_val = cvs_features[i] if i < len(cvs_features) else ""
+            
+                        score = keyword_score(s_val, r_val)
+            
+                        c1, c2 = st.columns(2)
+                        c1.write(s_val or "❌ Missing")
+                        c2.write(r_val or "❌ Missing")
+            
+                        st.write(f"Score: {score}%")
+                        st.divider()
+            
+                    st.write(f"✅ Feature Avg: {avg_feature_score}%")
         
                 # --------------------
                 # ✅ IMAGES (ALL + SCORES ✅)
