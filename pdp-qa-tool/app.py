@@ -254,6 +254,10 @@ def get_cvs_text(html_text):
     if script and script.string:
         combined = script.string
 
+    desc = ""
+    features = []
+    title = ""
+
     # =====================================
     # ✅ JSON-FIRST EXTRACTION (NEW ✅)
     # =====================================
