@@ -46,7 +46,7 @@ def get_html(url):
         return html_cache[url]
 
     try:
-        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
         if r.status_code == 200:
             html_cache[url] = r.text
 
@@ -59,6 +59,19 @@ def get_html(url):
         pass
 
     return ""
+
+# =========================================
+# ✅ LOAD IMAGE
+# =========================================
+
+def load_image(url):
+    try:
+        r = requests.get(url, timeout=8)
+        if r.status_code == 200:
+            return Image.open(BytesIO(r.content))
+    except Exception as e:
+        return None
+    return None
 
 # =========================================
 # ✅ NORMALIZE FILE NAME (DEDUP CORE)
@@ -181,7 +194,6 @@ def get_cvs_images(url):
     # ✅ return in original PDP order
     return [best_images[name]["url"] for name in order]
     
-
 # =========================================
 # ✅ TEXT EXTRACTION
 # =========================================
@@ -238,121 +250,211 @@ def get_cvs_text(html_text):
     for s in soup.find_all("script"):
         if s.string:
             combined += s.string
-            
-    # ✅ rebuild streamed chunks
-    chunks = re.findall(
-        r'self\.__next_f\.push\(\[1,"(.*?)"\]\)',
-        combined,
-        re.DOTALL
-    )    
-    
+
     desc = ""
     features = []
     title = ""
 
     # =====================================
-    # ✅ DESCRIPTION (MASTER EXTRACTION)
+    # ✅ DESCRIPTION
     # =====================================
-    
-    desc = ""
-    candidates = []
-    
-    matches = re.findall(
-        r'\d+:(T\d+,.+)',
-        combined,
-        re.DOTALL
+
+    desc_match = re.search(
+        r'vendorDetailsParagraph\\":\\"(.*?)\\"',
+        combined
     )
-    
-    # ✅ build full stream once
-    full_stream = " ".join(matches) + " " + " ".join(chunks)
-    
-    # ✅ extract clean T-block segments
-    matches = re.findall(
-        r'T\d+,(.*?)(?=\d+:|$)',
-        full_stream,
-        re.DOTALL
-    )
-    
-    for raw_text in matches:
-        raw_text = re.sub(r'^T\d+,', '', raw_text)
-        
-        raw_text = raw_text.replace('\\u0026', '&amp;')
-        raw_text = raw_text.replace('\\"', '"')
-        
-        raw_text = raw_text.replace('"])', '')
-        raw_text = raw_text.replace('self.__next_f.push([1,"', '')
-        raw_text = re.sub(r'&lt;/?script&gt;', '', raw_text)
-        
-        raw_text = raw_text.replace('\n', ' ')
-        raw_text = re.split(r'(?:\d+:\{|\d+:\[)', raw_text)[0]
-        
-        raw_text = re.sub(r'\s+', ' ', raw_text).strip()
-    
-        # ✅ FILTER
-        if len(raw_text) < 200:
-            continue
-    
-        if any(bad in raw_text.lower() for bad in [
-            "class=", "icon.", "react", "&lt;div"
-        ]):
-            continue
-    
-        if any(k in raw_text.lower() for k in [
-            "incontinence", "absorb", "leak",
-            "protection", "odor", "underwear"
-        ]):
-            candidates.append(raw_text)
-    
-    # ✅ get BEST
-    if candidates:
-        desc = html.unescape(max(candidates, key=len))
+
+    if desc_match:
+
+        raw_desc = desc_match.group(1)
+
+        # =====================================
+        # ✅ HANDLE NESTED POINTERS ($32 → $34)
+        # =====================================
+        if raw_desc.startswith("$"):
+
+            pointer = raw_desc.replace("$", "")
+
+            nested_match = re.search(
+                rf'{pointer}:\{{.*?"vendorDetailsParagraph":"\$(\d+)".*?\}}',
+                combined,
+                re.DOTALL
+            )
+
+            if nested_match:
+                pointer = nested_match.group(1)
+                raw_desc = f"${pointer}"
+
+        # =====================================
+        # ✅ POINTER CASE
+        # =====================================
+        if raw_desc.startswith("$"):
+
+            pointer = raw_desc.replace("$", "")
+
+            pointer_match = re.search(
+                rf'{pointer}:(T\d+,.+)',
+                combined,
+                re.DOTALL
+            )
+
+            if pointer_match and pointer_match.lastindex:
+
+                raw_text = pointer_match.group(1)
+
+                # ✅ rebuild streaming chunks
+                chunks = re.findall(
+                    r'self\.__next_f\.push\(\[1,"(.*?)"\]\)',
+                    combined,
+                    re.DOTALL
+                )
+
+                for chunk in chunks:
+                    raw_text += chunk
+
+                # ✅ remove prefix
+                raw_text = re.sub(r'^T\d+,', '', raw_text)
+
+                # ✅ decode characters
+                raw_text = raw_text.replace('\\u0026', '&')
+                raw_text = raw_text.replace('\\"', '"')
+
+                # ✅ remove stream artifacts
+                raw_text = raw_text.replace('"])', '')
+                raw_text = raw_text.replace('self.__next_f.push([1,"', '')
+                raw_text = re.sub(r'</?script>', '', raw_text)
+
+                raw_text = raw_text.replace('\n', ' ')
+
+                # ✅ stop before JSON blocks
+                raw_text = re.split(
+                    rf'(?:\d+:{{|\d+:\[)',
+                    raw_text
+                )[0]
+
+                # ✅ FIX ONLY TRUE BROKEN WORD SPLITS (SAFE)
+                raw_text = re.sub(r'\b([A-Za-z])\s([a-z]{2,})\b', r'\1\2', raw_text)
+
+                # ✅ normalize spacing
+                raw_text = re.sub(r'\s+', ' ', raw_text).strip()
+
+                desc = html.unescape(raw_text)
+
+        # =====================================
+        # ✅ NON-POINTER CASE
+        # =====================================
+        else:
+            desc = html.unescape(raw_desc)
 
     # =====================================
-    # ✅ FEATURES (STRICT ARRAY EXTRACTION)
+    # ✅ FALLBACK SCAN (CRITICAL EDGE CASE FIX)
     # =====================================
+
+    if not desc or len(desc) < 100:
+
+        fallback_candidates = []
     
-    features = []
+        for i in range(20, 41):
     
-    # ✅ find ALL bullet arrays
-    bullet_blocks = re.findall(
-        r'\d+:\[(.*?)\]',
-        combined,
-        re.DOTALL
-    )
+            m = re.search(
+                rf'{i}:(T\d+,.+)',
+                combined,
+                re.DOTALL
+            )
     
-    for block in bullet_blocks:
+            if not m:
+                continue
     
-        items = re.findall(r'"(.*?)"', block)
+            raw_text = m.group(1)
     
-        clean_items = [
-            html.unescape(x).strip()
-            for x in items
-            if len(x.strip()) > 30
-        ]
+            # ✅ rebuild chunks
+            chunks = re.findall(
+                r'self\.__next_f\.push\(\[1,"(.*?)"\]\)',
+                combined,
+                re.DOTALL
+            )
     
-        # ✅ only keep REAL feature sets
-        if (
-            len(clean_items) >= 3 and
-            any("protection" in x.lower() or "absorb" in x.lower() for x in clean_items)
-        ):
-            features = clean_items
-            break
+            for chunk in chunks:
+                raw_text += chunk
+    
+            # ✅ clean
+            raw_text = re.sub(r'^T\d+,', '', raw_text)
+            raw_text = raw_text.replace('\\u0026', '&')
+            raw_text = raw_text.replace('\\"', '"')
+    
+            raw_text = raw_text.replace('"])', '')
+            raw_text = raw_text.replace('self.__next_f.push([1,"', '')
+            raw_text = re.sub(r'</?script>', '', raw_text)
+    
+            raw_text = raw_text.replace('\n', ' ')
+    
+            raw_text = re.split(
+                rf'(?:\d+:{{|\d+:\[)',
+                raw_text
+            )[0]
+    
+            raw_text = re.sub(r'\s+', ' ', raw_text).strip()
+    
+            # ✅ 🚨 FILTER BAD BLOCKS
             
+            if (
+                "<div" in raw_text or
+                "class=" in raw_text or
+                "icon." in raw_text or
+                "jojyo" in raw_text or
+                "react" in raw_text.lower()
+            ):
+                continue
+
+    
+            # ✅ ✅ ACCEPT ONLY REAL PDP TEXT
+            if (
+                len(raw_text) > 200 and
+                any(k in raw_text.lower() for k in [
+                    "pad", "pads", "incontinence", "absorb", "protection", "leak"
+                ])
+            ):
+                fallback_candidates.append(raw_text)
+    
+        if fallback_candidates:
+            desc = html.unescape(max(fallback_candidates, key=len))
+
     # =====================================
-    # ✅ TITLE — FINAL SAFE MATCH
+    # ✅ FEATURES
     # =====================================
 
-    # ✅ TITLE — FINAL SAFE MATCH
-    title = ""
-    
-    title_matches = re.findall(r'"productName":"(.*?)"', combined)
-    
-    if title_matches:
-        title = html.unescape(title_matches[0].strip())
-    else:
-        name_matches = re.findall(r'"name":"(.*?)"', combined)
-        if name_matches:
-            title = html.unescape(name_matches[0].strip())
+    bullet_match = re.search(
+        r'vendorDetailsBullets\\":\[(.*?)\]',
+        combined,
+        re.DOTALL
+    )
+
+    if bullet_match:
+
+        raw_block = bullet_match.group(1)
+
+        for x in re.findall(r'"(.*?)"', raw_block):
+            clean = html.unescape(x).strip()
+            if len(clean) > 20:
+                features.append(clean)
+
+    # =====================================
+    # ✅ TITLE
+    # =====================================
+
+    title_match = re.search(
+        r'"productName":"(.*?)"',
+        combined
+    )
+
+    if not title_match:
+        title_match = re.search(
+            r'"name":"(.*?)"',
+            combined
+        )
+
+    if title_match:
+        title = title_match.group(1).strip()
 
     # =====================================
     # ✅ FINAL SAFE RETURN
@@ -467,6 +569,9 @@ def load_image_with_white_bg(img_data):
 # ✅ STREAMLIT IMAGE CACHE (BIG SPEED BOOST)
 # =====================================
 @st.cache_data(show_spinner=False)
+def process_row_cached(row_dict):
+    return process_row(row_dict)
+    
 def fetch_image_cached(url):
     try:
         resp = requests.get(url, timeout=5)
@@ -475,14 +580,22 @@ def fetch_image_cached(url):
     except:
         return None
     return None
+# =====================================
+# ✅ IMAGE PREFETCH
+# =====================================
+def prefetch_images(urls):
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        list(executor.map(fetch_image_cached, urls))
     
-def compare_images_visually(s_data, r_data):
+def compare_images_visually(s_url, r_url):
     try:
+        
+        def fetch_and_cache(url):
+            return fetch_image_cached(url)
 
         # ✅ FETCH BOTH
-    
-        s_img_data = s_data
-        r_img_data = r_data
+        s_img_data = fetch_and_cache(s_url)
+        r_img_data = fetch_and_cache(r_url)
 
         if not s_img_data or not r_img_data:
             return 0
@@ -531,11 +644,39 @@ def compare_images_visually(s_data, r_data):
 
     except:
         return 0
+# =====================================
+# ✅ IMAGE MATCHING
+# =====================================
+def match_images_visual(s_images, r_images):
 
-@st.cache_data(show_spinner=False)
-def process_row_cached(row_dict):
-    return process_row(row_dict)
+    results = []
 
+    max_len = max(len(s_images), len(r_images))
+
+    for i in range(max_len):
+
+        s_url = (
+            s_images[i].get("url")
+            if i < len(s_images) and isinstance(s_images[i], dict)
+            else None
+        )
+        
+        r_url = (
+            r_images[i]
+            if i < len(r_images) and isinstance(r_images[i], str)
+            else None
+        )
+
+        # ✅ ✅ USE VISUAL COMPARISON (NOT STRING MATCH)
+        if s_url and r_url:
+            score = compare_images_visually(s_url, r_url)
+        else:
+            score = 0
+
+        results.append((s_url, r_url, score))
+
+    return results
+    
 def process_row(row):
 
     try:
@@ -562,6 +703,14 @@ def process_row(row):
         for img in r_images:
             if isinstance(img, str):
                 all_urls.append(img)
+        
+        prefetch_images(all_urls)
+
+        if not isinstance(s_images, list):
+            s_images = []
+
+        if not isinstance(r_images, list):
+            r_images = []
 
         # ✅ SCORES
         title_score = keyword_score(s_text.get("title", ""), r_text.get("title", ""))
@@ -589,10 +738,7 @@ def process_row(row):
             r_url = r_images[i] if i < len(r_images) else None
 
             if s_url and r_url:
-                s_data = fetch_image_cached(s_url) if s_url else None
-                r_data = fetch_image_cached(r_url) if r_url else None
-                
-                sc = compare_images_visually(s_data, r_data)
+                sc = compare_images_visually(s_url, r_url)
                 if sc > 0:
                     img_scores.append(sc)
 
@@ -718,7 +864,7 @@ if uploaded_file:
         
             results = []
 
-            with ThreadPoolExecutor(max_workers=3) as executor:
+            with ThreadPoolExecutor(max_workers=5) as executor:
 
                 futures = [
                     executor.submit(process_row_cached, row.to_dict())
@@ -851,11 +997,7 @@ if uploaded_file:
                     )
 
                     if s_url and r_url:
-                        s_data = fetch_image_cached(s_url) if s_url else None
-                        r_data = fetch_image_cached(r_url) if r_url else None
-            
-                        sc = compare_images_visually(s_data, r_data)
-
+                        sc = compare_images_visually(s_url, r_url)
                         img_scores.append(sc)
         
                 avg_img_score = int(sum(img_scores)/len(img_scores)) if img_scores else 0
@@ -982,11 +1124,7 @@ if uploaded_file:
                 
                     # ✅ SCORE
                     if s_url and r_url:
-                        s_data = fetch_image_cached(s_url) if s_url else None
-                        r_data = fetch_image_cached(r_url) if r_url else None
-                        
-                        sc = compare_images_visually(s_data, r_data)
-
+                        sc = compare_images_visually(s_url, r_url)
                     else:
                         sc = 0
                 
@@ -1017,11 +1155,8 @@ if uploaded_file:
                     )
 
                     if s_url and r_url:
-                        s_data = fetch_image_cached(s_url) if s_url else None
-                        r_data = fetch_image_cached(r_url) if r_url else None
-                    
-                        valid_img_scores.append(compare_images_visually(s_data, r_data))
-
+                        valid_img_scores.append(compare_images_visually(s_url, r_url))
+                
                 avg_img_score = int(sum(valid_img_scores)/len(valid_img_scores)) if valid_img_scores else 0
                 
                 st.write(f"✅ Image Avg: {avg_img_score}%")
@@ -1089,7 +1224,6 @@ if st.session_state.summary_rows:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         ):
             st.session_state.download_clicked = True
-
 
 
 
