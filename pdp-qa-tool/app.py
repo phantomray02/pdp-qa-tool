@@ -1104,16 +1104,30 @@ if uploaded_file:
                     
                     st.markdown(f"### 🏷️ Title {score_badge(title_score)}", unsafe_allow_html=True)
                     c1, c2 = st.columns(2)
-                    c1.write(s_title or "❌ Missing")
-                    c2.write(r_title or "❌ Missing")
+                    c1.markdown(
+                        f"<div style='font-size:1.2rem'>{s_title or '❌ Missing'}</div>",
+                        unsafe_allow_html=True
+                    )
                     
+                    c2.markdown(
+                        f"<div style='font-size:1.2rem'>{r_title or '❌ Missing'}</div>",
+                        unsafe_allow_html=True
+                    )
                     # --------------------
                     # ✅ DESCRIPTION
                     # --------------------
                     st.markdown(f"### 📄 Description {score_badge(desc_score)}", unsafe_allow_html=True)
                     c1, c2 = st.columns(2)
-                    c1.write(s_desc or "❌ Missing")
-                    c2.write(r_desc or "❌ Missing")
+                    c1.markdown(
+                        f"<div style='font-size:1rem; line-height:1.6'>{s_desc or '❌ Missing'}</div>",
+                        unsafe_allow_html=True
+                    )
+                    
+                    c2.markdown(
+                        f"<div style='font-size:1rem; line-height:1.6'>{r_desc or '❌ Missing'}</div>",
+                        unsafe_allow_html=True
+                    )
+
             
                     # --------------------
                     # ✅ FEATURES (SIDE-BY-SIDE ✅)
@@ -1128,8 +1142,16 @@ if uploaded_file:
                         score = keyword_score(s_val, r_val)
             
                         c1, c2 = st.columns(2)
-                        c1.write(s_val or "❌ Missing")
-                        c2.write(r_val or "❌ Missing")
+                        c1.markdown(
+                            f"<div style='font-size:0.95rem'>{s_val or '❌ Missing'}</div>",
+                            unsafe_allow_html=True
+                        )
+                        
+                        c2.markdown(
+                            f"<div style='font-size:0.95rem'>{r_val or '❌ Missing'}</div>",
+                            unsafe_allow_html=True
+                        )
+
             
                         st.markdown(score_badge(score), unsafe_allow_html=True)
                         st.divider()
@@ -1171,7 +1193,12 @@ if uploaded_file:
                         # ✅ SALSIFY DISPLAY (KEEP THIS FLAG ✅)
                         
                         if s_url:
-                            col1.image(s_url, width=250)
+                            
+                            col1.markdown(
+                                f"<img src='{s_url}' style='width:100%; max-width:280px;'>",
+                                unsafe_allow_html=True
+                            )
+
                         else:
                             col1.write("")
     
@@ -1179,7 +1206,12 @@ if uploaded_file:
                         # ✅ CVS DISPLAY (CLEAN — NO FLAGS ✅)
                         
                         if r_url:
-                            col2.image(r_url, width=250)
+                            
+                            col2.markdown(
+                                f"<img src='{r_url}' style='width:100%; max-width:280px;'>",
+                                unsafe_allow_html=True
+                            )
+
                         else:
                             col2.write("")
     
