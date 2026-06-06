@@ -416,7 +416,7 @@ def get_cvs_text(html_text):
                 text = li.get_text(strip=True)
         
                 # ✅ lowered threshold (IMPORTANT)
-                if len(text) > 5 and not any(x in text.lower() for x in ["cookie", "policy", "terms"])
+                if len(text) > 5 and not any(x in text.lower() for x in ["cookie", "policy", "terms"]):
                     features.append(text)
         
         # ✅ 3. limit to 5
