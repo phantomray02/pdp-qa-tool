@@ -433,13 +433,21 @@ def get_cvs_text(html_text):
         combined,
         re.DOTALL
     )
-
+    
     if bullet_match:
-
         raw_block = bullet_match.group(1)
-
-        for x in re.findall(r'"(.*?)"', raw_block):
-            clean = html.unescape(x).strip()
+    
+        # ✅ decode first
+        raw_block = raw_block.encode().decode("unicode_escape")
+    
+        # ✅ split safely on ","
+        parts = raw_block.split('","')
+    
+        for p in parts:
+            clean = p.strip(' "')
+            clean = clean.replace("\\", "")
+            clean = html.unescape(clean)
+    
             if len(clean) > 20:
                 features.append(clean)
 
