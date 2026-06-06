@@ -277,9 +277,9 @@ def get_cvs_text(html_text):
         # -------------------------
         desc_match = re.search(
             r'vendorDetailsParagraph":"(.*?)"',
-            combined
+            html_text
         )
-
+            
         if desc_match:
             raw_desc = desc_match.group(1)
 
@@ -303,43 +303,61 @@ def get_cvs_text(html_text):
                 pointer = raw_desc.replace("$", "")
             
                 pointer_match = re.search(
-                    rf'{pointer}:(T\d+,.+)',
+                    rf'{pointer}:(T\d+,)?(.*?)(?=\d+:|$)',
                     html_text,
                     re.DOTALL
                 )
             
                 if pointer_match:
-                    raw_text = pointer_match.group(1)
+                    raw_text = pointer_match.group(2)
             
-                    # ✅ remove broken tail
-                    raw_text = re.split(r'["\]]\)', raw_text)[0]
+                    # ✅ remove leading marker
+                    raw_text = re.sub(r'^T\d+,', '', raw_text)
             
-                    # ✅ append ALL continuation chunks
-
+                    # ✅ CLEAN FIRST (before chunking)
+                    raw_text = raw_text.replace('\\"', '"')
+                    raw_text = raw_text.replace('\\u0026', '&')
+                    raw_text = raw_text.replace('\n', ' ')
+                    raw_text = re.sub(r'\s+', ' ', raw_text).strip()
+            
+                    # ✅ ONLY append SAFE continuation chunks
                     for chunk in chunks:
-                        raw_text += " " + chunk
-
-                    # ✅ HARD STOP at ANY JS / hydration / JSON boundary
+                    
+                        # ✅ skip if clearly not description content
+                        if any(x in chunk for x in [
+                            "prodId",
+                            "vendorDetailsBullets",
+                            "buildId",
+                            "children",
+                            "imageName",
+                            "dynamicMediaUrl"
+                        ]):
+                            continue
+                    
+                        # ✅ must look like sentence
+                        if not re.search(r'[a-zA-Z]{5,}', chunk):
+                            continue
+                    
+                        # ✅ avoid structural fragments
+                        if chunk.strip().startswith("{") or chunk.strip().startswith("["):
+                            continue
+                    
+                        # ✅ append only clean fragments
+                        if len(chunk.split()) >= 6:
+                            raw_text += " " + chunk
+                    ``
+                    # ✅ HARD STOP AFTER SAFE BUILD
                     raw_text = re.split(
                         r'"__next_f"|children":|\["prodId"|\{"buildId"|\\u003cscript',
                         raw_text
                     )[0]
             
-                    # ✅ clean
-                    raw_text = re.sub(r'^T\d+,', '', raw_text)
-                    raw_text = raw_text.replace('\\"', '"')
-                    raw_text = raw_text.replace('\\u0026', '&')
-                    raw_text = raw_text.replace('\n', ' ')
                     raw_text = re.sub(r'\s+', ' ', raw_text).strip()
-
-                    # ✅ reject if JSON-like garbage present
-                    if (
-                        len(raw_text) >= 80 and
-                        "children" not in raw_text and
-                        "prodId" not in raw_text and
-                        "__next" not in raw_text
-                    ):
+            
+                    if len(raw_text) >= 80:
                         desc = html.unescape(raw_text)
+
+
                     else:
                         desc = ""
 
@@ -350,13 +368,16 @@ def get_cvs_text(html_text):
         # -------------------------
         bullet_match = re.search(
             r'vendorDetailsBullets":\[(.*?)\]',
-            combined,
+            html_text,
             re.DOTALL
         )
-
+        
         if bullet_match:
-            parts = bullet_match.group(1).split('","')
-            features = [html.unescape(p.strip(' "')) for p in parts if p.strip()]
+            raw = bullet_match.group(1)
+        
+            parts = re.findall(r'"(.*?)"', raw)
+        
+            features = [html.unescape(p.strip()) for p in parts if p.strip()]
 
         # -------------------------
         # ✅ TITLE
@@ -626,8 +647,7 @@ def process_row(row):
         
         desc_raw = r_text.get("description", "")
         
-        if any(x in desc_raw for x in ["\\", "self.__next_f", "\\u0026", "\\n"]):
-            r_text["description"] = desc_raw
+        r_text["description"] = desc_raw
             
         cleaned_features = []
         
@@ -668,15 +688,19 @@ def process_row(row):
         cvs_features = r_text.get("features") if isinstance(r_text, dict) else []
         if not isinstance(cvs_features, list):
             cvs_features = []
-
+            
+        feature_fields = ["feature1","feature2","feature3","feature4","feature5"]
+        
         feature_scores = []
-
-        for f_key in ["feature1","feature2","feature3","feature4","feature5"]:
+        
+        for f_key in feature_fields:
             s_val = s_text.get(f_key, "")
-
+        
             scores = [keyword_score(s_val, f) for f in cvs_features if isinstance(f, str)]
-            feature_scores.append(max(scores) if scores else 0)
-
+        
+            best = max(scores) if scores else 0
+            feature_scores.append(best)
+        
         avg_feature_score = int(sum(feature_scores)/len(feature_scores)) if feature_scores else 0
 
         # ✅ IMAGE SCORE
@@ -897,11 +921,7 @@ if uploaded_file:
 
                 # ✅ DESCRIPTION (SAFE CLEAN)
                 desc_raw = r_text.get("description", "")
-                
-                if any(x in desc_raw for x in ["\\", "self.__next_f", "\\u0026", "\\n"]):
-                    r_text["description"] = desc_raw
-                else:
-                    r_text["description"] = desc_raw
+                r_text["description"] = desc_raw
                 
                 # ✅ FEATURES (THIS IS THE PART YOU MISSED)
                 cleaned_features = []
