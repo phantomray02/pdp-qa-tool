@@ -279,31 +279,18 @@ def get_cvs_text(html_text):
     title = ""
 
     try:
-        
-        # -------------------------
-        # ✅ DESCRIPTION (FIXED)
-        # -------------------------
-        desc = ""
-        
-        # ✅ PRIMARY OLD METHOD
-        desc_match = re.search(
-            r'vendorDetailsParagraph":"(.*?)"',
-            combined
-        )
-        
+        # =========================
+        # ✅ DESCRIPTION
+        # =========================
+        desc_match = re.search(r'vendorDetailsParagraph":"(.*?)"', combined)
         if desc_match:
             desc = html.unescape(desc_match.group(1))
-        
-        # ✅ ✅ FALLBACK 1 — MODERN CVS JSON
+
         if not desc:
-            desc_match = re.search(
-                r'"description":"(.*?)"',
-                combined
-            )
+            desc_match = re.search(r'"description":"(.*?)"', combined)
             if desc_match:
                 desc = html.unescape(desc_match.group(1))
-        
-        # ✅ ✅ FALLBACK 2 — META TAG
+
         if not desc:
             meta_match = re.search(
                 r'<meta name="description" content="(.*?)"',
@@ -311,37 +298,24 @@ def get_cvs_text(html_text):
             )
             if meta_match:
                 desc = html.unescape(meta_match.group(1))
-        
-        # ✅ ✅ FALLBACK 3 — VISIBLE HTML
+
         if not desc:
             soup = BeautifulSoup(html_text, "html.parser")
-        
             for tag in soup.find_all(["p", "div"]):
                 text = tag.get_text(strip=True)
-        
                 if len(text) > 120 and "cookie" not in text.lower():
                     desc = text
                     break
-                    
-    return {
-        "title": title.strip() if isinstance(title, str) else "",
-        "description": desc.strip() if isinstance(desc, str) else "",
-        "features": features if isinstance(features, list) else [],
-        "debug": debug
-    }
 
-        # -------------------------
-        # ✅ FEATURES (FIXED)
-        # -------------------------
-        features = []
-        
-        # ✅ PRIMARY OLD METHOD
+        # =========================
+        # ✅ FEATURES
+        # =========================
         bullet_match = re.search(
             r'vendorDetailsBullets":\[(.*?)\]',
             combined,
             re.DOTALL
         )
-        
+
         if bullet_match:
             raw = bullet_match.group(1)
             features = [
@@ -349,52 +323,32 @@ def get_cvs_text(html_text):
                 for p in re.findall(r'"(.*?)"', raw)
                 if p.strip()
             ]
-        
-        # ✅ ✅ FALLBACK — HTML <li>
+
         if not features:
             soup = BeautifulSoup(html_text, "html.parser")
-        
-            li_tags = soup.find_all("li")
-        
-            for li in li_tags:
+            for li in soup.find_all("li"):
                 text = li.get_text(strip=True)
-        
                 if len(text) > 25:
                     features.append(text)
-        
             features = features[:5]
-            
-        # ✅ NEW FALLBACK (NEXT.JS ALT STRUCTURE)
-        if not desc:
-            desc_match = re.search(
-                r'"productDescription":"(.*?)"',
-                combined
-            )
-            if desc_match:
-                desc = html.unescape(desc_match.group(1))
 
-        # ✅ ANOTHER COMMON FIELD
-        if not desc:
-            desc_match = re.search(
-                r'"longDescription":"(.*?)"',
-                combined
-            )
-            if desc_match:
-                desc = html.unescape(desc_match.group(1))
-
-        # -------------------------
+        # =========================
         # ✅ TITLE
-        # -------------------------
+        # =========================
         title_match = re.search(r'"title":"(.*?)"', combined)
         if title_match:
             title = title_match.group(1)
-        
-        return {
-            "title": title.strip() if isinstance(title, str) else "",
-            "description": desc.strip() if isinstance(desc, str) else "",
-            "features": features if isinstance(features, list) else [],
-            "debug": debug
-        }
+
+    except:
+        pass
+
+    # ✅ ✅ ONLY RETURN HERE
+    return {
+        "title": title.strip() if isinstance(title, str) else "",
+        "description": desc.strip() if isinstance(desc, str) else "",
+        "features": features if isinstance(features, list) else [],
+        "debug": debug
+    }
 # =====================================
 # ✅ CVS TEXT CLEANER (FINAL)
 # =====================================
