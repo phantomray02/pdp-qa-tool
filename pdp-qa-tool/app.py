@@ -821,7 +821,7 @@ if uploaded_file:
             "salsify url": "salsify_url",
             "retail url": "retail_url",
             "sku id": "sku",
-            "product sku": "sku"
+            "product sku": "sku",
             "cvs rpc": "cvs_rpc"
         }
         
