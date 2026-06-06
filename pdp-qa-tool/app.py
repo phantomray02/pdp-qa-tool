@@ -1206,7 +1206,7 @@ if uploaded_file:
                         # ✅ SALSIFY IMAGE
                         if s_url:
                             col1.markdown(
-                                f"<img src='{s_url}' style='width:100%; max-width:280px; border-radius:6px;'>",
+                                f"<img src='{s_url}'style='width:12vw; min-width:150px; border-radius:6px;'>",
                                 unsafe_allow_html=True
                             )
                         else:
@@ -1215,7 +1215,7 @@ if uploaded_file:
                         # ✅ CVS IMAGE
                         if r_url:
                             col2.markdown(
-                                f"<img src='{r_url}' style='width:100%; max-width:280px; border-radius:6px;'>",
+                                f"<img src='{r_url}'style='width:12vw; min-width:150px; border-radius:6px;'>",
                                 unsafe_allow_html=True
                             )
                         else:
