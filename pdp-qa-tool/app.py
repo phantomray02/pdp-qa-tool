@@ -249,13 +249,48 @@ def get_cvs_text(html_text):
     soup = BeautifulSoup(html_text, "html.parser")
 
     combined = ""
-    for s in soup.find_all("script"):
-        if s.string:
-            combined += s.string
+    
+    script = soup.find("script", {"id": "__NEXT_DATA__"})
+    if script and script.string:
+        combined = script.string
 
-    desc = ""
-    features = []
-    title = ""
+    # =====================================
+    # ✅ JSON-FIRST EXTRACTION (NEW ✅)
+    # =====================================
+    try:
+        import json
+
+        match = re.search(r'"vendorDetails":\{.*?"vendorPrdWeight":.*?\}', combined, re.DOTALL)
+
+        if match:
+            json_block = match.group(0)
+
+            # ✅ fix escaped characters
+            try:
+                json_block = json_block.encode().decode("unicode_escape")
+                parsed = json.loads("{" + json_block + "}")
+            except:
+                parsed = {}
+
+            vendor = parsed.get("vendorDetails", {})
+
+            features = vendor.get("vendorDetailsBullets", [])
+            desc = vendor.get("vendorDetailsParagraph", "")
+
+            # ✅ CLEAN TITLE FROM JSON SECTION TOO
+            title_match = re.search(r'"productName":"(.*?)"', combined)
+            if title_match:
+                title = title_match.group(1).strip()
+
+            # ✅ ✅ RETURN EARLY (skip all regex madness ✅)
+            return {
+                "title": title,
+                "description": desc,
+                "features": features
+            }
+
+    except Exception as e:
+        pass  # ✅ fallback to existing logic
 
     # =====================================
     # ✅ DESCRIPTION
@@ -338,7 +373,7 @@ def get_cvs_text(html_text):
                 raw_text = re.sub(r'\b([A-Za-z])\s([a-z]{2,})\b', r'\1\2', raw_text)
 
                 # ✅ remove trailing backslashes
-                text = re.sub(r'\\+$', '', text)
+                raw_text = re.sub(r'\\+$', '', raw_text)
                 
                 # ✅ normalize spacing
                 raw_text = re.sub(r'\s+', ' ', raw_text).strip()
@@ -487,38 +522,30 @@ def clean_cvs_text(text):
     if not text:
         return ""
 
-    # ✅ decode unicode (\u0026 → &)
+    # ✅ fix encoding once
     try:
-        text = text.encode().decode('unicode_escape')
+        text = text.encode('latin1', errors='ignore').decode('utf-8', errors='ignore')
     except:
         pass
 
-    # ✅ decode HTML (&amp; → &)
-    text = html.unescape(text)
+    # ✅ decode escape sequences once
+    try:
+        text = bytes(text, "utf-8").decode("unicode_escape")
+    except:
+        pass
 
-    # ✅ fix escaped quotes
-    text = text.replace('\\"', '"')
-    text = text.replace("\\'", "'")
-
-    # ✅ remove all backslashes
+    # ✅ remove slashes
     text = text.replace("\\", "")
 
-    # ✅ remove JSON garbage
+    # ✅ HTML decode
+    text = html.unescape(text)
+
+    # ✅ remove junk
     text = re.sub(r'\$?\d+:\{.*?\}', '', text)
     text = re.sub(r'\$?\d+:\[.*?\]', '', text)
-
-    # ✅ remove streaming junk
     text = re.sub(r'self\.__next_f\.push\(.*?\)', '', text)
 
-    # ✅ remove HTML tags
-    text = re.sub(r'<.*?>', '', text)
-    text = re.sub(r'&lt;.*?&gt;', '', text)
-    text = re.sub(r'&amp;lt;.*?&amp;gt;', '', text)
-
-    # ✅ remove weird tokens
-    text = re.sub(r'^T\d+,', '', text)
-
-    # ✅ normalize spacing
+    # ✅ normalize
     text = re.sub(r'\s+', ' ', text).strip()
 
     return text
