@@ -263,44 +263,41 @@ def get_cvs_text(html_text):
     # =====================================
     try:
         import json
-        
+    
         match = re.search(
             r'vendorContent":\{.*\},"totalReviewCount"',
             combined,
             re.DOTALL
         )
-        
+    
         if match:
             json_block = match.group(0)
             json_block = json_block.rsplit(',"totalReviewCount"', 1)[0]
-        
-            try:
-                parsed = json.loads("{" + json_block.strip().lstrip(",") + "}")
-        
-                vendor = parsed.get("vendorContent", {}).get("vendorDetails", {})
-        
-                desc = vendor.get("vendorDetailsParagraph", "").strip()
-                features = [f.strip() for f in vendor.get("vendorDetailsBullets", []) if f.strip()]
-        
-                # ✅ TITLE
-                title_match = re.search(r'"title":"(.*?)"', combined)
-                if not title_match:
-                    title_match = re.search(r'"displayName":"(.*?)"', combined)
-                if not title_match:
-                    title_match = re.search(r'"productName":"(.*?)"', combined)
-        
-                title = title_match.group(1).strip() if title_match else ""
-        
-                # ✅ ✅ ONLY RETURN IF VALID
-                if desc or features:
-                    return {
-                        "title": title,
-                        "description": desc,
-                        "features": features
-                    }
-        
-            except Exception as e:
-                pass  # ✅ allow fallback
+    
+            parsed = json.loads("{" + json_block.strip().lstrip(",") + "}")
+    
+            vendor = parsed.get("vendorContent", {}).get("vendorDetails", {})
+    
+            desc = vendor.get("vendorDetailsParagraph", "").strip()
+            features = [f.strip() for f in vendor.get("vendorDetailsBullets", []) if f.strip()]
+    
+            title_match = re.search(r'"title":"(.*?)"', combined)
+            if not title_match:
+                title_match = re.search(r'"displayName":"(.*?)"', combined)
+            if not title_match:
+                title_match = re.search(r'"productName":"(.*?)"', combined)
+    
+            title = title_match.group(1).strip() if title_match else ""
+    
+            if desc or features:
+                return {
+                    "title": title,
+                    "description": desc,
+                    "features": features
+                }
+    
+    except Exception:
+        pass  # ✅ THIS IS REQUIRED
 
     # =====================================
     # ✅ DESCRIPTION
