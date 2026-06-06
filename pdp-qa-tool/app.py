@@ -812,6 +812,7 @@ if uploaded_file:
     
         df = pd.read_csv(uploaded_file)
         
+        # ✅ normalize columns
         df.columns = [c.strip().lower() for c in df.columns]
         
         column_map = {
@@ -823,6 +824,10 @@ if uploaded_file:
         
         df.rename(columns=column_map, inplace=True)
 
+        # ✅ ensure brand column exists (column E fallback)
+        if "brand" not in df.columns:
+            if len(df.columns) >= 5:
+                df.rename(columns={df.columns[4]: "brand"}, inplace=True)
 
         required_cols = ["sku", "salsify_url", "retail_url"]
 
@@ -833,15 +838,22 @@ if uploaded_file:
             st.write("Detected columns:", list(df.columns))
             st.stop()
 
-    
+        # ✅ BRAND FILTER (NEW)
+        brands = sorted(df["brand"].dropna().unique()) if "brand" in df.columns else []
+        selected_brand = st.selectbox("🏷️ Select Brand", ["All"] + brands)
+
+        if selected_brand != "All":
+            df = df[df["brand"] == selected_brand]
+
         BATCH_SIZE = 20
     
         start = st.session_state.start_idx
         end = start + BATCH_SIZE
+
         if start >= len(df):
             st.session_state.processing_done = True
+
         batch_df = df.iloc[start:end]
-    
     
         # =====================================
         # ✅ OPTIONAL SAFETY (VIEW MODE RESET ✅)
@@ -860,7 +872,6 @@ if uploaded_file:
         st.write("### Overall Progress")
         overall_progress_bar = st.progress(0)
     
-    
         # =====================================
         # ✅ PROCESSING LOOP (FAST MODE)
         # =====================================
@@ -868,7 +879,7 @@ if uploaded_file:
         
             results = []
 
-            with ThreadPoolExecutor(max_workers=5) as executor:
+            with ThreadPoolExecutor(max_workers=3) as executor:
 
                 futures = [
                     executor.submit(process_row_cached, row.to_dict())
@@ -904,7 +915,7 @@ if uploaded_file:
 
             st.write(f"✅ Rows processed so far: {len(st.session_state.summary_rows)}")
             
-            # ✅ AUTO-BATCH (REQUIRED)
+            # ✅ AUTO-BATCH
             if st.session_state.start_idx + BATCH_SIZE < len(df):
                 st.session_state.start_idx += BATCH_SIZE
                 time.sleep(0.3)
