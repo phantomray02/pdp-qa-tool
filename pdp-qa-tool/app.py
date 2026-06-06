@@ -1110,12 +1110,12 @@ if uploaded_file:
                     st.markdown(f"### 🏷️ Title {score_badge(title_score)}", unsafe_allow_html=True)
                     c1, c2 = st.columns(2)
                     c1.markdown(
-                        f"<div style='font-size: clamp(18px, 1.2vw, 24px); line-height:1.4'>{s_title or '❌ Missing'}</div>",
+                        f"<div style='font-size:18px; line-height:1.4'>{s_title or '❌ Missing'}</div>",
                         unsafe_allow_html=True
                     )
                     
                     c2.markdown(
-                        f"<div style='font-size: clamp(18px, 1.2vw, 24px); line-height:1.4'>{r_title or '❌ Missing'}</div>",
+                        f"<div style='font-size:18px; line-height:1.4'>{r_title or '❌ Missing'}</div>",
                         unsafe_allow_html=True
                     )
                     # --------------------
@@ -1124,12 +1124,12 @@ if uploaded_file:
                     st.markdown(f"### 📄 Description {score_badge(desc_score)}", unsafe_allow_html=True)
                     c1, c2 = st.columns(2)
                     c1.markdown(
-                        f"<div style='font-size: clamp(14px, 0.9vw, 18px); line-height:1.6'>{s_desc or '❌ Missing'}</div>",
+                        f"<div style='font-size:14px; line-height:1.6'>{s_desc or '❌ Missing'}</div>",
                         unsafe_allow_html=True
                     )
                     
                     c2.markdown(
-                        f"<div style='font-size: clamp(14px, 0.9vw, 18px); line-height:1.6'>{r_desc or '❌ Missing'}</div>",
+                        f"<div style='font-size:14px; line-height:1.6'>{r_desc or '❌ Missing'}</div>",
                         unsafe_allow_html=True
                     )
 
@@ -1148,12 +1148,12 @@ if uploaded_file:
             
                         c1, c2 = st.columns(2)
                         c1.markdown(
-                            f"<div style='font-size: clamp(13px, 0.85vw, 16px); line-height:1.5'>{s_val or '❌ Missing'}</div>",
+                            f"<div style='font-size:13px; line-height:1.5'>{s_val or '❌ Missing'}</div>",
                             unsafe_allow_html=True
                         )
                         
                         c2.markdown(
-                            f"<div style='font-size: clamp(13px, 0.85vw, 16px); line-height:1.5'>{r_val or '❌ Missing'}</div>",
+                            f"<div style='font-size:13px; line-height:1.5'>{r_val or '❌ Missing'}</div>",
                             unsafe_allow_html=True
                         )
             
@@ -1206,7 +1206,7 @@ if uploaded_file:
                         # ✅ SALSIFY IMAGE
                         if s_url:
                             col1.markdown(
-                                f"<img src='{s_url}' style='width:12vw; min-width:150px; border-radius:6px;'>",
+                                f"<img src='{s_url}' style='width:100%; max-width:260px; border-radius:6px;'>",
                                 unsafe_allow_html=True
                             )
                         else:
@@ -1215,7 +1215,7 @@ if uploaded_file:
                         # ✅ CVS IMAGE
                         if r_url:
                             col2.markdown(
-                                f"<img src='{r_url}' style='width:12vw; min-width:150px; border-radius:6px;'>",
+                                f"<img src='{r_url}' style='width:100%; max-width:260px; border-radius:6px;'>",
                                 unsafe_allow_html=True
                             )
                         else:
