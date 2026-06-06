@@ -61,19 +61,6 @@ def get_html(url):
     return ""
 
 # =========================================
-# ✅ LOAD IMAGE
-# =========================================
-
-def load_image(url):
-    try:
-        r = requests.get(url, timeout=8)
-        if r.status_code == 200:
-            return Image.open(BytesIO(r.content))
-    except Exception as e:
-        return None
-    return None
-
-# =========================================
 # ✅ NORMALIZE FILE NAME (DEDUP CORE)
 # =========================================
 def normalize_filename(fname):
@@ -488,18 +475,9 @@ def fetch_image_cached(url):
     except:
         return None
     return None
-# =====================================
-# ✅ IMAGE PREFETCH
-# =====================================
-def prefetch_images(urls):
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        list(executor.map(fetch_image_cached, urls))
     
 def compare_images_visually(s_data, r_data):
     try:
-        
-        def fetch_and_cache(url):
-            return fetch_image_cached(url)
 
         # ✅ FETCH BOTH
     
@@ -553,39 +531,11 @@ def compare_images_visually(s_data, r_data):
 
     except:
         return 0
-# =====================================
-# ✅ IMAGE MATCHING
-# =====================================
-def match_images_visual(s_images, r_images):
 
-    results = []
+@st.cache_data(show_spinner=False)
+def process_row_cached(row_dict):
+    return process_row(row_dict)
 
-    max_len = max(len(s_images), len(r_images))
-
-    for i in range(max_len):
-
-        s_url = (
-            s_images[i].get("url")
-            if i < len(s_images) and isinstance(s_images[i], dict)
-            else None
-        )
-        
-        r_url = (
-            r_images[i]
-            if i < len(r_images) and isinstance(r_images[i], str)
-            else None
-        )
-
-        # ✅ ✅ USE VISUAL COMPARISON (NOT STRING MATCH)
-        if s_url and r_url:
-            score = compare_images_visually(s_url, r_url)
-        else:
-            score = 0
-
-        results.append((s_url, r_url, score))
-
-    return results
-    
 def process_row(row):
 
     try:
@@ -641,6 +591,7 @@ def process_row(row):
             if s_url and r_url:
                 s_data = fetch_image_cached(s_url) if s_url else None
                 r_data = fetch_image_cached(r_url) if r_url else None
+                
                 sc = compare_images_visually(s_data, r_data)
                 if sc > 0:
                     img_scores.append(sc)
@@ -900,7 +851,11 @@ if uploaded_file:
                     )
 
                     if s_url and r_url:
-                        sc = compare_images_visually(s_url, r_url)
+                        s_data = fetch_image_cached(s_url) if s_url else None
+                        r_data = fetch_image_cached(r_url) if r_url else None
+            
+                        sc = compare_images_visually(s_data, r_data)
+
                         img_scores.append(sc)
         
                 avg_img_score = int(sum(img_scores)/len(img_scores)) if img_scores else 0
@@ -1027,7 +982,11 @@ if uploaded_file:
                 
                     # ✅ SCORE
                     if s_url and r_url:
-                        sc = compare_images_visually(s_url, r_url)
+                        s_data = fetch_image_cached(s_url) if s_url else None
+                        r_data = fetch_image_cached(r_url) if r_url else None
+                        
+                        sc = compare_images_visually(s_data, r_data)
+
                     else:
                         sc = 0
                 
@@ -1058,8 +1017,11 @@ if uploaded_file:
                     )
 
                     if s_url and r_url:
-                        valid_img_scores.append(compare_images_visually(s_url, r_url))
-                
+                        s_data = fetch_image_cached(s_url) if s_url else None
+                        r_data = fetch_image_cached(r_url) if r_url else None
+                    
+                        valid_img_scores.append(compare_images_visually(s_data, r_data))
+
                 avg_img_score = int(sum(valid_img_scores)/len(valid_img_scores)) if valid_img_scores else 0
                 
                 st.write(f"✅ Image Avg: {avg_img_score}%")
