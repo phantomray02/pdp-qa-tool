@@ -263,44 +263,44 @@ def get_cvs_text(html_text):
     # =====================================
     try:
         import json
-
-        match = re.search(r'"vendorContent":\{.*?"vendorDetails":\{.*?\}.*?\}', combined, re.DOTALL)
+        
+        match = re.search(
+            r'vendorContent":\{.*?"vendorDetails":\{.*?\}.*?\}',
+            combined,
+            re.DOTALL
+        )
         
         if match:
             json_block = match.group(0)
-
+        
             try:
-                json_block = json_block.encode().decode("unicode_escape")
+                json_block = json_block.strip().lstrip(",")
                 parsed = json.loads("{" + json_block + "}")
             except:
                 parsed = {}
         
             vendor = parsed.get("vendorContent", {}).get("vendorDetails", {})
-            
+        
             desc = vendor.get("vendorDetailsParagraph", "").strip()
             features = [f.strip() for f in vendor.get("vendorDetailsBullets", []) if f.strip()]
-
-            # ✅ CORRECT TITLE EXTRACTION
+        
+            # ✅ title fix stays
             title_match = re.search(r'"title":"(.*?)"', combined)
-            
+        
             if not title_match:
                 title_match = re.search(r'"displayName":"(.*?)"', combined)
-            
+        
             if not title_match:
                 title_match = re.search(r'"productName":"(.*?)"', combined)
-            
-            if title_match:
-                title = title_match.group(1).strip()
-            else:
-                title = ""
-
-            # ✅ ✅ RETURN EARLY (skip all regex madness ✅)
+        
+            title = title_match.group(1).strip() if title_match else ""
+        
             return {
                 "title": title,
                 "description": desc,
                 "features": features
             }
-
+            
     except Exception as e:
         pass  # ✅ fallback to existing logic
 
