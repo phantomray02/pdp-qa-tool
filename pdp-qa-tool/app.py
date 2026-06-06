@@ -319,32 +319,29 @@ def get_cvs_text(html_text):
                     raw_text = raw_text.replace('\\u0026', '&')
                     raw_text = raw_text.replace('\n', ' ')
                     raw_text = re.sub(r'\s+', ' ', raw_text).strip()
-            
-                    # ✅ ONLY append SAFE continuation chunks
+
+                    # ✅ append ONLY reasonable continuation chunks
                     for chunk in chunks:
                     
-                        # ✅ skip if clearly not description content
+                        # skip obvious non-content
                         if any(x in chunk for x in [
                             "prodId",
                             "vendorDetailsBullets",
                             "buildId",
-                            "children",
                             "imageName",
                             "dynamicMediaUrl"
                         ]):
                             continue
                     
-                        # ✅ must look like sentence
-                        if not re.search(r'[a-zA-Z]{5,}', chunk):
+                        # must have real words
+                        if len(chunk.split()) < 5:
                             continue
                     
-                        # ✅ avoid structural fragments
+                        # must not look like JSON
                         if chunk.strip().startswith("{") or chunk.strip().startswith("["):
                             continue
                     
-                        # ✅ append only clean fragments
-                        if len(chunk.split()) >= 6:
-                            raw_text += " " + chunk
+                        raw_text += " " + chunk
                             
                     # ✅ HARD STOP AFTER SAFE BUILD
                     raw_text = re.split(
@@ -354,9 +351,8 @@ def get_cvs_text(html_text):
             
                     raw_text = re.sub(r'\s+', ' ', raw_text).strip()
             
-                    if len(raw_text) >= 80:
+                    if len(raw_text) >= 40:
                         desc = html.unescape(raw_text)
-
 
                     else:
                         desc = ""
