@@ -11,17 +11,17 @@ from bs4 import BeautifulSoup
 
 requests.adapters.DEFAULT_RETRIES = 2
 st.set_page_config(layout="wide")
-st.title("PDP QA Tool v4.1 — CVS Live Extract Debugger")
-st.caption("Updated testing build. De-prioritizes promo meta descriptions, improves visible section extraction, and exports richer raw windows.")
+st.title("PDP QA Tool v4.3 — CVS Raw Source Area Debugger")
+st.caption("Raw-source-first debugger. Pulls source windows around Details / Item / vendor refs / title / What’s Included and exports multiple extraction theories side by side.")
 
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
 html_cache = {}
 MAX_CACHE = 100
 
-# =========================================
-# HTTP / CACHE
-# =========================================
+# ============================================================
+# HTTP
+# ============================================================
 def get_html(url):
     if url in html_cache:
         html_cache[url] = html_cache.pop(url)
@@ -30,7 +30,7 @@ def get_html(url):
         r = requests.get(
             url,
             headers={"User-Agent": "Mozilla/5.0", "Connection": "keep-alive"},
-            timeout=12,
+            timeout=18,
         )
         if r.status_code == 200:
             html_cache[url] = r.text
@@ -41,35 +41,27 @@ def get_html(url):
         pass
     return ""
 
-# =========================================
+# ============================================================
 # TEXT HELPERS
-# =========================================
+# ============================================================
 def clean_text(text):
-    if not text:
+    if text is None:
         return ""
     text = str(text)
+    if not text:
+        return ""
     text = text.replace("\\u0026", "&")
     text = text.replace("\\n", " ")
     text = text.replace("\\/", "/")
     text = text.replace('\\"', '"')
     text = html.unescape(text)
     text = re.sub(r'^T\d+,', '', text)
-    text = re.sub(r'\$\w+', '', text)
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
 
-def split_sentences(text):
-    txt = clean_text(text)
-    if not txt:
-        return []
-    parts = re.split(r'(?<=[.!?])\s+(?=[A-Z0-9])', txt)
-    return [clean_text(p) for p in parts if len(clean_text(p)) > 10]
-
-
-def split_lines_keep_order(text):
-    txt = str(text or "")
-    raw_lines = re.split(r'\n+', txt)
+def lines_from_visible_text(text):
+    raw_lines = re.split(r'\n+', str(text or ""))
     out = []
     for line in raw_lines:
         line = clean_text(line)
@@ -78,20 +70,12 @@ def split_lines_keep_order(text):
     return out
 
 
-def has_nav_junk(text):
-    txt = clean_text(text).lower()
-    junk_markers = [
-        'skip to main content', 'cvs pharmacy', 'weekly ad', 'extra big deals',
-        'manage prescriptions', 'schedule a vaccine', 'photo coupons', 'carepass',
-        'sign in account', 'use the cvs app', 'how to get it', 'rating & reviews',
-        'extrabucks rewards', 'search cvs', 'summer manage prescriptions'
-    ]
-    return any(j in txt for j in junk_markers)
-
-
-def looks_like_promo_meta(text):
-    txt = clean_text(text).lower()
-    return txt.startswith('buy ') or 'free shipping' in txt or 'shop cvs now' in txt
+def split_sentences(text):
+    txt = clean_text(text)
+    if not txt:
+        return []
+    parts = re.split(r'(?<=[.!?])\s+(?=[A-Z0-9])', txt)
+    return [clean_text(p) for p in parts if len(clean_text(p)) > 10]
 
 
 def dedupe_keep_order(values):
@@ -106,16 +90,62 @@ def dedupe_keep_order(values):
     return out
 
 
+def has_nav_junk(text):
+    txt = clean_text(text).lower()
+    junk_markers = [
+        'skip to main content', 'cvs pharmacy', 'weekly ad', 'extra big deals', 'manage prescriptions',
+        'schedule a vaccine', 'photo coupons', 'carepass', 'sign in account', 'use the cvs app',
+        'how to get it', 'rating & reviews', 'extrabucks rewards', 'search cvs', 'same-day delivery policies',
+        'shipping restrictions', 'summer manage prescriptions'
+    ]
+    return any(j in txt for j in junk_markers)
+
+
+def looks_like_short_title(text):
+    txt = clean_text(text)
+    return (not txt) or (len(txt) <= 110 and txt.count('.') <= 1)
+
+
+def cleanup_frontmatter(text):
+    txt = clean_text(text)
+    if not txt:
+        return ""
+    txt = re.sub(r'^.*?\bItem\s*#\s*\d+\s*', '', txt)
+    txt = re.sub(r'^[A-Z0-9][A-Za-z0-9\-\+&/,()\'’ ]{6,140}\s+\d+\s*(?:Ct|Sht|Boxes?|Rolls?|Packs?|CT)\b[^A-Z]{0,20}', '', txt)
+    txt = re.sub(r'^\d+\s*(?:Ct|Sht|Boxes?|Rolls?|Packs?|CT)\b\s*,?\s*\d*\.?\d*\s*(?:lbs?|oz)?\.?\s*', '', txt, flags=re.I)
+    return clean_text(txt)
+
+
+def clean_feature_line(text):
+    txt = clean_text(text)
+    if not txt:
+        return ""
+    txt = txt.replace(' \| ', ' ').replace('|', ' ')
+    txt = re.sub(r'\s+', ' ', txt).strip(' -;:')
+    if has_nav_junk(txt):
+        return ""
+    return txt
+
+
+def clean_feature_list(values):
+    out = []
+    for v in values:
+        vv = clean_feature_line(v)
+        if vv and len(vv) > 20:
+            out.append(vv)
+    return dedupe_keep_order(out)[:5]
+
+
 def format_labeled_blocks(blocks):
     out = []
     for label, txt in blocks:
         if txt:
-            out.append(f"[{label}]\n{txt}")
-    return "\n\n".join(out)
+            out.append(f'[{label}]\n{txt}')
+    return '\n\n'.join(out)
 
-# =========================================
-# NEXT JS RAW SOURCE HELPERS
-# =========================================
+# ============================================================
+# RAW SOURCE HELPERS
+# ============================================================
 def get_nextjs_chunks(html_text):
     pattern = r'self\.__next_f\.push\(\[1,(.*?)\]\)'
     matches = re.findall(pattern, html_text, re.DOTALL)
@@ -128,7 +158,7 @@ def get_nextjs_chunks(html_text):
             chunks.append(text)
         except Exception:
             continue
-    return "\n".join(chunks)
+    return '\n'.join(chunks)
 
 
 def try_parse_jsonish(val):
@@ -169,27 +199,27 @@ def build_data_map(raw_text):
             if in_str:
                 if escape:
                     escape = False
-                elif ch == "\\":
+                elif ch == '\\':
                     escape = True
                 elif ch == '"':
                     in_str = False
             else:
                 if ch == '"':
                     in_str = True
-                elif ch in "[{(":
+                elif ch in '[{(':
                     depth += 1
-                elif ch in "]})":
+                elif ch in ']})':
                     depth = max(0, depth - 1)
                 elif depth == 0 and is_key_start(j):
                     break
             j += 1
         val = raw_text[val_start:j].strip()
-        if val.startswith("{") or val.startswith("["):
+        if val.startswith('{') or val.startswith('['):
             parsed = try_parse_jsonish(val)
             data_map[key] = parsed if parsed is not None else val
         else:
-            if val.startswith("T") and "," in val:
-                data_map[key] = val.split(",", 1)[1].strip().strip('"')
+            if val.startswith('T') and ',' in val:
+                data_map[key] = val.split(',', 1)[1].strip().strip('"')
             else:
                 data_map[key] = val.strip().strip('"')
         i = j
@@ -216,16 +246,16 @@ def get_top_level_value(raw_text, target_key):
         if in_str:
             if escape:
                 escape = False
-            elif ch == "\\":
+            elif ch == '\\':
                 escape = True
             elif ch == '"':
                 in_str = False
         else:
             if ch == '"':
                 in_str = True
-            elif ch in "[{(":
+            elif ch in '[{(':
                 depth += 1
-            elif ch in "]})":
+            elif ch in ']})':
                 depth = max(0, depth - 1)
             elif depth == 0 and is_key_start(j):
                 break
@@ -239,18 +269,18 @@ def parse_top_level_value(val):
     val = val.strip()
     if not val:
         return None
-    if val.startswith("{") or val.startswith("["):
+    if val.startswith('{') or val.startswith('['):
         parsed = try_parse_jsonish(val)
         return parsed if parsed is not None else val
-    if val.startswith("T") and "," in val:
-        return val.split(",", 1)[1].strip().strip('"')
+    if val.startswith('T') and ',' in val:
+        return val.split(',', 1)[1].strip().strip('"')
     return val.strip().strip('"')
 
 
 def resolve_ref_any(raw_text, data_map, value):
     if value is None:
         return None
-    if isinstance(value, str) and value.startswith("$"):
+    if isinstance(value, str) and value.startswith('$'):
         key = value[1:]
         if key in data_map:
             return data_map.get(key)
@@ -258,7 +288,7 @@ def resolve_ref_any(raw_text, data_map, value):
     return value
 
 
-def raw_window_around(text, marker, back=350, forward=3200):
+def window_around_marker(text, marker, back=350, forward=3500):
     if not text or not marker:
         return ''
     m = re.search(re.escape(marker), text)
@@ -269,7 +299,7 @@ def raw_window_around(text, marker, back=350, forward=3200):
     return text[start:end]
 
 
-def get_vendor_ref_candidates(raw_text, data_map):
+def find_vendor_objects(raw_text, data_map):
     normalized_raw = raw_text.replace('\\"', '"')
     patterns = [
         r'\{\s*"vendorDetailsBullets"\s*:\s*"(\$[0-9a-zA-Z]+)"\s*,\s*"vendorDetailsParagraph"\s*:\s*"(\$[0-9a-zA-Z]+)"\s*\}',
@@ -282,35 +312,33 @@ def get_vendor_ref_candidates(raw_text, data_map):
     for pat in patterns:
         for m in re.finditer(pat, normalized_raw):
             b, p = m.group(1), m.group(2)
-            start = max(0, m.start() - 300)
-            end = min(len(normalized_raw), m.end() + 2500)
-            preview = normalized_raw[start:end]
+            preview = normalized_raw[max(0, m.start()-300):min(len(normalized_raw), m.end()+2800)]
             candidates.append((b, p, 'vendor_regex', preview))
     seen = set()
     out = []
-    for b, p, src, preview in candidates:
+    for b, p, source, preview in candidates:
         key = (b, p)
         if key in seen:
             continue
         seen.add(key)
         bullets = resolve_ref_any(raw_text, data_map, b)
         para = resolve_ref_any(raw_text, data_map, p)
-        features = [clean_text(x) for x in bullets] if isinstance(bullets, list) else []
-        features = [x for x in features if len(x) > 20]
-        desc = clean_text(para) if isinstance(para, str) else ''
+        bullet_features = clean_feature_list([clean_text(x) for x in bullets] if isinstance(bullets, list) else [])
         out.append({
-            'source': src,
+            'source': source,
             'bullets_ref': b or '',
             'para_ref': p or '',
+            'desc': clean_text(para) if isinstance(para, str) else '',
+            'features': bullet_features,
             'preview': preview,
-            'desc': desc,
-            'features': dedupe_keep_order(features)[:5],
+            'resolved_bullets_raw': json.dumps(bullets, ensure_ascii=False)[:5000] if bullets is not None else '',
+            'resolved_para_raw': str(para)[:5000] if para is not None else '',
         })
     return out
 
-# =========================================
-# VISIBLE TEXT HELPERS
-# =========================================
+# ============================================================
+# HTML / VISIBLE SECTIONS
+# ============================================================
 def get_visible_text(html_text):
     soup = BeautifulSoup(html_text, 'html.parser')
     for tag in soup(['script', 'style', 'noscript']):
@@ -328,31 +356,25 @@ def section_from_lines(lines, start_idx):
         'rating & reviews', 'ingredients', 'directions', 'warnings', 'specifications',
         'same-day delivery policies', 'shipping restrictions', 'faq', 'q:', 'a:',
         'delivery details', 'explore more at cvs.com', 'show hidden columns',
-        'customers also bought', 'similar products', 'you may also like'
+        'customers also bought', 'similar products', 'you may also like', 'read reviews'
     ]
     collected = []
-    started = False
     for i in range(start_idx, len(lines)):
         line = lines[i]
         low = line.lower()
-        if not started:
-            started = True
         if any(stop in low for stop in stops):
             break
         collected.append(line)
-        if sum(len(x) for x in collected) > 5000:
+        if sum(len(x) for x in collected) > 8000:
             break
     return clean_text(' '.join(collected))
 
 
-def extract_line_based_sections(visible_text, title):
-    lines = split_lines_keep_order(visible_text)
-
+def find_section_indices(lines, title):
     item_idx = None
     details_idx = None
     title_idx = None
     whats_idx = None
-
     for i, line in enumerate(lines):
         low = line.lower()
         if item_idx is None and re.search(r'item\s*#\s*\d+', line, re.I):
@@ -361,24 +383,30 @@ def extract_line_based_sections(visible_text, title):
             details_idx = i + 1
         if title_idx is None and title and clean_text(line).lower() == clean_text(title).lower():
             title_idx = i + 1
-        if whats_idx is None and ("what's included" in low or 'what’s included' in low or 'depend fresh protection:' in low or 'poise daily liners:' in low):
+        if whats_idx is None and (
+            "what's included" in low or 'what’s included' in low or
+            'depend fresh protection:' in low or 'poise daily liners:' in low or 'depend xl washcloths:' in low or
+            'poise overnight incontinence pads:' in low or 'kleenex trusted care:' in low or 'depend xl washcloths:' in low
+        ):
             whats_idx = i
+    return item_idx, details_idx, title_idx, whats_idx
 
+
+def extract_line_based_sections(visible_text, title):
+    lines = lines_from_visible_text(visible_text)
+    item_idx, details_idx, title_idx, whats_idx = find_section_indices(lines, title)
     item_section = section_from_lines(lines, item_idx) if item_idx is not None else ''
     details_section = section_from_lines(lines, details_idx) if details_idx is not None else ''
     title_section = section_from_lines(lines, title_idx) if title_idx is not None else ''
     whats_section = section_from_lines(lines, whats_idx) if whats_idx is not None else ''
-
-    # pick better item/details if item has nav junk or is empty
-    if (not item_section or has_nav_junk(item_section)) and details_section and not has_nav_junk(details_section):
+    if (not item_section or has_nav_junk(item_section) or looks_like_short_title(item_section)) and details_section:
         item_section = details_section
-
     return {
         'lines': lines,
         'item_section': item_section,
         'details_section': details_section,
         'title_section': title_section,
-        'whats_included_section': whats_section,
+        'whats_section': whats_section,
     }
 
 
@@ -418,282 +446,205 @@ def extract_jsonld_description(html_text):
     except Exception:
         return ''
 
-# =========================================
-# FEATURE STRATEGIES
-# =========================================
-def clean_feature_list(values):
-    cleaned = []
-    for v in values:
-        vv = clean_text(v)
-        vv = re.sub(r'\s*\(\s*\|.*?\)', '', vv)
-        vv = vv.replace(' \| ', ' ').replace('|', ' ')
-        vv = re.sub(r'\s+', ' ', vv).strip(' -;:')
-        if len(vv) > 20 and not has_nav_junk(vv) and not looks_like_promo_meta(vv):
-            cleaned.append(vv)
-    return dedupe_keep_order(cleaned)[:5]
+# ============================================================
+# RAW EXTRACTION THEORIES
+# ============================================================
+def description_first_n_sentences(section, n=3):
+    sents = split_sentences(cleanup_frontmatter(section))
+    return clean_text(' '.join(sents[:n])) if sents else ''
 
 
-def feature_pattern_b(section):
+def description_before_headings(section):
+    txt = cleanup_frontmatter(section)
+    if not txt:
+        return ''
+    m = re.search(r'(.+?)(?=(?:WHAT\'?S INCLUDED|WHAT’S INCLUDED|[A-Z][A-Z0-9\'’/&\- ]{4,}\s*[—:-]))', txt, re.S)
+    if m:
+        return clean_text(m.group(1))
+    return description_first_n_sentences(txt, 3)
+
+
+def extract_heading_features(section):
     txt = clean_text(section)
     if not txt:
         return []
-    raw_lines = re.split(r'\n+|\s{2,}', txt)
     out = []
-    for line in raw_lines:
-        line = clean_text(line)
-        if len(line) < 20:
-            continue
-        if ('—' in line or ':' in line or ' - ' in line or ';' in line) and len(line.split()) >= 4:
-            out.append(line)
+    for m in re.finditer(r'([A-Z0-9][A-Z0-9\'’/&\- ]{3,60})\s*[—:-]\s*(.+?)(?=(?:[A-Z0-9][A-Z0-9\'’/&\- ]{3,60}\s*[—:-])|$)', txt, re.S):
+        heading = clean_text(m.group(1))
+        body = clean_text(m.group(2))
+        out.append(f'{heading} — {body}')
     return clean_feature_list(out)
 
 
-def feature_pattern_c(section):
-    txt = clean_text(section)
-    if not txt:
-        return []
-    sents = split_sentences(txt)
+def extract_sentence_features(section):
+    sents = split_sentences(cleanup_frontmatter(section))
     out = []
     for sent in sents:
-        sent_clean = clean_text(sent)
-        if len(sent_clean) >= 35 and len(sent_clean.split()) >= 6 and not has_nav_junk(sent_clean):
-            out.append(sent_clean)
+        if len(sent) >= 40 and len(sent.split()) >= 6 and not looks_like_short_title(sent):
+            out.append(sent)
     return clean_feature_list(out)
 
 
-def feature_pattern_d(section):
-    txt = str(section or '')
-    if not txt:
-        return []
-    # only split on actual bullets, not asterisks used in footnotes
-    vals = re.split(r'•|\u2022', txt)
-    vals = [clean_text(x) for x in vals if len(clean_text(x)) > 20]
-    return clean_feature_list(vals)
-
-
-def feature_from_whats_included(section):
+def extract_whats_features(section):
     txt = clean_text(section)
     if not txt:
         return []
+    out = []
     patterns = [
-        r"WHAT'S INCLUDED\s*[—:-]\s*(.+?)(?=(?:[A-Z][A-Z0-9 '&/\-]{4,}\s*[—:-])|$)",
+        r"WHAT\'?S INCLUDED\s*[—:-]\s*(.+?)(?=(?:[A-Z][A-Z0-9 '&/\-]{4,}\s*[—:-])|$)",
         r"WHAT’S INCLUDED\s*[—:-]\s*(.+?)(?=(?:[A-Z][A-Z0-9 '&/\-]{4,}\s*[—:-])|$)",
     ]
-    out = []
     for pat in patterns:
         m = re.search(pat, txt, re.S)
         if m:
             out.append("WHAT'S INCLUDED — " + clean_text(m.group(1)))
-    # also keep section headings style lines
-    raw_matches = re.findall(r'([A-Z][A-Z0-9\'’&/\- ]{4,}\s*[—:-]\s*.+?)(?=(?:[A-Z][A-Z0-9\'’&/\- ]{4,}\s*[—:-])|$)', txt, re.S)
-    out.extend(raw_matches)
+    out.extend(extract_heading_features(txt))
     return clean_feature_list(out)
 
 
-def description_first_n_sentences(section, n=3):
-    sents = split_sentences(section)
-    return clean_text(' '.join(sents[:n])) if sents else ''
+def extract_colon_features(section):
+    parts = re.split(r'\s{2,}|\n+', str(section or ''))
+    out = []
+    for part in parts:
+        part = clean_text(part)
+        if len(part) >= 20 and (':' in part or '—' in part or ' - ' in part):
+            out.append(part)
+    return clean_feature_list(out)
 
-
-def description_before_features(section, features, default_sent_count=3):
-    txt = clean_text(section)
-    if not txt:
-        return ''
-    if features:
-        first = clean_text(features[0])
-        tokens = first.split()
-        key = ' '.join(tokens[:4]) if len(tokens) >= 4 else first[:30]
-        idx = txt.find(key)
-        if idx > 40:
-            return clean_text(txt[:idx])
-    return description_first_n_sentences(txt, default_sent_count)
-
-# =========================================
-# STRATEGY COLLECTION
-# =========================================
-def collect_strategies(salsify_title, html_text):
+# ============================================================
+# COLLECT ALL THEORIES
+# ============================================================
+def collect_theories(title, html_text):
     raw_text = get_nextjs_chunks(html_text)
     data_map = build_data_map(raw_text)
     visible_text = get_visible_text(html_text)
-    line_sections = extract_line_based_sections(visible_text, salsify_title)
-    item_section = line_sections['item_section']
-    details_section = line_sections['details_section']
-    title_section = line_sections['title_section']
-    whats_section = line_sections['whats_included_section']
+    sections = extract_line_based_sections(visible_text, title)
 
-    vendor_variants = get_vendor_ref_candidates(raw_text, data_map)
+    vendor_objects = find_vendor_objects(raw_text, data_map)
     meta_desc = extract_meta_description(html_text)
     jsonld_desc = extract_jsonld_description(html_text)
 
-    desc_strategies = {}
-    feat_strategies = {}
+    desc = {}
+    feat = {}
 
-    for i, vv in enumerate(vendor_variants[:5], start=1):
-        desc_strategies[f'vendor_desc_{i}'] = vv.get('desc', '')
-        feat_strategies[f'vendor_features_{i}'] = vv.get('features', [])
+    for i, obj in enumerate(vendor_objects[:5], start=1):
+        desc[f'vendor_desc_{i}'] = obj.get('desc', '')
+        feat[f'vendor_features_{i}'] = obj.get('features', [])
 
-    desc_strategies['meta_desc'] = meta_desc
-    desc_strategies['jsonld_desc'] = jsonld_desc
+    desc['meta_desc'] = meta_desc
+    desc['jsonld_desc'] = jsonld_desc
+    desc['visible_details_2sent'] = description_first_n_sentences(sections['details_section'], 2)
+    desc['visible_details_3sent'] = description_first_n_sentences(sections['details_section'], 3)
+    desc['visible_details_before_headings'] = description_before_headings(sections['details_section'])
+    desc['visible_item_2sent'] = description_first_n_sentences(sections['item_section'], 2)
+    desc['visible_item_3sent'] = description_first_n_sentences(sections['item_section'], 3)
+    desc['visible_item_before_headings'] = description_before_headings(sections['item_section'])
+    desc['visible_whats_2sent'] = description_first_n_sentences(sections['whats_section'], 2)
 
-    # visible item section variants
-    item_b = feature_pattern_b(item_section)
-    item_c = feature_pattern_c(item_section)
-    item_d = feature_pattern_d(item_section)
-    item_whats = feature_from_whats_included(item_section)
-    feat_strategies['visible_item_pattern_b'] = item_b
-    feat_strategies['visible_item_pattern_c'] = item_c
-    feat_strategies['visible_item_pattern_d'] = item_d
-    feat_strategies['visible_item_whats'] = item_whats
+    feat['visible_details_whats'] = extract_whats_features(sections['details_section'])
+    feat['visible_details_headings'] = extract_heading_features(sections['details_section'])
+    feat['visible_details_sentences'] = extract_sentence_features(sections['details_section'])
+    feat['visible_details_colon'] = extract_colon_features(sections['details_section'])
+    feat['visible_item_whats'] = extract_whats_features(sections['item_section'])
+    feat['visible_item_headings'] = extract_heading_features(sections['item_section'])
+    feat['visible_item_sentences'] = extract_sentence_features(sections['item_section'])
+    feat['visible_item_colon'] = extract_colon_features(sections['item_section'])
+    feat['visible_whats_section'] = extract_whats_features(sections['whats_section'])
 
-    desc_strategies['visible_item_desc_1sent'] = description_first_n_sentences(item_section, 1)
-    desc_strategies['visible_item_desc_2sent'] = description_first_n_sentences(item_section, 2)
-    desc_strategies['visible_item_desc_3sent'] = description_first_n_sentences(item_section, 3)
-    desc_strategies['visible_item_before_b'] = description_before_features(item_section, item_b, 3)
-    desc_strategies['visible_item_before_c'] = description_before_features(item_section, item_c, 3)
-    desc_strategies['visible_item_before_d'] = description_before_features(item_section, item_d, 3)
-    desc_strategies['visible_item_before_whats'] = description_before_features(item_section, item_whats, 3)
-
-    # visible details section variants
-    details_b = feature_pattern_b(details_section)
-    details_c = feature_pattern_c(details_section)
-    details_d = feature_pattern_d(details_section)
-    details_whats = feature_from_whats_included(details_section)
-    feat_strategies['visible_details_pattern_b'] = details_b
-    feat_strategies['visible_details_pattern_c'] = details_c
-    feat_strategies['visible_details_pattern_d'] = details_d
-    feat_strategies['visible_details_whats'] = details_whats
-
-    desc_strategies['visible_details_desc_1sent'] = description_first_n_sentences(details_section, 1)
-    desc_strategies['visible_details_desc_2sent'] = description_first_n_sentences(details_section, 2)
-    desc_strategies['visible_details_desc_3sent'] = description_first_n_sentences(details_section, 3)
-    desc_strategies['visible_details_before_b'] = description_before_features(details_section, details_b, 3)
-    desc_strategies['visible_details_before_c'] = description_before_features(details_section, details_c, 3)
-    desc_strategies['visible_details_before_d'] = description_before_features(details_section, details_d, 3)
-    desc_strategies['visible_details_before_whats'] = description_before_features(details_section, details_whats, 3)
-
-    # title section variants
-    title_b = feature_pattern_b(title_section)
-    title_c = feature_pattern_c(title_section)
-    title_d = feature_pattern_d(title_section)
-    feat_strategies['visible_title_pattern_b'] = title_b
-    feat_strategies['visible_title_pattern_c'] = title_c
-    feat_strategies['visible_title_pattern_d'] = title_d
-
-    desc_strategies['visible_title_desc_1sent'] = description_first_n_sentences(title_section, 1)
-    desc_strategies['visible_title_desc_2sent'] = description_first_n_sentences(title_section, 2)
-    desc_strategies['visible_title_desc_3sent'] = description_first_n_sentences(title_section, 3)
-
-    # raw windows
     normalized_raw = raw_text.replace('\\"', '"')
-    raw_vendor_desc = raw_window_around(normalized_raw, 'vendorDetailsParagraph')
-    raw_vendor_feat = raw_window_around(normalized_raw, 'vendorDetailsBullets')
-    raw_item_marker = raw_window_around(visible_text, 'Item #')
-    raw_details_marker = raw_window_around(visible_text, 'Details')
-    raw_whats_marker = raw_window_around(visible_text, "WHAT'S INCLUDED") or raw_window_around(visible_text, 'WHAT’S INCLUDED')
+    raw_vendor_desc = window_around_marker(normalized_raw, 'vendorDetailsParagraph')
+    raw_vendor_feat = window_around_marker(normalized_raw, 'vendorDetailsBullets')
+    raw_details = window_around_marker(visible_text, 'Details')
+    raw_item = window_around_marker(visible_text, 'Item #')
+    raw_whats = window_around_marker(visible_text, "WHAT'S INCLUDED") or window_around_marker(visible_text, 'WHAT’S INCLUDED')
+    raw_title = window_around_marker(visible_text, title) if title else ''
 
-    raw_desc_source_window = format_labeled_blocks([
-        ('RAW vendorDetailsParagraph', raw_vendor_desc[:4000]),
-        ('VISIBLE around Item #', raw_item_marker[:4000]),
-        ('VISIBLE around Details', raw_details_marker[:4000]),
-        ('VISIBLE item section', item_section[:4000]),
-        ('VISIBLE details section', details_section[:4000]),
+    raw_desc_window = format_labeled_blocks([
+        ('RAW vendorDetailsParagraph', raw_vendor_desc[:4500]),
+        ('VISIBLE around Details', raw_details[:4500]),
+        ('VISIBLE around Item #', raw_item[:4500]),
+        ('VISIBLE around title', raw_title[:3500]),
+        ('VISIBLE details section', sections['details_section'][:4500]),
+        ('VISIBLE item section', sections['item_section'][:4500]),
     ])
 
-    raw_feature_source_window = format_labeled_blocks([
-        ('RAW vendorDetailsBullets', raw_vendor_feat[:4000]),
-        ('VISIBLE around WHAT\'S INCLUDED', raw_whats_marker[:4000]),
-        ('VISIBLE around Item #', raw_item_marker[:4000]),
-        ('VISIBLE item section', item_section[:4000]),
-        ('VISIBLE details section', details_section[:4000]),
+    raw_feat_window = format_labeled_blocks([
+        ('RAW vendorDetailsBullets', raw_vendor_feat[:4500]),
+        ('VISIBLE around WHAT\'S INCLUDED', raw_whats[:4500]),
+        ('VISIBLE around Details', raw_details[:4500]),
+        ('VISIBLE details section', sections['details_section'][:4500]),
+        ('VISIBLE item section', sections['item_section'][:4500]),
+        ('VISIBLE whats section', sections['whats_section'][:4500]),
     ])
 
     return {
         'raw_text': raw_text,
         'data_map': data_map,
         'visible_text': visible_text,
-        'item_section': item_section,
-        'details_section': details_section,
-        'title_section': title_section,
-        'whats_included_section': whats_section,
-        'vendor_variants': vendor_variants,
-        'desc_strategies': desc_strategies,
-        'feat_strategies': feat_strategies,
-        'raw_desc_source_window': raw_desc_source_window,
-        'raw_feature_source_window': raw_feature_source_window,
-        'raw_vendor_desc_window': raw_vendor_desc[:5000],
-        'raw_vendor_feature_window': raw_vendor_feat[:5000],
-        'raw_item_marker_window': raw_item_marker[:5000],
-        'raw_details_marker_window': raw_details_marker[:5000],
-        'raw_whats_included_window': raw_whats_marker[:5000],
+        'sections': sections,
+        'vendor_objects': vendor_objects,
+        'desc': desc,
+        'feat': feat,
+        'raw_desc_window': raw_desc_window,
+        'raw_feat_window': raw_feat_window,
+        'raw_vendor_desc': raw_vendor_desc[:5000],
+        'raw_vendor_feat': raw_vendor_feat[:5000],
+        'raw_details': raw_details[:5000],
+        'raw_item': raw_item[:5000],
+        'raw_whats': raw_whats[:5000],
+        'raw_title': raw_title[:5000],
     }
 
-# =========================================
-# CHOOSERS
-# =========================================
-def choose_best_description(desc_strategies):
+# ============================================================
+# BEST GUESS PICKERS
+# ============================================================
+def choose_best_desc(desc_map):
     priority = [
         'vendor_desc_1', 'vendor_desc_2', 'vendor_desc_3',
-        'visible_details_desc_3sent', 'visible_details_before_whats', 'visible_details_before_d', 'visible_details_before_c',
-        'visible_item_desc_3sent', 'visible_item_before_whats', 'visible_item_before_d', 'visible_item_before_c',
-        'visible_details_desc_2sent', 'visible_item_desc_2sent',
+        'visible_details_before_headings', 'visible_details_3sent', 'visible_details_2sent',
+        'visible_item_before_headings', 'visible_item_3sent', 'visible_item_2sent',
         'jsonld_desc', 'meta_desc'
     ]
-
-    # try strict clean candidates first
-    for name in priority:
-        desc = clean_text(desc_strategies.get(name, ''))
-        if not desc:
+    for key in priority:
+        txt = cleanup_frontmatter(desc_map.get(key, ''))
+        if not txt:
             continue
-        if has_nav_junk(desc):
+        if has_nav_junk(txt):
             continue
-        if name == 'meta_desc' and looks_like_promo_meta(desc):
+        if key == 'meta_desc' and looks_like_promo_meta(txt):
             continue
-        if len(desc) >= 80:
-            return name, desc
-
-    # then allow shorter but still useful descriptions
-    for name in priority:
-        desc = clean_text(desc_strategies.get(name, ''))
-        if not desc:
+        if key == 'jsonld_desc' and looks_like_short_title(txt):
             continue
-        if has_nav_junk(desc):
-            continue
-        if name == 'meta_desc' and looks_like_promo_meta(desc):
-            continue
-        return name, desc
-
-    # finally fallback to meta/jsonld only if nothing else exists
-    for name in ['jsonld_desc', 'meta_desc']:
-        desc = clean_text(desc_strategies.get(name, ''))
-        if desc:
-            return name, desc
-
+        if len(txt) >= 90:
+            return key, txt
+    for key in priority:
+        txt = cleanup_frontmatter(desc_map.get(key, ''))
+        if txt and not has_nav_junk(txt):
+            return key, txt
     return '', ''
 
 
-def choose_best_features(feat_strategies):
+def choose_best_feat(feat_map):
     priority = [
-        'visible_details_whats', 'visible_item_whats',
-        'visible_details_pattern_c', 'visible_item_pattern_c',
-        'visible_details_pattern_d', 'visible_item_pattern_d',
+        'visible_details_whats', 'visible_item_whats', 'visible_whats_section',
+        'visible_details_headings', 'visible_item_headings',
+        'visible_details_sentences', 'visible_item_sentences',
         'vendor_features_1', 'vendor_features_2', 'vendor_features_3',
-        'visible_details_pattern_b', 'visible_item_pattern_b'
+        'visible_details_colon', 'visible_item_colon'
     ]
-    for name in priority:
-        feats = feat_strategies.get(name, [])
-        feats = clean_feature_list(feats if isinstance(feats, list) else [])
-        if len(feats) >= 3:
-            return name, feats
-    for name in priority:
-        feats = feat_strategies.get(name, [])
-        feats = clean_feature_list(feats if isinstance(feats, list) else [])
-        if feats:
-            return name, feats
+    for key in priority:
+        vals = clean_feature_list(feat_map.get(key, []) if isinstance(feat_map.get(key, []), list) else [])
+        if len(vals) >= 3:
+            return key, vals
+    for key in priority:
+        vals = clean_feature_list(feat_map.get(key, []) if isinstance(feat_map.get(key, []), list) else [])
+        if vals:
+            return key, vals
     return '', []
 
-# =========================================
-# ROW PROCESSING
-# =========================================
+# ============================================================
+# PER-ROW PROCESSING
+# ============================================================
 def process_row(row):
     retail_url = row.get('retail_url', '')
     salsify_url = row.get('salsify_url', '')
@@ -702,10 +653,12 @@ def process_row(row):
     salsify_title = clean_text(row.get('salsify_title', ''))
 
     html_text = get_html(retail_url)
-    collected = collect_strategies(salsify_title, html_text)
+    bundle = collect_theories(salsify_title, html_text)
 
-    best_desc_strategy, best_desc = choose_best_description(collected['desc_strategies'])
-    best_feat_strategy, best_feats = choose_best_features(collected['feat_strategies'])
+    best_desc_strategy, best_desc = choose_best_desc(bundle['desc'])
+    best_feat_strategy, best_feats = choose_best_feat(bundle['feat'])
+
+    sections = bundle['sections']
 
     summary_row = {
         'SKU': sku,
@@ -718,14 +671,14 @@ def process_row(row):
         'Best Feature Count': len(best_feats),
         'Best Features': ' | '.join(best_feats),
         'Has NextF': 'self.__next_f.push([1,' in html_text,
-        'Has vendorDetailsBullets Token': 'vendorDetailsBullets' in collected['raw_text'],
-        'Has vendorDetailsParagraph Token': 'vendorDetailsParagraph' in collected['raw_text'],
-        'Raw Text Length': len(collected['raw_text']),
-        'Data Map Key Count': len(collected['data_map']),
-        'Visible Item Section Preview': clean_text(collected['item_section'][:1200]),
-        'Visible Details Section Preview': clean_text(collected['details_section'][:1200]),
-        'Visible Title Section Preview': clean_text(collected['title_section'][:1200]),
-        'Visible Whats Included Preview': clean_text(collected['whats_included_section'][:1200]),
+        'Has vendorDetailsBullets Token': 'vendorDetailsBullets' in bundle['raw_text'],
+        'Has vendorDetailsParagraph Token': 'vendorDetailsParagraph' in bundle['raw_text'],
+        'Raw Text Length': len(bundle['raw_text']),
+        'Data Map Key Count': len(bundle['data_map']),
+        'Visible Item Section Preview': clean_text(sections['item_section'][:1200]),
+        'Visible Details Section Preview': clean_text(sections['details_section'][:1200]),
+        'Visible Title Section Preview': clean_text(sections['title_section'][:1200]),
+        'Visible Whats Included Preview': clean_text(sections['whats_section'][:1200]),
     }
 
     strategy_row = {
@@ -733,30 +686,27 @@ def process_row(row):
         'CVS RPC': cvs_rpc,
         'Salsify URL': salsify_url,
         'Retail URL': retail_url,
-        'desc_meta': collected['desc_strategies'].get('meta_desc', ''),
-        'desc_jsonld': collected['desc_strategies'].get('jsonld_desc', ''),
-        'desc_vendor_1': collected['desc_strategies'].get('vendor_desc_1', ''),
-        'desc_vendor_2': collected['desc_strategies'].get('vendor_desc_2', ''),
-        'desc_vendor_3': collected['desc_strategies'].get('vendor_desc_3', ''),
-        'desc_visible_item_3sent': collected['desc_strategies'].get('visible_item_desc_3sent', ''),
-        'desc_visible_item_before_c': collected['desc_strategies'].get('visible_item_before_c', ''),
-        'desc_visible_item_before_d': collected['desc_strategies'].get('visible_item_before_d', ''),
-        'desc_visible_item_before_whats': collected['desc_strategies'].get('visible_item_before_whats', ''),
-        'desc_visible_details_3sent': collected['desc_strategies'].get('visible_details_desc_3sent', ''),
-        'desc_visible_details_before_c': collected['desc_strategies'].get('visible_details_before_c', ''),
-        'desc_visible_details_before_d': collected['desc_strategies'].get('visible_details_before_d', ''),
-        'desc_visible_details_before_whats': collected['desc_strategies'].get('visible_details_before_whats', ''),
-        'feat_vendor_1': ' | '.join(collected['feat_strategies'].get('vendor_features_1', [])),
-        'feat_vendor_2': ' | '.join(collected['feat_strategies'].get('vendor_features_2', [])),
-        'feat_vendor_3': ' | '.join(collected['feat_strategies'].get('vendor_features_3', [])),
-        'feat_visible_item_b': ' | '.join(collected['feat_strategies'].get('visible_item_pattern_b', [])),
-        'feat_visible_item_c': ' | '.join(collected['feat_strategies'].get('visible_item_pattern_c', [])),
-        'feat_visible_item_d': ' | '.join(collected['feat_strategies'].get('visible_item_pattern_d', [])),
-        'feat_visible_item_whats': ' | '.join(collected['feat_strategies'].get('visible_item_whats', [])),
-        'feat_visible_details_b': ' | '.join(collected['feat_strategies'].get('visible_details_pattern_b', [])),
-        'feat_visible_details_c': ' | '.join(collected['feat_strategies'].get('visible_details_pattern_c', [])),
-        'feat_visible_details_d': ' | '.join(collected['feat_strategies'].get('visible_details_pattern_d', [])),
-        'feat_visible_details_whats': ' | '.join(collected['feat_strategies'].get('visible_details_whats', [])),
+        'desc_meta': bundle['desc'].get('meta_desc', ''),
+        'desc_jsonld': bundle['desc'].get('jsonld_desc', ''),
+        'desc_vendor_1': bundle['desc'].get('vendor_desc_1', ''),
+        'desc_vendor_2': bundle['desc'].get('vendor_desc_2', ''),
+        'desc_vendor_3': bundle['desc'].get('vendor_desc_3', ''),
+        'desc_visible_details_before_headings': bundle['desc'].get('visible_details_before_headings', ''),
+        'desc_visible_details_3sent': bundle['desc'].get('visible_details_3sent', ''),
+        'desc_visible_item_before_headings': bundle['desc'].get('visible_item_before_headings', ''),
+        'desc_visible_item_3sent': bundle['desc'].get('visible_item_3sent', ''),
+        'feat_vendor_1': ' | '.join(bundle['feat'].get('vendor_features_1', [])),
+        'feat_vendor_2': ' | '.join(bundle['feat'].get('vendor_features_2', [])),
+        'feat_vendor_3': ' | '.join(bundle['feat'].get('vendor_features_3', [])),
+        'feat_visible_details_whats': ' | '.join(bundle['feat'].get('visible_details_whats', [])),
+        'feat_visible_details_headings': ' | '.join(bundle['feat'].get('visible_details_headings', [])),
+        'feat_visible_details_sentences': ' | '.join(bundle['feat'].get('visible_details_sentences', [])),
+        'feat_visible_details_colon': ' | '.join(bundle['feat'].get('visible_details_colon', [])),
+        'feat_visible_item_whats': ' | '.join(bundle['feat'].get('visible_item_whats', [])),
+        'feat_visible_item_headings': ' | '.join(bundle['feat'].get('visible_item_headings', [])),
+        'feat_visible_item_sentences': ' | '.join(bundle['feat'].get('visible_item_sentences', [])),
+        'feat_visible_item_colon': ' | '.join(bundle['feat'].get('visible_item_colon', [])),
+        'feat_visible_whats_section': ' | '.join(bundle['feat'].get('visible_whats_section', [])),
     }
 
     raw_row = {
@@ -764,28 +714,55 @@ def process_row(row):
         'CVS RPC': cvs_rpc,
         'Salsify URL': salsify_url,
         'Retail URL': retail_url,
-        'raw_desc_source_window': collected['raw_desc_source_window'],
-        'raw_feature_source_window': collected['raw_feature_source_window'],
-        'raw_vendor_desc_window': collected['raw_vendor_desc_window'],
-        'raw_vendor_feature_window': collected['raw_vendor_feature_window'],
-        'raw_item_marker_window': collected['raw_item_marker_window'],
-        'raw_details_marker_window': collected['raw_details_marker_window'],
-        'raw_whats_included_window': collected['raw_whats_included_window'],
-        'visible_item_section_raw': collected['item_section'][:5000],
-        'visible_details_section_raw': collected['details_section'][:5000],
-        'visible_title_section_raw': collected['title_section'][:5000],
-        'visible_whats_included_raw': collected['whats_included_section'][:5000],
+        'raw_desc_source_window': bundle['raw_desc_window'],
+        'raw_feature_source_window': bundle['raw_feat_window'],
+        'raw_vendor_desc_window': bundle['raw_vendor_desc'],
+        'raw_vendor_feature_window': bundle['raw_vendor_feat'],
+        'raw_details_window': bundle['raw_details'],
+        'raw_item_window': bundle['raw_item'],
+        'raw_whats_window': bundle['raw_whats'],
+        'raw_title_window': bundle['raw_title'],
+        'visible_details_section_raw': sections['details_section'][:6000],
+        'visible_item_section_raw': sections['item_section'][:6000],
+        'visible_whats_section_raw': sections['whats_section'][:6000],
+        'visible_title_section_raw': sections['title_section'][:6000],
     }
 
-    return summary_row, strategy_row, raw_row
+    vendor_debug = {
+        'SKU': sku,
+        'CVS RPC': cvs_rpc,
+        'Retail URL': retail_url,
+        'vendor_1_source': bundle['vendor_objects'][0]['source'] if len(bundle['vendor_objects']) > 0 else '',
+        'vendor_1_bullets_ref': bundle['vendor_objects'][0]['bullets_ref'] if len(bundle['vendor_objects']) > 0 else '',
+        'vendor_1_para_ref': bundle['vendor_objects'][0]['para_ref'] if len(bundle['vendor_objects']) > 0 else '',
+        'vendor_1_desc': bundle['vendor_objects'][0]['desc'] if len(bundle['vendor_objects']) > 0 else '',
+        'vendor_1_features': ' | '.join(bundle['vendor_objects'][0]['features']) if len(bundle['vendor_objects']) > 0 else '',
+        'vendor_1_preview': bundle['vendor_objects'][0]['preview'][:5000] if len(bundle['vendor_objects']) > 0 else '',
+        'vendor_1_resolved_bullets_raw': bundle['vendor_objects'][0]['resolved_bullets_raw'] if len(bundle['vendor_objects']) > 0 else '',
+        'vendor_1_resolved_para_raw': bundle['vendor_objects'][0]['resolved_para_raw'] if len(bundle['vendor_objects']) > 0 else '',
+    }
 
-# =========================================
+    marker_debug = {
+        'SKU': sku,
+        'CVS RPC': cvs_rpc,
+        'Retail URL': retail_url,
+        'Has vendorDetailsParagraph Token': 'vendorDetailsParagraph' in bundle['raw_text'],
+        'Has vendorDetailsBullets Token': 'vendorDetailsBullets' in bundle['raw_text'],
+        'Has Details marker': 'Details' in bundle['visible_text'],
+        'Has Item marker': 'Item #' in bundle['visible_text'],
+        'Has What Included marker': "WHAT'S INCLUDED" in bundle['visible_text'] or 'WHAT’S INCLUDED' in bundle['visible_text'],
+        'Details Preview': clean_text(sections['details_section'][:1000]),
+        'Whats Preview': clean_text(sections['whats_section'][:1000]),
+    }
+
+    return summary_row, strategy_row, raw_row, vendor_debug, marker_debug
+
+# ============================================================
 # MAIN
-# =========================================
+# ============================================================
 if uploaded_file:
     df = pd.read_csv(uploaded_file)
     df.columns = [c.strip().lower() for c in df.columns]
-
     column_map = {
         'salsify url': 'salsify_url',
         'retail url': 'retail_url',
@@ -803,27 +780,31 @@ if uploaded_file:
     required_cols = ['sku', 'salsify_url', 'retail_url']
     missing = [c for c in required_cols if c not in df.columns]
     if missing:
-        st.error(f"Missing required columns: {missing}")
+        st.error(f'Missing required columns: {missing}')
         st.write(list(df.columns))
         st.stop()
 
-    if st.button('Run CVS live extraction v4.1'):
+    if st.button('Run CVS raw source area debug v4.3'):
         progress = st.progress(0)
         status = st.empty()
 
         summary_rows = []
         strategy_rows = []
         raw_rows = []
+        vendor_rows = []
+        marker_rows = []
 
         total = len(df)
         with ThreadPoolExecutor(max_workers=8) as ex:
             futures = [ex.submit(process_row, row.to_dict()) for _, row in df.iterrows()]
             for i, fut in enumerate(as_completed(futures), start=1):
                 try:
-                    summary_row, strategy_row, raw_row = fut.result()
+                    summary_row, strategy_row, raw_row, vendor_row, marker_row = fut.result()
                     summary_rows.append(summary_row)
                     strategy_rows.append(strategy_row)
                     raw_rows.append(raw_row)
+                    vendor_rows.append(vendor_row)
+                    marker_rows.append(marker_row)
                 except Exception:
                     pass
                 progress.progress(i / total)
@@ -833,17 +814,21 @@ if uploaded_file:
             summary_df = pd.DataFrame(summary_rows)
             strategies_df = pd.DataFrame(strategy_rows)
             raw_df = pd.DataFrame(raw_rows)
+            vendor_df = pd.DataFrame(vendor_rows)
+            marker_df = pd.DataFrame(marker_rows)
 
-            file_name = 'pdp_qa_tool_v4_1_output.xlsx'
+            file_name = 'pdp_qa_tool_v4_3_output.xlsx'
             with pd.ExcelWriter(file_name, engine='openpyxl') as writer:
                 summary_df.to_excel(writer, index=False, sheet_name='Summary')
                 strategies_df.to_excel(writer, index=False, sheet_name='Strategy Matrix')
                 raw_df.to_excel(writer, index=False, sheet_name='Raw Windows')
+                vendor_df.to_excel(writer, index=False, sheet_name='Vendor Debug')
+                marker_df.to_excel(writer, index=False, sheet_name='Marker Debug')
 
             with open(file_name, 'rb') as f:
                 st.success('Done.')
                 st.download_button(
-                    'Download v4.1 Excel output',
+                    'Download v4.3 Excel output',
                     data=f,
                     file_name=file_name,
                     mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
