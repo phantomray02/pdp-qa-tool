@@ -58,7 +58,39 @@ def resolve_ref(data_map, value):
         return data_map.get(value[1:], [])
     return value
 
-    
+def find_vendor_block(data_map):
+    for v in data_map.values():
+        if isinstance(v, dict):
+            if (
+                "vendorDetailsBullets" in v
+                and "vendorDetailsParagraph" in v
+            ):
+                return v
+    return None
+
+def clean_cvs_text(text):
+
+    if not text:
+        return ""
+
+    import html, re
+
+    text = html.unescape(text)
+
+    # ✅ remove NextJS chunk breaks
+    text = re.sub(r'\]\).*?self\.__next_f\.push\(\[1,"', '', text)
+
+    # ✅ remove trailing script junk
+    text = re.sub(r'"\]\).*', '', text)
+
+    # ✅ remove pointer refs like $33
+    text = re.sub(r'\$\w+', '', text)
+
+    # ✅ normalize whitespace
+    text = re.sub(r'\s+', ' ', text).strip()
+
+    return text
+
 requests.adapters.DEFAULT_RETRIES = 2
 
 st.set_page_config(layout="wide")
@@ -294,184 +326,78 @@ def get_salsify_text(url):
 # ✅ CVS COPY EXTRACTION (FINAL WITH TITLE)
 # =========================================
 def get_cvs_text(html_text):
-        
-    debug = {
-        "pointer": "",
-        "raw_pointer_text": "",
-        "chunks_used": 0,
-        "raw_features": ""
-    }
 
     if not html_text:
         return {"title": "", "description": "", "features": []}
 
-    # ✅ rebuild streamed content
-    chunks = re.findall(
-        r'self\.__next_f\.push\(\[1,"(.*?)"\]\)',
-        html_text,
-        re.DOTALL
-    )
+    # ✅ rebuild NextJS content
+    raw_text = get_nextjs_chunks(html_text)
+    data_map = build_data_map(raw_text)
 
-    combined = "".join(chunks)
-
+    title = ""
     desc = ""
     features = []
-    title = ""
 
     try:
-        
-        # =========================
-        # ✅ DESCRIPTION DEBUG CAPTURE (NEW 🔥)
-        # =========================
-        raw_text = get_nextjs_chunks(html_text)
-        data_map = build_data_map(raw_text)
-        
-        desc_sources = {
-            "vendor": "",
-            "description_field": "",
-            "meta": "",
-            "fallback": ""
-        }
-
-        
-        # ✅ ✅ 1. NEW STRUCTURED DESCRIPTION (FIXED)
-        desc = ""
-        
-        try:
-            vendor_details = data_map.get("32", {})
-        
-            para_ref = vendor_details.get("vendorDetailsParagraph")
-            para = resolve_ref(data_map, para_ref)
-        
-            if isinstance(para, str):
-                desc = html.unescape(para)
-        
-        except:
-            pass
-        
-        # ✅ store for debug
-        desc_sources["vendor"] = desc
-        
-        # ✅ 2. generic description field
-        match_desc = re.search(r'"description":"(.*?)"', combined)
-        if match_desc:
-            desc_sources["description_field"] = html.unescape(match_desc.group(1))
-        
-        # ✅ 3. meta tag (FIXED VERSION ✅)
-        meta_match = re.search(
-            r'<meta name="description" content="(.*?)"',
-            html_text
-        )
-        if meta_match:
-            desc_sources["meta"] = html.unescape(meta_match.group(1))
-        
-        # ✅ 4. fallback HTML scrape
-        soup = BeautifulSoup(html_text, "html.parser")
-        for tag in soup.find_all(["p", "div"]):
-            text = tag.get_text(strip=True)
-            if len(text) > 120 and "cookie" not in text.lower():
-                desc_sources["fallback"] = text
-                break
-        
-        # =========================
-        # ✅ FINAL CHOICE (STRICT ORDER ✅ NO GUESSING)
-        # =========================
-        desc = (
-            desc_sources["vendor"]
-            or desc_sources["description_field"]
-            or desc_sources["meta"]
-            or desc_sources["fallback"]
-        )
-        
-        # ✅ DEBUG STORE
-        debug["desc_vendor"] = desc_sources["vendor"]
-        debug["desc_description_field"] = desc_sources["description_field"]
-        debug["desc_meta"] = desc_sources["meta"]
-        debug["desc_fallback"] = desc_sources["fallback"]
-        debug["desc_final"] = desc
+        # ✅ GET STRUCTURED BLOCK
+        vendor_block = find_vendor_block(data_map)
 
         # =========================
-        # ✅ FEATURES (FIXED + EXPANDED ✅)
+        # ✅ FEATURES
         # =========================
-        features = []
-        
-        # ✅ 1. Try multiple JSON patterns (NEW ✅)
-        # ✅ ✅ NEW STRUCTURED FEATURE EXTRACTION
-        features = []
-        
-        try:
-            vendor_details = data_map.get("32", {})
-        
-            bullets_ref = vendor_details.get("vendorDetailsBullets")
+        if vendor_block:
+            bullets_ref = vendor_block.get("vendorDetailsBullets")
             bullets = resolve_ref(data_map, bullets_ref)
-        
+
             if isinstance(bullets, list):
-                for b in bullets:
-                    if isinstance(b, str) and len(b.strip()) > 20:
-                        features.append(html.unescape(b.strip()))
-        
+                features = [
+                    clean_cvs_text(b)
+                    for b in bullets
+                    if isinstance(b, str)
+                ]
+
+        features = features[:5]
+
+        # =========================
+        # ✅ DESCRIPTION
+        # =========================
+        if vendor_block:
+            para_ref = vendor_block.get("vendorDetailsParagraph")
+            para = resolve_ref(data_map, para_ref)
+
+            if isinstance(para, str):
+            
+                # ✅ grab ALL linked text fragments
+                desc_parts = [para]
+            
+                # ✅ scan for continuation chunks
+                for v in data_map.values():
+                    if isinstance(v, str) and len(v) > 50:
+                        if para[:40] in v and v != para:
+                            desc_parts.append(v)
+            
+                # ✅ join + clean once
+                desc = clean_cvs_text(" ".join(desc_parts))
+                
+        # =========================
+        # ✅ TITLE (SAFE MINIMAL VERSION)
+        # =========================
+        try:
+            # ✅ use HTML title ONLY as fallback anchor
+            soup = BeautifulSoup(html_text, "html.parser")
+            if soup.title:
+                title = soup.title.get_text(strip=True)
         except:
             pass
-        
-        # ✅ limit to 5
-        features = features[:5]
-        
-        # ✅ 2. Strong HTML fallback (FIXED ✅)
-        if not features:
-            soup = BeautifulSoup(html_text, "html.parser")
-        
-            for li in soup.find_all("li"):
-                text = li.get_text(strip=True)
-        
-                # ✅ lowered threshold (IMPORTANT)
-                if len(text) > 5 and not any(x in text.lower() for x in ["cookie", "policy", "terms"]):
-                    features.append(text)
-        
-        # ✅ 3. limit to 5
-        features = features[:5]
-        # =========================
-        # ✅ TITLE
-        # =========================
-        title_match = re.search(r'"title":"(.*?)"', combined)
-        if title_match:
-            title = title_match.group(1)
 
     except:
         pass
 
-    # ✅ ✅ ONLY RETURN HERE
     return {
         "title": title.strip() if isinstance(title, str) else "",
         "description": desc.strip() if isinstance(desc, str) else "",
-        "features": features if isinstance(features, list) else [],
-        "debug": {
-            **debug,
-            "Desc Vendor": debug.get("desc_vendor", ""),
-            "Desc Description Field": debug.get("desc_description_field", ""),
-            "Desc Meta": debug.get("desc_meta", ""),
-            "Desc Fallback": debug.get("desc_fallback", ""),
-            "Desc Final": debug.get("desc_final", "")
-        }
+        "features": features if isinstance(features, list) else []
     }
-# =====================================
-# ✅ CVS TEXT CLEANER (FINAL)
-# =====================================
-def clean_cvs_text(text):
-
-    if not text:
-        return ""
-
-    # ✅ safe cleanup only
-    text = text.replace("\\n", " ").replace("\\", "")
-
-    text = html.unescape(text)
-
-    # ✅ remove pointer junk ONLY
-    text = re.sub(r'\$\d+', '', text)
-
-    text = re.sub(r'\s+', ' ', text).strip()
-
-    return text
     
 # =========================================
 # ✅ SCORE
