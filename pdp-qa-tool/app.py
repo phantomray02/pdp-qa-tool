@@ -13,7 +13,52 @@ from io import BytesIO
 import traceback
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import re
+import json
 
+def get_nextjs_chunks(html):
+    pattern = r'self\.__next_f\.push\(\[1,(.*?)\]\)'
+    matches = re.findall(pattern, html, re.DOTALL)
+
+    chunks = []
+
+    for m in matches:
+        try:
+            text = m.strip()
+
+            # remove wrapping quotes
+            if text.startswith('"') and text.endswith('"'):
+                text = text[1:-1]
+
+            # fix escaped quotes
+            text = text.replace('\\"', '"')
+
+            chunks.append(text)
+        except:
+            continue
+
+    return "\n".join(chunks)
+    
+def build_data_map(raw_text):
+    data_map = {}
+
+    matches = re.findall(r'(\w+):(\[.*?\]|\{.*?\})', raw_text, re.DOTALL)
+
+    for key, val in matches:
+        try:
+            parsed = json.loads(val)
+            data_map[key] = parsed
+        except:
+            continue
+
+    return data_map
+    
+def resolve_ref(data_map, value):
+    if isinstance(value, str) and value.startswith("$"):
+        return data_map.get(value[1:], [])
+    return value
+
+    
 requests.adapters.DEFAULT_RETRIES = 2
 
 st.set_page_config(layout="wide")
@@ -268,26 +313,6 @@ def get_cvs_text(html_text):
     )
 
     combined = "".join(chunks)
-    # =========================================
-    # ✅ BUILD POINTER MAP (CRITICAL 🔥)
-    # =========================================
-    
-    pointer_map = {}
-    
-    pointer_matches = re.findall(
-        r'(\d+):([^]]+?)(?=(?:\d+:)|$)',
-        combined
-    )
-    
-    for key, value in pointer_matches:
-        pointer_map[key] = value.strip()
-    
-    debug["pointer_map_count"] = len(pointer_map)
-
-    # ✅ clean escape characters
-    combined = combined.replace('\\"', '"')
-    combined = combined.replace('\\u0026', '&')
-    combined = combined.replace('\\n', ' ')
 
     desc = ""
     features = []
@@ -298,6 +323,8 @@ def get_cvs_text(html_text):
         # =========================
         # ✅ DESCRIPTION DEBUG CAPTURE (NEW 🔥)
         # =========================
+        raw_text = get_nextjs_chunks(html_text)
+        data_map = build_data_map(raw_text)
         
         desc_sources = {
             "vendor": "",
@@ -305,45 +332,26 @@ def get_cvs_text(html_text):
             "meta": "",
             "fallback": ""
         }
+
         
-        # ✅ 1. vendorDetailsParagraph (BEST SOURCE)
-        match_vendor = re.search(r'vendorDetailsParagraph":"(.*?)"', combined)
+        # ✅ ✅ 1. NEW STRUCTURED DESCRIPTION (FIXED)
+        desc = ""
         
-        if match_vendor:
+        try:
+            vendor_details = data_map.get("32", {})
         
-            raw_value = match_vendor.group(1)
-            debug["raw_vendor_pointer"] = raw_value
+            para_ref = vendor_details.get("vendorDetailsParagraph")
+            para = resolve_ref(data_map, para_ref)
         
-            ptr_match = re.match(r'\$(\d+)', raw_value)
+            if isinstance(para, str):
+                desc = html.unescape(para)
         
-            if ptr_match:
-                ptr_id = ptr_match.group(1)
-                debug["resolved_pointer_id"] = ptr_id
+        except:
+            pass
         
-                # ✅ BASE POINTER TEXT
-                real_text = pointer_map.get(ptr_id, "")
+        # ✅ store for debug
+        desc_sources["vendor"] = desc
         
-                # ✅ ✅ MULTI-CHUNK STITCH (IMPORTANT 🔥)
-                chunk_matches = re.findall(
-                    rf'{ptr_id}:(.*?)(?=\d+:|$)',
-                    combined,
-                    re.DOTALL
-                )
-        
-                if chunk_matches:
-                    real_text = " ".join(chunk_matches)
-        
-                debug["resolved_pointer_text"] = real_text
-        
-                cleaned_text = html.unescape(real_text)
-        
-            else:
-                cleaned_text = html.unescape(raw_value)
-        
-            # ✅ ✅ FINAL CLEAN (ONLY ONCE 🔥)
-            cleaned_text = re.sub(r'^[A-Z]\d+,', '', cleaned_text)
-        
-            desc_sources["vendor"] = cleaned_text
         # ✅ 2. generic description field
         match_desc = re.search(r'"description":"(.*?)"', combined)
         if match_desc:
@@ -388,25 +396,25 @@ def get_cvs_text(html_text):
         features = []
         
         # ✅ 1. Try multiple JSON patterns (NEW ✅)
-        patterns = [
-            r'vendorDetailsBullets":\[(.*?)\]',
-            r'featureBullets":\[(.*?)\]',
-            r'"bullets":\[(.*?)\]',
-            r'"productHighlights":\[(.*?)\]'
-        ]
-
+        # ✅ ✅ NEW STRUCTURED FEATURE EXTRACTION
+        features = []
         
-        for pattern in patterns:
-            match = re.search(pattern, combined, re.DOTALL)
-            if match:
-                raw = match.group(1)
-                features = [
-                    html.unescape(p.strip())
-                    for p in re.findall(r'"(.*?)"', raw)
-                    if p.strip()
-                ]
-                if features:
-                    break
+        try:
+            vendor_details = data_map.get("32", {})
+        
+            bullets_ref = vendor_details.get("vendorDetailsBullets")
+            bullets = resolve_ref(data_map, bullets_ref)
+        
+            if isinstance(bullets, list):
+                for b in bullets:
+                    if isinstance(b, str) and len(b.strip()) > 20:
+                        features.append(html.unescape(b.strip()))
+        
+        except:
+            pass
+        
+        # ✅ limit to 5
+        features = features[:5]
         
         # ✅ 2. Strong HTML fallback (FIXED ✅)
         if not features:
