@@ -13,12 +13,11 @@ from io import BytesIO
 import traceback
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import re
 import json
 
-def get_nextjs_chunks(html):
+def get_nextjs_chunks(html_text):
     pattern = r'self\.__next_f\.push\(\[1,(.*?)\]\)'
-    matches = re.findall(pattern, html, re.DOTALL)
+    matches = re.findall(pattern, html_text, re.DOTALL)
 
     chunks = []
 
@@ -26,12 +25,10 @@ def get_nextjs_chunks(html):
         try:
             text = m.strip()
 
-            # remove wrapping quotes
+            # remove wrapping quotes only
             if text.startswith('"') and text.endswith('"'):
-                text = text[1:-1]
-
-            # fix escaped quotes
-            text = text.replace('\\"', '"')
+                ❌ DO NOT unescape \\" here                text = text[1:-1]
+            # keeping escapes intact allows json.loads to work later
 
             chunks.append(text)
         except:
@@ -110,9 +107,87 @@ def build_data_map(raw_text):
 
     return data_map
 
+def parse_top_level_value(val):
+    if val is None:
+        return None
+
+    val = val.strip()
+
+    if not val:
+        return None
+
+    if val.startswith("{") or val.startswith("["):
+        try:
+            return json.loads(val)
+        except:
+            return val
+
+    if val.startswith("T") and "," in val:
+        return val.split(",", 1)[1].strip().strip('"')
+
+    return val.strip().strip('"')
+
+def get_top_level_value(raw_text, target_key):
+    pattern = rf'{re.escape(str(target_key))}:'
+    m = re.search(pattern, raw_text)
+    if not m:
+        return None
+
+    start = m.end()
+    n = len(raw_text)
+    j = start
+    depth = 0
+    in_str = False
+    escape = False
+
+    def is_key_start(pos):
+        return re.match(r'([0-9a-zA-Z]{1,3}):(?=[\[\{T"])', raw_text[pos:])
+
+    while j < n:
+        ch = raw_text[j]
+
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+        else:
+            if ch == '"':
+                in_str = True
+            elif ch in "[{(":
+                depth += 1
+            elif ch in "]})":
+                depth = max(0, depth - 1)
+            elif depth == 0:
+                if is_key_start(j):
+                    break
+
+        j += 1
+
+    return raw_text[start:j].strip()
+
 def resolve_ref(data_map, value):
     if isinstance(value, str) and value.startswith("$"):
         return data_map.get(value[1:], [])
+    return value
+
+def resolve_ref_any(raw_text, data_map, value):
+    if value is None:
+        return None
+
+    if isinstance(value, str) and value.startswith("$"):
+        ref_key = value[1:]
+
+        # first try parsed map
+        if ref_key in data_map:
+            return data_map.get(ref_key)
+
+        # then direct raw-text fallback
+        raw_val = get_top_level_value(raw_text, ref_key)
+        return parse_top_level_value(raw_val)
+
     return value
 
 def find_vendor_block(data_map):
@@ -125,39 +200,45 @@ def find_vendor_block(data_map):
                 return v
     return None
 
-# =========================================
-# ✅ VALID VENDOR BLOCK (FILTERED ✅)
-# =========================================
-def get_valid_vendor_block(data_map):
+def get_vendor_candidates(raw_text, data_map):
+    candidates = []
 
+    # 1. candidates from parsed data_map
     for v in data_map.values():
-        if not isinstance(v, dict):
-            continue
+        if isinstance(v, dict):
+            if "vendorDetailsBullets" in v and "vendorDetailsParagraph" in v:
+                candidates.append(v)
 
-        if "vendorDetailsBullets" not in v or "vendorDetailsParagraph" not in v:
-            continue
+    # 2. direct regex candidates from raw streamed text
+    regex_matches = re.findall(
+        r'\{"vendorDetailsBullets":"(\$[0-9a-zA-Z]+)","vendorDetailsParagraph":"(\$[0-9a-zA-Z]+)"\}',
+        raw_text
+    )
 
-        bullets = resolve_ref(data_map, v.get("vendorDetailsBullets"))
-        desc = resolve_ref(data_map, v.get("vendorDetailsParagraph"))
+    for bullets_ref, para_ref in regex_matches:
+        candidates.append({
+            "vendorDetailsBullets": bullets_ref,
+            "vendorDetailsParagraph": para_ref
+        })
 
-        if not isinstance(bullets, list):
-            continue
+    # dedupe
+    seen = set()
+    unique_candidates = []
 
-        if not all(isinstance(b, str) for b in bullets):
-            continue
+    for c in candidates:
+        key = (
+            c.get("vendorDetailsBullets", ""),
+            c.get("vendorDetailsParagraph", "")
+        )
+        if key not in seen:
+            seen.add(key)
+            unique_candidates.append(c)
 
-        if not isinstance(desc, str):
-            continue
+    return unique_candidates
 
-        # only keep real product blocks
-        cleaned_bullets = [clean_cvs_text(b) for b in bullets if isinstance(b, str)]
-        cleaned_desc = clean_cvs_text(desc)
-
-        if len(cleaned_bullets) >= 3 and len(cleaned_desc) > 80:
-            return v
-
-    return None
-
+# =========================================
+# ✅ CVS TEXT CLEANER
+# =========================================
 def clean_cvs_text(text):
 
     if not text:
@@ -173,6 +254,9 @@ def clean_cvs_text(text):
 
     text = html.unescape(text)
 
+    # remove leading raw string marker if present
+    text = re.sub(r'^T\d+,', '', text)
+
     # ✅ remove NextJS chunk breaks
     text = re.sub(r'\]\).*?self\.__next_f\.push\(\[1,"', '', text)
 
@@ -186,6 +270,44 @@ def clean_cvs_text(text):
     text = re.sub(r'\s+', ' ', text).strip()
 
     return text
+
+# =========================================
+# ✅ VALID VENDOR BLOCK (FILTERED ✅)
+# =========================================
+def get_valid_vendor_block(raw_text, data_map):
+
+    candidates = get_vendor_candidates(raw_text, data_map)
+
+    best_block = None
+    best_score = -1
+
+    for v in candidates:
+        bullets = resolve_ref_any(raw_text, data_map, v.get("vendorDetailsBullets"))
+        desc = resolve_ref_any(raw_text, data_map, v.get("vendorDetailsParagraph"))
+
+        if not isinstance(bullets, list):
+            continue
+
+        if not all(isinstance(b, str) for b in bullets):
+            continue
+
+        if not isinstance(desc, str):
+            continue
+
+        cleaned_bullets = [clean_cvs_text(b) for b in bullets if isinstance(b, str)]
+        cleaned_desc = clean_cvs_text(desc)
+
+        # score candidate quality
+        feature_count = len([b for b in cleaned_bullets if len(b) > 20])
+        desc_len = len(cleaned_desc)
+
+        if feature_count >= 3 and desc_len > 80:
+            score = feature_count * 1000 + desc_len
+            if score > best_score:
+                best_score = score
+                best_block = v
+
+    return best_block
 
 requests.adapters.DEFAULT_RETRIES = 2
 
@@ -270,12 +392,10 @@ def normalize_filename(fname):
 # =========================================
 # ✅ ✅ SALSIFY (FINAL CORRECT ENGINE)
 # =========================================
-import json
-
 def get_salsify_images(url):
 
-    html = get_html(url)
-    soup = BeautifulSoup(html, "html.parser")
+    html_text = get_html(url)
+    soup = BeautifulSoup(html_text, "html.parser")
 
     script = soup.find("script", {"id": "__NEXT_DATA__"})
     if not script:
@@ -341,11 +461,11 @@ def get_salsify_images(url):
 # =========================================
 def get_cvs_images(url):
 
-    html = get_html(url)
+    html_text = get_html(url)
 
     matches = re.findall(
         r'/bizcontent/merchandising/productimages/high_res/[^\s"]+\.jpg\?[^"]*',
-        html
+        html_text
     )
 
     best_images = {}
@@ -382,8 +502,8 @@ def get_cvs_images(url):
 # ✅ TEXT EXTRACTION
 # =========================================
 def get_salsify_text(url):
-    html = get_html(url)
-    soup = BeautifulSoup(html, "html.parser")
+    html_text = get_html(url)
+    soup = BeautifulSoup(html_text, "html.parser")
 
     script = soup.find("script", {"id": "__NEXT_DATA__"})
     if not script:
@@ -430,7 +550,8 @@ def get_cvs_text(html_text):
         "Vendor Block Found": False,
         "Vendor Bullets Ref": "",
         "Vendor Paragraph Ref": "",
-        "Vendor Feature Count": 0
+        "Vendor Feature Count": 0,
+        "Vendor Candidate Count": 0
     }
 
     if not html_text:
@@ -444,7 +565,9 @@ def get_cvs_text(html_text):
     features = []
 
     try:
-        vendor_block = get_valid_vendor_block(data_map)
+        debug["Vendor Candidate Count"] = len(get_vendor_candidates(raw_text, data_map))
+
+        vendor_block = get_valid_vendor_block(raw_text, data_map)
 
         debug["Vendor Block Found"] = bool(vendor_block)
 
@@ -456,7 +579,7 @@ def get_cvs_text(html_text):
             debug["Vendor Bullets Ref"] = bullets_ref if isinstance(bullets_ref, str) else ""
             debug["Vendor Paragraph Ref"] = para_ref if isinstance(para_ref, str) else ""
 
-            bullets = resolve_ref(data_map, bullets_ref)
+            bullets = resolve_ref_any(raw_text, data_map, bullets_ref)
 
             if isinstance(bullets, list):
                 features = [
@@ -465,13 +588,14 @@ def get_cvs_text(html_text):
                     if isinstance(b, str)
                 ]
 
+        features = [f for f in features if f]
         features = features[:5]
         debug["Vendor Feature Count"] = len(features)
 
         # ✅ DESCRIPTION
         if vendor_block:
             para_ref = vendor_block.get("vendorDetailsParagraph")
-            para = resolve_ref(data_map, para_ref)
+            para = resolve_ref_any(raw_text, data_map, para_ref)
 
             if isinstance(para, str):
                 desc = clean_cvs_text(para)
@@ -933,6 +1057,7 @@ def process_row(row):
                 "Vendor Bullets Ref": debug_data.get("Vendor Bullets Ref", ""),
                 "Vendor Paragraph Ref": debug_data.get("Vendor Paragraph Ref", ""),
                 "Vendor Feature Count": debug_data.get("Vendor Feature Count", 0),
+                "Vendor Candidate Count": debug_data.get("Vendor Candidate Count", 0),
 
                 # ✅ EXISTING DEBUG
                 "Desc Quality Score": r_desc_debug["quality_score"],
@@ -1510,3 +1635,4 @@ if st.session_state.processing_done and st.session_state.summary_rows:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         ):
             st.session_state.download_clicked = True
+
