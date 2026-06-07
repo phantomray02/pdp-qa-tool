@@ -40,16 +40,31 @@ def get_nextjs_chunks(html):
     return "\n".join(chunks)
     
 def build_data_map(raw_text):
+    import re, json
+
     data_map = {}
 
-    matches = re.findall(r'(\w+):(\[.*?\]|\{.*?\})', raw_text, re.DOTALL)
+    matches = re.findall(r'(\w+):([^\n]+)', raw_text)
 
     for key, val in matches:
+        val = val.strip()
+
+        # ✅ TRY JSON FIRST
         try:
             parsed = json.loads(val)
             data_map[key] = parsed
-        except:
             continue
+        except:
+            pass
+
+        # ✅ HANDLE RAW STRING FORMAT (THIS FIXES YOUR ISSUE)
+        # example: T421,Experience underwear...
+        if "," in val:
+            parts = val.split(",", 1)
+            raw_string = parts[1].strip().strip('"')
+            data_map[key] = raw_string
+        else:
+            data_map[key] = val.strip('"')
 
     return data_map
     
@@ -66,6 +81,31 @@ def find_vendor_block(data_map):
                 and "vendorDetailsParagraph" in v
             ):
                 return v
+    return None
+# =========================================
+# ✅ VALID VENDOR BLOCK (FILTERED ✅)
+# =========================================
+def get_valid_vendor_block(data_map):
+
+    for v in data_map.values():
+        if isinstance(v, dict):
+            if (
+                "vendorDetailsBullets" in v and
+                "vendorDetailsParagraph" in v
+            ):
+                bullets = resolve_ref(data_map, v["vendorDetailsBullets"])
+                desc = resolve_ref(data_map, v["vendorDetailsParagraph"])
+
+                # ✅ ONLY KEEP REAL PRODUCT BLOCK
+                if (
+                    isinstance(bullets, list)
+                    and len(bullets) >= 3
+                    and all(isinstance(b, str) for b in bullets)
+                    and isinstance(desc, str)
+                    and len(desc) > 80
+                ):
+                    return v
+
     return None
 
 def clean_cvs_text(text):
@@ -340,7 +380,7 @@ def get_cvs_text(html_text):
 
     try:
         # ✅ GET STRUCTURED BLOCK
-        vendor_block = find_vendor_block(data_map)
+        vendor_block = get_valid_vendor_block(data_map)
 
         # =========================
         # ✅ FEATURES
