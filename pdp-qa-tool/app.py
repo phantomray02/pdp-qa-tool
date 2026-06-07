@@ -1,4 +1,5 @@
 import io
+import json
 import re
 from html import unescape
 
@@ -55,15 +56,104 @@ def clean_page_text(soup):
     return normalize_space(soup_copy.get_text(separator=" ", strip=True))
 
 
+def parse_jsonld_blocks(soup):
+    blocks = []
+    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        raw = script.string or script.get_text() or ""
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            blocks.append(json.loads(raw))
+        except Exception:
+            continue
+    return blocks
+
+
+def iter_json_nodes(obj):
+    if isinstance(obj, dict):
+        yield obj
+        for value in obj.values():
+            yield from iter_json_nodes(value)
+    elif isinstance(obj, list):
+        for item in obj:
+            yield from iter_json_nodes(item)
+
+
+def extract_from_jsonld(soup):
+    title = ""
+    vendor = ""
+    description = ""
+    features = []
+
+    for block in parse_jsonld_blocks(soup):
+        for node in iter_json_nodes(block):
+            node_type = str(node.get("@type", "")).lower()
+
+            if "product" in node_type or node.get("name") or node.get("description"):
+                if not title and node.get("name"):
+                    title = normalize_space(node.get("name"))
+
+                if not description and node.get("description"):
+                    description = normalize_space(node.get("description"))
+
+                brand = node.get("brand")
+                if not vendor and brand:
+                    if isinstance(brand, dict):
+                        vendor = normalize_space(brand.get("name", ""))
+                    else:
+                        vendor = normalize_space(str(brand))
+
+                for key in ["features", "feature", "benefits", "bullets", "bulletText", "keyFeatures"]:
+                    if key in node:
+                        val = node[key]
+                        if isinstance(val, list):
+                            for item in val:
+                                item = normalize_space(item)
+                                if item:
+                                    features.append(item)
+                        else:
+                            val = normalize_space(val)
+                            if val:
+                                features.append(val)
+
+    # dedupe
+    seen = set()
+    deduped = []
+    for item in features:
+        if item not in seen:
+            seen.add(item)
+            deduped.append(item)
+
+    return {
+        "title": title,
+        "vendor": vendor,
+        "description": description,
+        "features": " | ".join(deduped[:25]),
+    }
+
+
 def extract_title(soup, html_source):
+    # 1. H1
     h1 = soup.find("h1")
     if h1:
-        return normalize_space(h1.get_text(" ", strip=True))
+        text = normalize_space(h1.get_text(" ", strip=True))
+        if text:
+            return text
 
+    # 2. JSON-LD
+    jsonld = extract_from_jsonld(soup)
+    if jsonld["title"]:
+        return jsonld["title"]
+
+    # 3. <title>
     title_tag = soup.find("title")
     if title_tag:
-        return normalize_space(title_tag.get_text(" ", strip=True))
+        text = normalize_space(title_tag.get_text(" ", strip=True))
+        if text:
+            return text
 
+    # 4. Fallback source patterns
     patterns = [
         r'"productName"\s*:\s*"([^"]+)"',
         r'"name"\s*:\s*"([^"]+)"',
@@ -79,6 +169,12 @@ def extract_title(soup, html_source):
 
 
 def extract_vendor(soup, html_source):
+    # 1. JSON-LD brand
+    jsonld = extract_from_jsonld(soup)
+    if jsonld["vendor"]:
+        return jsonld["vendor"]
+
+    # 2. Known source patterns
     patterns = [
         r'>\s*From\s+([^<]+)<',
         r'See all\s+([A-Za-z0-9 &._-]+)\s+products',
@@ -92,6 +188,7 @@ def extract_vendor(soup, html_source):
         if m:
             return normalize_space(m.group(1))
 
+    # 3. Brand/shop links
     for a in soup.find_all("a", href=True):
         txt = normalize_space(a.get_text(" ", strip=True))
         href = a.get("href", "")
@@ -102,14 +199,26 @@ def extract_vendor(soup, html_source):
 
 
 def extract_description(soup, html_source):
+    # 1. Meta description
     meta_desc = soup.find("meta", attrs={"name": "description"})
     if meta_desc and meta_desc.get("content"):
-        return normalize_space(meta_desc.get("content"))
+        text = normalize_space(meta_desc.get("content"))
+        if text:
+            return text
 
+    # 2. OG description
     og_desc = soup.find("meta", attrs={"property": "og:description"})
     if og_desc and og_desc.get("content"):
-        return normalize_space(og_desc.get("content"))
+        text = normalize_space(og_desc.get("content"))
+        if text:
+            return text
 
+    # 3. JSON-LD description
+    jsonld = extract_from_jsonld(soup)
+    if jsonld["description"]:
+        return jsonld["description"]
+
+    # 4. Raw source fields
     patterns = [
         r'"longDescription"\s*:\s*"([^"]+)"',
         r'"shortDescription"\s*:\s*"([^"]+)"',
@@ -122,11 +231,18 @@ def extract_description(soup, html_source):
         if m:
             return normalize_space(m.group(1))
 
+    # 5. Fallback visible page text
     text = clean_page_text(soup)
     return text[:2500]
 
 
 def extract_features(soup, html_source):
+    # 1. JSON-LD features-like fields
+    jsonld = extract_from_jsonld(soup)
+    if jsonld["features"]:
+        return jsonld["features"]
+
+    # 2. Structured source arrays
     patterns = [
         r'"features"\s*:\s*\[([^\]]+)\]',
         r'"feature"\s*:\s*\[([^\]]+)\]',
@@ -141,11 +257,13 @@ def extract_features(soup, html_source):
         if m:
             return normalize_space(m.group(1))
 
+    # 3. Bullet-like lists
     bullets = []
     seen = set()
 
     for li in soup.find_all("li"):
         txt = normalize_space(li.get_text(" ", strip=True))
+        # Keep only substantive bullets so nav/policy junk is reduced.
         if len(txt) >= 20 and txt not in seen:
             seen.add(txt)
             bullets.append(txt)
