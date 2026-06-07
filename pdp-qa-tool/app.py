@@ -1,12 +1,13 @@
-import argparse
-import html
+
+import io
 import re
-import time
-import zipfile
-from pathlib import Path
+from typing import List, Tuple
 
 import pandas as pd
 import requests
+import streamlit as st
+from bs4 import BeautifulSoup
+from rapidfuzz import fuzz
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
@@ -14,306 +15,285 @@ HEADERS = {
     "Connection": "keep-alive",
 }
 
-EXCEL_CELL_LIMIT = 30000
-CONTEXT_WINDOW = 1200
-
-TITLE_PATTERNS = [
-    r"<title[^>]*>.*?</title>",
-    r"<h1[^>]*>.*?</h1>",
-    r'"title"\s*:',
-    r'"name"\s*:',
-    r'"productName"\s*:',
-]
-
-VENDOR_PATTERNS = [
-    r'"brand"\s*:',
-    r'"vendor"\s*:',
-    r'"manufacturer"\s*:',
-    r'>\s*From\s+[^<]+<',
-    r'from\s+[A-Za-z0-9 &._-]+',
-]
-
-DESCRIPTION_PATTERNS = [
-    r'"description"\s*:',
-    r'"longDescription"\s*:',
-    r'"shortDescription"\s*:',
-    r'"productDescription"\s*:',
-    r'description',
-]
-
-FEATURES_PATTERNS = [
-    r'"features"\s*:',
-    r'"feature"\s*:',
-    r'"benefits"\s*:',
-    r'"bullets"\s*:',
-    r'"bulletText"\s*:',
-    r'"keyFeatures"\s*:',
-    r'features',
-]
+REQUEST_TIMEOUT = 25
 
 
-def safe_name(text: str) -> str:
-    text = str(text or "").strip()
-    text = re.sub(r"[^A-Za-z0-9._-]+", "_", text)
-    return text[:120] or "row"
-
-
-def clean_snippet(text: str) -> str:
-    text = html.unescape(str(text or ""))
-    text = text.replace("\x00", "")
+def normalize_space(text: str) -> str:
+    text = str(text or "")
+    text = re.sub(r"\s+", " ", text)
     return text.strip()
 
 
-def find_first_context(source: str, patterns: list, window: int = CONTEXT_WINDOW):
-    source = str(source or "")
-    if not source:
+def fetch_html(url: str) -> str:
+    if not url or not str(url).strip():
+        return ""
+    resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+    resp.raise_for_status()
+    return resp.text
+
+
+def get_soup(url: str) -> BeautifulSoup:
+    html = fetch_html(url)
+    return BeautifulSoup(html, "html.parser")
+
+
+def extract_page_text_from_soup(soup: BeautifulSoup) -> str:
+    for tag in soup(["script", "style", "noscript"]):
+        tag.decompose()
+    text = soup.get_text(separator=" ", strip=True)
+    return normalize_space(text)
+
+
+def extract_title_from_soup(soup: BeautifulSoup) -> str:
+    h1 = soup.find("h1")
+    if h1:
+        return normalize_space(h1.get_text(" ", strip=True))
+
+    title_tag = soup.find("title")
+    if title_tag:
+        return normalize_space(title_tag.get_text(" ", strip=True))
+
+    meta_og = soup.find("meta", attrs={"property": "og:title"})
+    if meta_og and meta_og.get("content"):
+        return normalize_space(meta_og.get("content"))
+
+    return ""
+
+
+def extract_meta_description_from_soup(soup: BeautifulSoup) -> str:
+    meta = soup.find("meta", attrs={"name": "description"})
+    if meta and meta.get("content"):
+        return normalize_space(meta.get("content"))
+
+    meta_og = soup.find("meta", attrs={"property": "og:description"})
+    if meta_og and meta_og.get("content"):
+        return normalize_space(meta_og.get("content"))
+
+    return ""
+
+
+def extract_feature_bullets_from_soup(soup: BeautifulSoup) -> str:
+    bullets: List[str] = []
+
+    for li in soup.find_all("li"):
+        txt = normalize_space(li.get_text(" ", strip=True))
+        if len(txt) >= 20:
+            bullets.append(txt)
+
+    # de-duplicate while preserving order
+    seen = set()
+    deduped = []
+    for b in bullets:
+        if b not in seen:
+            seen.add(b)
+            deduped.append(b)
+
+    return " | ".join(deduped[:25])
+
+
+def get_text(url: str) -> str:
+    try:
+        soup = get_soup(url)
+        return extract_title_from_soup(soup)
+    except Exception:
+        return ""
+
+
+def get_images(url: str) -> List[str]:
+    try:
+        soup = get_soup(url)
+        images = soup.find_all("img")
+        image_urls = []
+        for img in images:
+            src = img.get("src")
+            if src and "http" in src:
+                image_urls.append(src.strip())
+        return sorted(set(image_urls))
+    except Exception:
+        return []
+
+
+def get_salsify_data(url: str) -> str:
+    try:
+        soup = get_soup(url)
+        title = extract_title_from_soup(soup)
+        meta_desc = extract_meta_description_from_soup(soup)
+        page_text = extract_page_text_from_soup(soup)
+        combined = " ".join([title, meta_desc, page_text])
+        return normalize_space(combined)
+    except Exception:
+        return ""
+
+
+def get_cvs_data(url: str) -> Tuple[str, str]:
+    try:
+        soup = get_soup(url)
+
+        title = extract_title_from_soup(soup)
+        meta_desc = extract_meta_description_from_soup(soup)
+        feature_bullets = extract_feature_bullets_from_soup(soup)
+        page_text = extract_page_text_from_soup(soup)
+
+        # description = title + meta description + trimmed page text
+        description_text = normalize_space(" ".join([title, meta_desc, page_text[:3000]]))
+
+        # features = bullet-like text if found, otherwise a trimmed fallback slice
+        if not feature_bullets:
+            feature_bullets = normalize_space(page_text[:2500])
+
+        return description_text, feature_bullets
+    except Exception:
         return "", ""
 
-    for pattern in patterns:
-        match = re.search(pattern, source, flags=re.IGNORECASE | re.DOTALL)
-        if match:
-            start = max(0, match.start() - window)
-            end = min(len(source), match.end() + window)
-            anchor = match.group(0)
-            context = source[start:end]
-            return clean_snippet(anchor), clean_snippet(context)
 
-    return "", ""
+def validate_columns(df: pd.DataFrame):
+    cols = {c.strip().lower(): c for c in df.columns}
+    required = ["salsify_url", "retail_url"]
+    missing = [col for col in required if col not in cols]
+    if missing:
+        raise ValueError(f"Missing required columns: {missing}")
+    return cols
 
 
-def extract_source_contexts(source: str) -> dict:
-    title_anchor, title_context = find_first_context(source, TITLE_PATTERNS)
-    vendor_anchor, vendor_context = find_first_context(source, VENDOR_PATTERNS)
-    description_anchor, description_context = find_first_context(source, DESCRIPTION_PATTERNS)
-    features_anchor, features_context = find_first_context(source, FEATURES_PATTERNS)
+def run_qa(df: pd.DataFrame) -> pd.DataFrame:
+    cols = validate_columns(df)
 
-    return {
-        "title_anchor": title_anchor,
-        "title_source_context": title_context,
-        "vendor_anchor": vendor_anchor,
-        "vendor_source_context": vendor_context,
-        "description_anchor": description_anchor,
-        "description_source_context": description_context,
-        "features_anchor": features_anchor,
-        "features_source_context": features_context,
-    }
+    salsify_col = cols["salsify_url"]
+    retail_col = cols["retail_url"]
+    sku_col = cols.get("sku")
+    rpc_col = cols.get("cvs rpc")
+    brand_col = cols.get("brand")
 
+    results = []
 
-def find_url_column(df: pd.DataFrame) -> str:
-    normalized = {str(c).strip().lower(): c for c in df.columns}
-    for candidate in ["retail url", "retail_url", "url", "product url"]:
-        if candidate in normalized:
-            return normalized[candidate]
-    raise ValueError("Could not find a retail URL column.")
+    progress = st.progress(0)
+    total = len(df)
 
+    for i, (_, row) in enumerate(df.iterrows(), start=1):
+        salsify_url = str(row[salsify_col]).strip() if pd.notna(row[salsify_col]) else ""
+        retail_url = str(row[retail_col]).strip() if pd.notna(row[retail_col]) else ""
+        sku = str(row[sku_col]).strip() if sku_col and pd.notna(row[sku_col]) else ""
+        cvs_rpc = str(row[rpc_col]).strip() if rpc_col and pd.notna(row[rpc_col]) else ""
+        brand = str(row[brand_col]).strip() if brand_col and pd.notna(row[brand_col]) else ""
 
-def load_input(path: str) -> pd.DataFrame:
-    p = Path(path)
-
-    if p.suffix.lower() == ".csv":
-        df = pd.read_csv(p)
-
-    elif p.suffix.lower() in [".xlsx", ".xlsm", ".xls"]:
-        try:
-            xls = pd.ExcelFile(p, engine="openpyxl")
-            sheet = "Summary" if "Summary" in xls.sheet_names else xls.sheet_names[0]
-            df = pd.read_excel(p, sheet_name=sheet, engine="openpyxl")
-        except Exception:
-            df = pd.read_excel(p, engine="openpyxl")
-
-    else:
-        raise ValueError("Unsupported input type. Use CSV or XLSX.")
-
-    return df
-
-
-def chunk_text(text: str, chunk_size: int = EXCEL_CELL_LIMIT) -> list:
-    text = text if isinstance(text, str) else str(text or "")
-    if not text:
-        return [""]
-    return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
-
-
-def fetch_all(input_path: str, out_dir: str, sleep_seconds: float = 0.5):
-    out = Path(out_dir)
-    out.mkdir(parents=True, exist_ok=True)
-
-    txt_dir = out / "raw_txt"
-    txt_dir.mkdir(exist_ok=True)
-
-    df = load_input(input_path)
-    url_col = find_url_column(df)
-
-    cols_lower = {str(c).strip().lower(): c for c in df.columns}
-    sku_col = cols_lower.get("sku") or cols_lower.get("sku id") or cols_lower.get("product sku")
-    rpc_col = cols_lower.get("cvs rpc")
-    brand_col = cols_lower.get("brand")
-
-    session = requests.Session()
-    session.headers.update(HEADERS)
-
-    summary_rows = []
-    raw_rows = []
-
-    for idx, row in df.iterrows():
-        url = str(row[url_col]).strip() if pd.notna(row[url_col]) else ""
-        sku = str(row.get(sku_col, "")).strip() if sku_col else ""
-        rpc = str(row.get(rpc_col, "")).strip() if rpc_col else ""
-        brand = str(row.get(brand_col, "")).strip() if brand_col else ""
-
-        if not url:
-            summary_rows.append({
-                "row_number": idx + 1,
-                "sku": sku,
-                "cvs_rpc": rpc,
-                "brand": brand,
-                "retail_url": "",
-                "final_url": "",
-                "status_code": "",
-                "source_capture_status": "missing_url",
-                "source_capture_error": "missing_url",
-                "source_file": "",
-                "source_bytes": 0,
-                "source_length": 0,
-                "title_anchor": "",
-                "title_source_context": "",
-                "vendor_anchor": "",
-                "vendor_source_context": "",
-                "description_anchor": "",
-                "description_source_context": "",
-                "features_anchor": "",
-                "features_source_context": "",
-            })
-
-            raw_rows.append({
-                "row_number": idx + 1,
-                "sku": sku,
-                "cvs_rpc": rpc,
-                "brand": brand,
-                "retail_url": "",
-                "raw_source_1": "",
-            })
-            continue
-
-        base_name = safe_name(rpc if rpc else f"row_{idx + 1}")
-        txt_path = txt_dir / f"{base_name}_RAW.txt"
-
-        status_code = ""
-        final_url = ""
-        capture_status = "failed"
-        capture_error = ""
-        source = ""
-
-        contexts = {
-            "title_anchor": "",
-            "title_source_context": "",
-            "vendor_anchor": "",
-            "vendor_source_context": "",
-            "description_anchor": "",
-            "description_source_context": "",
-            "features_anchor": "",
-            "features_source_context": "",
-        }
+        s_text = ""
+        cvs_desc = ""
+        cvs_features = ""
+        s_images = []
+        r_images = []
+        error_text = ""
 
         try:
-            resp = session.get(url, timeout=30, allow_redirects=True)
-            status_code = resp.status_code
-            final_url = resp.url
+            s_text = get_salsify_data(salsify_url)
+            cvs_desc, cvs_features = get_cvs_data(retail_url)
 
-            if resp.status_code == 200:
-                source = resp.text
-                txt_path.write_text(source, encoding="utf-8")
-                capture_status = "success"
-            else:
-                capture_error = f"http_{resp.status_code}"
+            s_images = get_images(salsify_url)
+            r_images = get_images(retail_url)
+
+            s_set = set(s_images)
+            r_set = set(r_images)
+            match_count = len(s_set & r_set)
+            total_salsify = len(s_set)
+            image_match_pct = round((match_count / total_salsify) * 100, 2) if total_salsify else 0.0
+
+            desc_score = fuzz.partial_ratio(s_text, cvs_desc) if s_text and cvs_desc else 0
+            feat_score = fuzz.partial_ratio(s_text, cvs_features) if s_text and cvs_features else 0
+
+            status = "PASS" if desc_score > 85 and feat_score > 80 and image_match_pct > 50 else "FAIL"
+
+            results.append({
+                "sku": sku,
+                "cvs_rpc": cvs_rpc,
+                "brand": brand,
+                "salsify_url": salsify_url,
+                "retail_url": retail_url,
+                "desc_score": desc_score,
+                "feat_score": feat_score,
+                "image_match_pct": image_match_pct,
+                "matching_image_count": match_count,
+                "salsify_image_count": total_salsify,
+                "status": status,
+                "salsify_text": s_text,
+                "cvs_description": cvs_desc,
+                "cvs_features": cvs_features,
+                "salsify_images": " | ".join(s_images),
+                "retail_images": " | ".join(r_images),
+                "error": "",
+            })
 
         except Exception as exc:
-            capture_error = f"{type(exc).__name__}: {exc}"
+            error_text = f"{type(exc).__name__}: {exc}"
+            results.append({
+                "sku": sku,
+                "cvs_rpc": cvs_rpc,
+                "brand": brand,
+                "salsify_url": salsify_url,
+                "retail_url": retail_url,
+                "desc_score": 0,
+                "feat_score": 0,
+                "image_match_pct": 0,
+                "matching_image_count": 0,
+                "salsify_image_count": 0,
+                "status": "ERROR",
+                "salsify_text": s_text,
+                "cvs_description": cvs_desc,
+                "cvs_features": cvs_features,
+                "salsify_images": " | ".join(s_images),
+                "retail_images": " | ".join(r_images),
+                "error": error_text,
+            })
 
-        contexts = extract_source_contexts(source)
+        progress.progress(i / total)
 
-        source_bytes = len(source.encode("utf-8", errors="ignore")) if source else 0
-        source_length = len(source) if source else 0
+    progress.empty()
+    return pd.DataFrame(results)
 
-        summary_rows.append({
-            "row_number": idx + 1,
-            "sku": sku,
-            "cvs_rpc": rpc,
-            "brand": brand,
-            "retail_url": url,
-            "final_url": final_url,
-            "status_code": status_code,
-            "source_capture_status": capture_status,
-            "source_capture_error": capture_error,
-            "source_file": str(txt_path) if txt_path.exists() else "",
-            "source_bytes": source_bytes,
-            "source_length": source_length,
-            "title_anchor": contexts["title_anchor"],
-            "title_source_context": contexts["title_source_context"],
-            "vendor_anchor": contexts["vendor_anchor"],
-            "vendor_source_context": contexts["vendor_source_context"],
-            "description_anchor": contexts["description_anchor"],
-            "description_source_context": contexts["description_source_context"],
-            "features_anchor": contexts["features_anchor"],
-            "features_source_context": contexts["features_source_context"],
-        })
 
-        chunks = chunk_text(source)
-
-        raw_row = {
-            "row_number": idx + 1,
-            "sku": sku,
-            "cvs_rpc": rpc,
-            "brand": brand,
-            "retail_url": url,
-        }
-
-        for i, chunk in enumerate(chunks, start=1):
-            raw_row[f"raw_source_{i}"] = chunk
-
-        raw_rows.append(raw_row)
-
-        time.sleep(sleep_seconds)
-
-    summary_df = pd.DataFrame(summary_rows)
-    raw_df = pd.DataFrame(raw_rows)
-
-    debugger_df = summary_df.merge(
-        raw_df,
-        on=["row_number", "sku", "cvs_rpc", "brand", "retail_url"],
-        how="left"
-    )
-
-    excel_path = out / "cvs_debugger_with_source.xlsx"
-    with pd.ExcelWriter(excel_path, engine="openpyxl") as writer:
-        debugger_df.to_excel(writer, index=False, sheet_name="debugger")
-        summary_df.to_excel(writer, index=False, sheet_name="summary")
-        raw_df.to_excel(writer, index=False, sheet_name="raw_source")
-
-    zip_path = out / "cvs_debugger_with_source_bundle.zip"
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.write(excel_path, arcname=excel_path.name)
-        for file in txt_dir.glob("*.txt"):
-            zf.write(file, arcname=f"raw_txt/{file.name}")
-
-    return excel_path, zip_path
+def make_excel_bytes(results_df: pd.DataFrame) -> bytes:
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        results_df.to_excel(writer, index=False, sheet_name="QA Results")
+    output.seek(0)
+    return output.getvalue()
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Fetch raw CVS source for every URL and export debugger Excel with raw source and source contexts."
-    )
-    parser.add_argument(
-        "input_file",
-        help="CSV or XLSX containing Retail URL column. Summary sheet is used automatically for XLSX if present.",
-    )
-    parser.add_argument("--out-dir", default="cvs_raw_source_output", help="Output directory.")
-    parser.add_argument("--sleep", type=float, default=0.5, help="Sleep between requests in seconds.")
-    args = parser.parse_args()
+    st.set_page_config(page_title="PDP QA Tool", layout="wide")
+    st.title("PDP QA Tool")
 
-    excel_path, zip_path = fetch_all(args.input_file, args.out_dir, args.sleep)
-    print(f"Debugger Excel written to: {excel_path}")
-    print(f"ZIP bundle written to: {zip_path}")
+    uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
+
+    if uploaded_file is None:
+        st.info("Upload a CSV file to begin.")
+        st.stop()
+
+    try:
+        df = pd.read_csv(uploaded_file)
+    except Exception as exc:
+        st.error(f"Could not read uploaded CSV: {exc}")
+        st.stop()
+
+    st.write("Preview of uploaded data:")
+    st.dataframe(df.head())
+
+    if st.button("Run QA"):
+        with st.spinner("Running QA checks..."):
+            try:
+                results_df = run_qa(df)
+            except Exception as exc:
+                st.error(f"QA run failed: {exc}")
+                st.stop()
+
+        st.success("QA run complete.")
+        st.dataframe(results_df, use_container_width=True)
+
+        excel_bytes = make_excel_bytes(results_df)
+        st.download_button(
+            label="Download Excel Results",
+            data=excel_bytes,
+            file_name="pdp_qa_results.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
 
 
 if __name__ == "__main__":
