@@ -2,6 +2,7 @@ import io
 import json
 import re
 from html import unescape
+from urllib.parse import urljoin
 
 import pandas as pd
 import requests
@@ -15,7 +16,7 @@ HEADERS = {
 }
 
 REQUEST_TIMEOUT = 15
-SECTION_WINDOW = 3500
+SECTION_WINDOW = 4000
 
 NOISE_PHRASES = [
     "manage prescriptions",
@@ -58,15 +59,10 @@ NOISE_PHRASES = [
     "media exchange",
     "supplier",
     "privacy practices",
-]
-
-PROMO_PHRASES = [
-    "buy ",
-    "free shipping",
-    "coupons",
-    "best deals",
-    "shop cvs now",
-    "enjoy free shipping",
+    "weekly ad",
+    "extra big deals",
+    "wellness zone",
+    "use the cvs app",
 ]
 
 FEATURE_HINTS = [
@@ -102,9 +98,19 @@ FEATURE_HINTS = [
     "free of added dyes",
     "maximum absorbency",
     "light absorbency",
+    "incontinence",
     "trusted care",
     "soothing lotion",
     "cooling aloe",
+    "mega rolls",
+    "wipes",
+    "underwear",
+    "guards",
+    "shields",
+    "tissues",
+    "fragrance free",
+    "gentleplus",
+    "fresh care",
 ]
 
 TITLE_PATTERNS = [
@@ -119,18 +125,15 @@ TITLE_PATTERNS = [
 DESCRIPTION_PATTERNS = [
     r'"longDescription"\s*:\s*"[^"]+"',
     r'"shortDescription"\s*:\s*"[^"]+"',
-    r'"description"\s*:\s*"([^"]+)"',
-    r'"productDescription"\s*:\s*"([^"]+)"',
+    r'"description"\s*:\s*"[^"]+"',
+    r'"productDescription"\s*:\s*"[^"]+"',
     r'<meta[^>]+name="description"[^>]+content="[^"]+"',
     r'<meta[^>]+property="og:description"[^>]+content="[^"]+"',
-]
-
-DETAILS_PATTERNS = [
-    r'Details',
-    r'Specifications',
-    r'Directions',
-    r'Warnings',
-    r'Ingredients',
+    r"Details",
+    r"Specifications",
+    r"Directions",
+    r"Warnings",
+    r"Ingredients",
 ]
 
 FEATURE_ARRAY_PATTERNS = [
@@ -142,16 +145,77 @@ FEATURE_ARRAY_PATTERNS = [
     r'"keyFeatures"\s*:\s*\[([^\]]+)\]',
 ]
 
+DETAILS_PATTERNS = [
+    r"Details",
+    r"Specifications",
+    r"Directions",
+    r"Warnings",
+    r"Ingredients",
+]
 
-# -----------------------------
-# Generic helpers
-# -----------------------------
 
 def normalize_space(text):
     text = str(text or "")
     text = unescape(text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
+
+
+def dedupe_preserve_order(items):
+    output = []
+    seen = set()
+    for item in items:
+        item = normalize_space(item)
+        if item and item not in seen:
+            seen.add(item)
+            output.append(item)
+    return output
+
+
+def contains_noise(text):
+    lowered = normalize_space(text).lower()
+    if not lowered:
+        return True
+    for phrase in NOISE_PHRASES:
+        if phrase in lowered:
+            return True
+    return False
+
+
+def simple_sentence_split(text):
+    text = normalize_space(text)
+    if not text:
+        return []
+    parts = re.split(r"(?<=[\.\!\?])\s+|\s+\|\s+|;\s+|\s{2,}", text)
+    return [normalize_space(p) for p in parts if normalize_space(p)]
+
+
+def clean_section_lines(section_text):
+    text = normalize_space(section_text)
+    if not text:
+        return []
+
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = normalize_space(text)
+
+    lines = simple_sentence_split(text)
+    output = []
+
+    for line in lines:
+        lowered = line.lower()
+
+        if len(line) < 8:
+            continue
+        if contains_noise(line):
+            continue
+        if lowered in {"details", "specifications", "directions", "warnings", "ingredients"}:
+            continue
+        if lowered in {"home", "shop", "household", "paper & plastic", "toilet paper"}:
+            continue
+
+        output.append(line)
+
+    return dedupe_preserve_order(output)
 
 
 def fetch_page(session, url):
@@ -185,107 +249,20 @@ def make_excel_bytes(results_df):
     return output.getvalue()
 
 
-def dedupe_preserve_order(items):
-    output = []
-    seen = set()
-    for item in items:
-        item = normalize_space(item)
-        if item and item not in seen:
-            seen.add(item)
-            output.append(item)
-    return output
-
-
-def contains_noise(text):
-    lowered = normalize_space(text).lower()
-    if not lowered:
-        return True
-    for phrase in NOISE_PHRASES:
-        if phrase in lowered:
-            return True
-    return False
-
-
-def looks_promotional(text):
-    lowered = normalize_space(text).lower()
-    if not lowered:
-        return False
-    return any(phrase in lowered for phrase in PROMO_PHRASES)
-
-
-def simple_sentence_split(text):
-    text = normalize_space(text)
-    if not text:
-        return []
-    parts = re.split(r"(?<=[\.\!\?])\s+|\s+\|\s+|;\s+|\s{2,}", text)
-    return [normalize_space(p) for p in parts if normalize_space(p)]
-
-
-def clean_section_lines(section_text):
-    text = normalize_space(section_text)
-    if not text:
-        return []
-
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = normalize_space(text)
-
-    lines = simple_sentence_split(text)
-    output = []
-
-    for line in lines:
-        lowered = line.lower()
-
-        if len(line) < 8:
-            continue
-        if contains_noise(line):
-            continue
-        if lowered in {"details", "specifications", "directions", "warnings", "ingredients"}:
-            continue
-
-        output.append(line)
-
-    return dedupe_preserve_order(output)
-
-
-def extract_quoted_payload(text):
-    patterns = [
-        r'"longDescription"\s*:\s*"([^"]+)"',
-        r'"shortDescription"\s*:\s*"([^"]+)"',
-        r'"description"\s*:\s*"([^"]+)"',
-        r'"productDescription"\s*:\s*"([^"]+)"',
-        r'"productName"\s*:\s*"([^"]+)"',
-        r'"name"\s*:\s*"([^"]+)"',
-        r'"title"\s*:\s*"([^"]+)"',
-        r'"brand"\s*:\s*"([^"]+)"',
-        r'content="([^"]+)"',
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL)
-        if match:
-            return normalize_space(match.group(1))
-    return ""
-
-
 def pull_big_section(source, patterns, window=SECTION_WINDOW):
     source = str(source or "")
     if not source:
-        return "", ""
+        return ""
 
     for pattern in patterns:
         match = re.search(pattern, source, flags=re.IGNORECASE | re.DOTALL)
         if match:
             start = max(0, match.start() - window)
             end = min(len(source), match.end() + window)
-            anchor = normalize_space(match.group(0))
-            context = normalize_space(source[start:end])
-            return anchor, context
+            return normalize_space(source[start:end])
 
-    return "", ""
+    return ""
 
-
-# -----------------------------
-# JSON-LD helpers
-# -----------------------------
 
 def parse_jsonld_blocks(soup):
     blocks = []
@@ -311,7 +288,16 @@ def iter_json_nodes(obj):
             yield from iter_json_nodes(item)
 
 
-def extract_from_jsonld(soup):
+def normalize_image_url(image_url, final_url):
+    image_url = normalize_space(image_url)
+    if not image_url:
+        return ""
+    image_url = image_url.replace("http://localhost:4300", "https://www.cvs.com")
+    image_url = image_url.replace("https://localhost:4300", "https://www.cvs.com")
+    return urljoin(final_url, image_url)
+
+
+def extract_from_jsonld(soup, final_url):
     title = ""
     description = ""
     features = []
@@ -331,9 +317,9 @@ def extract_from_jsonld(soup):
                 if not image and node.get("image"):
                     img = node.get("image")
                     if isinstance(img, list) and img:
-                        image = normalize_space(img[0])
+                        image = normalize_image_url(str(img[0]), final_url)
                     else:
-                        image = normalize_space(img)
+                        image = normalize_image_url(str(img), final_url)
 
                 for key in ["features", "feature", "benefits", "bullets", "bulletText", "keyFeatures"]:
                     if key in node:
@@ -356,45 +342,20 @@ def extract_from_jsonld(soup):
     }
 
 
-# -----------------------------
-# Pull raw sections
-# -----------------------------
-
-def pull_title_section(source):
-    return pull_big_section(source, TITLE_PATTERNS)
-
-
-def pull_short_description_section(source):
-    return pull_big_section(source, DESCRIPTION_PATTERNS)
-
-
-def pull_details_section(source):
-    return pull_big_section(source, DETAILS_PATTERNS)
-
-
-def pull_features_section(source):
-    patterns = FEATURE_ARRAY_PATTERNS + DETAILS_PATTERNS + [r"<li[^>]*>.*?</li>"]
-    return pull_big_section(source, patterns)
-
-
-# -----------------------------
-# Extract fields
-# -----------------------------
-
-def extract_title(soup, title_anchor, raw_title_section):
+def extract_title(soup, html_source, final_url):
     h1 = soup.find("h1")
     if h1:
         text = normalize_space(h1.get_text(" ", strip=True))
         if text:
             return text, "h1"
 
+    jsonld = extract_from_jsonld(soup, final_url)
+    if jsonld["title"]:
+        return jsonld["title"], "jsonld_title"
+
     og_title = soup.find("meta", attrs={"property": "og:title"})
     if og_title and og_title.get("content"):
         return normalize_space(og_title.get("content")), "og_title"
-
-    jsonld = extract_from_jsonld(soup)
-    if jsonld["title"]:
-        return jsonld["title"], "jsonld_title"
 
     title_tag = soup.find("title")
     if title_tag:
@@ -402,38 +363,34 @@ def extract_title(soup, title_anchor, raw_title_section):
         if text:
             return text, "html_title"
 
-    payload = extract_quoted_payload(title_anchor)
-    if payload:
-        return payload, "title_anchor_payload"
-
-    lines = clean_section_lines(raw_title_section)
+    section = pull_big_section(html_source, TITLE_PATTERNS)
+    lines = clean_section_lines(section)
     if lines:
         return lines[0], "title_section_line"
 
     return "", "title_empty"
 
 
-def extract_description(soup, short_description_anchor, raw_short_description_section, raw_details_section):
-    # 1. Try deeper details section first if it has useful non-noisy lines.
-    details_lines = clean_section_lines(raw_details_section)
-    detail_keep = []
+def extract_description(soup, html_source, final_url):
+    jsonld = extract_from_jsonld(soup, final_url)
+    if jsonld["description"]:
+        return jsonld["description"], "jsonld_description"
+
+    details_section = pull_big_section(html_source, DETAILS_PATTERNS)
+    details_lines = clean_section_lines(details_section)
+
+    details_keep = []
     for line in details_lines:
         lowered = line.lower()
         if any(hint in lowered for hint in FEATURE_HINTS):
-            detail_keep.append(line)
-        elif not contains_noise(line) and len(line) >= 25:
-            detail_keep.append(line)
+            details_keep.append(line)
+        elif len(line) >= 25 and not contains_noise(line):
+            details_keep.append(line)
 
-    detail_keep = dedupe_preserve_order(detail_keep)
-    if detail_keep and not looks_promotional(" ".join(detail_keep[:4])):
-        return " ".join(detail_keep[:8]), "details_section_lines"
+    details_keep = dedupe_preserve_order(details_keep)
+    if details_keep:
+        return " ".join(details_keep[:8]), "details_section_lines"
 
-    # 2. JSON-LD
-    jsonld = extract_from_jsonld(soup)
-    if jsonld["description"] and not looks_promotional(jsonld["description"]):
-        return jsonld["description"], "jsonld_description"
-
-    # 3. Meta / OG description
     meta_desc = soup.find("meta", attrs={"name": "description"})
     if meta_desc and meta_desc.get("content"):
         text = normalize_space(meta_desc.get("content"))
@@ -446,34 +403,102 @@ def extract_description(soup, short_description_anchor, raw_short_description_se
         if text:
             return text, "og_description"
 
-    # 4. Raw short description section
-    payload = extract_quoted_payload(short_description_anchor)
-    if payload:
-        return payload, "short_description_anchor_payload"
+    section = pull_big_section(html_source, DESCRIPTION_PATTERNS)
+    lines = clean_section_lines(section)
+    if lines:
+        return " ".join(lines[:6]), "description_section_lines"
 
-    short_lines = clean_section_lines(raw_short_description_section)
-    if short_lines:
-        return " ".join(short_lines[:5]), "short_description_section_lines"
-
-    # 5. Visible text fallback
     fallback = clean_page_text(soup)[:2500]
     return fallback, "visible_text_fallback"
 
 
-def extract_features(raw_features_section, raw_details_section):
-    source_for_features = f"{raw_features_section} {raw_details_section}"
+def synthesize_features_from_text(title_text, description_text, details_text):
+    combined = " ".join([
+        normalize_space(title_text),
+        normalize_space(description_text),
+        normalize_space(details_text),
+    ]).lower()
 
-    # 1. Structured arrays
+    features = []
+
+    # Claims / phrases.
+    phrase_patterns = [
+        r"3x [a-z\- ]+",
+        r"septic[- ]safe",
+        r"hypoallergenic",
+        r"dermatologist[- ]tested",
+        r"alcohol[- ]free",
+        r"fragrance[- ]free",
+        r"moisture[- ]wicking",
+        r"maximum absorbency",
+        r"light absorbency",
+        r"softest",
+        r"stronger",
+        r"strong",
+        r"comfort",
+        r"flushable",
+        r"odorblock",
+        r"dryshield",
+        r"moisturewick",
+        r"cleaningripples",
+        r"aloe",
+        r"vitamin e",
+        r"chamomile",
+    ]
+
+    for pattern in phrase_patterns:
+        for match in re.finditer(pattern, combined, flags=re.IGNORECASE):
+            features.append(normalize_space(match.group(0)))
+
+    # Count / size / pack cues.
+    count_patterns = [
+        r"\b\d+\s*mega rolls?\b",
+        r"\b\d+\s*ct\b",
+        r"\b\d+\s*count\b",
+        r"\b\d+\s*wipes?\b",
+        r"\b\d+\s*pk\b",
+        r"\b\d+\s*total wipes\b",
+        r"\bsmall\/medium\b",
+        r"\bx-large\b",
+        r"\bxx-large\b",
+        r"\blarge\b",
+        r"\bmedium\b",
+        r"\bsmall\b",
+        r"\bgrey\b",
+        r"\bgray\b",
+        r"\bblush\b",
+    ]
+
+    for pattern in count_patterns:
+        for match in re.finditer(pattern, combined, flags=re.IGNORECASE):
+            features.append(normalize_space(match.group(0)))
+
+    features = dedupe_preserve_order(features)
+    return " | ".join(features[:20])
+
+
+def extract_features(soup, html_source, final_url, title_text, description_text):
+    jsonld = extract_from_jsonld(soup, final_url)
+    if jsonld["features"]:
+        return jsonld["features"], "jsonld_features"
+
+    # Old logic we want back: arrays + big sections + bullets + hints.
+    whole_text = html_source
+
     for pattern in FEATURE_ARRAY_PATTERNS:
-        match = re.search(pattern, source_for_features, flags=re.IGNORECASE | re.DOTALL)
+        match = re.search(pattern, whole_text, flags=re.IGNORECASE | re.DOTALL)
         if match:
             payload = normalize_space(match.group(1))
             if payload and not contains_noise(payload):
                 return payload, "features_json_array"
 
-    # 2. HTML bullets
-    section_soup = build_soup(source_for_features)
+    features_section = pull_big_section(html_source, FEATURE_PATTERNS)
+    details_section = pull_big_section(html_source, DETAILS_PATTERNS)
+    source_for_features = f"{features_section} {details_section}"
+
+    # Parse bullets from section HTML first.
     bullets = []
+    section_soup = build_soup(source_for_features)
     seen = set()
 
     for li in section_soup.find_all("li"):
@@ -488,7 +513,6 @@ def extract_features(raw_features_section, raw_details_section):
             continue
         if not any(hint in lowered for hint in FEATURE_HINTS):
             continue
-
         if text not in seen:
             seen.add(text)
             bullets.append(text)
@@ -496,7 +520,7 @@ def extract_features(raw_features_section, raw_details_section):
     if bullets:
         return " | ".join(bullets[:20]), "features_html_bullets"
 
-    # 3. Cleaned lines with feature hints
+    # Clean general section lines and keep product-claim lines.
     lines = clean_section_lines(source_for_features)
     keep = []
     for line in lines:
@@ -508,44 +532,38 @@ def extract_features(raw_features_section, raw_details_section):
     if keep:
         return " | ".join(keep[:20]), "features_section_lines"
 
-    # 4. Final hint-only fallback
-    lowered = normalize_space(source_for_features).lower()
-    hits = []
-    for hint in FEATURE_HINTS:
-        if hint in lowered:
-            hits.append(hint)
-
-    hits = dedupe_preserve_order(hits)
-    if hits:
-        return " | ".join(hits[:20]), "features_hint_hits"
+    # Final structured fallback from title + description + details.
+    synthesized = synthesize_features_from_text(
+        title_text,
+        description_text,
+        details_section,
+    )
+    if synthesized:
+        return synthesized, "features_synthesized"
 
     return "", "features_empty"
 
 
-def extract_image(soup):
-    og_img = soup.find("meta", attrs={"property": "og:image"})
-    if og_img and og_img.get("content"):
-        return normalize_space(og_img.get("content")), "og_image"
-
-    tw_img = soup.find("meta", attrs={"name": "twitter:image"})
-    if tw_img and tw_img.get("content"):
-        return normalize_space(tw_img.get("content")), "twitter_image"
-
-    jsonld = extract_from_jsonld(soup)
+def extract_image(soup, final_url):
+    jsonld = extract_from_jsonld(soup, final_url)
     if jsonld["image"]:
         return jsonld["image"], "jsonld_image"
+
+    og_image = soup.find("meta", attrs={"property": "og:image"})
+    if og_image and og_image.get("content"):
+        return normalize_image_url(og_image.get("content"), final_url), "og_image"
+
+    twitter_image = soup.find("meta", attrs={"name": "twitter:image"})
+    if twitter_image and twitter_image.get("content"):
+        return normalize_image_url(twitter_image.get("content"), final_url), "twitter_image"
 
     for img in soup.find_all("img"):
         src = img.get("src")
         if src and "productimages" in src:
-            return normalize_space(src), "img_tag"
+            return normalize_image_url(src, final_url), "img_tag"
 
     return "", "image_empty"
 
-
-# -----------------------------
-# App logic
-# -----------------------------
 
 def validate_columns(df):
     cols = {c.strip().lower(): c for c in df.columns}
@@ -586,16 +604,6 @@ def process_items(df, max_rows):
         source_capture_status = "failed"
         source_capture_error = ""
 
-        title_anchor = ""
-        short_description_anchor = ""
-        details_anchor = ""
-        features_anchor = ""
-
-        raw_title_section = ""
-        raw_short_description_section = ""
-        raw_details_section = ""
-        raw_features_section = ""
-
         title_extracted = ""
         description_extracted = ""
         features_extracted = ""
@@ -615,30 +623,16 @@ def process_items(df, max_rows):
                 source_capture_status = "success"
                 soup = build_soup(html_source)
 
-                title_anchor, raw_title_section = pull_title_section(html_source)
-                short_description_anchor, raw_short_description_section = pull_short_description_section(html_source)
-                details_anchor, raw_details_section = pull_details_section(html_source)
-                features_anchor, raw_features_section = pull_features_section(html_source)
-
-                title_extracted, title_extraction_path = extract_title(
-                    soup,
-                    title_anchor,
-                    raw_title_section,
-                )
-
-                description_extracted, description_extraction_path = extract_description(
-                    soup,
-                    short_description_anchor,
-                    raw_short_description_section,
-                    raw_details_section,
-                )
-
+                title_extracted, title_extraction_path = extract_title(soup, html_source, final_url)
+                description_extracted, description_extraction_path = extract_description(soup, html_source, final_url)
                 features_extracted, features_extraction_path = extract_features(
-                    raw_features_section,
-                    raw_details_section,
+                    soup,
+                    html_source,
+                    final_url,
+                    title_extracted,
+                    description_extracted,
                 )
-
-                image_extracted, image_extraction_path = extract_image(soup)
+                image_extracted, image_extraction_path = extract_image(soup, final_url)
 
                 if not title_extracted:
                     cleaning_flags.append("missing_title")
@@ -649,10 +643,7 @@ def process_items(df, max_rows):
                 if not image_extracted:
                     cleaning_flags.append("missing_image")
 
-                if description_extraction_path in ("meta_description", "og_description"):
-                    cleaning_flags.append("description_meta_only")
-
-                if features_extraction_path in ("features_empty", "features_hint_hits"):
+                if features_extraction_path in ("features_empty",):
                     cleaning_flags.append("weak_features")
 
             else:
@@ -669,30 +660,15 @@ def process_items(df, max_rows):
             "status_code": status_code,
             "source_capture_status": source_capture_status,
             "source_capture_error": source_capture_error,
-            "source_bytes": len(html_source.encode("utf-8", errors="ignore")) if html_source else 0,
-            "source_length": len(html_source) if html_source else 0,
-
             "title_extracted": title_extracted,
             "description_extracted": description_extracted,
             "features_extracted": features_extracted,
             "image_extracted": image_extracted,
-
             "title_extraction_path": title_extraction_path,
             "description_extraction_path": description_extraction_path,
             "features_extraction_path": features_extraction_path,
             "image_extraction_path": image_extraction_path,
-
             "cleaning_flags": " | ".join(cleaning_flags),
-
-            "title_anchor": title_anchor,
-            "short_description_anchor": short_description_anchor,
-            "details_anchor": details_anchor,
-            "features_anchor": features_anchor,
-
-            "raw_title_section": raw_title_section,
-            "raw_short_description_section": raw_short_description_section,
-            "raw_details_section": raw_details_section,
-            "raw_features_section": raw_features_section,
         })
 
         progress.progress(i / total)
@@ -729,8 +705,8 @@ def main():
         step=1,
     )
 
-    if st.button("Pull CVS Copy From Source"):
-        with st.spinner("Fetching CVS pages, pulling title/description/details/features/image, and cleaning fields..."):
+    if st.button("Pull CVS Copy"):
+        with st.spinner("Fetching CVS pages and extracting title, description, features, and image..."):
             try:
                 results_df = process_items(df, int(max_rows))
             except Exception as exc:
@@ -744,7 +720,7 @@ def main():
         st.download_button(
             label="Download CVS Copy Excel",
             data=excel_bytes,
-            file_name="cvs_copy_debugger.xlsx",
+            file_name="cvs_copy_extracted.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
