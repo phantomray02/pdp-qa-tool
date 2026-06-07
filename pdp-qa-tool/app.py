@@ -1,5 +1,5 @@
 # =========================================
-# ✅ IMPORTS (TOP OF FILE)
+# IMPORTS (TOP OF FILE)
 # =========================================
 import re
 import html
@@ -30,12 +30,43 @@ def get_nextjs_chunks(html_text):
             if text.startswith('"') and text.endswith('"'):
                 text = text[1:-1]
 
-            # keep escaped quotes intact so json.loads can still parse nested arrays/objects later
+            # keep escaped quotes intact here; we normalize later only where needed
             chunks.append(text)
         except Exception:
             continue
 
     return "\n".join(chunks)
+
+
+def try_parse_jsonish(val):
+    if not isinstance(val, str):
+        return None
+
+    vv = val.strip()
+    if not vv:
+        return None
+
+    # try raw first
+    try:
+        return json.loads(vv)
+    except Exception:
+        pass
+
+    # try with escaped quotes normalized
+    try:
+        vv2 = vv.replace('\\"', '"')
+        return json.loads(vv2)
+    except Exception:
+        pass
+
+    # try html-unescaped + escaped quotes normalized
+    try:
+        vv3 = html.unescape(vv).replace('\\"', '"')
+        return json.loads(vv3)
+    except Exception:
+        pass
+
+    return None
 
 
 def build_data_map(raw_text):
@@ -89,9 +120,10 @@ def build_data_map(raw_text):
         val = raw_text[val_start:j].strip()
 
         if val.startswith("{") or val.startswith("["):
-            try:
-                data_map[key] = json.loads(val)
-            except Exception:
+            parsed = try_parse_jsonish(val)
+            if parsed is not None:
+                data_map[key] = parsed
+            else:
                 data_map[key] = val
         else:
             if val.startswith("T") and "," in val:
@@ -113,10 +145,10 @@ def parse_top_level_value(val):
         return None
 
     if val.startswith("{") or val.startswith("["):
-        try:
-            return json.loads(val)
-        except Exception:
-            return val
+        parsed = try_parse_jsonish(val)
+        if parsed is not None:
+            return parsed
+        return val
 
     if val.startswith("T") and "," in val:
         return val.split(",", 1)[1].strip().strip('"')
@@ -207,16 +239,22 @@ def get_vendor_candidates(raw_text, data_map):
             if "vendorDetailsBullets" in v and "vendorDetailsParagraph" in v:
                 candidates.append(v)
 
-    regex_matches = re.findall(
-        r'\{"vendorDetailsBullets":"(\$[0-9a-zA-Z]+)","vendorDetailsParagraph":"(\$[0-9a-zA-Z]+)"\}',
-        raw_text
-    )
+    normalized_raw = raw_text.replace('\\"', '"')
 
-    for bullets_ref, para_ref in regex_matches:
-        candidates.append({
-            "vendorDetailsBullets": bullets_ref,
-            "vendorDetailsParagraph": para_ref
-        })
+    regex_patterns = [
+        r'\{"vendorDetailsBullets":"(\$[0-9a-zA-Z]+)","vendorDetailsParagraph":"(\$[0-9a-zA-Z]+)"\}',
+        r'\{\s*"vendorDetailsBullets"\s*:\s*"(\$[0-9a-zA-Z]+)"\s*,\s*"vendorDetailsParagraph"\s*:\s*"(\$[0-9a-zA-Z]+)"\s*\}',
+        r'vendorDetailsBullets"\s*:\s*"(\$[0-9a-zA-Z]+)"\s*,\s*"vendorDetailsParagraph"\s*:\s*"(\$[0-9a-zA-Z]+)"'
+    ]
+
+    for rx in regex_patterns:
+        for source in (raw_text, normalized_raw):
+            regex_matches = re.findall(rx, source)
+            for bullets_ref, para_ref in regex_matches:
+                candidates.append({
+                    "vendorDetailsBullets": bullets_ref,
+                    "vendorDetailsParagraph": para_ref
+                })
 
     seen = set()
     unique_candidates = []
@@ -234,7 +272,7 @@ def get_vendor_candidates(raw_text, data_map):
 
 
 # =========================================
-# ✅ CVS TEXT CLEANER
+# CVS TEXT CLEANER
 # =========================================
 def clean_cvs_text(text):
     if not text:
@@ -257,7 +295,7 @@ def clean_cvs_text(text):
 
 
 # =========================================
-# ✅ VALID VENDOR BLOCK (FILTERED)
+# VALID VENDOR BLOCK (FILTERED)
 # =========================================
 def get_valid_vendor_block(raw_text, data_map):
     candidates = get_vendor_candidates(raw_text, data_map)
@@ -312,7 +350,7 @@ if "download_clicked" not in st.session_state:
 
 
 # =========================================
-# ✅ CACHE HTML
+# CACHE HTML
 # =========================================
 html_cache = {}
 MAX_CACHE = 100
@@ -345,7 +383,7 @@ def get_html(url):
 
 
 # =========================================
-# ✅ LOAD IMAGE
+# LOAD IMAGE
 # =========================================
 def load_image(url):
     try:
@@ -358,7 +396,7 @@ def load_image(url):
 
 
 # =========================================
-# ✅ NORMALIZE FILE NAME (DEDUP CORE)
+# NORMALIZE FILE NAME (DEDUP CORE)
 # =========================================
 def normalize_filename(fname):
     fname = fname.lower()
@@ -368,7 +406,7 @@ def normalize_filename(fname):
 
 
 # =========================================
-# ✅ ✅ SALSIFY (FINAL CORRECT ENGINE)
+# SALSIFY (FINAL CORRECT ENGINE)
 # =========================================
 def get_salsify_images(url):
     html_text = get_html(url)
@@ -425,7 +463,7 @@ def get_salsify_images(url):
 
 
 # =========================================
-# ✅ CVS IMAGES (UNLIMITED + BEST RES)
+# CVS IMAGES (UNLIMITED + BEST RES)
 # =========================================
 def get_cvs_images(url):
     html_text = get_html(url)
@@ -457,7 +495,7 @@ def get_cvs_images(url):
 
 
 # =========================================
-# ✅ TEXT EXTRACTION
+# TEXT EXTRACTION
 # =========================================
 def get_salsify_text(url):
     html_text = get_html(url)
@@ -494,7 +532,7 @@ def get_salsify_text(url):
 
 
 # =========================================
-# ✅ CVS COPY EXTRACTION (FINAL WITH TITLE)
+# CVS COPY EXTRACTION (FINAL WITH TITLE + RAW DEBUG)
 # =========================================
 def get_cvs_text(html_text):
     debug = {
@@ -507,7 +545,13 @@ def get_cvs_text(html_text):
         "Vendor Bullets Ref": "",
         "Vendor Paragraph Ref": "",
         "Vendor Feature Count": 0,
-        "Vendor Candidate Count": 0
+        "Vendor Candidate Count": 0,
+        "Has NextF": False,
+        "Raw Text Length": 0,
+        "Has vendorDetailsBullets Token": False,
+        "Has vendorDetailsParagraph Token": False,
+        "Data Map Key Count": 0,
+        "Raw Preview": ""
     }
 
     if not html_text:
@@ -516,12 +560,19 @@ def get_cvs_text(html_text):
     raw_text = get_nextjs_chunks(html_text)
     data_map = build_data_map(raw_text)
 
+    debug["Has NextF"] = "self.__next_f.push([1," in html_text
+    debug["Raw Text Length"] = len(raw_text)
+    debug["Has vendorDetailsBullets Token"] = "vendorDetailsBullets" in raw_text
+    debug["Has vendorDetailsParagraph Token"] = "vendorDetailsParagraph" in raw_text
+    debug["Data Map Key Count"] = len(data_map)
+
     title = ""
     desc = ""
     features = []
 
     try:
-        debug["Vendor Candidate Count"] = len(get_vendor_candidates(raw_text, data_map))
+        candidates = get_vendor_candidates(raw_text, data_map)
+        debug["Vendor Candidate Count"] = len(candidates)
 
         vendor_block = get_valid_vendor_block(raw_text, data_map)
         debug["Vendor Block Found"] = bool(vendor_block)
@@ -556,6 +607,9 @@ def get_cvs_text(html_text):
     except Exception:
         pass
 
+    if not debug["Vendor Block Found"]:
+        debug["Raw Preview"] = clean_cvs_text(raw_text[:800])
+
     debug["Desc Final"] = desc
 
     return {
@@ -567,7 +621,7 @@ def get_cvs_text(html_text):
 
 
 # =========================================
-# ✅ SCORE
+# SCORE
 # =========================================
 def normalize_text(t):
     if not isinstance(t, str):
@@ -580,7 +634,7 @@ def keyword_score(a, b):
 
 
 # =========================================
-# ✅ HELPERS
+# HELPERS
 # =========================================
 def equal_height_block(text):
     return f"""
@@ -639,7 +693,7 @@ def score_badge(score):
 
 
 # =========================================
-# ✅ DESCRIPTION DEBUGGER (NEW)
+# DESCRIPTION DEBUGGER (NEW)
 # =========================================
 def debug_description(desc):
     if not desc:
@@ -694,7 +748,7 @@ def debug_description(desc):
 
 
 # =========================================
-# ✅ DESCRIPTION FIX SUGGESTIONS
+# DESCRIPTION FIX SUGGESTIONS
 # =========================================
 def suggest_description_fix(debug):
     suggestions = []
@@ -714,7 +768,7 @@ def suggest_description_fix(debug):
 
 
 # =========================================
-# ✅ TRUE IMAGE VISUAL COMPARISON
+# TRUE IMAGE VISUAL COMPARISON
 # =========================================
 def load_image_with_white_bg(img_data):
     try:
@@ -734,7 +788,7 @@ def load_image_with_white_bg(img_data):
 
 
 # =====================================
-# ✅ STREAMLIT IMAGE CACHE (BIG SPEED BOOST)
+# STREAMLIT IMAGE CACHE (BIG SPEED BOOST)
 # =====================================
 @st.cache_data(show_spinner=False)
 def process_row_cached(row_dict):
@@ -752,7 +806,7 @@ def fetch_image_cached(url):
 
 
 # =====================================
-# ✅ IMAGE PREFETCH
+# IMAGE PREFETCH
 # =====================================
 def prefetch_images(urls):
     with ThreadPoolExecutor(max_workers=12) as executor:
@@ -809,7 +863,7 @@ def compare_images_visually(s_url, r_url):
 
 
 # =====================================
-# ✅ IMAGE MATCHING
+# IMAGE MATCHING
 # =====================================
 def match_images_visual(s_images, r_images):
     results = []
@@ -939,6 +993,12 @@ def process_row(row):
                 "Vendor Paragraph Ref": debug_data.get("Vendor Paragraph Ref", ""),
                 "Vendor Feature Count": debug_data.get("Vendor Feature Count", 0),
                 "Vendor Candidate Count": debug_data.get("Vendor Candidate Count", 0),
+                "Has NextF": debug_data.get("Has NextF", False),
+                "Raw Text Length": debug_data.get("Raw Text Length", 0),
+                "Has vendorDetailsBullets Token": debug_data.get("Has vendorDetailsBullets Token", False),
+                "Has vendorDetailsParagraph Token": debug_data.get("Has vendorDetailsParagraph Token", False),
+                "Data Map Key Count": debug_data.get("Data Map Key Count", 0),
+                "Raw Preview": debug_data.get("Raw Preview", ""),
                 "Desc Quality Score": r_desc_debug["quality_score"],
                 "Desc Length": r_desc_debug["length"],
                 "Desc Issues": ", ".join(r_desc_debug["issues"]),
@@ -951,7 +1011,7 @@ def process_row(row):
 
 
 # =========================================
-# ✅ MAIN APP
+# MAIN APP
 # =========================================
 st.markdown("## 🔎 QA Viewer Controls")
 
@@ -1331,7 +1391,7 @@ if uploaded_file:
 
 
 # =====================================
-# ✅ EXPORT FILE
+# EXPORT FILE
 # =====================================
 if st.session_state.processing_done and st.session_state.summary_rows:
     summary_df = pd.DataFrame(st.session_state.summary_rows)
