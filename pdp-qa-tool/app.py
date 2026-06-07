@@ -1,7 +1,8 @@
 import io
+import json
 import re
-from difflib import SequenceMatcher
-from typing import List, Tuple
+from html import unescape
+from typing import Dict, List, Tuple
 
 import pandas as pd
 import requests
@@ -19,134 +20,52 @@ EXCEL_CELL_LIMIT = 30000
 CONTEXT_WINDOW = 1200
 
 
+# ---------- Generic helpers ----------
+
 def normalize_space(text: str) -> str:
     text = str(text or "")
+    text = unescape(text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
 
-def safe_text(text: str) -> str:
-    return normalize_space(text).replace("\x00", "")
-
-
-def chunk_text(text: str, chunk_size: int = EXCEL_CELL_LIMIT) -> list:
+def chunk_text(text: str, chunk_size: int = EXCEL_CELL_LIMIT) -> List[str]:
     text = text if isinstance(text, str) else str(text or "")
     if not text:
         return [""]
     return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
 
 
-def similarity_score(a: str, b: str) -> int:
-    a = normalize_space(a)
-    b = normalize_space(b)
-    if not a or not b:
-        return 0
-    return int(round(SequenceMatcher(None, a, b).ratio() * 100))
-
-
-def fetch_html(url: str) -> str:
-    if not url or not str(url).strip():
-        return ""
-    resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
-    resp.raise_for_status()
-    return resp.text
-
-
-def get_soup_from_html(html: str) -> BeautifulSoup:
-    return BeautifulSoup(html, "html.parser")
-
-
-def extract_page_text_from_soup(soup: BeautifulSoup) -> str:
-    soup = BeautifulSoup(str(soup), "html.parser")
-    for tag in soup(["script", "style", "noscript"]):
-        tag.decompose()
-    text = soup.get_text(separator=" ", strip=True)
-    return normalize_space(text)
-
-
-def extract_title_from_soup(soup: BeautifulSoup) -> str:
-    h1 = soup.find("h1")
-    if h1:
-        return normalize_space(h1.get_text(" ", strip=True))
-
-    title_tag = soup.find("title")
-    if title_tag:
-        return normalize_space(title_tag.get_text(" ", strip=True))
-
-    og_title = soup.find("meta", attrs={"property": "og:title"})
-    if og_title and og_title.get("content"):
-        return normalize_space(og_title.get("content"))
-
-    return ""
-
-
-def extract_meta_description_from_soup(soup: BeautifulSoup) -> str:
-    meta = soup.find("meta", attrs={"name": "description"})
-    if meta and meta.get("content"):
-        return normalize_space(meta.get("content"))
-
-    og_desc = soup.find("meta", attrs={"property": "og:description"})
-    if og_desc and og_desc.get("content"):
-        return normalize_space(og_desc.get("content"))
-
-    return ""
-
-
-def extract_feature_bullets_from_soup(soup: BeautifulSoup) -> str:
-    bullets = []
-
-    for li in soup.find_all("li"):
-        txt = normalize_space(li.get_text(" ", strip=True))
-        if len(txt) >= 20:
-            bullets.append(txt)
-
-    # dedupe while preserving order
+def safe_join(items: List[str], sep: str = " | ") -> str:
+    cleaned = []
     seen = set()
-    deduped = []
-    for item in bullets:
-        if item not in seen:
+    for item in items:
+        item = normalize_space(item)
+        if item and item not in seen:
             seen.add(item)
-            deduped.append(item)
-
-    return " | ".join(deduped[:25])
-
-
-TITLE_PATTERNS = [
-    r"<title[^>]*>.*?</title>",
-    r"<h1[^>]*>.*?</h1>",
-    r'"title"\s*:',
-    r'"name"\s*:',
-    r'"productName"\s*:',
-]
-
-VENDOR_PATTERNS = [
-    r'"brand"\s*:',
-    r'"vendor"\s*:',
-    r'"manufacturer"\s*:',
-    r'>\s*From\s+[^<]+<',
-    r'from\s+[A-Za-z0-9 &._-]+',
-]
-
-DESCRIPTION_PATTERNS = [
-    r'"description"\s*:',
-    r'"longDescription"\s*:',
-    r'"shortDescription"\s*:',
-    r'"productDescription"\s*:',
-    r'description',
-]
-
-FEATURES_PATTERNS = [
-    r'"features"\s*:',
-    r'"feature"\s*:',
-    r'"benefits"\s*:',
-    r'"bullets"\s*:',
-    r'"bulletText"\s*:',
-    r'"keyFeatures"\s*:',
-    r'features',
-]
+            cleaned.append(item)
+    return sep.join(cleaned)
 
 
-def find_first_context(source: str, patterns: list, window: int = CONTEXT_WINDOW):
+def fetch_html(url: str) -> Tuple[int, str, str]:
+    if not url or not str(url).strip():
+        return 0, "", ""
+    resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT, allow_redirects=True)
+    return resp.status_code, resp.url, resp.text
+
+
+def build_soup(html: str) -> BeautifulSoup:
+    return BeautifulSoup(html or "", "html.parser")
+
+
+def get_clean_page_text(soup: BeautifulSoup) -> str:
+    soup_copy = BeautifulSoup(str(soup), "html.parser")
+    for tag in soup_copy(["script", "style", "noscript"]):
+        tag.decompose()
+    return normalize_space(soup_copy.get_text(separator=" ", strip=True))
+
+
+def find_first_context(source: str, patterns: List[str], window: int = CONTEXT_WINDOW) -> Tuple[str, str]:
     source = str(source or "")
     if not source:
         return "", ""
@@ -156,78 +75,266 @@ def find_first_context(source: str, patterns: list, window: int = CONTEXT_WINDOW
         if match:
             start = max(0, match.start() - window)
             end = min(len(source), match.end() + window)
-            anchor = match.group(0)
-            context = source[start:end]
-            return safe_text(anchor), safe_text(context)
+            anchor = normalize_space(match.group(0))
+            context = normalize_space(source[start:end])
+            return anchor, context
 
     return "", ""
 
 
-def extract_source_contexts(source: str) -> dict:
-    title_anchor, title_context = find_first_context(source, TITLE_PATTERNS)
-    vendor_anchor, vendor_context = find_first_context(source, VENDOR_PATTERNS)
-    description_anchor, description_context = find_first_context(source, DESCRIPTION_PATTERNS)
-    features_anchor, features_context = find_first_context(source, FEATURES_PATTERNS)
+# ---------- JSON-LD / structured extraction ----------
+
+def flatten_jsonld(obj):
+    """Yield every dict node inside mixed JSON-LD structures."""
+    if isinstance(obj, dict):
+        yield obj
+        for v in obj.values():
+            yield from flatten_jsonld(v)
+    elif isinstance(obj, list):
+        for item in obj:
+            yield from flatten_jsonld(item)
+
+
+def parse_jsonld_blocks(soup: BeautifulSoup) -> List[dict]:
+    blocks = []
+    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        raw = script.string or script.get_text() or ""
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            parsed = json.loads(raw)
+            blocks.append(parsed)
+        except Exception:
+            # ignore malformed JSON-LD
+            continue
+    return blocks
+
+
+def extract_from_jsonld(blocks: List[dict]) -> Dict[str, str]:
+    title = ""
+    vendor = ""
+    description = ""
+    features = []
+
+    for block in blocks:
+        for node in flatten_jsonld(block):
+            node_type = str(node.get("@type", "")).lower()
+
+            # Product-ish nodes are the most useful.
+            if "product" in node_type or node.get("name") or node.get("description"):
+                if not title and node.get("name"):
+                    title = normalize_space(node.get("name"))
+
+                if not description and node.get("description"):
+                    description = normalize_space(node.get("description"))
+
+                brand = node.get("brand")
+                if not vendor and brand:
+                    if isinstance(brand, dict):
+                        vendor = normalize_space(brand.get("name", ""))
+                    else:
+                        vendor = normalize_space(str(brand))
+
+                for key in ["features", "feature", "benefits", "bullets", "bulletText", "keyFeatures"]:
+                    if key in node:
+                        val = node[key]
+                        if isinstance(val, list):
+                            features.extend([normalize_space(x) for x in val if normalize_space(x)])
+                        else:
+                            v = normalize_space(val)
+                            if v:
+                                features.append(v)
 
     return {
-        "title_anchor": title_anchor,
-        "title_source_context": title_context,
-        "vendor_anchor": vendor_anchor,
-        "vendor_source_context": vendor_context,
-        "description_anchor": description_anchor,
-        "description_source_context": description_context,
-        "features_anchor": features_anchor,
-        "features_source_context": features_context,
+        "title": normalize_space(title),
+        "vendor": normalize_space(vendor),
+        "description": normalize_space(description),
+        "features": safe_join(features),
     }
 
 
-def get_images_from_html(html: str) -> List[str]:
-    try:
-        soup = get_soup_from_html(html)
-        images = soup.find_all("img")
-        image_urls = []
-        for img in images:
-            src = img.get("src")
-            if src and "http" in src:
-                image_urls.append(src.strip())
-        return sorted(set(image_urls))
-    except Exception:
-        return []
+# ---------- HTML/meta extraction ----------
+
+def extract_title_candidates(soup: BeautifulSoup) -> List[str]:
+    out = []
+
+    h1 = soup.find("h1")
+    if h1:
+        out.append(h1.get_text(" ", strip=True))
+
+    title_tag = soup.find("title")
+    if title_tag:
+        out.append(title_tag.get_text(" ", strip=True))
+
+    og_title = soup.find("meta", attrs={"property": "og:title"})
+    if og_title and og_title.get("content"):
+        out.append(og_title.get("content"))
+
+    return [normalize_space(x) for x in out if normalize_space(x)]
 
 
-def get_salsify_data(html: str) -> str:
-    try:
-        soup = get_soup_from_html(html)
-        title = extract_title_from_soup(soup)
-        meta_desc = extract_meta_description_from_soup(soup)
-        page_text = extract_page_text_from_soup(soup)
-        combined = " ".join([title, meta_desc, page_text])
-        return normalize_space(combined)
-    except Exception:
-        return ""
+def extract_description_candidates(soup: BeautifulSoup) -> List[str]:
+    out = []
+
+    meta_desc = soup.find("meta", attrs={"name": "description"})
+    if meta_desc and meta_desc.get("content"):
+        out.append(meta_desc.get("content"))
+
+    og_desc = soup.find("meta", attrs={"property": "og:description"})
+    if og_desc and og_desc.get("content"):
+        out.append(og_desc.get("content"))
+
+    return [normalize_space(x) for x in out if normalize_space(x)]
 
 
-def get_cvs_data(html: str) -> Tuple[str, str]:
-    try:
-        soup = get_soup_from_html(html)
-        title = extract_title_from_soup(soup)
-        meta_desc = extract_meta_description_from_soup(soup)
-        features = extract_feature_bullets_from_soup(soup)
-        page_text = extract_page_text_from_soup(soup)
+def extract_vendor_candidates(source: str, soup: BeautifulSoup) -> List[str]:
+    out = []
 
-        description_text = normalize_space(" ".join([title, meta_desc, page_text[:3000]]))
+    # Visible text patterns from the sample source like "From Cottonelle" / "See all Cottonelle products".
+    vendor_patterns = [
+        r'>\s*From\s+([^<]+)<',
+        r'See all\s+([A-Za-z0-9 &._-]+)\s+products',
+        r'"brand"\s*:\s*"([^"]+)"',
+        r'"manufacturer"\s*:\s*"([^"]+)"',
+        r'"vendor"\s*:\s*"([^"]+)"',
+    ]
 
-        if not features:
-            features = normalize_space(page_text[:2500])
+    for pattern in vendor_patterns:
+        for m in re.finditer(pattern, source, flags=re.IGNORECASE | re.DOTALL):
+            if m.groups():
+                out.append(m.group(1))
+            else:
+                out.append(m.group(0))
 
-        return description_text, features
-    except Exception:
-        return "", ""
+    # Sometimes brand page links include the brand name.
+    for a in soup.find_all("a", href=True):
+        txt = normalize_space(a.get_text(" ", strip=True))
+        href = a.get("href", "")
+        if txt and ("brand-shop" in href or "See all" in txt):
+            out.append(txt)
+
+    return [normalize_space(x) for x in out if normalize_space(x)]
+
+
+def extract_feature_candidates(source: str, soup: BeautifulSoup) -> List[str]:
+    out = []
+
+    # JSON-ish keys in raw source.
+    feature_patterns = [
+        r'"features"\s*:\s*(\[[^\]]+\])',
+        r'"feature"\s*:\s*(\[[^\]]+\])',
+        r'"benefits"\s*:\s*(\[[^\]]+\])',
+        r'"bullets"\s*:\s*(\[[^\]]+\])',
+        r'"bulletText"\s*:\s*(\[[^\]]+\])',
+        r'"keyFeatures"\s*:\s*(\[[^\]]+\])',
+    ]
+
+    for pattern in feature_patterns:
+        for m in re.finditer(pattern, source, flags=re.IGNORECASE | re.DOTALL):
+            out.append(m.group(0))
+
+    # Bullet-like HTML.
+    for li in soup.find_all("li"):
+        txt = normalize_space(li.get_text(" ", strip=True))
+        if len(txt) >= 20:
+            out.append(txt)
+
+    return [normalize_space(x) for x in out if normalize_space(x)]
+
+
+# ---------- Main extraction ----------
+
+TITLE_CONTEXT_PATTERNS = [
+    r"<title[^>]*>.*?</title>",
+    r"<h1[^>]*>.*?</h1>",
+    r'"title"\s*:\s*"[^"]+"',
+    r'"name"\s*:\s*"[^"]+"',
+    r'"productName"\s*:\s*"[^"]+"',
+]
+
+VENDOR_CONTEXT_PATTERNS = [
+    r'>\s*From\s+[^<]+<',
+    r'See all\s+[A-Za-z0-9 &._-]+\s+products',
+    r'"brand"\s*:\s*"[^"]+"',
+    r'"vendor"\s*:\s*"[^"]+"',
+    r'"manufacturer"\s*:\s*"[^"]+"',
+]
+
+DESCRIPTION_CONTEXT_PATTERNS = [
+    r'"description"\s*:\s*"[^"]+"',
+    r'"longDescription"\s*:\s*"[^"]+"',
+    r'"shortDescription"\s*:\s*"[^"]+"',
+    r'"productDescription"\s*:\s*"[^"]+"',
+    r'<meta[^>]+name="description"[^>]+content="[^"]+"',
+    r'<meta[^>]+property="og:description"[^>]+content="[^"]+"',
+]
+
+FEATURES_CONTEXT_PATTERNS = [
+    r'"features"\s*:\s*\[[^\]]+\]',
+    r'"feature"\s*:\s*\[[^\]]+\]',
+    r'"benefits"\s*:\s*\[[^\]]+\]',
+    r'"bullets"\s*:\s*\[[^\]]+\]',
+    r'"bulletText"\s*:\s*\[[^\]]+\]',
+    r'"keyFeatures"\s*:\s*\[[^\]]+\]',
+    r'<li[^>]*>.*?</li>',
+]
+
+
+def extract_fields_and_contexts(html_source: str) -> Dict[str, str]:
+    soup = build_soup(html_source)
+    jsonld_blocks = parse_jsonld_blocks(soup)
+    jsonld_data = extract_from_jsonld(jsonld_blocks)
+
+    title_candidates = []
+    title_candidates.extend(extract_title_candidates(soup))
+    if jsonld_data["title"]:
+        title_candidates.insert(0, jsonld_data["title"])
+
+    vendor_candidates = []
+    vendor_candidates.extend(extract_vendor_candidates(html_source, soup))
+    if jsonld_data["vendor"]:
+        vendor_candidates.insert(0, jsonld_data["vendor"])
+
+    desc_candidates = []
+    desc_candidates.extend(extract_description_candidates(soup))
+    if jsonld_data["description"]:
+        desc_candidates.insert(0, jsonld_data["description"])
+
+    feature_candidates = []
+    if jsonld_data["features"]:
+        feature_candidates.append(jsonld_data["features"])
+    feature_candidates.extend(extract_feature_candidates(html_source, soup))
+
+    title_extracted = next((x for x in title_candidates if x), "")
+    vendor_extracted = next((x for x in vendor_candidates if x), "")
+    description_extracted = next((x for x in desc_candidates if x), "")
+    features_extracted = safe_join(feature_candidates)
+
+    title_anchor, title_source_context = find_first_context(html_source, TITLE_CONTEXT_PATTERNS)
+    vendor_anchor, vendor_source_context = find_first_context(html_source, VENDOR_CONTEXT_PATTERNS)
+    description_anchor, description_source_context = find_first_context(html_source, DESCRIPTION_CONTEXT_PATTERNS)
+    features_anchor, features_source_context = find_first_context(html_source, FEATURES_CONTEXT_PATTERNS)
+
+    return {
+        "title_extracted": title_extracted,
+        "vendor_extracted": vendor_extracted,
+        "description_extracted": description_extracted,
+        "features_extracted": features_extracted,
+        "title_anchor": title_anchor,
+        "title_source_context": title_source_context,
+        "vendor_anchor": vendor_anchor,
+        "vendor_source_context": vendor_source_context,
+        "description_anchor": description_anchor,
+        "description_source_context": description_source_context,
+        "features_anchor": features_anchor,
+        "features_source_context": features_source_context,
+    }
 
 
 def validate_columns(df: pd.DataFrame):
     cols = {c.strip().lower(): c for c in df.columns}
-    required = ["salsify_url", "retail_url"]
+    required = ["retail_url"]
     missing = [col for col in required if col not in cols]
     if missing:
         raise ValueError(f"Missing required columns: {missing}")
@@ -242,10 +349,9 @@ def make_excel_bytes(results_df: pd.DataFrame) -> bytes:
     return output.getvalue()
 
 
-def run_qa(df: pd.DataFrame) -> pd.DataFrame:
+def process_items(df: pd.DataFrame) -> pd.DataFrame:
     cols = validate_columns(df)
 
-    salsify_col = cols["salsify_url"]
     retail_col = cols["retail_url"]
     sku_col = cols.get("sku")
     rpc_col = cols.get("cvs rpc")
@@ -257,24 +363,22 @@ def run_qa(df: pd.DataFrame) -> pd.DataFrame:
     total = len(df)
 
     for i, (_, row) in enumerate(df.iterrows(), start=1):
-        salsify_url = str(row[salsify_col]).strip() if pd.notna(row[salsify_col]) else ""
         retail_url = str(row[retail_col]).strip() if pd.notna(row[retail_col]) else ""
         sku = str(row[sku_col]).strip() if sku_col and pd.notna(row[sku_col]) else ""
         cvs_rpc = str(row[rpc_col]).strip() if rpc_col and pd.notna(row[rpc_col]) else ""
         brand = str(row[brand_col]).strip() if brand_col and pd.notna(row[brand_col]) else ""
 
-        s_html = ""
-        r_html = ""
-        s_text = ""
-        cvs_desc = ""
-        cvs_features = ""
-        s_images = []
-        r_images = []
-        s_status = ""
-        r_status = ""
-        error_text = ""
+        status_code = 0
+        final_url = ""
+        source_capture_status = "failed"
+        source_capture_error = ""
+        html_source = ""
 
-        contexts = {
+        extracted = {
+            "title_extracted": "",
+            "vendor_extracted": "",
+            "description_extracted": "",
+            "features_extracted": "",
             "title_anchor": "",
             "title_source_context": "",
             "vendor_anchor": "",
@@ -286,78 +390,31 @@ def run_qa(df: pd.DataFrame) -> pd.DataFrame:
         }
 
         try:
-            # Salsify fetch
-            s_resp = requests.get(salsify_url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
-            s_status = s_resp.status_code
-            s_resp.raise_for_status()
-            s_html = s_resp.text
-
-            # CVS fetch
-            r_resp = requests.get(retail_url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
-            r_status = r_resp.status_code
-            r_resp.raise_for_status()
-            r_html = r_resp.text
-
-            s_text = get_salsify_data(s_html)
-            cvs_desc, cvs_features = get_cvs_data(r_html)
-            contexts = extract_source_contexts(r_html)
-
-            s_images = get_images_from_html(s_html)
-            r_images = get_images_from_html(r_html)
-
-            s_set = set(s_images)
-            r_set = set(r_images)
-            match_count = len(s_set & r_set)
-            total_salsify = len(s_set)
-            image_match_pct = round((match_count / total_salsify) * 100, 2) if total_salsify else 0.0
-
-            desc_score = similarity_score(s_text, cvs_desc)
-            feat_score = similarity_score(s_text, cvs_features)
-
-            status = "PASS" if desc_score > 85 and feat_score > 80 and image_match_pct > 50 else "FAIL"
+            status_code, final_url, html_source = fetch_html(retail_url)
+            if status_code == 200:
+                source_capture_status = "success"
+                extracted = extract_fields_and_contexts(html_source)
+            else:
+                source_capture_error = f"http_{status_code}"
 
         except Exception as exc:
-            error_text = f"{type(exc).__name__}: {exc}"
-            match_count = 0
-            total_salsify = 0
-            image_match_pct = 0.0
-            desc_score = 0
-            feat_score = 0
-            status = "ERROR"
+            source_capture_error = f"{type(exc).__name__}: {exc}"
 
-        source_chunks = chunk_text(r_html)
         row_dict = {
             "sku": sku,
             "cvs_rpc": cvs_rpc,
             "brand": brand,
-            "salsify_url": salsify_url,
             "retail_url": retail_url,
-            "salsify_status_code": s_status,
-            "retail_status_code": r_status,
-            "desc_score": desc_score,
-            "feat_score": feat_score,
-            "image_match_pct": image_match_pct,
-            "matching_image_count": match_count,
-            "salsify_image_count": total_salsify,
-            "status": status,
-            "error": error_text,
-            "salsify_text": s_text,
-            "cvs_description": cvs_desc,
-            "cvs_features": cvs_features,
-            "salsify_images": " | ".join(s_images),
-            "retail_images": " | ".join(r_images),
-            "title_anchor": contexts["title_anchor"],
-            "title_source_context": contexts["title_source_context"],
-            "vendor_anchor": contexts["vendor_anchor"],
-            "vendor_source_context": contexts["vendor_source_context"],
-            "description_anchor": contexts["description_anchor"],
-            "description_source_context": contexts["description_source_context"],
-            "features_anchor": contexts["features_anchor"],
-            "features_source_context": contexts["features_source_context"],
-            "source_bytes": len(r_html.encode('utf-8', errors='ignore')) if r_html else 0,
-            "source_length": len(r_html) if r_html else 0,
+            "final_url": final_url,
+            "status_code": status_code,
+            "source_capture_status": source_capture_status,
+            "source_capture_error": source_capture_error,
+            "source_bytes": len(html_source.encode("utf-8", errors="ignore")) if html_source else 0,
+            "source_length": len(html_source) if html_source else 0,
+            **extracted,
         }
 
+        source_chunks = chunk_text(html_source)
         for idx_chunk, chunk in enumerate(source_chunks, start=1):
             row_dict[f"raw_source_{idx_chunk}"] = chunk
 
@@ -375,7 +432,7 @@ def main():
     uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
     if uploaded_file is None:
-        st.info("Upload a CSV file to begin.")
+        st.info("Upload a CVS CSV file to begin.")
         st.stop()
 
     try:
@@ -387,22 +444,22 @@ def main():
     st.write("Preview of uploaded data:")
     st.dataframe(df.head(), use_container_width=True)
 
-    if st.button("Run QA"):
-        with st.spinner("Running QA checks..."):
+    if st.button("Run Extraction"):
+        with st.spinner("Fetching CVS pages and extracting title/vendor/description/features..."):
             try:
-                results_df = run_qa(df)
+                results_df = process_items(df)
             except Exception as exc:
-                st.error(f"QA run failed: {exc}")
+                st.error(f"Extraction run failed: {exc}")
                 st.stop()
 
-        st.success("QA run complete.")
+        st.success("Extraction run complete.")
         st.dataframe(results_df.head(50), use_container_width=True)
 
         excel_bytes = make_excel_bytes(results_df)
         st.download_button(
-            label="Download Excel Results",
+            label="Download Debugger Excel",
             data=excel_bytes,
-            file_name="pdp_qa_results.xlsx",
+            file_name="cvs_debugger_with_source.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
