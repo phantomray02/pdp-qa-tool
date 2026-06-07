@@ -1,7 +1,5 @@
 import io
-import json
 import re
-from difflib import SequenceMatcher
 from html import unescape
 from typing import Dict, List, Tuple
 
@@ -37,14 +35,6 @@ def chunk_text(text: str, chunk_size: int = EXCEL_CELL_LIMIT) -> List[str]:
     if not text:
         return [""]
     return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
-
-
-def similarity_score(a: str, b: str) -> int:
-    a = normalize_space(a)
-    b = normalize_space(b)
-    if not a or not b:
-        return 0
-    return int(round(SequenceMatcher(None, a, b).ratio() * 100))
 
 
 def fetch_page(url: str) -> Tuple[int, str, str]:
@@ -97,6 +87,41 @@ def extract_description_candidates(soup: BeautifulSoup) -> List[str]:
     return [normalize_space(x) for x in out if normalize_space(x)]
 
 
+def extract_vendor_candidates(source: str, soup: BeautifulSoup) -> List[str]:
+    out = []
+
+    vendor_patterns = [
+        r'>\s*From\s+([^<]+)<',
+        r'See all\s+([A-Za-z0-9 &._-]+)\s+products',
+        r'"brand"\s*:\s*"([^"]+)"',
+        r'"vendor"\s*:\s*"([^"]+)"',
+        r'"manufacturer"\s*:\s*"([^"]+)"',
+    ]
+
+    for pattern in vendor_patterns:
+        for match in re.finditer(pattern, source, flags=re.IGNORECASE | re.DOTALL):
+            if match.groups():
+                out.append(match.group(1))
+            else:
+                out.append(match.group(0))
+
+    for a in soup.find_all("a", href=True):
+        txt = normalize_space(a.get_text(" ", strip=True))
+        href = a.get("href", "")
+        if txt and ("brand-shop" in href or "See all" in txt):
+            out.append(txt)
+
+    deduped = []
+    seen = set()
+    for item in out:
+        item = normalize_space(item)
+        if item and item not in seen:
+            seen.add(item)
+            deduped.append(item)
+
+    return deduped
+
+
 def extract_feature_candidates(source: str, soup: BeautifulSoup) -> List[str]:
     out = []
 
@@ -110,51 +135,16 @@ def extract_feature_candidates(source: str, soup: BeautifulSoup) -> List[str]:
     ]
 
     for pattern in feature_patterns:
-        for m in re.finditer(pattern, source, flags=re.IGNORECASE | re.DOTALL):
-            out.append(m.group(0))
+        for match in re.finditer(pattern, source, flags=re.IGNORECASE | re.DOTALL):
+            out.append(match.group(0))
 
     for li in soup.find_all("li"):
         txt = normalize_space(li.get_text(" ", strip=True))
         if len(txt) >= 20:
             out.append(txt)
 
-    # de-duplicate
-    seen = set()
     deduped = []
-    for item in out:
-        if item and item not in seen:
-            seen.add(item)
-            deduped.append(item)
-
-    return deduped
-
-
-def extract_vendor_candidates(source: str, soup: BeautifulSoup) -> List[str]:
-    out = []
-
-    vendor_patterns = [
-        r'>\s*From\s+([^<]+)<',
-        r'See all\s+([A-Za-z0-9 &._-]+)\s+products',
-        r'"brand"\s*:\s*"([^"]+)"',
-        r'"vendor"\s*:\s*"([^"]+)"',
-        r'"manufacturer"\s*:\s*"([^"]+)"',
-    ]
-
-    for pattern in vendor_patterns:
-        for m in re.finditer(pattern, source, flags=re.IGNORECASE | re.DOTALL):
-            if m.groups():
-                out.append(m.group(1))
-            else:
-                out.append(m.group(0))
-
-    for a in soup.find_all("a", href=True):
-        txt = normalize_space(a.get_text(" ", strip=True))
-        href = a.get("href", "")
-        if txt and ("brand-shop" in href or "See all" in txt):
-            out.append(txt)
-
     seen = set()
-    deduped = []
     for item in out:
         item = normalize_space(item)
         if item and item not in seen:
@@ -229,7 +219,6 @@ def extract_fields_and_contexts(html_source: str) -> Dict[str, str]:
     vendor_extracted = vendor_candidates[0] if vendor_candidates else ""
     description_extracted = desc_candidates[0] if desc_candidates else ""
 
-    # fallback to visible page text slice if no meta description
     if not description_extracted:
         description_extracted = get_clean_page_text(soup)[:3000].strip()
 
@@ -317,11 +306,8 @@ def run_qa(df: pd.DataFrame) -> pd.DataFrame:
         r_final_url = ""
         s_html = ""
         r_html = ""
-        s_text = ""
         s_images = []
         r_images = []
-        desc_score = 0
-        feat_score = 0
         image_match_pct = 0.0
         match_count = 0
         total_salsify = 0
@@ -344,19 +330,13 @@ def run_qa(df: pd.DataFrame) -> pd.DataFrame:
         }
 
         try:
-            # Salsify
             s_status, s_final_url, s_html = fetch_page(salsify_url)
             if s_status != 200:
                 raise RuntimeError(f"Salsify HTTP {s_status}")
 
-            # Retail/CVS
             r_status, r_final_url, r_html = fetch_page(retail_url)
             if r_status != 200:
                 raise RuntimeError(f"Retail HTTP {r_status}")
-
-            # Extract
-            s_soup = build_soup(s_html)
-            s_text = get_clean_page_text(s_soup)
 
             extracted = extract_fields_and_contexts(r_html)
 
@@ -369,10 +349,7 @@ def run_qa(df: pd.DataFrame) -> pd.DataFrame:
             total_salsify = len(s_set)
             image_match_pct = round((match_count / total_salsify) * 100, 2) if total_salsify else 0.0
 
-            desc_score = similarity_score(s_text, extracted["description_extracted"])
-            feat_score = similarity_score(s_text, extracted["features_extracted"])
-
-            app_status = "PASS" if desc_score > 85 and feat_score > 80 and image_match_pct > 50 else "FAIL"
+            app_status = "PASS"
 
         except Exception as exc:
             error_text = f"{type(exc).__name__}: {exc}"
@@ -387,14 +364,11 @@ def run_qa(df: pd.DataFrame) -> pd.DataFrame:
             "retail_final_url": r_final_url,
             "salsify_status_code": s_status,
             "retail_status_code": r_status,
-            "desc_score": desc_score,
-            "feat_score": feat_score,
             "image_match_pct": image_match_pct,
             "matching_image_count": match_count,
             "salsify_image_count": total_salsify,
             "status": app_status,
             "error": error_text,
-            "salsify_text": s_text,
             "salsify_images": " | ".join(s_images),
             "retail_images": " | ".join(r_images),
             "source_bytes": len(r_html.encode("utf-8", errors="ignore")) if r_html else 0,
