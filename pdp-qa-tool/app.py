@@ -1,6 +1,7 @@
 import io
 import json
 import re
+from difflib import SequenceMatcher
 from html import unescape
 from typing import Dict, List, Tuple
 
@@ -15,18 +16,20 @@ HEADERS = {
     "Connection": "keep-alive",
 }
 
-REQUEST_TIMEOUT = 25
+REQUEST_TIMEOUT = 20
 EXCEL_CELL_LIMIT = 30000
 CONTEXT_WINDOW = 1200
 
-
-# ---------- Generic helpers ----------
 
 def normalize_space(text: str) -> str:
     text = str(text or "")
     text = unescape(text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
+
+
+def safe_text(text: str) -> str:
+    return normalize_space(text).replace("\x00", "")
 
 
 def chunk_text(text: str, chunk_size: int = EXCEL_CELL_LIMIT) -> List[str]:
@@ -36,26 +39,23 @@ def chunk_text(text: str, chunk_size: int = EXCEL_CELL_LIMIT) -> List[str]:
     return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
 
 
-def safe_join(items: List[str], sep: str = " | ") -> str:
-    cleaned = []
-    seen = set()
-    for item in items:
-        item = normalize_space(item)
-        if item and item not in seen:
-            seen.add(item)
-            cleaned.append(item)
-    return sep.join(cleaned)
+def similarity_score(a: str, b: str) -> int:
+    a = normalize_space(a)
+    b = normalize_space(b)
+    if not a or not b:
+        return 0
+    return int(round(SequenceMatcher(None, a, b).ratio() * 100))
 
 
-def fetch_html(url: str) -> Tuple[int, str, str]:
+def fetch_page(url: str) -> Tuple[int, str, str]:
     if not url or not str(url).strip():
         return 0, "", ""
     resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT, allow_redirects=True)
     return resp.status_code, resp.url, resp.text
 
 
-def build_soup(html: str) -> BeautifulSoup:
-    return BeautifulSoup(html or "", "html.parser")
+def build_soup(html_source: str) -> BeautifulSoup:
+    return BeautifulSoup(html_source or "", "html.parser")
 
 
 def get_clean_page_text(soup: BeautifulSoup) -> str:
@@ -64,97 +64,6 @@ def get_clean_page_text(soup: BeautifulSoup) -> str:
         tag.decompose()
     return normalize_space(soup_copy.get_text(separator=" ", strip=True))
 
-
-def find_first_context(source: str, patterns: List[str], window: int = CONTEXT_WINDOW) -> Tuple[str, str]:
-    source = str(source or "")
-    if not source:
-        return "", ""
-
-    for pattern in patterns:
-        match = re.search(pattern, source, flags=re.IGNORECASE | re.DOTALL)
-        if match:
-            start = max(0, match.start() - window)
-            end = min(len(source), match.end() + window)
-            anchor = normalize_space(match.group(0))
-            context = normalize_space(source[start:end])
-            return anchor, context
-
-    return "", ""
-
-
-# ---------- JSON-LD / structured extraction ----------
-
-def flatten_jsonld(obj):
-    """Yield every dict node inside mixed JSON-LD structures."""
-    if isinstance(obj, dict):
-        yield obj
-        for v in obj.values():
-            yield from flatten_jsonld(v)
-    elif isinstance(obj, list):
-        for item in obj:
-            yield from flatten_jsonld(item)
-
-
-def parse_jsonld_blocks(soup: BeautifulSoup) -> List[dict]:
-    blocks = []
-    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
-        raw = script.string or script.get_text() or ""
-        raw = raw.strip()
-        if not raw:
-            continue
-        try:
-            parsed = json.loads(raw)
-            blocks.append(parsed)
-        except Exception:
-            # ignore malformed JSON-LD
-            continue
-    return blocks
-
-
-def extract_from_jsonld(blocks: List[dict]) -> Dict[str, str]:
-    title = ""
-    vendor = ""
-    description = ""
-    features = []
-
-    for block in blocks:
-        for node in flatten_jsonld(block):
-            node_type = str(node.get("@type", "")).lower()
-
-            # Product-ish nodes are the most useful.
-            if "product" in node_type or node.get("name") or node.get("description"):
-                if not title and node.get("name"):
-                    title = normalize_space(node.get("name"))
-
-                if not description and node.get("description"):
-                    description = normalize_space(node.get("description"))
-
-                brand = node.get("brand")
-                if not vendor and brand:
-                    if isinstance(brand, dict):
-                        vendor = normalize_space(brand.get("name", ""))
-                    else:
-                        vendor = normalize_space(str(brand))
-
-                for key in ["features", "feature", "benefits", "bullets", "bulletText", "keyFeatures"]:
-                    if key in node:
-                        val = node[key]
-                        if isinstance(val, list):
-                            features.extend([normalize_space(x) for x in val if normalize_space(x)])
-                        else:
-                            v = normalize_space(val)
-                            if v:
-                                features.append(v)
-
-    return {
-        "title": normalize_space(title),
-        "vendor": normalize_space(vendor),
-        "description": normalize_space(description),
-        "features": safe_join(features),
-    }
-
-
-# ---------- HTML/meta extraction ----------
 
 def extract_title_candidates(soup: BeautifulSoup) -> List[str]:
     out = []
@@ -188,39 +97,9 @@ def extract_description_candidates(soup: BeautifulSoup) -> List[str]:
     return [normalize_space(x) for x in out if normalize_space(x)]
 
 
-def extract_vendor_candidates(source: str, soup: BeautifulSoup) -> List[str]:
-    out = []
-
-    # Visible text patterns from the sample source like "From Cottonelle" / "See all Cottonelle products".
-    vendor_patterns = [
-        r'>\s*From\s+([^<]+)<',
-        r'See all\s+([A-Za-z0-9 &._-]+)\s+products',
-        r'"brand"\s*:\s*"([^"]+)"',
-        r'"manufacturer"\s*:\s*"([^"]+)"',
-        r'"vendor"\s*:\s*"([^"]+)"',
-    ]
-
-    for pattern in vendor_patterns:
-        for m in re.finditer(pattern, source, flags=re.IGNORECASE | re.DOTALL):
-            if m.groups():
-                out.append(m.group(1))
-            else:
-                out.append(m.group(0))
-
-    # Sometimes brand page links include the brand name.
-    for a in soup.find_all("a", href=True):
-        txt = normalize_space(a.get_text(" ", strip=True))
-        href = a.get("href", "")
-        if txt and ("brand-shop" in href or "See all" in txt):
-            out.append(txt)
-
-    return [normalize_space(x) for x in out if normalize_space(x)]
-
-
 def extract_feature_candidates(source: str, soup: BeautifulSoup) -> List[str]:
     out = []
 
-    # JSON-ish keys in raw source.
     feature_patterns = [
         r'"features"\s*:\s*(\[[^\]]+\])',
         r'"feature"\s*:\s*(\[[^\]]+\])',
@@ -234,16 +113,56 @@ def extract_feature_candidates(source: str, soup: BeautifulSoup) -> List[str]:
         for m in re.finditer(pattern, source, flags=re.IGNORECASE | re.DOTALL):
             out.append(m.group(0))
 
-    # Bullet-like HTML.
     for li in soup.find_all("li"):
         txt = normalize_space(li.get_text(" ", strip=True))
         if len(txt) >= 20:
             out.append(txt)
 
-    return [normalize_space(x) for x in out if normalize_space(x)]
+    # de-duplicate
+    seen = set()
+    deduped = []
+    for item in out:
+        if item and item not in seen:
+            seen.add(item)
+            deduped.append(item)
+
+    return deduped
 
 
-# ---------- Main extraction ----------
+def extract_vendor_candidates(source: str, soup: BeautifulSoup) -> List[str]:
+    out = []
+
+    vendor_patterns = [
+        r'>\s*From\s+([^<]+)<',
+        r'See all\s+([A-Za-z0-9 &._-]+)\s+products',
+        r'"brand"\s*:\s*"([^"]+)"',
+        r'"vendor"\s*:\s*"([^"]+)"',
+        r'"manufacturer"\s*:\s*"([^"]+)"',
+    ]
+
+    for pattern in vendor_patterns:
+        for m in re.finditer(pattern, source, flags=re.IGNORECASE | re.DOTALL):
+            if m.groups():
+                out.append(m.group(1))
+            else:
+                out.append(m.group(0))
+
+    for a in soup.find_all("a", href=True):
+        txt = normalize_space(a.get_text(" ", strip=True))
+        href = a.get("href", "")
+        if txt and ("brand-shop" in href or "See all" in txt):
+            out.append(txt)
+
+    seen = set()
+    deduped = []
+    for item in out:
+        item = normalize_space(item)
+        if item and item not in seen:
+            seen.add(item)
+            deduped.append(item)
+
+    return deduped
+
 
 TITLE_CONTEXT_PATTERNS = [
     r"<title[^>]*>.*?</title>",
@@ -281,35 +200,40 @@ FEATURES_CONTEXT_PATTERNS = [
 ]
 
 
+def find_first_context(source: str, patterns: List[str], window: int = CONTEXT_WINDOW) -> Tuple[str, str]:
+    source = str(source or "")
+    if not source:
+        return "", ""
+
+    for pattern in patterns:
+        match = re.search(pattern, source, flags=re.IGNORECASE | re.DOTALL)
+        if match:
+            start = max(0, match.start() - window)
+            end = min(len(source), match.end() + window)
+            anchor = safe_text(match.group(0))
+            context = safe_text(source[start:end])
+            return anchor, context
+
+    return "", ""
+
+
 def extract_fields_and_contexts(html_source: str) -> Dict[str, str]:
     soup = build_soup(html_source)
-    jsonld_blocks = parse_jsonld_blocks(soup)
-    jsonld_data = extract_from_jsonld(jsonld_blocks)
 
-    title_candidates = []
-    title_candidates.extend(extract_title_candidates(soup))
-    if jsonld_data["title"]:
-        title_candidates.insert(0, jsonld_data["title"])
+    title_candidates = extract_title_candidates(soup)
+    vendor_candidates = extract_vendor_candidates(html_source, soup)
+    desc_candidates = extract_description_candidates(soup)
+    feature_candidates = extract_feature_candidates(html_source, soup)
 
-    vendor_candidates = []
-    vendor_candidates.extend(extract_vendor_candidates(html_source, soup))
-    if jsonld_data["vendor"]:
-        vendor_candidates.insert(0, jsonld_data["vendor"])
+    title_extracted = title_candidates[0] if title_candidates else ""
+    vendor_extracted = vendor_candidates[0] if vendor_candidates else ""
+    description_extracted = desc_candidates[0] if desc_candidates else ""
 
-    desc_candidates = []
-    desc_candidates.extend(extract_description_candidates(soup))
-    if jsonld_data["description"]:
-        desc_candidates.insert(0, jsonld_data["description"])
+    # fallback to visible page text slice if no meta description
+    if not description_extracted:
+        description_extracted = get_clean_page_text(soup)[:3000].strip()
 
-    feature_candidates = []
-    if jsonld_data["features"]:
-        feature_candidates.append(jsonld_data["features"])
-    feature_candidates.extend(extract_feature_candidates(html_source, soup))
-
-    title_extracted = next((x for x in title_candidates if x), "")
-    vendor_extracted = next((x for x in vendor_candidates if x), "")
-    description_extracted = next((x for x in desc_candidates if x), "")
-    features_extracted = safe_join(feature_candidates)
+    features_extracted = " | ".join(feature_candidates[:25])
 
     title_anchor, title_source_context = find_first_context(html_source, TITLE_CONTEXT_PATTERNS)
     vendor_anchor, vendor_source_context = find_first_context(html_source, VENDOR_CONTEXT_PATTERNS)
@@ -332,9 +256,23 @@ def extract_fields_and_contexts(html_source: str) -> Dict[str, str]:
     }
 
 
+def get_images_from_html(html_source: str) -> List[str]:
+    try:
+        soup = build_soup(html_source)
+        images = soup.find_all("img")
+        image_urls = []
+        for img in images:
+            src = img.get("src")
+            if src and "http" in src:
+                image_urls.append(src.strip())
+        return sorted(set(image_urls))
+    except Exception:
+        return []
+
+
 def validate_columns(df: pd.DataFrame):
     cols = {c.strip().lower(): c for c in df.columns}
-    required = ["retail_url"]
+    required = ["salsify_url", "retail_url"]
     missing = [col for col in required if col not in cols]
     if missing:
         raise ValueError(f"Missing required columns: {missing}")
@@ -349,9 +287,10 @@ def make_excel_bytes(results_df: pd.DataFrame) -> bytes:
     return output.getvalue()
 
 
-def process_items(df: pd.DataFrame) -> pd.DataFrame:
+def run_qa(df: pd.DataFrame) -> pd.DataFrame:
     cols = validate_columns(df)
 
+    salsify_col = cols["salsify_url"]
     retail_col = cols["retail_url"]
     sku_col = cols.get("sku")
     rpc_col = cols.get("cvs rpc")
@@ -359,20 +298,35 @@ def process_items(df: pd.DataFrame) -> pd.DataFrame:
 
     results = []
 
-    progress = st.progress(0)
+    progress = st.progress(0.0)
+    status_box = st.empty()
     total = len(df)
 
     for i, (_, row) in enumerate(df.iterrows(), start=1):
+        salsify_url = str(row[salsify_col]).strip() if pd.notna(row[salsify_col]) else ""
         retail_url = str(row[retail_col]).strip() if pd.notna(row[retail_col]) else ""
         sku = str(row[sku_col]).strip() if sku_col and pd.notna(row[sku_col]) else ""
         cvs_rpc = str(row[rpc_col]).strip() if rpc_col and pd.notna(row[rpc_col]) else ""
         brand = str(row[brand_col]).strip() if brand_col and pd.notna(row[brand_col]) else ""
 
-        status_code = 0
-        final_url = ""
-        source_capture_status = "failed"
-        source_capture_error = ""
-        html_source = ""
+        status_box.write(f"Processing row {i} of {total}: CVS RPC = {cvs_rpc or '(blank)'}")
+
+        s_status = 0
+        r_status = 0
+        s_final_url = ""
+        r_final_url = ""
+        s_html = ""
+        r_html = ""
+        s_text = ""
+        s_images = []
+        r_images = []
+        desc_score = 0
+        feat_score = 0
+        image_match_pct = 0.0
+        match_count = 0
+        total_salsify = 0
+        app_status = "ERROR"
+        error_text = ""
 
         extracted = {
             "title_extracted": "",
@@ -390,31 +344,65 @@ def process_items(df: pd.DataFrame) -> pd.DataFrame:
         }
 
         try:
-            status_code, final_url, html_source = fetch_html(retail_url)
-            if status_code == 200:
-                source_capture_status = "success"
-                extracted = extract_fields_and_contexts(html_source)
-            else:
-                source_capture_error = f"http_{status_code}"
+            # Salsify
+            s_status, s_final_url, s_html = fetch_page(salsify_url)
+            if s_status != 200:
+                raise RuntimeError(f"Salsify HTTP {s_status}")
+
+            # Retail/CVS
+            r_status, r_final_url, r_html = fetch_page(retail_url)
+            if r_status != 200:
+                raise RuntimeError(f"Retail HTTP {r_status}")
+
+            # Extract
+            s_soup = build_soup(s_html)
+            s_text = get_clean_page_text(s_soup)
+
+            extracted = extract_fields_and_contexts(r_html)
+
+            s_images = get_images_from_html(s_html)
+            r_images = get_images_from_html(r_html)
+
+            s_set = set(s_images)
+            r_set = set(r_images)
+            match_count = len(s_set & r_set)
+            total_salsify = len(s_set)
+            image_match_pct = round((match_count / total_salsify) * 100, 2) if total_salsify else 0.0
+
+            desc_score = similarity_score(s_text, extracted["description_extracted"])
+            feat_score = similarity_score(s_text, extracted["features_extracted"])
+
+            app_status = "PASS" if desc_score > 85 and feat_score > 80 and image_match_pct > 50 else "FAIL"
 
         except Exception as exc:
-            source_capture_error = f"{type(exc).__name__}: {exc}"
+            error_text = f"{type(exc).__name__}: {exc}"
 
         row_dict = {
             "sku": sku,
             "cvs_rpc": cvs_rpc,
             "brand": brand,
+            "salsify_url": salsify_url,
             "retail_url": retail_url,
-            "final_url": final_url,
-            "status_code": status_code,
-            "source_capture_status": source_capture_status,
-            "source_capture_error": source_capture_error,
-            "source_bytes": len(html_source.encode("utf-8", errors="ignore")) if html_source else 0,
-            "source_length": len(html_source) if html_source else 0,
+            "salsify_final_url": s_final_url,
+            "retail_final_url": r_final_url,
+            "salsify_status_code": s_status,
+            "retail_status_code": r_status,
+            "desc_score": desc_score,
+            "feat_score": feat_score,
+            "image_match_pct": image_match_pct,
+            "matching_image_count": match_count,
+            "salsify_image_count": total_salsify,
+            "status": app_status,
+            "error": error_text,
+            "salsify_text": s_text,
+            "salsify_images": " | ".join(s_images),
+            "retail_images": " | ".join(r_images),
+            "source_bytes": len(r_html.encode("utf-8", errors="ignore")) if r_html else 0,
+            "source_length": len(r_html) if r_html else 0,
             **extracted,
         }
 
-        source_chunks = chunk_text(html_source)
+        source_chunks = chunk_text(r_html)
         for idx_chunk, chunk in enumerate(source_chunks, start=1):
             row_dict[f"raw_source_{idx_chunk}"] = chunk
 
@@ -422,6 +410,7 @@ def process_items(df: pd.DataFrame) -> pd.DataFrame:
         progress.progress(i / total)
 
     progress.empty()
+    status_box.empty()
     return pd.DataFrame(results)
 
 
@@ -442,18 +431,18 @@ def main():
         st.stop()
 
     st.write("Preview of uploaded data:")
-    st.dataframe(df.head(), use_container_width=True)
+    st.dataframe(df.head(), width="stretch")
 
     if st.button("Run Extraction"):
-        with st.spinner("Fetching CVS pages and extracting title/vendor/description/features..."):
+        with st.spinner("Fetching CVS pages and extracting title, vendor, description, and features..."):
             try:
-                results_df = process_items(df)
+                results_df = run_qa(df)
             except Exception as exc:
                 st.error(f"Extraction run failed: {exc}")
                 st.stop()
 
         st.success("Extraction run complete.")
-        st.dataframe(results_df.head(50), use_container_width=True)
+        st.dataframe(results_df.head(50), width="stretch")
 
         excel_bytes = make_excel_bytes(results_df)
         st.download_button(
