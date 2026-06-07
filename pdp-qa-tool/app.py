@@ -404,7 +404,6 @@ def process_items(df, max_rows):
 
         status_box.write(f"Processing row {i} of {total}: CVS RPC = {cvs_rpc or '(blank)'}")
 
-        # Defaults
         s_status = 0
         r_status = 0
         s_final_url = ""
@@ -435,7 +434,6 @@ def process_items(df, max_rows):
         }
 
         try:
-            # Fetch both pages
             s_status, s_final_url, s_html = fetch_page(salsify_url)
             r_status, r_final_url, r_html = fetch_page(retail_url)
 
@@ -553,10 +551,10 @@ def main():
     st.dataframe(df.head(), width="stretch")
 
     max_rows = st.number_input(
-        "Rows to process for testing",
+        "Rows to process",
         min_value=1,
         max_value=len(df),
-        value=min(10, len(df)),
+        value=len(df),
         step=1,
     )
 
