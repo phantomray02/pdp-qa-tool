@@ -16,7 +16,6 @@ HEADERS = {
 }
 
 REQUEST_TIMEOUT = 15
-EXCEL_CELL_LIMIT = 30000
 CONTEXT_WINDOW = 1000
 
 
@@ -29,13 +28,6 @@ def normalize_space(text):
     text = unescape(text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
-
-
-def chunk_text(text, chunk_size=EXCEL_CELL_LIMIT):
-    text = text if isinstance(text, str) else str(text or "")
-    if not text:
-        return [""]
-    return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
 
 
 def similarity_score(a, b):
@@ -359,7 +351,7 @@ def extract_contexts(html_source):
 
 
 # -----------------------------
-# Row processing
+# Main comparison logic
 # -----------------------------
 
 def validate_columns(df):
@@ -514,10 +506,6 @@ def process_items(df, max_rows):
             "features_anchor": contexts["features_anchor"],
             "features_source_context": contexts["features_source_context"],
         }
-
-        source_chunks = chunk_text(r_html)
-        for idx_chunk, chunk in enumerate(source_chunks, start=1):
-            row_dict[f"raw_source_{idx_chunk}"] = chunk
 
         results.append(row_dict)
         progress.progress(i / total)
