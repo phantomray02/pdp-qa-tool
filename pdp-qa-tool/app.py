@@ -33,8 +33,6 @@ NOISE_PHRASES = [
     "sign in",
     "cart",
     "menu",
-    "home",
-    "shop",
     "wellness zone",
     "help center",
     "contact us",
@@ -66,13 +64,13 @@ def normalize_space(text):
 def fetch_page(session, url):
     if not url or not str(url).strip():
         return 0, "", ""
-    resp = session.get(
+    response = session.get(
         url,
         headers=HEADERS,
         timeout=REQUEST_TIMEOUT,
         allow_redirects=True,
     )
-    return resp.status_code, resp.url, resp.text
+    return response.status_code, response.url, response.text
 
 
 def build_soup(html_source):
@@ -95,23 +93,15 @@ def make_excel_bytes(results_df):
 
 
 def is_noise_text(text):
-    t = normalize_space(text).lower()
-    if not t:
+    value = normalize_space(text).lower()
+    if not value:
         return True
-    if len(t) < 8:
+    if len(value) < 8:
         return True
     for phrase in NOISE_PHRASES:
-        if phrase in t:
+        if phrase in value:
             return True
     return False
-
-
-def safe_first(values):
-    for value in values:
-        value = normalize_space(value)
-        if value:
-            return value
-    return ""
 
 
 # -----------------------------
@@ -126,7 +116,8 @@ def parse_jsonld_blocks(soup):
         if not raw:
             continue
         try:
-            blocks.append(json.loads(raw))
+            parsed = json.loads(raw)
+            blocks.append(parsed)
         except Exception:
             continue
     return blocks
@@ -148,7 +139,9 @@ def extract_from_jsonld(soup):
     description = ""
     features = []
 
-    for block in parse_jsonld_blocks(soup):
+    blocks = parse_jsonld_blocks(soup)
+
+    for block in blocks:
         for node in iter_json_nodes(block):
             node_type = str(node.get("@type", "")).lower()
 
@@ -168,20 +161,21 @@ def extract_from_jsonld(soup):
 
                 for key in FEATURE_KEYS:
                     if key in node:
-                        val = node[key]
-                        if isinstance(val, list):
-                            for item in val:
+                        value = node[key]
+
+                        if isinstance(value, list):
+                            for item in value:
                                 item = normalize_space(item)
                                 if item and not is_noise_text(item):
                                     features.append(item)
                         else:
-                            val = normalize_space(val)
-                            if val and not is_noise_text(val):
-                                features.append(val)
+                            value = normalize_space(value)
+                            if value and not is_noise_text(value):
+                                features.append(value)
 
-    # dedupe
     deduped = []
     seen = set()
+
     for item in features:
         if item not in seen:
             seen.add(item)
@@ -196,19 +190,19 @@ def extract_from_jsonld(soup):
 
 
 # -----------------------------
-# Extraction functions
+# Field extraction
 # -----------------------------
 
 def extract_title(soup, html_source):
     h1 = soup.find("h1")
     if h1:
-        txt = normalize_space(h1.get_text(" ", strip=True))
-        if txt:
-            return txt
+        text = normalize_space(h1.get_text(" ", strip=True))
+        if text:
+            return text
 
-    jsonld = extract_from_jsonld(soup)
-    if jsonld["title"]:
-        return jsonld["title"]
+    jsonld_data = extract_from_jsonld(soup)
+    if jsonld_data["title"]:
+        return jsonld_data["title"]
 
     og_title = soup.find("meta", attrs={"property": "og:title"})
     if og_title and og_title.get("content"):
@@ -216,27 +210,28 @@ def extract_title(soup, html_source):
 
     title_tag = soup.find("title")
     if title_tag:
-        txt = normalize_space(title_tag.get_text(" ", strip=True))
-        if txt:
-            return txt
+        text = normalize_space(title_tag.get_text(" ", strip=True))
+        if text:
+            return text
 
     patterns = [
         r'"productName"\s*:\s*"([^"]+)"',
         r'"name"\s*:\s*"([^"]+)"',
         r'"title"\s*:\s*"([^"]+)"',
     ]
+
     for pattern in patterns:
-        m = re.search(pattern, html_source, flags=re.IGNORECASE | re.DOTALL)
-        if m:
-            return normalize_space(m.group(1))
+        match = re.search(pattern, html_source, flags=re.IGNORECASE | re.DOTALL)
+        if match:
+            return normalize_space(match.group(1))
 
     return ""
 
 
 def extract_vendor(soup, html_source):
-    jsonld = extract_from_jsonld(soup)
-    if jsonld["vendor"]:
-        return jsonld["vendor"]
+    jsonld_data = extract_from_jsonld(soup)
+    if jsonld_data["vendor"]:
+        return jsonld_data["vendor"]
 
     patterns = [
         r'>\s*From\s+([^<]+)<',
@@ -245,16 +240,17 @@ def extract_vendor(soup, html_source):
         r'"vendor"\s*:\s*"([^"]+)"',
         r'"manufacturer"\s*:\s*"([^"]+)"',
     ]
+
     for pattern in patterns:
-        m = re.search(pattern, html_source, flags=re.IGNORECASE | re.DOTALL)
-        if m:
-            return normalize_space(m.group(1))
+        match = re.search(pattern, html_source, flags=re.IGNORECASE | re.DOTALL)
+        if match:
+            return normalize_space(match.group(1))
 
     for a in soup.find_all("a", href=True):
-        txt = normalize_space(a.get_text(" ", strip=True))
+        text = normalize_space(a.get_text(" ", strip=True))
         href = a.get("href", "")
-        if txt and ("brand-shop" in href or "See all" in txt):
-            return txt
+        if text and ("brand-shop" in href or "See all" in text):
+            return text
 
     return ""
 
@@ -262,19 +258,19 @@ def extract_vendor(soup, html_source):
 def extract_description(soup, html_source):
     meta_desc = soup.find("meta", attrs={"name": "description"})
     if meta_desc and meta_desc.get("content"):
-        txt = normalize_space(meta_desc.get("content"))
-        if txt:
-            return txt
+        text = normalize_space(meta_desc.get("content"))
+        if text:
+            return text
 
     og_desc = soup.find("meta", attrs={"property": "og:description"})
     if og_desc and og_desc.get("content"):
-        txt = normalize_space(og_desc.get("content"))
-        if txt:
-            return txt
+        text = normalize_space(og_desc.get("content"))
+        if text:
+            return text
 
-    jsonld = extract_from_jsonld(soup)
-    if jsonld["description"]:
-        return jsonld["description"]
+    jsonld_data = extract_from_jsonld(soup)
+    if jsonld_data["description"]:
+        return jsonld_data["description"]
 
     patterns = [
         r'"longDescription"\s*:\s*"([^"]+)"',
@@ -282,20 +278,20 @@ def extract_description(soup, html_source):
         r'"description"\s*:\s*"([^"]+)"',
         r'"productDescription"\s*:\s*"([^"]+)"',
     ]
-    for pattern in patterns:
-        m = re.search(pattern, html_source, flags=re.IGNORECASE | re.DOTALL)
-        if m:
-            return normalize_space(m.group(1))
 
-    # last resort: clean visible text, trimmed
+    for pattern in patterns:
+        match = re.search(pattern, html_source, flags=re.IGNORECASE | re.DOTALL)
+        if match:
+            return normalize_space(match.group(1))
+
     page_text = clean_page_text(soup)
     return page_text[:2500]
 
 
 def extract_features(soup, html_source):
-    jsonld = extract_from_jsonld(soup)
-    if jsonld["features"]:
-        return jsonld["features"]
+    jsonld_data = extract_from_jsonld(soup)
+    if jsonld_data["features"]:
+        return jsonld_data["features"]
 
     patterns = [
         r'"features"\s*:\s*\[([^\]]+)\]',
@@ -305,28 +301,27 @@ def extract_features(soup, html_source):
         r'"bulletText"\s*:\s*\[([^\]]+)\]',
         r'"keyFeatures"\s*:\s*\[([^\]]+)\]',
     ]
+
     for pattern in patterns:
-        m = re.search(pattern, html_source, flags=re.IGNORECASE | re.DOTALL)
-        if m:
-            text = normalize_space(m.group(1))
+        match = re.search(pattern, html_source, flags=re.IGNORECASE | re.DOTALL)
+        if match:
+            text = normalize_space(match.group(1))
             if text and not is_noise_text(text):
                 return text
 
-    # collect likely product bullets only
     bullets = []
     seen = set()
+
     for li in soup.find_all("li"):
-        txt = normalize_space(li.get_text(" ", strip=True))
-        if txt and not is_noise_text(txt) and len(txt) >= 20 and txt not in seen:
-            seen.add(txt)
-            bullets.append(txt)
+        text = normalize_space(li.get_text(" ", strip=True))
+        if text and not is_noise_text(text) and len(text) >= 20 and text not in seen:
+            seen.add(text)
+            bullets.append(text)
 
     if bullets:
         return " | ".join(bullets[:20])
 
-    # fallback: look for feature-ish claims in visible text
     page_text = clean_page_text(soup)
-    claims = []
     claim_patterns = [
         r"3x [a-z ]+",
         r"septic[- ]safe",
@@ -340,11 +335,13 @@ def extract_features(soup, html_source):
         r"dryshield",
         r"moisturewick",
     ]
-    for pattern in claim_patterns:
-        for m in re.finditer(pattern, page_text, flags=re.IGNORECASE):
-            claims.append(normalize_space(m.group(0)))
 
-    claims = [c for c in dict.fromkeys(claims)]
+    claims = []
+    for pattern in claim_patterns:
+        for match in re.finditer(pattern, page_text, flags=re.IGNORECASE):
+            claims.append(normalize_space(match.group(0)))
+
+    claims = list(dict.fromkeys(claims))
     return " | ".join(claims[:20])
 
 
@@ -358,11 +355,11 @@ def find_context(source, patterns, window=CONTEXT_WINDOW):
         return "", ""
 
     for pattern in patterns:
-        m = re.search(pattern, source, flags=re.IGNORECASE | re.DOTALL)
-        if m:
-            start = max(0, m.start() - window)
-            end = min(len(source), m.end() + window)
-            anchor = normalize_space(m.group(0))
+        match = re.search(pattern, source, flags=re.IGNORECASE | re.DOTALL)
+        if match:
+            start = max(0, match.start() - window)
+            end = min(len(source), match.end() + window)
+            anchor = normalize_space(match.group(0))
             context = normalize_space(source[start:end])
             return anchor, context
 
@@ -517,7 +514,7 @@ def process_items(df, max_rows):
             "status_code": status_code,
             "source_capture_status": source_capture_status,
             "source_capture_error": source_capture_error,
-            "source_bytes": len(html_source.encode('utf-8', errors='ignore')) if html_source else 0,
+            "source_bytes": len(html_source.encode("utf-8", errors="ignore")) if html_source else 0,
             "source_length": len(html_source) if html_source else 0,
             "title_extracted": title_extracted,
             "vendor_extracted": vendor_extracted,
@@ -561,3 +558,31 @@ def main():
 
     max_rows = st.number_input(
         "Rows to process",
+        min_value=1,
+        max_value=len(df),
+        value=min(25, len(df)),
+        step=1
+    )
+
+    if st.button("Pull CVS Copy From Source"):
+        with st.spinner("Fetching CVS pages and extracting title/vendor/description/features..."):
+            try:
+                results_df = process_items(df, int(max_rows))
+            except Exception as exc:
+                st.error(f"Run failed: {exc}")
+                st.stop()
+
+        st.success("Extraction complete.")
+        st.dataframe(results_df.head(50), width="stretch")
+
+        excel_bytes = make_excel_bytes(results_df)
+        st.download_button(
+            label="Download CVS Copy Debugger Excel",
+            data=excel_bytes,
+            file_name="cvs_copy_debugger.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+
+if __name__ == "__main__":
+    main()
