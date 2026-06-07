@@ -1,4 +1,3 @@
-
 import io
 import re
 from html import unescape
@@ -144,6 +143,7 @@ def extract_features(soup, html_source):
 
     bullets = []
     seen = set()
+
     for li in soup.find_all("li"):
         txt = normalize_space(li.get_text(" ", strip=True))
         if len(txt) >= 20 and txt not in seen:
@@ -322,7 +322,7 @@ def process_items(df, max_rows):
             "status_code": status_code,
             "source_capture_status": source_capture_status,
             "source_capture_error": error_text,
-            "source_bytes": len(html_source.encode("utf-8", errors="ignore")) if html_source else 0,
+            "source_bytes": len(html_source.encode('utf-8', errors='ignore')) if html_source else 0,
             "source_length": len(html_source) if html_source else 0,
             "title_extracted": title_extracted,
             "vendor_extracted": vendor_extracted,
@@ -334,4 +334,68 @@ def process_items(df, max_rows):
             "vendor_source_context": contexts["vendor_source_context"],
             "description_anchor": contexts["description_anchor"],
             "description_source_context": contexts["description_source_context"],
-            "features_anchor
+            "features_anchor": contexts["features_anchor"],
+            "features_source_context": contexts["features_source_context"],
+        }
+
+        source_chunks = chunk_text(html_source)
+        for idx_chunk, chunk in enumerate(source_chunks, start=1):
+            row_dict[f"raw_source_{idx_chunk}"] = chunk
+
+        results.append(row_dict)
+        progress.progress(i / total)
+
+    progress.empty()
+    status_box.empty()
+    return pd.DataFrame(results)
+
+
+def main():
+    st.set_page_config(page_title="PDP QA Tool", layout="wide")
+    st.title("PDP QA Tool")
+
+    uploaded_file = st.file_uploader("Upload CVS CSV", type=["csv"])
+
+    if uploaded_file is None:
+        st.info("Upload a CVS CSV file to begin.")
+        st.stop()
+
+    try:
+        df = pd.read_csv(uploaded_file)
+    except Exception as exc:
+        st.error(f"Could not read uploaded CSV: {exc}")
+        st.stop()
+
+    st.write("Preview of uploaded data:")
+    st.dataframe(df.head(), width="stretch")
+
+    max_rows = st.number_input(
+        "Rows to process for testing",
+        min_value=1,
+        max_value=len(df),
+        value=min(10, len(df)),
+        step=1,
+    )
+
+    if st.button("Run Extraction"):
+        with st.spinner("Fetching CVS pages and extracting title, vendor, description, and features..."):
+            try:
+                results_df = process_items(df, int(max_rows))
+            except Exception as exc:
+                st.error(f"Extraction run failed: {exc}")
+                st.stop()
+
+        st.success("Extraction run complete.")
+        st.dataframe(results_df.head(50), width="stretch")
+
+        excel_bytes = make_excel_bytes(results_df)
+        st.download_button(
+            label="Download Debugger Excel",
+            data=excel_bytes,
+            file_name="cvs_debugger_with_source.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+
+if __name__ == "__main__":
+    main()
