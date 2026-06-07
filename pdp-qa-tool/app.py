@@ -22,9 +22,46 @@ GENERIC_BRAND_WORDS = {
     "brand", "co", "company", "corp", "corporation", "inc", "llc", "ltd", "the"
 }
 
-TITLE_STOPWORDS = {
-    "buy", "shop", "now", "with", "and", "the", "a", "an", "for", "of"
+TITLE_SYNONYMS = {
+    "ultra comfort": "ultra soft",
+    "toilet tissue": "toilet paper",
+    "flushable wet wipes": "flushable wipes",
+    "adult wet wipes": "flushable wipes",
+    "fresh protection": "fit flex",
 }
+
+STOPWORDS = {
+    "buy", "shop", "now", "with", "and", "the", "a", "an", "for", "of", "most", "orders"
+}
+
+FEATURE_KEYWORDS = [
+    "cleaningripples",
+    "softest",
+    "strong",
+    "strength",
+    "absorbent",
+    "absorbency",
+    "3x",
+    "thicker",
+    "stronger",
+    "septic",
+    "safe",
+    "no perfumes",
+    "no dyes",
+    "hypoallergenic",
+    "dermatologist tested",
+    "95 water",
+    "flushable",
+    "odorblock",
+    "dryshield",
+    "moisturewick",
+    "hsa",
+    "fsa",
+    "aloe",
+    "vitamin e",
+    "chamomile",
+    "alcohol free",
+]
 
 
 # -----------------------------
@@ -38,26 +75,34 @@ def normalize_space(text):
     return text.strip()
 
 
-def clean_for_compare(text):
+def clean_basic(text):
     text = normalize_space(text).lower()
     text = re.sub(r"[^a-z0-9\s]", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
 
+def apply_title_synonyms(text):
+    text = text.lower()
+    for src, dst in TITLE_SYNONYMS.items():
+        text = text.replace(src, dst)
+    return text
+
+
 def normalize_vendor_name(text):
-    text = clean_for_compare(text)
+    text = clean_basic(text)
     parts = [p for p in text.split() if p not in GENERIC_BRAND_WORDS]
     return " ".join(parts).strip()
 
 
 def normalize_title_text(text):
-    text = clean_for_compare(text)
-    parts = [p for p in text.split() if p not in TITLE_STOPWORDS]
+    text = apply_title_synonyms(normalize_space(text))
+    text = clean_basic(text)
+    parts = [p for p in text.split() if p not in STOPWORDS]
     return " ".join(parts).strip()
 
 
-def similarity_score(a, b):
+def sequence_score(a, b):
     a = normalize_space(a)
     b = normalize_space(b)
     if not a or not b:
@@ -65,32 +110,69 @@ def similarity_score(a, b):
     return int(round(SequenceMatcher(None, a, b).ratio() * 100))
 
 
-def vendor_score(a, b):
-    a = normalize_vendor_name(a)
-    b = normalize_vendor_name(b)
-    if not a or not b:
+def vendor_score(a, b, fallback_brand=""):
+    a_norm = normalize_vendor_name(a or fallback_brand)
+    b_norm = normalize_vendor_name(b or fallback_brand)
+
+    if not a_norm or not b_norm:
         return 0
-    if a == b:
+    if a_norm == b_norm:
         return 100
-    return int(round(SequenceMatcher(None, a, b).ratio() * 100))
+    return int(round(SequenceMatcher(None, a_norm, b_norm).ratio() * 100))
 
 
 def title_score(a, b):
-    a = normalize_title_text(a)
-    b = normalize_title_text(b)
-    if not a or not b:
+    a_norm = normalize_title_text(a)
+    b_norm = normalize_title_text(b)
+
+    if not a_norm or not b_norm:
         return 0
-    if a == b:
+    if a_norm == b_norm:
         return 100
-    return int(round(SequenceMatcher(None, a, b).ratio() * 100))
+    return int(round(SequenceMatcher(None, a_norm, b_norm).ratio() * 100))
 
 
-def description_score(a, b):
-    return similarity_score(a, b)
+def tokenize_feature_text(text):
+    text = normalize_space(text).lower()
+
+    # simple phrase preservation for useful phrases
+    text = text.replace("no perfumes", "no_perfumes")
+    text = text.replace("no dyes", "no_dyes")
+    text = text.replace("dermatologist tested", "dermatologist_tested")
+    text = text.replace("alcohol free", "alcohol_free")
+    text = text.replace("vitamin e", "vitamin_e")
+    text = text.replace("95% water", "95_water")
+    text = text.replace("95 water", "95_water")
+    text = text.replace("hsa/fsa", "hsa_fsa")
+    text = text.replace("cleaning ripples", "cleaningripples")
+    text = text.replace("septic safe", "septic_safe")
+
+    text = re.sub(r"[^a-z0-9_\s]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+
+    tokens = set()
+    for token in text.split():
+        if len(token) >= 3:
+            tokens.add(token)
+
+    for keyword in FEATURE_KEYWORDS:
+        if keyword in text:
+            tokens.add(keyword.replace(" ", "_"))
+
+    return tokens
 
 
-def features_score(a, b):
-    return similarity_score(a, b)
+def keyword_overlap_score(a, b):
+    a_tokens = tokenize_feature_text(a)
+    b_tokens = tokenize_feature_text(b)
+
+    if not a_tokens or not b_tokens:
+        return 0
+
+    overlap = len(a_tokens & b_tokens)
+    union = len(a_tokens | b_tokens)
+
+    return int(round((overlap / union) * 100)) if union else 0
 
 
 def fetch_page(session, url):
@@ -150,7 +232,9 @@ def extract_from_jsonld(soup):
     description = ""
     features = []
 
-    for block in parse_jsonld_blocks(soup):
+    blocks = parse_jsonld_blocks(soup)
+
+    for block in blocks:
         for node in iter_json_nodes(block):
             node_type = str(node.get("@type", "")).lower()
 
@@ -406,7 +490,46 @@ def extract_contexts(html_source):
 
 
 # -----------------------------
-# Comparison / debugger logic
+# Diagnostics / status helpers
+# -----------------------------
+
+def build_mapping_warning(sku, cvs_rpc, s_title, r_title, s_vendor, r_vendor):
+    warnings = []
+
+    if not sku:
+        warnings.append("missing_sku")
+    if not cvs_rpc:
+        warnings.append("missing_cvs_rpc")
+
+    if s_vendor and r_vendor and vendor_score(s_vendor, r_vendor) == 0:
+        warnings.append("vendor_zero_match")
+
+    if s_title and r_title and title_score(s_title, r_title) < 40:
+        warnings.append("title_low_match")
+
+    return " | ".join(warnings)
+
+
+def compare_status_for_row(error_text, s_status, r_status, t_score, v_score, d_score, f_score):
+    if error_text:
+        return "ERROR"
+    if r_status != 200:
+        return "RETAIL_FAIL"
+    if s_status != 200:
+        return "SALSIFY_FAIL"
+
+    # Weighted logic: vendor + title matter most, features/description support.
+    if v_score >= 70 and t_score >= 70 and (d_score >= 20 or f_score >= 15):
+        return "PASS"
+
+    if v_score == 100 and t_score >= 55 and (d_score >= 15 or f_score >= 10):
+        return "PASS"
+
+    return "FAIL"
+
+
+# -----------------------------
+# Main comparison / debugger logic
 # -----------------------------
 
 def validate_columns(df):
@@ -424,25 +547,6 @@ def make_excel_bytes(results_df):
         results_df.to_excel(writer, index=False, sheet_name="debugger")
     output.seek(0)
     return output.getvalue()
-
-
-def build_mapping_warning(sku, cvs_rpc, s_title, r_title, s_vendor, r_vendor):
-    warnings = []
-
-    if not sku:
-        warnings.append("missing_sku")
-    if not cvs_rpc:
-        warnings.append("missing_cvs_rpc")
-
-    t_score = title_score(s_title, r_title)
-    v_score = vendor_score(s_vendor, r_vendor)
-
-    if v_score == 0 and s_vendor and r_vendor:
-        warnings.append("vendor_zero_match")
-    if t_score < 40 and s_title and r_title:
-        warnings.append("title_low_match")
-
-    return " | ".join(warnings)
 
 
 def process_items(df, max_rows):
@@ -524,33 +628,30 @@ def process_items(df, max_rows):
         except Exception as exc:
             error_text = f"{type(exc).__name__}: {exc}"
 
+        # If the explicit brand column exists, use that as the fallback/anchor.
+        v_score = vendor_score(s_vendor or brand, r_vendor or brand, fallback_brand=brand)
         t_score = title_score(s_title, r_title)
-        v_score = vendor_score(s_vendor, r_vendor)
-        d_score = description_score(s_description, r_description)
-        f_score = features_score(s_features, r_features)
+        d_score = keyword_overlap_score(s_description, r_description)
+        f_score = keyword_overlap_score(s_features, r_features)
 
         mapping_warning = build_mapping_warning(
             sku,
             cvs_rpc,
             s_title,
             r_title,
-            s_vendor,
-            r_vendor,
+            s_vendor or brand,
+            r_vendor or brand,
         )
 
-        if error_text:
-            compare_status = "ERROR"
-        elif r_status != 200:
-            compare_status = "RETAIL_FAIL"
-        elif s_status != 200:
-            compare_status = "SALSIFY_FAIL"
-        else:
-            compare_status = "PASS" if (
-                t_score >= 80 and
-                v_score >= 70 and
-                d_score >= 60 and
-                f_score >= 45
-            ) else "FAIL"
+        compare_status = compare_status_for_row(
+            error_text,
+            s_status,
+            r_status,
+            t_score,
+            v_score,
+            d_score,
+            f_score,
+        )
 
         row_dict = {
             "sku": sku,
@@ -629,7 +730,7 @@ def main():
         "Rows to process",
         min_value=1,
         max_value=len(df),
-        value=len(df),
+        value=min(25, len(df)),
         step=1,
     )
 
