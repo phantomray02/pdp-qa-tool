@@ -213,7 +213,12 @@ def get_marker_windows(raw_text, markers, back=300, forward=3500):
             key = (start, end)
             if key not in seen:
                 seen.add(key)
-                windows.append(raw_text[start:end])
+                windows.append({
+                    "marker": marker,
+                    "start": start,
+                    "end": end,
+                    "text": raw_text[start:end]
+                })
     return windows
 
 
@@ -222,7 +227,14 @@ def get_vendor_candidates(raw_text, data_map):
 
     for v in data_map.values():
         if isinstance(v, dict) and "vendorDetailsBullets" in v and "vendorDetailsParagraph" in v:
-            candidates.append(v)
+            candidates.append({
+                "vendorDetailsBullets": v.get("vendorDetailsBullets"),
+                "vendorDetailsParagraph": v.get("vendorDetailsParagraph"),
+                "segment_start_marker_used": "data_map",
+                "segment_end_marker_used": "data_map",
+                "segment_length": 0,
+                "source_segment_preview": ""
+            })
 
     normalized_raw = raw_text.replace('\\"', '"')
     windows = get_marker_windows(
@@ -231,20 +243,24 @@ def get_vendor_candidates(raw_text, data_map):
         back=250,
         forward=2500
     )
-    windows.insert(0, normalized_raw)
 
     regex_patterns = [
         r'\{\s*"vendorDetailsBullets"\s*:\s*"(\$[0-9a-zA-Z]+)"\s*,\s*"vendorDetailsParagraph"\s*:\s*"(\$[0-9a-zA-Z]+)"\s*\}',
         r'vendorDetailsBullets"\s*:\s*"(\$[0-9a-zA-Z]+)"\s*,\s*"vendorDetailsParagraph"\s*:\s*"(\$[0-9a-zA-Z]+)"'
     ]
 
-    for source in windows:
+    for w in windows:
+        source = w["text"]
         for rx in regex_patterns:
             matches = re.findall(rx, source)
             for bullets_ref, para_ref in matches:
                 candidates.append({
                     "vendorDetailsBullets": bullets_ref,
-                    "vendorDetailsParagraph": para_ref
+                    "vendorDetailsParagraph": para_ref,
+                    "segment_start_marker_used": w["marker"],
+                    "segment_end_marker_used": "window_end",
+                    "segment_length": len(source),
+                    "source_segment_preview": clean_cvs_text(source[:1000])
                 })
 
     seen = set()
@@ -285,7 +301,9 @@ def get_valid_vendor_block(raw_text, data_map):
             score = feature_count * 1000 + desc_len
             if score > best_score:
                 best_score = score
-                best_block = v
+                best_block = v.copy()
+                best_block["resolved_bullets"] = cleaned_bullets
+                best_block["resolved_desc"] = cleaned_desc
 
     return best_block
 
@@ -330,7 +348,6 @@ def split_bullets_from_section(section):
 
     section = clean_cvs_text(section)
 
-    # most CVS pages use all-caps heading + dash/colon bullets
     bullet_pattern = re.compile(
         r'((?:[A-Z0-9#&/\+\-\'\u2019\u2018\s]{4,60})\s*(?:—|-|:)\s*.+?)(?=(?:[A-Z0-9#&/\+\-\'\u2019\u2018\s]{4,60}\s*(?:—|-|:)\s*)|$)',
         re.S
@@ -340,7 +357,9 @@ def split_bullets_from_section(section):
     matches = [m for m in matches if len(m) > 20]
 
     if matches:
-        first_idx = section.find(matches[0][:20].split()[0])
+        first_match_text = matches[0]
+        first_word = first_match_text.split()[0] if first_match_text.split() else first_match_text[:20]
+        first_idx = section.find(first_word)
         desc = section[:first_idx].strip() if first_idx > 0 else ""
         return matches[:5], clean_cvs_text(desc)
 
@@ -556,7 +575,7 @@ def get_salsify_text(url):
 
 
 # =========================================
-# CVS COPY EXTRACTION (SOURCE SEGMENT FIRST)
+# CVS COPY EXTRACTION (SOURCE SEGMENT FIRST + DEBUG)
 # =========================================
 def get_cvs_text(html_text):
     debug = {
@@ -576,11 +595,22 @@ def get_cvs_text(html_text):
         "Has vendorDetailsParagraph Token": False,
         "Data Map Key Count": 0,
         "Raw Preview": "",
+        "Source Segment Preview": "",
+        "Segment Start Marker Used": "",
+        "Segment End Marker Used": "",
+        "Segment Length": 0,
         "Visible Section Preview": "",
-        "Used Visible Fallback": False
+        "Visible Section Length": 0,
+        "Visible Fallback Description": "",
+        "Visible Fallback Features": "",
+        "Used Visible Fallback": False,
+        "Feature Count Final": 0,
+        "Desc Length Final": 0,
+        "Failure Bucket": ""
     }
 
     if not html_text:
+        debug["Failure Bucket"] = "Empty HTML"
         return {"title": "", "description": "", "features": [], "debug": debug}
 
     raw_text = get_nextjs_chunks(html_text)
@@ -609,12 +639,16 @@ def get_cvs_text(html_text):
 
             debug["Vendor Bullets Ref"] = bullets_ref if isinstance(bullets_ref, str) else ""
             debug["Vendor Paragraph Ref"] = para_ref if isinstance(para_ref, str) else ""
+            debug["Source Segment Preview"] = vendor_block.get("source_segment_preview", "")
+            debug["Segment Start Marker Used"] = vendor_block.get("segment_start_marker_used", "")
+            debug["Segment End Marker Used"] = vendor_block.get("segment_end_marker_used", "")
+            debug["Segment Length"] = vendor_block.get("segment_length", 0)
 
-            bullets = resolve_ref_any(raw_text, data_map, bullets_ref)
+            bullets = vendor_block.get("resolved_bullets") or resolve_ref_any(raw_text, data_map, bullets_ref)
             if isinstance(bullets, list):
                 features = [clean_cvs_text(b) for b in bullets if isinstance(b, str)]
 
-            para = resolve_ref_any(raw_text, data_map, para_ref)
+            para = vendor_block.get("resolved_desc") or resolve_ref_any(raw_text, data_map, para_ref)
             if isinstance(para, str):
                 desc = clean_cvs_text(para)
                 debug["Desc Vendor"] = desc
@@ -623,20 +657,22 @@ def get_cvs_text(html_text):
         features = features[:5]
         debug["Vendor Feature Count"] = len(features)
 
-        # visible text fallback when source segment resolution fails
-        if not desc or not features:
-            fallback = extract_visible_fallback(html_text)
-            debug["Visible Section Preview"] = clean_cvs_text(fallback.get("section", "")[:800])
+        # visible text fallback when source segment resolution fails or merges content
+        fallback = extract_visible_fallback(html_text)
+        debug["Visible Section Preview"] = clean_cvs_text(fallback.get("section", "")[:1000])
+        debug["Visible Section Length"] = len(clean_cvs_text(fallback.get("section", "")))
+        debug["Visible Fallback Description"] = clean_cvs_text(fallback.get("desc", ""))
+        debug["Visible Fallback Features"] = " | ".join([clean_cvs_text(x) for x in fallback.get("bullets", [])])
 
-            if not desc and fallback.get("desc"):
-                desc = clean_cvs_text(fallback["desc"])
-                debug["Desc Fallback"] = desc
-                debug["Used Visible Fallback"] = True
+        if not desc and fallback.get("desc"):
+            desc = clean_cvs_text(fallback["desc"])
+            debug["Desc Fallback"] = desc
+            debug["Used Visible Fallback"] = True
 
-            if (not features) and fallback.get("bullets"):
-                features = [clean_cvs_text(x) for x in fallback["bullets"]][:5]
-                debug["Vendor Feature Count"] = len(features)
-                debug["Used Visible Fallback"] = True
+        if (not features) and fallback.get("bullets"):
+            features = [clean_cvs_text(x) for x in fallback["bullets"]][:5]
+            debug["Vendor Feature Count"] = len(features)
+            debug["Used Visible Fallback"] = True
 
         try:
             soup = BeautifulSoup(html_text, "html.parser")
@@ -649,9 +685,28 @@ def get_cvs_text(html_text):
         pass
 
     if not debug["Vendor Block Found"]:
-        debug["Raw Preview"] = clean_cvs_text(raw_text[:800])
+        debug["Raw Preview"] = clean_cvs_text(raw_text[:1000])
 
     debug["Desc Final"] = desc
+    debug["Feature Count Final"] = len(features) if isinstance(features, list) else 0
+    debug["Desc Length Final"] = len(clean_cvs_text(desc)) if isinstance(desc, str) else 0
+
+    if not debug["Has NextF"]:
+        debug["Failure Bucket"] = "No NextF Stream"
+    elif not debug["Has vendorDetailsBullets Token"] and not debug["Has vendorDetailsParagraph Token"]:
+        debug["Failure Bucket"] = "No Vendor Tokens"
+    elif debug["Vendor Candidate Count"] == 0:
+        debug["Failure Bucket"] = "No Vendor Candidates"
+    elif debug["Feature Count Final"] > 0 and debug["Desc Length Final"] > 0:
+        debug["Failure Bucket"] = "Extracted Successfully"
+    elif debug["Vendor Block Found"] and debug["Feature Count Final"] == 0 and debug["Desc Length Final"] > 0:
+        debug["Failure Bucket"] = "Description Only"
+    elif debug["Used Visible Fallback"] and debug["Feature Count Final"] == 0 and debug["Desc Length Final"] > 0:
+        debug["Failure Bucket"] = "Visible Fallback Description Only"
+    elif debug["Feature Count Final"] > 0 and debug["Desc Length Final"] == 0:
+        debug["Failure Bucket"] = "Features Only"
+    else:
+        debug["Failure Bucket"] = "Nothing Extracted"
 
     return {
         "title": title.strip() if isinstance(title, str) else "",
@@ -734,7 +789,7 @@ def score_badge(score):
 
 
 # =========================================
-# DESCRIPTION DEBUGGER (NEW)
+# DESCRIPTION DEBUGGER
 # =========================================
 def debug_description(desc):
     if not desc:
@@ -829,7 +884,7 @@ def load_image_with_white_bg(img_data):
 
 
 # =====================================
-# STREAMLIT IMAGE CACHE (BIG SPEED BOOST)
+# STREAMLIT IMAGE CACHE
 # =====================================
 @st.cache_data(show_spinner=False)
 def process_row_cached(row_dict):
@@ -971,7 +1026,6 @@ def process_row(row):
 
         title_score = keyword_score(s_text.get("title", ""), r_text.get("title", ""))
 
-        s_desc_debug = debug_description(s_text.get("description", ""))
         r_desc_debug = debug_description(r_text.get("description", ""))
 
         text_similarity = keyword_score(
@@ -1040,8 +1094,18 @@ def process_row(row):
                 "Has vendorDetailsParagraph Token": debug_data.get("Has vendorDetailsParagraph Token", False),
                 "Data Map Key Count": debug_data.get("Data Map Key Count", 0),
                 "Raw Preview": debug_data.get("Raw Preview", ""),
+                "Source Segment Preview": debug_data.get("Source Segment Preview", ""),
+                "Segment Start Marker Used": debug_data.get("Segment Start Marker Used", ""),
+                "Segment End Marker Used": debug_data.get("Segment End Marker Used", ""),
+                "Segment Length": debug_data.get("Segment Length", 0),
                 "Visible Section Preview": debug_data.get("Visible Section Preview", ""),
+                "Visible Section Length": debug_data.get("Visible Section Length", 0),
+                "Visible Fallback Description": debug_data.get("Visible Fallback Description", ""),
+                "Visible Fallback Features": debug_data.get("Visible Fallback Features", ""),
                 "Used Visible Fallback": debug_data.get("Used Visible Fallback", False),
+                "Feature Count Final": debug_data.get("Feature Count Final", 0),
+                "Desc Length Final": debug_data.get("Desc Length Final", 0),
+                "Failure Bucket": debug_data.get("Failure Bucket", ""),
                 "Desc Quality Score": r_desc_debug["quality_score"],
                 "Desc Length": r_desc_debug["length"],
                 "Desc Issues": ", ".join(r_desc_debug["issues"]),
@@ -1100,9 +1164,8 @@ if uploaded_file:
         }
         df.rename(columns=column_map, inplace=True)
 
-        if "brand" not in df.columns:
-            if len(df.columns) >= 5:
-                df.rename(columns={df.columns[4]: "brand"}, inplace=True)
+        if "brand" not in df.columns and len(df.columns) >= 5:
+            df.rename(columns={df.columns[4]: "brand"}, inplace=True)
 
         required_cols = ["sku", "salsify_url", "retail_url"]
         missing = [c for c in required_cols if c not in df.columns]
@@ -1161,18 +1224,16 @@ if uploaded_file:
                         summary = result.get("summary")
                         debug = result.get("debug")
 
-                        if summary:
-                            if summary["SKU"] not in {r["SKU"] for r in st.session_state.summary_rows}:
-                                st.session_state.summary_rows.append(summary)
+                        if summary and summary["SKU"] not in {r["SKU"] for r in st.session_state.summary_rows}:
+                            st.session_state.summary_rows.append(summary)
 
-                        if summary:
-                            if summary["SKU"] not in {r["SKU"] for r in st.session_state.export_rows}:
-                                st.session_state.export_rows.append({
-                                    "SKU": summary["SKU"],
-                                    "CVS RPC": summary["CVS RPC"],
-                                    "Salsify URL": summary["Salsify URL"],
-                                    "Retail URL": summary["Retail URL"]
-                                })
+                        if summary and summary["SKU"] not in {r["SKU"] for r in st.session_state.export_rows}:
+                            st.session_state.export_rows.append({
+                                "SKU": summary["SKU"],
+                                "CVS RPC": summary["CVS RPC"],
+                                "Salsify URL": summary["Salsify URL"],
+                                "Retail URL": summary["Retail URL"]
+                            })
 
                         if "debug_rows" not in st.session_state:
                             st.session_state.debug_rows = []
@@ -1259,19 +1320,10 @@ if uploaded_file:
                 max_images = max(len(s_images), len(r_images))
 
                 for i in range(max_images):
-                    s_url = (
-                        s_images[i].get("url")
-                        if i < len(s_images) and isinstance(s_images[i], dict)
-                        else None
-                    )
-                    r_url = (
-                        r_images[i]
-                        if i < len(r_images) and isinstance(r_images[i], str)
-                        else None
-                    )
+                    s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else None
+                    r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else None
                     if s_url and r_url:
-                        sc = compare_images_visually(s_url, r_url)
-                        img_scores.append(sc)
+                        img_scores.append(compare_images_visually(s_url, r_url))
 
                 avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
 
@@ -1309,25 +1361,13 @@ if uploaded_file:
                 with left:
                     st.markdown(f"### 🏷️ Title {score_badge(title_score)}", unsafe_allow_html=True)
                     c1, c2 = st.columns(2)
-                    c1.markdown(
-                        f"<div style='font-size:26px; line-height:1.5'>{s_title or '❌ Missing'}</div>",
-                        unsafe_allow_html=True
-                    )
-                    c2.markdown(
-                        f"<div style='font-size:26px; line-height:1.5'>{r_title or '❌ Missing'}</div>",
-                        unsafe_allow_html=True
-                    )
+                    c1.markdown(f"<div style='font-size:26px; line-height:1.5'>{s_title or '❌ Missing'}</div>", unsafe_allow_html=True)
+                    c2.markdown(f"<div style='font-size:26px; line-height:1.5'>{r_title or '❌ Missing'}</div>", unsafe_allow_html=True)
 
                     st.markdown(f"### 📄 Description {score_badge(desc_score)}", unsafe_allow_html=True)
                     c1, c2 = st.columns(2)
-                    c1.markdown(
-                        f"<div style='font-size:25px; line-height:1.5'>{s_desc or '❌ Missing'}</div>",
-                        unsafe_allow_html=True
-                    )
-                    c2.markdown(
-                        f"<div style='font-size:25px; line-height:1.5'>{r_desc or '❌ Missing'}</div>",
-                        unsafe_allow_html=True
-                    )
+                    c1.markdown(f"<div style='font-size:25px; line-height:1.5'>{s_desc or '❌ Missing'}</div>", unsafe_allow_html=True)
+                    c2.markdown(f"<div style='font-size:25px; line-height:1.5'>{r_desc or '❌ Missing'}</div>", unsafe_allow_html=True)
 
                     r_desc_debug = debug_description(r_desc)
                     if r_desc_debug["quality_score"] < 50:
@@ -1353,14 +1393,8 @@ if uploaded_file:
                         score = max(scores) if scores else 0
 
                         c1, c2 = st.columns(2)
-                        c1.markdown(
-                            f"<div style='font-size:25px; line-height:1.5'>{s_val or '❌ Missing'}</div>",
-                            unsafe_allow_html=True
-                        )
-                        c2.markdown(
-                            f"<div style='font-size:25px; line-height:1.5'>{r_val or '❌ Missing'}</div>",
-                            unsafe_allow_html=True
-                        )
+                        c1.markdown(f"<div style='font-size:25px; line-height:1.5'>{s_val or '❌ Missing'}</div>", unsafe_allow_html=True)
+                        c2.markdown(f"<div style='font-size:25px; line-height:1.5'>{r_val or '❌ Missing'}</div>", unsafe_allow_html=True)
                         st.markdown(score_badge(score), unsafe_allow_html=True)
                         st.divider()
 
@@ -1370,10 +1404,7 @@ if uploaded_file:
                     st.markdown("</div>", unsafe_allow_html=True)
 
                     if len(r_images) > len(s_images):
-                        st.markdown(
-                            f"<div style='min-height:{len(r_images)*120}px'></div>",
-                            unsafe_allow_html=True
-                        )
+                        st.markdown(f"<div style='min-height:{len(r_images)*120}px'></div>", unsafe_allow_html=True)
 
                 with right:
                     st.markdown(f"### 🖼️ Images — Avg {score_badge(avg_img_score)}", unsafe_allow_html=True)
@@ -1383,30 +1414,16 @@ if uploaded_file:
                     max_images = max(len(s_images), len(r_images))
                     for i in range(max_images):
                         col1, col2, col3 = st.columns([3, 3, 1])
-                        s_url = (
-                            s_images[i].get("url")
-                            if i < len(s_images) and isinstance(s_images[i], dict)
-                            else None
-                        )
-                        r_url = (
-                            r_images[i]
-                            if i < len(r_images) and isinstance(r_images[i], str)
-                            else None
-                        )
+                        s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else None
+                        r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else None
 
                         if s_url:
-                            col1.markdown(
-                                f"<img src='{s_url}' style='width:100%; max-width:200px; border-radius:6px;'>",
-                                unsafe_allow_html=True
-                            )
+                            col1.markdown(f"<img src='{s_url}' style='width:100%; max-width:200px; border-radius:6px;'>", unsafe_allow_html=True)
                         else:
                             col1.write("")
 
                         if r_url:
-                            col2.markdown(
-                                f"<img src='{r_url}' style='width:100%; max-width:200px; border-radius:6px;'>",
-                                unsafe_allow_html=True
-                            )
+                            col2.markdown(f"<img src='{r_url}' style='width:100%; max-width:200px; border-radius:6px;'>", unsafe_allow_html=True)
                         else:
                             col2.write("")
 
@@ -1423,9 +1440,7 @@ if uploaded_file:
                     st.markdown(score_bar(overall_score), unsafe_allow_html=True)
                     st.error(f"🔴 Critical Issue: {overall_score}%")
 
-                st.caption(
-                    f"Title: {title_score}% | Desc: {desc_score}% | Feat: {avg_feature_score}% | Img: {avg_img_score}%"
-                )
+                st.caption(f"Title: {title_score}% | Desc: {desc_score}% | Feat: {avg_feature_score}% | Img: {avg_img_score}%")
 
     except Exception as e:
         st.error("🔥 CRITICAL APP ERROR")
