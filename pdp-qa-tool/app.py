@@ -12,8 +12,8 @@ from bs4 import BeautifulSoup
 
 requests.adapters.DEFAULT_RETRIES = 2
 st.set_page_config(layout="wide")
-st.title("PDP QA Tool v4.6 — CVS Rule-Locked Parser")
-st.caption("Details-first parser with family routing, heading-first feature extraction, vendor tail cleanup, and debugger outputs for parser path validation.")
+st.title("PDP QA Tool v4.6.1 — CVS Patch-Only Parser")
+st.caption("Patch on top of v4.6. Keeps working routes locked, adds sibling inheritance for shared PDP variants, and avoids backtracking on rows already parsing correctly.")
 
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 html_cache = {}
@@ -52,10 +52,7 @@ def clean_text(text):
     text = str(text)
     if not text:
         return ""
-    text = text.replace("\\u0026", "&")
-    text = text.replace("\\n", " ")
-    text = text.replace("\\/", "/")
-    text = text.replace('\\"', '"')
+    text = text.replace("\\u0026", "&").replace("\\n", " ").replace("\\/", "/").replace('\\"', '"')
     text = html.unescape(text)
     text = re.sub(r'^T\d+,', '', text)
     text = re.sub(r'\s+', ' ', text).strip()
@@ -74,16 +71,15 @@ def dedupe_keep_order(values):
     return out
 
 
-def lines_from_visible_text(text):
-    return [clean_text(x) for x in re.split(r'\n+', str(text or '')) if clean_text(x)]
-
-
 def split_sentences(text):
     txt = clean_text(text)
     if not txt:
         return []
-    parts = re.split(r'(?<=[.!?])\s+(?=[A-Z0-9])', txt)
-    return [clean_text(x) for x in parts if clean_text(x)]
+    return [clean_text(x) for x in re.split(r'(?<=[.!?])\s+(?=[A-Z0-9])', txt) if clean_text(x)]
+
+
+def lines_from_visible_text(text):
+    return [clean_text(x) for x in re.split(r'\n+', str(text or '')) if clean_text(x)]
 
 
 def has_nav_junk(text):
@@ -109,25 +105,18 @@ def is_title_like(text):
     txt = clean_text(text)
     if not txt:
         return True
-    if len(txt) <= 110 and len(split_sentences(txt)) <= 1:
-        return True
-    return False
+    return len(txt) <= 110 and len(split_sentences(txt)) <= 1
 
 
 def has_rebate_copy(text):
     txt = clean_text(text).lower()
-    markers = [
-        'purchase by', 'postmarked', 'original receipt', 'restrictions apply',
-        'limit 1 per household', 'mail in by', 'money back', 'satisfaction guaranteed'
-    ]
+    markers = ['purchase by', 'postmarked', 'original receipt', 'restrictions apply', 'limit 1 per household', 'mail in by', 'money back', 'satisfaction guaranteed']
     return any(marker in txt for marker in markers)
 
 
 def has_eligibility_copy(text):
     txt = clean_text(text).lower()
-    markers = [
-        'hsa/fsa', 'check with your provider', 'fsa-eligible', 'hsa-eligible', 'eligible in the us'
-    ]
+    markers = ['hsa/fsa', 'check with your provider', 'fsa-eligible', 'hsa-eligible', 'eligible in the us']
     return any(marker in txt for marker in markers)
 
 
@@ -135,12 +124,8 @@ def cutoff_at_markers(text, markers):
     txt = clean_text(text)
     if not txt:
         return ''
-    cut_positions = []
     low = txt.lower()
-    for marker in markers:
-        pos = low.find(marker.lower())
-        if pos != -1:
-            cut_positions.append(pos)
+    cut_positions = [low.find(marker.lower()) for marker in markers if low.find(marker.lower()) != -1]
     if cut_positions:
         txt = txt[:min(cut_positions)].strip(' -;,.')
     return clean_text(txt)
@@ -199,6 +184,14 @@ def clean_feature_list(values, keep_eligibility=False, keep_rebates=False):
             continue
         out.append(vv)
     return dedupe_keep_order(out)[:8]
+
+
+def split_feature_string(text):
+    txt = clean_text(text)
+    if not txt:
+        return []
+    parts = [clean_text(x) for x in re.split(r'\s*\|\s*', txt) if clean_text(x)]
+    return clean_feature_list(parts, keep_eligibility=False, keep_rebates=False)
 
 
 def format_labeled_blocks(blocks):
@@ -267,8 +260,7 @@ def try_parse_jsonish(val):
     vv = val.strip()
     if not vv:
         return None
-    candidates = [vv, vv.replace('\\"', '"'), html.unescape(vv).replace('\\"', '"')]
-    for candidate in candidates:
+    for candidate in [vv, vv.replace('\\"', '"'), html.unescape(vv).replace('\\"', '"')]:
         try:
             return json.loads(candidate)
         except Exception:
@@ -319,10 +311,7 @@ def build_data_map(raw_text):
             parsed = try_parse_jsonish(val)
             data_map[key] = parsed if parsed is not None else val
         else:
-            if val.startswith('T') and ',' in val:
-                data_map[key] = val.split(',', 1)[1].strip().strip('"')
-            else:
-                data_map[key] = val.strip().strip('"')
+            data_map[key] = val.split(',', 1)[1].strip().strip('"') if val.startswith('T') and ',' in val else val.strip().strip('"')
         i = j
     return data_map
 
@@ -372,9 +361,7 @@ def parse_top_level_value(val):
     if val.startswith('{') or val.startswith('['):
         parsed = try_parse_jsonish(val)
         return parsed if parsed is not None else val
-    if val.startswith('T') and ',' in val:
-        return val.split(',', 1)[1].strip().strip('"')
-    return val.strip().strip('"')
+    return val.split(',', 1)[1].strip().strip('"') if val.startswith('T') and ',' in val else val.strip().strip('"')
 
 
 def resolve_ref_any(raw_text, data_map, value):
@@ -436,7 +423,7 @@ def find_vendor_objects(raw_text, data_map):
     return out
 
 # ==========================================================
-# Visible sections.
+# Visible section helpers.
 # ==========================================================
 def get_visible_text(html_text):
     soup = BeautifulSoup(html_text, 'html.parser')
@@ -451,12 +438,7 @@ def get_visible_text(html_text):
 def section_from_lines(lines, start_idx):
     if start_idx is None or start_idx < 0 or start_idx >= len(lines):
         return ''
-    stops = [
-        'rating & reviews', 'ingredients', 'directions', 'warnings', 'specifications',
-        'same-day delivery policies', 'shipping restrictions', 'faq', 'q:', 'a:',
-        'delivery details', 'explore more at cvs.com', 'show hidden columns',
-        'customers also bought', 'similar products', 'you may also like', 'read reviews'
-    ]
+    stops = ['rating & reviews','ingredients','directions','warnings','specifications','same-day delivery policies','shipping restrictions','faq','q:','a:','delivery details','explore more at cvs.com','show hidden columns','customers also bought','similar products','you may also like','read reviews']
     collected = []
     for i in range(start_idx, len(lines)):
         line = lines[i]
@@ -470,10 +452,7 @@ def section_from_lines(lines, start_idx):
 
 def extract_sections(visible_text, title):
     lines = lines_from_visible_text(visible_text)
-    item_idx = None
-    details_idx = None
-    title_idx = None
-    whats_idx = None
+    item_idx = details_idx = title_idx = whats_idx = None
     for i, line in enumerate(lines):
         low = line.lower()
         if item_idx is None and re.search(r'item\s*#\s*\d+', line, re.I):
@@ -485,9 +464,7 @@ def extract_sections(visible_text, title):
         if whats_idx is None:
             if "what's included" in low or 'what’s included' in low:
                 whats_idx = i
-            elif re.search(r'^[A-Z][A-Z0-9\'’/&\- ]{5,}:', line):
-                whats_idx = i
-            elif re.search(r'^[A-Z][A-Z0-9\'’/&\- ]{5,}\s*[—:-]', line):
+            elif re.search(r'^[A-Z][A-Z0-9\'’/&\- ]{5,}:', line) or re.search(r'^[A-Z][A-Z0-9\'’/&\- ]{5,}\s*[—:-]', line):
                 whats_idx = i
     details = section_from_lines(lines, details_idx) if details_idx is not None else ''
     item = section_from_lines(lines, item_idx) if item_idx is not None else ''
@@ -498,7 +475,7 @@ def extract_sections(visible_text, title):
     return {'lines': lines, 'details': details, 'item': item, 'title_section': title_section, 'whats': whats, 'item_idx': item_idx, 'details_idx': details_idx, 'title_idx': title_idx, 'whats_idx': whats_idx}
 
 # ==========================================================
-# Details/heading split.
+# Details split / heading parse.
 # ==========================================================
 def mark_heading_boundaries(text):
     txt = clean_text(text)
@@ -530,11 +507,11 @@ def parse_heading_lines(source_text):
 def split_details_area(details_text):
     txt = clean_text(details_text)
     if not txt:
-        return {'cleaned':'', 'prose':'', 'prose_alt':'', 'heading_block':'', 'heading_lines':[], 'heading_lines_alt':[], 'whats_only':'', 'sentence_features':[]}
+        return {'cleaned':'','prose':'','prose_alt':'','heading_block':'','heading_lines':[],'heading_lines_alt':[],'whats_only':'','sentence_features':[]}
     txt_clean = cleanup_frontmatter(txt)
     txt_marked = mark_heading_boundaries(txt_clean)
-    m = re.search(r'(.+?)(?=(?:WHAT\'?S INCLUDED|WHAT’S INCLUDED|[A-Z][A-Z0-9\'’/&\- ]{4,}\s*[—:-]))', txt_clean, re.S)
-    prose = clean_text(m.group(1)) if m else txt_clean
+    match = re.search(r'(.+?)(?=(?:WHAT\'?S INCLUDED|WHAT’S INCLUDED|[A-Z][A-Z0-9\'’/&\- ]{4,}\s*[—:-]))', txt_clean, re.S)
+    prose = clean_text(match.group(1)) if match else txt_clean
     prose_alt = clean_text(txt_marked.split(' ||| ')[0]) if ' ||| ' in txt_marked else prose
     heading_block = ''
     for token in ["WHAT'S INCLUDED", 'WHAT’S INCLUDED']:
@@ -554,18 +531,15 @@ def split_details_area(details_text):
         if m3:
             whats_only = clean_text(m3.group(1))
             break
-    heading_lines = parse_heading_lines(heading_block)
-    heading_lines_alt = parse_heading_lines(txt_marked)
-    sentence_features = clean_feature_list([s for s in split_sentences(heading_block or txt_clean) if len(s) >= 45], keep_eligibility=False, keep_rebates=False)
     return {
         'cleaned': txt_clean,
         'prose': prose,
         'prose_alt': prose_alt,
         'heading_block': heading_block,
-        'heading_lines': heading_lines,
-        'heading_lines_alt': heading_lines_alt,
+        'heading_lines': parse_heading_lines(heading_block),
+        'heading_lines_alt': parse_heading_lines(txt_marked),
         'whats_only': whats_only,
-        'sentence_features': sentence_features,
+        'sentence_features': clean_feature_list([s for s in split_sentences(heading_block or txt_clean) if len(s) >= 45], keep_eligibility=False, keep_rebates=False),
     }
 
 
@@ -581,11 +555,11 @@ def extract_whats_features(section):
     return clean_feature_list(vals, keep_eligibility=False, keep_rebates=False)
 
 # ==========================================================
-# Family routing + rule-locked parser.
+# Family routing + parser.
 # ==========================================================
 def classify_family(retail_url, salsify_url, visible_details, vendor_desc):
     blob = ' '.join([retail_url or '', salsify_url or '', visible_details or '', vendor_desc or '']).lower()
-    if 'cottonelle' in blob or 'scott-' in salsify_url.lower() or 'kleenex' in blob or 'viva-' in salsify_url.lower():
+    if 'cottonelle' in blob or 'kleenex' in blob or 'scott-' in (salsify_url or '').lower() or 'viva-' in (salsify_url or '').lower():
         return 'details_family'
     if 'depend-guards' in blob or 'depend-shields' in blob or 'washcloth' in blob:
         return 'vendor_hybrid_family'
@@ -600,16 +574,8 @@ def classify_family(retail_url, salsify_url, visible_details, vendor_desc):
 
 def clean_vendor_description(text):
     txt = cleanup_frontmatter(text)
-    txt = cutoff_at_markers(txt, [
-        'hsa/fsa', 'check with your provider', 'fsa-eligible', 'hsa-eligible',
-        'purchase by', 'mail in by', 'original receipt', 'restrictions apply', 'limit 1 per household',
-        'satisfaction guaranteed'
-    ])
+    txt = cutoff_at_markers(txt, ['hsa/fsa','check with your provider','fsa-eligible','hsa-eligible','purchase by','mail in by','original receipt','restrictions apply','limit 1 per household','satisfaction guaranteed'])
     return clean_text(txt)
-
-
-def is_better_desc(a, b):
-    return len(clean_text(a)) > len(clean_text(b)) + 20
 
 
 def choose_description(family, details_split, item_split, vendor_objs, jsonld_desc, meta_desc):
@@ -617,16 +583,13 @@ def choose_description(family, details_split, item_split, vendor_objs, jsonld_de
     details_prose = cleanup_frontmatter(details_split['prose'])
     details_prose_alt = cleanup_frontmatter(details_split['prose_alt'])
     item_prose = cleanup_frontmatter(item_split['prose'])
-    item_sent = best_sentence_block(item_split['cleaned'])
     details_sent = best_sentence_block(details_split['cleaned'])
-    visible_longest = max([details_prose, details_prose_alt, item_prose, item_sent, details_sent], key=lambda x: len(clean_text(x)))
-
+    item_sent = best_sentence_block(item_split['cleaned'])
     fallback_jsonld = clean_text(jsonld_desc)
     fallback_meta = clean_text(meta_desc)
-
     path = ''
     desc = ''
-    reject_reason = ''
+    flags = ''
 
     if family == 'details_family':
         if desc_is_usable(details_prose):
@@ -638,10 +601,10 @@ def choose_description(family, details_split, item_split, vendor_objs, jsonld_de
         elif desc_is_usable(vendor_desc):
             path, desc = 'vendor_desc_clean', vendor_desc
     elif family == 'vendor_hybrid_family':
-        if desc_is_usable(vendor_desc):
-            path, desc = 'vendor_desc_clean', vendor_desc
-        elif desc_is_usable(details_prose):
+        if desc_is_usable(details_prose):
             path, desc = 'details_prose', details_prose
+        elif desc_is_usable(vendor_desc):
+            path, desc = 'vendor_desc_clean', vendor_desc
         elif desc_is_usable(item_prose):
             path, desc = 'item_prose', item_prose
     elif family == 'variant_detail_family':
@@ -668,39 +631,17 @@ def choose_description(family, details_split, item_split, vendor_objs, jsonld_de
         elif desc_is_usable(vendor_desc):
             path, desc = 'vendor_desc_clean', vendor_desc
     else:
-        if desc_is_usable(visible_longest):
-            path, desc = 'visible_best', visible_longest
-        elif desc_is_usable(vendor_desc):
-            path, desc = 'vendor_desc_clean', vendor_desc
+        for candidate_path, candidate in [('details_prose', details_prose), ('item_prose', item_prose), ('vendor_desc_clean', vendor_desc), ('details_sentence_block', details_sent), ('item_sentence_block', item_sent)]:
+            if desc_is_usable(candidate, min_len=120):
+                path, desc = candidate_path, candidate
+                break
 
     if not desc:
-        if desc_is_usable(fallback_jsonld, min_len=160):
-            path, desc = 'jsonld_fallback_desc', fallback_jsonld
-        elif desc_is_usable(fallback_meta, min_len=160):
-            path, desc = 'meta_fallback_desc', fallback_meta
-        elif fallback_jsonld and not is_title_like(fallback_jsonld):
-            path, desc = 'jsonld_loose_fallback', fallback_jsonld
-        elif fallback_meta and not is_promo_meta(fallback_meta) and not is_title_like(fallback_meta):
-            path, desc = 'meta_loose_fallback', fallback_meta
-        elif fallback_jsonld:
-            path, desc = 'title_only_fallback', fallback_jsonld
-            reject_reason = 'title_like_only'
+        if fallback_jsonld:
+            path, desc, flags = 'title_only_fallback', fallback_jsonld, 'title_like_only'
         elif fallback_meta:
-            path, desc = 'title_only_fallback', fallback_meta
-            reject_reason = 'promo_or_title_only'
-
-    if desc:
-        desc = clean_text(desc)
-        if not reject_reason:
-            flags = []
-            if has_eligibility_copy(desc):
-                flags.append('eligibility_copy')
-            if has_rebate_copy(desc):
-                flags.append('rebate_copy')
-            if is_title_like(desc):
-                flags.append('title_like')
-            reject_reason = '; '.join(flags)
-    return path, desc, reject_reason
+            path, desc, flags = 'title_only_fallback', fallback_meta, 'promo_or_title_only'
+    return path, clean_text(desc), flags
 
 
 def choose_features(family, details_split, vendor_objs):
@@ -711,7 +652,7 @@ def choose_features(family, details_split, vendor_objs):
     sentence_features = clean_feature_list(details_split['sentence_features'], keep_eligibility=False, keep_rebates=False)
     vendor_clean = clean_feature_list(vendor_features, keep_eligibility=False, keep_rebates=False)
 
-    if family in ['details_family', 'variant_detail_family', 'details_or_item_family', 'general_family']:
+    if family in ['details_family','variant_detail_family','details_or_item_family','general_family','vendor_hybrid_family']:
         if len(heading_a) >= 3:
             return 'details_heading_lines_a', heading_a, ''
         if len(heading_b) >= 3:
@@ -734,7 +675,92 @@ def choose_features(family, details_split, vendor_objs):
     return '', [], 'no_feature_block'
 
 # ==========================================================
-# Row processing.
+# Post-processing: sibling inheritance. This is the 4.6.1 patch.
+# ==========================================================
+def desc_path_rank(path):
+    order = {
+        'details_prose': 1,
+        'details_prose_alt': 2,
+        'item_prose': 3,
+        'details_sentence_block': 4,
+        'vendor_desc_clean': 5,
+        'title_only_fallback': 99,
+        '': 100,
+    }
+    return order.get(path or '', 50)
+
+
+def feat_path_rank(path):
+    order = {
+        'details_heading_lines_a': 1,
+        'details_heading_lines_b': 2,
+        'details_whats_lines': 3,
+        'vendor_features_clean': 4,
+        'details_sentence_features': 5,
+        '': 99,
+    }
+    return order.get(path or '', 50)
+
+
+def apply_sibling_inheritance(summary_df, parser_df):
+    if summary_df.empty:
+        return summary_df, parser_df
+
+    summary_df = summary_df.copy()
+    parser_df = parser_df.copy()
+
+    # Use Retail URL first, then fallback to visible title family if needed.
+    for retail_url, idx in summary_df.groupby('Retail URL').groups.items():
+        group = summary_df.loc[list(idx)].copy()
+        if len(group) <= 1:
+            continue
+
+        strong_desc_group = group[
+            (group['Description Path'].isin(['details_prose', 'details_prose_alt', 'item_prose', 'vendor_desc_clean', 'details_sentence_block'])) &
+            (group['Best Description'].fillna('').str.len() >= 140)
+        ].copy()
+        if not strong_desc_group.empty:
+            strong_desc_group['__rank'] = strong_desc_group['Description Path'].map(desc_path_rank)
+            strong_desc_group['__len'] = strong_desc_group['Best Description'].fillna('').str.len()
+            donor_desc = strong_desc_group.sort_values(['__rank', '__len'], ascending=[True, False]).iloc[0]
+            for row_idx in idx:
+                current_path = clean_text(summary_df.at[row_idx, 'Description Path'])
+                current_desc = clean_text(summary_df.at[row_idx, 'Best Description'])
+                if (current_path == 'title_only_fallback' or len(current_desc) < 120) and donor_desc['SKU'] != summary_df.at[row_idx, 'SKU']:
+                    summary_df.at[row_idx, 'Description Path'] = f"{donor_desc['Description Path']}__inherited"
+                    summary_df.at[row_idx, 'Best Description'] = donor_desc['Best Description']
+                    flags = clean_text(summary_df.at[row_idx, 'Description Flags'])
+                    summary_df.at[row_idx, 'Description Flags'] = clean_text((flags + ' | inherited_from_sibling').strip(' |'))
+
+        strong_feat_group = group[(pd.to_numeric(group['Best Feature Count'], errors='coerce').fillna(0) > 0) & (group['Feature Path'].fillna('') != '')].copy()
+        if not strong_feat_group.empty:
+            strong_feat_group['__rank'] = strong_feat_group['Feature Path'].map(feat_path_rank)
+            strong_feat_group['__count'] = pd.to_numeric(strong_feat_group['Best Feature Count'], errors='coerce').fillna(0)
+            donor_feat = strong_feat_group.sort_values(['__rank', '__count'], ascending=[True, False]).iloc[0]
+            for row_idx in idx:
+                current_count = pd.to_numeric(summary_df.at[row_idx, 'Best Feature Count'], errors='coerce')
+                current_count = 0 if pd.isna(current_count) else current_count
+                if current_count == 0 and donor_feat['SKU'] != summary_df.at[row_idx, 'SKU']:
+                    summary_df.at[row_idx, 'Feature Path'] = f"{donor_feat['Feature Path']}__inherited"
+                    summary_df.at[row_idx, 'Best Feature Count'] = donor_feat['Best Feature Count']
+                    summary_df.at[row_idx, 'Best Features'] = donor_feat['Best Features']
+                    flags = clean_text(summary_df.at[row_idx, 'Feature Flags'])
+                    summary_df.at[row_idx, 'Feature Flags'] = clean_text((flags + ' | inherited_from_sibling').strip(' |'))
+
+        # Keep parser paths sheet aligned with summary after inheritance.
+        shared = set(summary_df.loc[list(idx), 'SKU'].astype(str)) & set(parser_df['SKU'].astype(str))
+        for sku in shared:
+            srow = summary_df[summary_df['SKU'].astype(str) == sku].iloc[0]
+            prow_idx = parser_df[parser_df['SKU'].astype(str) == sku].index[0]
+            parser_df.at[prow_idx, 'final_description_path'] = srow['Description Path']
+            parser_df.at[prow_idx, 'final_feature_path'] = srow['Feature Path']
+            parser_df.at[prow_idx, 'final_description'] = srow['Best Description']
+            parser_df.at[prow_idx, 'final_features'] = srow['Best Features']
+
+    return summary_df, parser_df
+
+# ==========================================================
+# Row processor.
 # ==========================================================
 def process_row(row):
     retail_url = row.get('retail_url', '')
@@ -792,7 +818,7 @@ def process_row(row):
         'Has Truncated Meta': False,
     }
 
-    paths = {
+    parser_paths = {
         'SKU': sku,
         'CVS RPC': cvs_rpc,
         'Retail URL': retail_url,
@@ -809,6 +835,10 @@ def process_row(row):
         'details_whats_lines': ' | '.join(extract_whats_features(details_split['whats_only'] or details_split['heading_block'])),
         'vendor_features_clean': ' | '.join(vendor_objects[0]['features']) if vendor_objects else '',
         'details_sentence_features': ' | '.join(details_split['sentence_features']),
+        'final_description_path': desc_path,
+        'final_feature_path': feat_path,
+        'final_description': best_desc,
+        'final_features': ' | '.join(best_features),
     }
 
     raw_debug = {
@@ -881,7 +911,7 @@ def process_row(row):
         'Details Preview': clean_text(sections['details'][:1000]),
         'Whats Preview': clean_text(sections['whats'][:1000]),
     }
-    return summary, paths, raw_debug, vendor_debug, marker
+    return summary, parser_paths, raw_debug, vendor_debug, marker
 
 # ==========================================================
 # MAIN.
@@ -908,7 +938,7 @@ if uploaded_file:
         st.write(list(df.columns))
         st.stop()
 
-    if st.button('Run CVS rule-locked parser v4.6'):
+    if st.button('Run CVS patch-only parser v4.6.1'):
         progress = st.progress(0)
         status = st.empty()
         summary_rows = []
@@ -947,24 +977,33 @@ if uploaded_file:
                 progress.progress(i / total)
                 status.write(f'Processed {i}/{total} | Success: {len(summary_rows)} | Errors: {len(error_rows)}')
 
-        file_name = 'pdp_qa_tool_v4_6_output.xlsx'
+        summary_df = pd.DataFrame(summary_rows)
+        path_df = pd.DataFrame(path_rows)
+        raw_df = pd.DataFrame(raw_rows)
+        vendor_df = pd.DataFrame(vendor_rows)
+        marker_df = pd.DataFrame(marker_rows)
+        errors_df = pd.DataFrame(error_rows)
+
+        summary_df, path_df = apply_sibling_inheritance(summary_df, path_df)
+
+        file_name = 'pdp_qa_tool_v4_6_1_output.xlsx'
         try:
             with pd.ExcelWriter(file_name, engine='openpyxl') as writer:
-                pd.DataFrame(summary_rows).to_excel(writer, index=False, sheet_name='Summary')
-                pd.DataFrame(path_rows).to_excel(writer, index=False, sheet_name='Parser Paths')
-                pd.DataFrame(raw_rows).to_excel(writer, index=False, sheet_name='Raw Windows')
-                pd.DataFrame(vendor_rows).to_excel(writer, index=False, sheet_name='Vendor Debug')
-                pd.DataFrame(marker_rows).to_excel(writer, index=False, sheet_name='Marker Debug')
-                pd.DataFrame(error_rows).to_excel(writer, index=False, sheet_name='Errors')
+                summary_df.to_excel(writer, index=False, sheet_name='Summary')
+                path_df.to_excel(writer, index=False, sheet_name='Parser Paths')
+                raw_df.to_excel(writer, index=False, sheet_name='Raw Windows')
+                vendor_df.to_excel(writer, index=False, sheet_name='Vendor Debug')
+                marker_df.to_excel(writer, index=False, sheet_name='Marker Debug')
+                errors_df.to_excel(writer, index=False, sheet_name='Errors')
         except Exception as exc:
             st.error(f'Excel write failed: {type(exc).__name__}: {exc}')
             st.stop()
 
         if Path(file_name).exists():
-            st.success(f'Done. Success rows: {len(summary_rows)}. Error rows: {len(error_rows)}.')
+            st.success(f'Done. Success rows: {len(summary_df)}. Error rows: {len(errors_df)}.')
             with open(file_name, 'rb') as f:
                 st.download_button(
-                    'Download v4.6 Excel output',
+                    'Download v4.6.1 Excel output',
                     data=f,
                     file_name=file_name,
                     mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
