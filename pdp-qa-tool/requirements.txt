@@ -1,10 +1,6 @@
+
 streamlit
 pandas
 requests
 beautifulsoup4
-lxml
-playwright
-openpyxl
-imagehash
-Pillow
 openpyxl
