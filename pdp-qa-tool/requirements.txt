@@ -7,3 +7,4 @@ playwright
 openpyxl
 imagehash
 Pillow
+openpyxl
