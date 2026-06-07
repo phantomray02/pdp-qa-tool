@@ -12,8 +12,8 @@ from bs4 import BeautifulSoup
 
 requests.adapters.DEFAULT_RETRIES = 2
 st.set_page_config(layout="wide")
-st.title("PDP QA Tool v4.5 — CVS Pro Debugger")
-st.caption("Multi-theory debugger. Tests many description and feature extraction paths, scores each path, logs reject reasons, and exports a full option matrix so we can lock rules from evidence.")
+st.title("PDP QA Tool v4.5.1 — CVS Pro Debugger")
+st.caption("Patched build. Restores meta/JSON-LD helper functions, keeps multi-theory scoring, logs reject reasons, and exports a full option matrix.")
 
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 html_cache = {}
@@ -83,8 +83,7 @@ def split_sentences(text):
     if not txt:
         return []
     parts = re.split(r'(?<=[.!?])\s+(?=[A-Z0-9])', txt)
-    out = [clean_text(x) for x in parts if clean_text(x)]
-    return out
+    return [clean_text(x) for x in parts if clean_text(x)]
 
 
 def normalize_spacing(text):
@@ -104,10 +103,7 @@ def has_nav_junk(text):
 
 def is_promo_meta(text):
     txt = clean_text(text).lower()
-    promo_markers = [
-        'buy ', 'free shipping', 'shop cvs now', 'best deals',
-        'coupon', 'coupons', 'most orders'
-    ]
+    promo_markers = ['buy ', 'free shipping', 'shop cvs now', 'best deals', 'coupon', 'coupons', 'most orders']
     return any(token in txt for token in promo_markers)
 
 
@@ -121,10 +117,7 @@ def is_truncated_meta(text):
 
 def has_rebate_copy(text):
     txt = clean_text(text).lower()
-    markers = [
-        'purchase by', 'postmarked', 'original receipt', 'restrictions apply',
-        'limit 1 per household', 'mail in by'
-    ]
+    markers = ['purchase by', 'postmarked', 'original receipt', 'restrictions apply', 'limit 1 per household', 'mail in by']
     return any(marker in txt for marker in markers)
 
 
@@ -148,9 +141,7 @@ def looks_like_title_only(text):
     txt = clean_text(text)
     if not txt:
         return True
-    if len(txt) <= 120 and txt.count('.') <= 1:
-        return True
-    return False
+    return len(txt) <= 120 and txt.count('.') <= 1
 
 
 def clean_feature_line(text):
@@ -195,6 +186,45 @@ def format_labeled_blocks(blocks):
         if txt:
             out.append(f'[{label}]\n{txt}')
     return '\n\n'.join(out)
+
+# ==========================================================
+# Meta / JSON-LD helpers. Restored in v4.5.1.
+# ==========================================================
+def extract_meta_description(html_text):
+    try:
+        soup = BeautifulSoup(html_text, 'html.parser')
+        for tag in [
+            soup.find('meta', attrs={'name': 'description'}),
+            soup.find('meta', attrs={'property': 'og:description'}),
+            soup.find('meta', attrs={'name': 'twitter:description'}),
+        ]:
+            if tag and tag.get('content'):
+                return clean_text(tag.get('content', ''))
+    except Exception:
+        pass
+    return ''
+
+
+def extract_jsonld_description(html_text):
+    try:
+        soup = BeautifulSoup(html_text, 'html.parser')
+        vals = []
+        for script in soup.find_all('script', attrs={'type': 'application/ld+json'}):
+            txt = script.string or script.get_text(' ', strip=True)
+            if not txt:
+                continue
+            try:
+                obj = json.loads(txt)
+                items = obj if isinstance(obj, list) else [obj]
+                for item in items:
+                    if isinstance(item, dict) and item.get('description'):
+                        vals.append(clean_text(str(item.get('description'))))
+            except Exception:
+                continue
+        vals = [v for v in vals if len(v) > 20]
+        return max(vals, key=len) if vals else ''
+    except Exception:
+        return ''
 
 # ==========================================================
 # Next.js raw helpers.
@@ -463,10 +493,8 @@ def mark_heading_boundaries(text):
     txt = clean_text(text)
     if not txt:
         return ''
-    # Insert synthetic boundaries before strong heading patterns.
     txt = re.sub(r'(?<=[a-z0-9\*\)])\s+(?=(?:WHAT\'?S INCLUDED|WHAT’S INCLUDED))', ' ||| ', txt)
     txt = re.sub(r'(?<=[a-z0-9\*\)])\s+(?=(?:[A-Z][A-Z0-9\'’/&\- ]{4,}\s*[—:-]))', ' ||| ', txt)
-    # Insert boundaries before known all-caps style headings without dash.
     txt = re.sub(r'(?<=[a-z0-9\*\)])\s+(?=(?:OUR |UP TO |ALL DAY |UNDERWEAR-LIKE |ODOR CONTROL |OUTSTANDING |GENTLE FOR |HELPS IN |FRESHNESS |WETNESS |SAVE YOUR |MADE WITH |THE ORIGINAL |YOUR EVERYDAY |PLUSH TOILET |LASTS LONGER|FOR LARGE |FITS IN |HELPS REDUCE |BREAKS DOWN ))', ' ||| ', txt)
     return normalize_spacing(txt)
 
@@ -474,34 +502,16 @@ def mark_heading_boundaries(text):
 def split_details_area(details_text):
     txt = clean_text(details_text)
     if not txt:
-        return {
-            'cleaned': '',
-            'prose_a': '',
-            'prose_b': '',
-            'prose_c': '',
-            'heading_block_a': '',
-            'heading_block_b': '',
-            'whats_only': '',
-            'heading_lines_a': [],
-            'heading_lines_b': [],
-            'sentences_clean': [],
-        }
+        return {'cleaned': '', 'prose_a': '', 'prose_b': '', 'prose_c': '', 'heading_block_a': '', 'heading_block_b': '', 'whats_only': '', 'heading_lines_a': [], 'heading_lines_b': [], 'sentences_clean': []}
 
     txt_clean = cleanup_frontmatter(txt)
     txt_marked = mark_heading_boundaries(txt_clean)
 
-    # Theory A: prose before WHAT'S INCLUDED or all-caps dash heading.
     m_a = re.search(r'(.+?)(?=(?:WHAT\'?S INCLUDED|WHAT’S INCLUDED|[A-Z][A-Z0-9\'’/&\- ]{4,}\s*[—:-]))', txt_clean, re.S)
     prose_a = clean_text(m_a.group(1)) if m_a else txt_clean
-
-    # Theory B: prose before synthetic boundary.
     prose_b = clean_text(txt_marked.split(' ||| ')[0]) if ' ||| ' in txt_marked else prose_a
+    prose_c = clean_text(' '.join(split_sentences(txt_clean)[:4]))
 
-    # Theory C: first strong sentences from cleaned details block.
-    prose_c = ' '.join(split_sentences(txt_clean)[:4])
-    prose_c = clean_text(prose_c)
-
-    # Heading blocks.
     heading_block_a = ''
     for token in ["WHAT'S INCLUDED", 'WHAT’S INCLUDED']:
         idx = txt_clean.find(token)
@@ -513,11 +523,7 @@ def split_details_area(details_text):
         if m_h:
             heading_block_a = clean_text(m_h.group(1))
 
-    heading_block_b = ''
-    if ' ||| ' in txt_marked:
-        heading_block_b = clean_text(' '.join(txt_marked.split(' ||| ')[1:]))
-    else:
-        heading_block_b = heading_block_a
+    heading_block_b = clean_text(' '.join(txt_marked.split(' ||| ')[1:])) if ' ||| ' in txt_marked else heading_block_a
 
     whats_only = ''
     for pat in [r'(WHAT\'?S INCLUDED\s*[—:-].+)$', r'(WHAT’S INCLUDED\s*[—:-].+)$']:
@@ -534,20 +540,13 @@ def split_details_area(details_text):
         chunks = [clean_text(x) for x in source.split(' ||| ') if clean_text(x)]
         out = []
         for chunk in chunks:
-            # direct heading pattern.
             if re.search(r'[A-Z][A-Z0-9\'’/&\- ]{3,60}\s*[—:-]', chunk):
                 out.append(chunk)
             elif chunk.upper() == chunk and len(chunk.split()) <= 12:
                 out.append(chunk)
-        # Also run regex inside the source.
         for match in re.finditer(r'([A-Z0-9][A-Z0-9\'’/&\- ]{3,60})\s*[—:-]\s*(.+?)(?=(?:[A-Z0-9][A-Z0-9\'’/&\- ]{3,60}\s*[—:-])|$)', source, re.S):
             out.append(f"{clean_text(match.group(1))} — {clean_text(match.group(2))}")
         return clean_feature_list(out, keep_eligibility=True, keep_rebates=True)
-
-    heading_lines_a = parse_heading_lines(heading_block_a or txt_clean)
-    heading_lines_b = parse_heading_lines(heading_block_b or txt_marked)
-
-    sentences_clean = clean_feature_list([s for s in split_sentences(txt_clean) if len(s) >= 45], keep_eligibility=False, keep_rebates=False)
 
     return {
         'cleaned': txt_clean,
@@ -557,10 +556,22 @@ def split_details_area(details_text):
         'heading_block_a': heading_block_a,
         'heading_block_b': heading_block_b,
         'whats_only': whats_only,
-        'heading_lines_a': heading_lines_a,
-        'heading_lines_b': heading_lines_b,
-        'sentences_clean': sentences_clean,
+        'heading_lines_a': parse_heading_lines(heading_block_a or txt_clean),
+        'heading_lines_b': parse_heading_lines(heading_block_b or txt_marked),
+        'sentences_clean': clean_feature_list([s for s in split_sentences(txt_clean) if len(s) >= 45], keep_eligibility=False, keep_rebates=False),
     }
+
+
+def extract_whats_features(section):
+    txt = clean_text(section)
+    if not txt:
+        return []
+    vals = []
+    for pat in [r"WHAT\'?S INCLUDED\s*[—:-]\s*(.+?)(?=(?:[A-Z][A-Z0-9 '&/\-]{4,}\s*[—:-])|$)", r"WHAT’S INCLUDED\s*[—:-]\s*(.+?)(?=(?:[A-Z][A-Z0-9 '&/\-]{4,}\s*[—:-])|$)"]:
+        m = re.search(pat, txt, re.S)
+        if m:
+            vals.append("WHAT'S INCLUDED — " + clean_text(m.group(1)))
+    return vals
 
 # ==========================================================
 # Scoring.
@@ -590,7 +601,6 @@ def evaluate_description_candidate(name, text):
     if has_eligibility_copy(txt):
         reasons.append('eligibility_copy')
         score -= 2
-
     length = len(txt)
     score += min(length // 40, 20)
     if name.startswith('details_prose'):
@@ -605,15 +615,11 @@ def evaluate_description_candidate(name, text):
         score += 10
     elif name == 'meta_desc':
         score -= 20
-
-    # Bonus for real prose.
-    sentence_count = len(split_sentences(txt))
-    score += min(sentence_count * 2, 12)
+    score += min(len(split_sentences(txt)) * 2, 12)
     if length >= 120:
         score += 8
     if length >= 250:
         score += 6
-
     return {'name': name, 'text': txt, 'score': score, 'reasons': '; '.join(reasons)}
 
 
@@ -624,18 +630,11 @@ def evaluate_feature_candidate(name, values):
     score = 0
     if not permissive_values:
         reasons.append('empty')
-        return {
-            'name': name,
-            'values': [],
-            'score': -999,
-            'reasons': '; '.join(reasons),
-            'values_joined': '',
-        }
+        return {'name': name, 'values': [], 'score': -999, 'reasons': '; '.join(reasons), 'values_joined': ''}
     if not cleaned_values:
         cleaned_values = permissive_values[:]
         reasons.append('only_permissive_values')
         score -= 10
-
     score += len(cleaned_values) * 12
     joined = ' | '.join(cleaned_values)
     score += feature_penalty_score(joined)
@@ -647,19 +646,11 @@ def evaluate_feature_candidate(name, values):
         score += 15
     elif name.startswith('vendor_features'):
         score += 8
-
     if 'WHAT' in joined.upper():
         score += 3
     if len(joined) > 200:
         score += 4
-
-    return {
-        'name': name,
-        'values': cleaned_values,
-        'score': score,
-        'reasons': '; '.join(reasons),
-        'values_joined': joined,
-    }
+    return {'name': name, 'values': cleaned_values, 'score': score, 'reasons': '; '.join(reasons), 'values_joined': joined}
 
 # ==========================================================
 # Row processing.
@@ -695,7 +686,6 @@ def process_row(row):
         'visible_details_3sent': ' '.join(split_sentences(details_split['cleaned'])[:3]),
         'visible_item_3sent': ' '.join(split_sentences(item_split['cleaned'])[:3]),
     }
-
     feat_candidates = {
         'vendor_features_1': vendor_objects[0]['features'] if len(vendor_objects) > 0 else [],
         'details_heading_lines_a': details_split['heading_lines_a'],
@@ -711,11 +701,8 @@ def process_row(row):
 
     best_desc = best_desc_eval['text'] if best_desc_eval['score'] > -80 else ''
     best_desc_strategy = best_desc_eval['name'] if best_desc else ''
-    best_desc_reject_reason = best_desc_eval['reasons']
-
     best_features = best_feat_eval['values'] if best_feat_eval['score'] > -50 else []
     best_feat_strategy = best_feat_eval['name'] if best_features else ''
-    best_feat_reject_reason = best_feat_eval['reasons']
 
     raw_vendor_desc = around(raw_text.replace('\\"', '"'), 'vendorDetailsParagraph')
     raw_vendor_feat = around(raw_text.replace('\\"', '"'), 'vendorDetailsBullets')
@@ -732,12 +719,12 @@ def process_row(row):
         'Best Description Strategy': best_desc_strategy,
         'Best Description': best_desc,
         'Best Description Score': best_desc_eval['score'],
-        'Best Description Reject Reason': best_desc_reject_reason,
+        'Best Description Reject Reason': best_desc_eval['reasons'],
         'Best Feature Strategy': best_feat_strategy,
         'Best Feature Count': len(best_features),
         'Best Features': ' | '.join(best_features),
         'Best Feature Score': best_feat_eval['score'],
-        'Best Feature Reject Reason': best_feat_reject_reason,
+        'Best Feature Reject Reason': best_feat_eval['reasons'],
         'Has NextF': 'self.__next_f.push([1,' in html_text,
         'Has vendorDetailsBullets Token': 'vendorDetailsBullets' in raw_text,
         'Has vendorDetailsParagraph Token': 'vendorDetailsParagraph' in raw_text,
@@ -868,10 +855,8 @@ if uploaded_file:
         'title': 'salsify_title',
         'salsify title': 'salsify_title',
     }, inplace=True)
-
     if 'salsify_title' not in df.columns:
         df['salsify_title'] = ''
-
     required = ['sku', 'salsify_url', 'retail_url']
     missing = [c for c in required if c not in df.columns]
     if missing:
@@ -879,7 +864,7 @@ if uploaded_file:
         st.write(list(df.columns))
         st.stop()
 
-    if st.button('Run CVS pro debugger v4.5'):
+    if st.button('Run CVS pro debugger v4.5.1'):
         progress = st.progress(0)
         status = st.empty()
         summary_rows = []
@@ -899,7 +884,6 @@ if uploaded_file:
                 fut = executor.submit(process_row, row_dict)
                 futures.append(fut)
                 future_map[fut] = row_dict
-
             for i, fut in enumerate(as_completed(futures), start=1):
                 row_dict = future_map[fut]
                 try:
@@ -921,7 +905,7 @@ if uploaded_file:
                 progress.progress(i / total)
                 status.write(f'Processed {i}/{total} | Success: {len(summary_rows)} | Errors: {len(error_rows)}')
 
-        file_name = 'pdp_qa_tool_v4_5_output.xlsx'
+        file_name = 'pdp_qa_tool_v4_5_1_output.xlsx'
         try:
             with pd.ExcelWriter(file_name, engine='openpyxl') as writer:
                 pd.DataFrame(summary_rows).to_excel(writer, index=False, sheet_name='Summary')
@@ -939,7 +923,7 @@ if uploaded_file:
             st.success(f'Done. Success rows: {len(summary_rows)}. Error rows: {len(error_rows)}.')
             with open(file_name, 'rb') as f:
                 st.download_button(
-                    'Download v4.5 Excel output',
+                    'Download v4.5.1 Excel output',
                     data=f,
                     file_name=file_name,
                     mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
