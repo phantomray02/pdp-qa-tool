@@ -1,47 +1,59 @@
 
-# =========================================
-# IMPORTS (TOP OF FILE)
-# =========================================
 import re
 import html
-from bs4 import BeautifulSoup
-import streamlit as st
+import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import pandas as pd
 import requests
+import streamlit as st
+from bs4 import BeautifulSoup
 from difflib import SequenceMatcher
-from PIL import Image
-from io import BytesIO
-import traceback
-import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import json
+
+requests.adapters.DEFAULT_RETRIES = 2
+st.set_page_config(layout="wide")
+st.title("CVS Extraction Matrix Debugger v2")
+st.caption("Debug-only tester that exports many extraction variants to Excel for side-by-side analysis.")
+
+uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
+
+html_cache = {}
+MAX_CACHE = 100
 
 
-# =========================================
-# CVS RAW SOURCE HELPERS
-# =========================================
-def get_nextjs_chunks(html_text):
-    pattern = r'self\.__next_f\.push\(\[1,(.*?)\]\)'
-    matches = re.findall(pattern, html_text, re.DOTALL)
+def get_html(url):
+    if url in html_cache:
+        html_cache[url] = html_cache.pop(url)
+        return html_cache[url]
+    try:
+        r = requests.get(
+            url,
+            headers={"User-Agent": "Mozilla/5.0", "Connection": "keep-alive"},
+            timeout=12,
+        )
+        if r.status_code == 200:
+            html_cache[url] = r.text
+            while len(html_cache) > MAX_CACHE:
+                html_cache.pop(next(iter(html_cache)))
+            return r.text
+    except Exception:
+        pass
+    return ""
 
-    chunks = []
 
-    for m in matches:
-        try:
-            text = m.strip()
-            if text.startswith('"') and text.endswith('"'):
-                text = text[1:-1]
-            chunks.append(text)
-        except Exception:
-            continue
+def normalize_text(t):
+    if not isinstance(t, str):
+        return ""
+    return re.sub(r'[^a-z0-9\s]', '', t.lower())
 
-    return "\n".join(chunks)
+
+def keyword_score(a, b):
+    return int(SequenceMatcher(None, normalize_text(a), normalize_text(b)).ratio() * 100)
 
 
 def clean_cvs_text(text):
     if not text:
         return ""
-
     text = text.replace("\\u0026", "&")
     text = text.replace("\\n", " ")
     text = text.replace("\\/", "/")
@@ -55,24 +67,41 @@ def clean_cvs_text(text):
     return text
 
 
+def split_sentences(text):
+    txt = clean_cvs_text(text)
+    if not txt:
+        return []
+    parts = re.split(r'(?<=[.!?])\s+(?=[A-Z0-9])', txt)
+    parts = [clean_cvs_text(p) for p in parts if len(clean_cvs_text(p)) > 10]
+    return parts
+
+
+def get_nextjs_chunks(html_text):
+    pattern = r'self\.__next_f\.push\(\[1,(.*?)\]\)'
+    matches = re.findall(pattern, html_text, re.DOTALL)
+    chunks = []
+    for m in matches:
+        try:
+            text = m.strip()
+            if text.startswith('"') and text.endswith('"'):
+                text = text[1:-1]
+            chunks.append(text)
+        except Exception:
+            continue
+    return "\n".join(chunks)
+
+
 def try_parse_jsonish(val):
     if not isinstance(val, str):
         return None
-
     vv = val.strip()
     if not vv:
         return None
-
-    for candidate in [
-        vv,
-        vv.replace('\\"', '"'),
-        html.unescape(vv).replace('\\"', '"')
-    ]:
+    for candidate in [vv, vv.replace('\\"', '"'), html.unescape(vv).replace('\\"', '"')]:
         try:
             return json.loads(candidate)
         except Exception:
             continue
-
     return None
 
 
@@ -89,18 +118,14 @@ def build_data_map(raw_text):
         if not m:
             i += 1
             continue
-
         key = m.group(1)
         val_start = i + len(key) + 1
-
         j = val_start
         depth = 0
         in_str = False
         escape = False
-
         while j < n:
             ch = raw_text[j]
-
             if in_str:
                 if escape:
                     escape = False
@@ -115,14 +140,10 @@ def build_data_map(raw_text):
                     depth += 1
                 elif ch in "]})":
                     depth = max(0, depth - 1)
-                elif depth == 0:
-                    m2 = is_key_start(j)
-                    if m2:
-                        break
+                elif depth == 0 and is_key_start(j):
+                    break
             j += 1
-
         val = raw_text[val_start:j].strip()
-
         if val.startswith("{") or val.startswith("["):
             parsed = try_parse_jsonish(val)
             data_map[key] = parsed if parsed is not None else val
@@ -131,24 +152,8 @@ def build_data_map(raw_text):
                 data_map[key] = val.split(",", 1)[1].strip().strip('"')
             else:
                 data_map[key] = val.strip().strip('"')
-
         i = j
-
     return data_map
-
-
-def parse_top_level_value(val):
-    if val is None:
-        return None
-    val = val.strip()
-    if not val:
-        return None
-    if val.startswith("{") or val.startswith("["):
-        parsed = try_parse_jsonish(val)
-        return parsed if parsed is not None else val
-    if val.startswith("T") and "," in val:
-        return val.split(",", 1)[1].strip().strip('"')
-    return val.strip().strip('"')
 
 
 def get_top_level_value(raw_text, target_key):
@@ -156,7 +161,6 @@ def get_top_level_value(raw_text, target_key):
     m = re.search(pattern, raw_text)
     if not m:
         return None
-
     start = m.end()
     n = len(raw_text)
     j = start
@@ -183,134 +187,65 @@ def get_top_level_value(raw_text, target_key):
                 depth += 1
             elif ch in "]})":
                 depth = max(0, depth - 1)
-            elif depth == 0:
-                if is_key_start(j):
-                    break
+            elif depth == 0 and is_key_start(j):
+                break
         j += 1
-
     return raw_text[start:j].strip()
+
+
+def parse_top_level_value(val):
+    if val is None:
+        return None
+    val = val.strip()
+    if not val:
+        return None
+    if val.startswith("{") or val.startswith("["):
+        parsed = try_parse_jsonish(val)
+        return parsed if parsed is not None else val
+    if val.startswith("T") and "," in val:
+        return val.split(",", 1)[1].strip().strip('"')
+    return val.strip().strip('"')
 
 
 def resolve_ref_any(raw_text, data_map, value):
     if value is None:
         return None
     if isinstance(value, str) and value.startswith("$"):
-        ref_key = value[1:]
-        if ref_key in data_map:
-            return data_map.get(ref_key)
-        raw_val = get_top_level_value(raw_text, ref_key)
-        return parse_top_level_value(raw_val)
+        key = value[1:]
+        if key in data_map:
+            return data_map.get(key)
+        return parse_top_level_value(get_top_level_value(raw_text, key))
     return value
 
 
-def get_marker_windows(raw_text, markers, back=300, forward=3500):
-    windows = []
-    seen = set()
-    for marker in markers:
-        for m in re.finditer(re.escape(marker), raw_text):
-            start = max(0, m.start() - back)
-            end = min(len(raw_text), m.end() + forward)
-            key = (start, end)
-            if key not in seen:
-                seen.add(key)
-                windows.append({
-                    "marker": marker,
-                    "start": start,
-                    "end": end,
-                    "text": raw_text[start:end]
-                })
-    return windows
+def get_salsify_text(url):
+    html_text = get_html(url)
+    soup = BeautifulSoup(html_text, "html.parser")
+    script = soup.find("script", {"id": "__NEXT_DATA__"})
+    if not script:
+        return {}
+    data = json.loads(script.string)
+    try:
+        props = data["props"]["pageProps"]["product"]["propertySets"][0]["properties"]
+    except Exception:
+        return {}
+    text_map = {}
+    for p in props:
+        key = p.get("property")
+        values = p.get("values", [])
+        if values:
+            text_map[key] = values[0]
+    return {
+        "title": text_map.get("PRODUCT_TITLE", ""),
+        "description": text_map.get("DESCRIPTION", ""),
+        "feature1": text_map.get("FEATURE_1", ""),
+        "feature2": text_map.get("FEATURE_2", ""),
+        "feature3": text_map.get("FEATURE_3", ""),
+        "feature4": text_map.get("FEATURE_4", ""),
+        "feature5": text_map.get("FEATURE_5", ""),
+    }
 
 
-def get_vendor_candidates(raw_text, data_map):
-    candidates = []
-
-    for v in data_map.values():
-        if isinstance(v, dict) and "vendorDetailsBullets" in v and "vendorDetailsParagraph" in v:
-            candidates.append({
-                "vendorDetailsBullets": v.get("vendorDetailsBullets"),
-                "vendorDetailsParagraph": v.get("vendorDetailsParagraph"),
-                "segment_start_marker_used": "data_map",
-                "segment_end_marker_used": "data_map",
-                "segment_length": 0,
-                "source_segment_preview": ""
-            })
-
-    normalized_raw = raw_text.replace('\\"', '"')
-    windows = get_marker_windows(
-        normalized_raw,
-        ["vendorDetailsBullets", "vendorDetailsParagraph"],
-        back=250,
-        forward=2500
-    )
-
-    regex_patterns = [
-        r'\{\s*"vendorDetailsBullets"\s*:\s*"(\$[0-9a-zA-Z]+)"\s*,\s*"vendorDetailsParagraph"\s*:\s*"(\$[0-9a-zA-Z]+)"\s*\}',
-        r'vendorDetailsBullets"\s*:\s*"(\$[0-9a-zA-Z]+)"\s*,\s*"vendorDetailsParagraph"\s*:\s*"(\$[0-9a-zA-Z]+)"'
-    ]
-
-    for w in windows:
-        source = w["text"]
-        for rx in regex_patterns:
-            matches = re.findall(rx, source)
-            for bullets_ref, para_ref in matches:
-                candidates.append({
-                    "vendorDetailsBullets": bullets_ref,
-                    "vendorDetailsParagraph": para_ref,
-                    "segment_start_marker_used": w["marker"],
-                    "segment_end_marker_used": "window_end",
-                    "segment_length": len(source),
-                    "source_segment_preview": clean_cvs_text(source[:1000])
-                })
-
-    seen = set()
-    unique_candidates = []
-    for c in candidates:
-        key = (c.get("vendorDetailsBullets", ""), c.get("vendorDetailsParagraph", ""))
-        if key not in seen:
-            seen.add(key)
-            unique_candidates.append(c)
-
-    return unique_candidates
-
-
-def get_valid_vendor_block(raw_text, data_map):
-    candidates = get_vendor_candidates(raw_text, data_map)
-
-    best_block = None
-    best_score = -1
-
-    for v in candidates:
-        bullets = resolve_ref_any(raw_text, data_map, v.get("vendorDetailsBullets"))
-        desc = resolve_ref_any(raw_text, data_map, v.get("vendorDetailsParagraph"))
-
-        if not isinstance(bullets, list):
-            continue
-        if not all(isinstance(b, str) for b in bullets):
-            continue
-        if not isinstance(desc, str):
-            continue
-
-        cleaned_bullets = [clean_cvs_text(b) for b in bullets if isinstance(b, str)]
-        cleaned_desc = clean_cvs_text(desc)
-
-        feature_count = len([b for b in cleaned_bullets if len(b) > 20])
-        desc_len = len(cleaned_desc)
-
-        if feature_count >= 3 and desc_len > 80:
-            score = feature_count * 1000 + desc_len
-            if score > best_score:
-                best_score = score
-                best_block = v.copy()
-                best_block["resolved_bullets"] = cleaned_bullets
-                best_block["resolved_desc"] = cleaned_desc
-
-    return best_block
-
-
-# =========================================
-# VISIBLE TEXT FALLBACK HELPERS
-# =========================================
 def get_visible_text(html_text):
     soup = BeautifulSoup(html_text, "html.parser")
     for tag in soup(["script", "style", "noscript"]):
@@ -321,1177 +256,426 @@ def get_visible_text(html_text):
     return text
 
 
-def extract_section_after_item(visible_text):
+def extract_section_with_stops(visible_text, start_pat=None, stop_markers=None):
     txt = visible_text.replace('\xa0', ' ')
-    m = re.search(r'Item\s*#\s*\d+\s*(.*)', txt, re.S)
-    if not m:
-        return ""
-    section = m.group(1)
-
-    stops = [
+    section = txt
+    if start_pat:
+        m = re.search(start_pat, txt, re.S | re.I)
+        if m:
+            section = m.group(1) if m.groups() else txt[m.end():]
+    stop_markers = stop_markers or [
         "Rating & reviews", "Ingredients", "Directions", "Warnings", "Specifications",
         "Same-Day Delivery policies", "Shipping restrictions", "FAQ", "Q:", "A:",
-        "Delivery Details", "Explore more at CVS.com", "From ", "Show Hidden Columns"
+        "Delivery Details", "Explore more at CVS.com", "From ", "Show Hidden Columns",
+        "Product details", "Details"
     ]
     cut = len(section)
-    for stop in stops:
+    for stop in stop_markers:
         idx = section.find(stop)
         if idx != -1 and idx < cut:
             cut = idx
-    section = section[:cut].strip()
-    return section
+    return section[:cut].strip()
 
 
-def split_bullets_from_section(section):
-    if not section:
-        return [], ""
-
-    section = clean_cvs_text(section)
-
-    bullet_pattern = re.compile(
-        r'((?:[A-Z0-9#&/\+\-\'\u2019\u2018\s]{4,60})\s*(?:—|-|:)\s*.+?)(?=(?:[A-Z0-9#&/\+\-\'\u2019\u2018\s]{4,60}\s*(?:—|-|:)\s*)|$)',
-        re.S
-    )
-
-    matches = [clean_cvs_text(m[0]) for m in bullet_pattern.findall(section)]
-    matches = [m for m in matches if len(m) > 20]
-
-    if matches:
-        first_match_text = matches[0]
-        first_word = first_match_text.split()[0] if first_match_text.split() else first_match_text[:20]
-        first_idx = section.find(first_word)
-        desc = section[:first_idx].strip() if first_idx > 0 else ""
-        return matches[:5], clean_cvs_text(desc)
-
-    return [], clean_cvs_text(section)
+def extract_section_after_item(visible_text):
+    return extract_section_with_stops(visible_text, r'Item\s*#\s*\d+\s*(.*)')
 
 
-def extract_visible_fallback(html_text):
-    visible_text = get_visible_text(html_text)
-    section = extract_section_after_item(visible_text)
-    bullets, desc = split_bullets_from_section(section)
-    return {
-        "visible_text": visible_text,
-        "section": section,
-        "bullets": bullets,
-        "desc": desc
-    }
-
-
-requests.adapters.DEFAULT_RETRIES = 2
-
-st.set_page_config(layout="wide")
-st.title("PDP QA Tool ✅")
-
-uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
-download_placeholder = st.empty()
-
-if "start_idx" not in st.session_state:
-    st.session_state.start_idx = 0
-if "summary_rows" not in st.session_state:
-    st.session_state.summary_rows = []
-if "export_rows" not in st.session_state:
-    st.session_state.export_rows = []
-if "processing_done" not in st.session_state:
-    st.session_state.processing_done = False
-if "download_clicked" not in st.session_state:
-    st.session_state.download_clicked = False
-
-
-# =========================================
-# CACHE HTML
-# =========================================
-html_cache = {}
-MAX_CACHE = 100
-
-
-def get_html(url):
-    if url in html_cache:
-        html_cache[url] = html_cache.pop(url)
-        return html_cache[url]
-
+def extract_section_after_title(visible_text, title):
+    if not title:
+        return ""
     try:
-        r = requests.get(
-            url,
-            headers={
-                "User-Agent": "Mozilla/5.0",
-                "Connection": "keep-alive"
-            },
-            timeout=10
-        )
+        idx = visible_text.find(title)
+        if idx == -1:
+            return ""
+        return extract_section_with_stops(visible_text[idx + len(title):])
+    except Exception:
+        return ""
 
-        if r.status_code == 200:
-            html_cache[url] = r.text
-            while len(html_cache) > MAX_CACHE:
-                html_cache.pop(next(iter(html_cache)))
-            return r.text
+
+def extract_meta_description(html_text):
+    try:
+        soup = BeautifulSoup(html_text, "html.parser")
+        for tag in [
+            soup.find("meta", attrs={"name": "description"}),
+            soup.find("meta", attrs={"property": "og:description"}),
+            soup.find("meta", attrs={"name": "twitter:description"}),
+        ]:
+            if tag and tag.get("content"):
+                return clean_cvs_text(tag.get("content", ""))
     except Exception:
         pass
-
     return ""
 
 
-# =========================================
-# LOAD IMAGE
-# =========================================
-def load_image(url):
+def extract_jsonld_description(html_text):
     try:
-        r = requests.get(url, timeout=8)
-        if r.status_code == 200:
-            return Image.open(BytesIO(r.content))
+        soup = BeautifulSoup(html_text, "html.parser")
+        vals = []
+        for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+            txt = script.string or script.get_text(" ", strip=True)
+            if not txt:
+                continue
+            try:
+                obj = json.loads(txt)
+                items = obj if isinstance(obj, list) else [obj]
+                for item in items:
+                    if isinstance(item, dict) and item.get("description"):
+                        vals.append(clean_cvs_text(str(item.get("description"))))
+            except Exception:
+                continue
+        vals = [v for v in vals if len(v) > 20]
+        return max(vals, key=len) if vals else ""
     except Exception:
-        return None
-    return None
-
-
-# =========================================
-# NORMALIZE FILE NAME (DEDUP CORE)
-# =========================================
-def normalize_filename(fname):
-    fname = fname.lower()
-    fname = re.sub(r'(_|-)?\d+x\d+', '', fname)
-    fname = re.sub(r'(_|-)?\d+', '', fname)
-    return fname
-
-
-# =========================================
-# SALSIFY (FINAL CORRECT ENGINE)
-# =========================================
-def get_salsify_images(url):
-    html_text = get_html(url)
-    soup = BeautifulSoup(html_text, "html.parser")
-
-    script = soup.find("script", {"id": "__NEXT_DATA__"})
-    if not script:
-        return []
-
-    data = json.loads(script.string)
-
-    try:
-        properties = data["props"]["pageProps"]["product"]["digitalAssets"]["properties"]
-    except Exception:
-        return []
-
-    asset_map = {}
-
-    for prop in properties:
-        name = prop.get("property", "").lower()
-        values = prop.get("values", [])
-
-        if values:
-            val = values[0].get("value", "")
-            if val:
-                asset_map[name] = val.split("?")[0]
-
-    def find(keyword):
-        for k, v in asset_map.items():
-            if keyword in k:
-                return v
-        return None
-
-    ordered = [find("online"), find("back"), find("left")]
-    atf_io = find("atf io")
-
-    if atf_io:
-        ordered.append(atf_io)
-        for k in ["atf 2", "atf 3", "atf 4", "atf 5", "atf 6"]:
-            ordered.append(find(k))
-    else:
-        for k in ["atf 2", "atf 3", "atf 4", "atf 5", "atf 6"]:
-            ordered.append(find(k))
-
-    ordered = ordered[:8]
-    ordered = ordered[:8]
-
-    return [{"url": img} for img in ordered]
-
-
-# =========================================
-# CVS IMAGES (UNLIMITED + BEST RES)
-# =========================================
-def get_cvs_images(url):
-    html_text = get_html(url)
-
-    matches = re.findall(
-        r'/bizcontent/merchandising/productimages/high_res/[^\s"]+\.jpg\?[^\"]*',
-        html_text
-    )
-
-    best_images = {}
-    order = []
-
-    for m in matches:
-        full = "https://www.cvs.com" + m
-        base = full.split("?")[0]
-        name = base.split("/")[-1]
-
-        size_match = re.search(r'Resize=\((\d+)', m)
-        size = int(size_match.group(1)) if size_match else 0
-
-        if name not in best_images:
-            order.append(name)
-            best_images[name] = {"url": base, "size": size}
-        else:
-            if size > best_images[name]["size"]:
-                best_images[name] = {"url": base, "size": size}
-
-    return [best_images[name]["url"] for name in order]
-
-
-# =========================================
-# TEXT EXTRACTION
-# =========================================
-def get_salsify_text(url):
-    html_text = get_html(url)
-    soup = BeautifulSoup(html_text, "html.parser")
-
-    script = soup.find("script", {"id": "__NEXT_DATA__"})
-    if not script:
-        return {}
-
-    data = json.loads(script.string)
-
-    try:
-        props = data["props"]["pageProps"]["product"]["propertySets"][0]["properties"]
-    except Exception:
-        return {}
-
-    text_map = {}
-    for p in props:
-        key = p.get("property")
-        values = p.get("values", [])
-        if values:
-            text_map[key] = values[0]
-
-    return {
-        "title": text_map.get("PRODUCT_TITLE", ""),
-        "description": text_map.get("DESCRIPTION", ""),
-        "feature1": text_map.get("FEATURE_1", ""),
-        "feature2": text_map.get("FEATURE_2", ""),
-        "feature3": text_map.get("FEATURE_3", ""),
-        "feature4": text_map.get("FEATURE_4", ""),
-        "feature5": text_map.get("FEATURE_5", "")
-    }
-
-
-# =========================================
-# CVS COPY EXTRACTION (SOURCE SEGMENT FIRST + DEBUG)
-# =========================================
-def get_cvs_text(html_text):
-    debug = {
-        "Desc Vendor": "",
-        "Desc Description Field": "",
-        "Desc Meta": "",
-        "Desc Fallback": "",
-        "Desc Final": "",
-        "Vendor Block Found": False,
-        "Vendor Bullets Ref": "",
-        "Vendor Paragraph Ref": "",
-        "Vendor Feature Count": 0,
-        "Vendor Candidate Count": 0,
-        "Has NextF": False,
-        "Raw Text Length": 0,
-        "Has vendorDetailsBullets Token": False,
-        "Has vendorDetailsParagraph Token": False,
-        "Data Map Key Count": 0,
-        "Raw Preview": "",
-        "Source Segment Preview": "",
-        "Segment Start Marker Used": "",
-        "Segment End Marker Used": "",
-        "Segment Length": 0,
-        "Visible Section Preview": "",
-        "Visible Section Length": 0,
-        "Visible Fallback Description": "",
-        "Visible Fallback Features": "",
-        "Used Visible Fallback": False,
-        "Feature Count Final": 0,
-        "Desc Length Final": 0,
-        "Failure Bucket": ""
-    }
-
-    if not html_text:
-        debug["Failure Bucket"] = "Empty HTML"
-        return {"title": "", "description": "", "features": [], "debug": debug}
-
-    raw_text = get_nextjs_chunks(html_text)
-    data_map = build_data_map(raw_text)
-
-    debug["Has NextF"] = "self.__next_f.push([1," in html_text
-    debug["Raw Text Length"] = len(raw_text)
-    debug["Has vendorDetailsBullets Token"] = "vendorDetailsBullets" in raw_text
-    debug["Has vendorDetailsParagraph Token"] = "vendorDetailsParagraph" in raw_text
-    debug["Data Map Key Count"] = len(data_map)
-
-    title = ""
-    desc = ""
-    features = []
-
-    try:
-        candidates = get_vendor_candidates(raw_text, data_map)
-        debug["Vendor Candidate Count"] = len(candidates)
-
-        vendor_block = get_valid_vendor_block(raw_text, data_map)
-        debug["Vendor Block Found"] = bool(vendor_block)
-
-        if vendor_block:
-            bullets_ref = vendor_block.get("vendorDetailsBullets")
-            para_ref = vendor_block.get("vendorDetailsParagraph")
-
-            debug["Vendor Bullets Ref"] = bullets_ref if isinstance(bullets_ref, str) else ""
-            debug["Vendor Paragraph Ref"] = para_ref if isinstance(para_ref, str) else ""
-            debug["Source Segment Preview"] = vendor_block.get("source_segment_preview", "")
-            debug["Segment Start Marker Used"] = vendor_block.get("segment_start_marker_used", "")
-            debug["Segment End Marker Used"] = vendor_block.get("segment_end_marker_used", "")
-            debug["Segment Length"] = vendor_block.get("segment_length", 0)
-
-            bullets = vendor_block.get("resolved_bullets") or resolve_ref_any(raw_text, data_map, bullets_ref)
-            if isinstance(bullets, list):
-                features = [clean_cvs_text(b) for b in bullets if isinstance(b, str)]
-
-            para = vendor_block.get("resolved_desc") or resolve_ref_any(raw_text, data_map, para_ref)
-            if isinstance(para, str):
-                desc = clean_cvs_text(para)
-                debug["Desc Vendor"] = desc
-
-        features = [f for f in features if f]
-        features = features[:5]
-        debug["Vendor Feature Count"] = len(features)
-
-        # visible text fallback when source segment resolution fails or merges content
-        fallback = extract_visible_fallback(html_text)
-        debug["Visible Section Preview"] = clean_cvs_text(fallback.get("section", "")[:1000])
-        debug["Visible Section Length"] = len(clean_cvs_text(fallback.get("section", "")))
-        debug["Visible Fallback Description"] = clean_cvs_text(fallback.get("desc", ""))
-        debug["Visible Fallback Features"] = " | ".join([clean_cvs_text(x) for x in fallback.get("bullets", [])])
-
-        if not desc and fallback.get("desc"):
-            desc = clean_cvs_text(fallback["desc"])
-            debug["Desc Fallback"] = desc
-            debug["Used Visible Fallback"] = True
-
-        if (not features) and fallback.get("bullets"):
-            features = [clean_cvs_text(x) for x in fallback["bullets"]][:5]
-            debug["Vendor Feature Count"] = len(features)
-            debug["Used Visible Fallback"] = True
-
-        try:
-            soup = BeautifulSoup(html_text, "html.parser")
-            if soup.title:
-                title = soup.title.get_text(strip=True)
-        except Exception:
-            pass
-
-    except Exception:
-        pass
-
-    if not debug["Vendor Block Found"]:
-        debug["Raw Preview"] = clean_cvs_text(raw_text[:1000])
-
-    debug["Desc Final"] = desc
-    debug["Feature Count Final"] = len(features) if isinstance(features, list) else 0
-    debug["Desc Length Final"] = len(clean_cvs_text(desc)) if isinstance(desc, str) else 0
-
-    if not debug["Has NextF"]:
-        debug["Failure Bucket"] = "No NextF Stream"
-    elif not debug["Has vendorDetailsBullets Token"] and not debug["Has vendorDetailsParagraph Token"]:
-        debug["Failure Bucket"] = "No Vendor Tokens"
-    elif debug["Vendor Candidate Count"] == 0:
-        debug["Failure Bucket"] = "No Vendor Candidates"
-    elif debug["Feature Count Final"] > 0 and debug["Desc Length Final"] > 0:
-        debug["Failure Bucket"] = "Extracted Successfully"
-    elif debug["Vendor Block Found"] and debug["Feature Count Final"] == 0 and debug["Desc Length Final"] > 0:
-        debug["Failure Bucket"] = "Description Only"
-    elif debug["Used Visible Fallback"] and debug["Feature Count Final"] == 0 and debug["Desc Length Final"] > 0:
-        debug["Failure Bucket"] = "Visible Fallback Description Only"
-    elif debug["Feature Count Final"] > 0 and debug["Desc Length Final"] == 0:
-        debug["Failure Bucket"] = "Features Only"
-    else:
-        debug["Failure Bucket"] = "Nothing Extracted"
-
-    return {
-        "title": title.strip() if isinstance(title, str) else "",
-        "description": desc.strip() if isinstance(desc, str) else "",
-        "features": features if isinstance(features, list) else [],
-        "debug": debug
-    }
-
-
-# =========================================
-# SCORE
-# =========================================
-def normalize_text(t):
-    if not isinstance(t, str):
         return ""
-    return re.sub(r'[^a-z0-9\s]', '', t.lower())
 
 
-def keyword_score(a, b):
-    return int(SequenceMatcher(None, normalize_text(a), normalize_text(b)).ratio() * 100)
+def extract_feature_lines_pattern_a(section):
+    txt = clean_cvs_text(section)
+    if not txt:
+        return []
+    pat = re.compile(
+        r'((?:[A-Z0-9#&/\+\-\'\u2019\u2018\s]{4,90})\s*(?:—|-|:)\s*.+?)(?=(?:[A-Z0-9#&/\+\-\'\u2019\u2018\s]{4,90}\s*(?:—|-|:)\s*)|$)',
+        re.S,
+    )
+    vals = [clean_cvs_text(m[0]) for m in pat.findall(txt)]
+    return [v for v in vals if len(v) > 20][:5]
 
 
-# =========================================
-# HELPERS
-# =========================================
-def equal_height_block(text):
-    return f"""
-    <div style="
-        min-height: 180px;
-        display: flex;
-        align-items: flex-start;
-    ">
-        {text}
-    </div>
-    """
+def extract_feature_lines_pattern_b(section):
+    txt = clean_cvs_text(section)
+    if not txt:
+        return []
+    raw_lines = re.split(r'\n+|\s{2,}', txt)
+    out = []
+    for line in raw_lines:
+        line = clean_cvs_text(line)
+        if len(line) < 20:
+            continue
+        if ("—" in line or ":" in line or " - " in line or ";" in line) and len(line.split()) >= 4:
+            out.append(line)
+    seen = set()
+    dedup = []
+    for x in out:
+        k = normalize_text(x)
+        if k not in seen:
+            seen.add(k)
+            dedup.append(x)
+    return dedup[:5]
 
 
-def equal_feature_block(text):
-    return f"""
-    <div style="
-        min-height: 70px;
-        display: flex;
-        align-items: flex-start;
-    ">
-        {text}
-    </div>
-    """
+def extract_feature_lines_pattern_c(section):
+    txt = clean_cvs_text(section)
+    sents = split_sentences(txt)
+    # candidate features are later descriptive sentences, not the first one or two if they look paragraph-like.
+    out = []
+    for sent in sents:
+        if len(sent) >= 35 and len(sent.split()) >= 6:
+            out.append(sent)
+    seen = set()
+    dedup = []
+    for x in out:
+        k = normalize_text(x)
+        if k not in seen:
+            seen.add(k)
+            dedup.append(x)
+    return dedup[:5]
 
 
-def score_bar(score):
-    if score >= 80:
-        color = "#2E7D32"
-    elif score >= 50:
-        color = "#F9A825"
-    else:
-        color = "#C62828"
-
-    return f"""
-    <div style="
-        background-color:{color};
-        padding:6px 10px;
-        border-radius:6px;
-        color:white;
-        font-weight:600;
-        margin-top:6px;
-        margin-bottom:6px;
-    ">
-        Score: {score}%
-    </div>
-    """
+def extract_feature_lines_pattern_d(section):
+    txt = clean_cvs_text(section)
+    raw = re.split(r'•|\u2022|\*+', txt)
+    vals = [clean_cvs_text(x) for x in raw if len(clean_cvs_text(x)) > 20]
+    seen = set()
+    out = []
+    for x in vals:
+        k = normalize_text(x)
+        if k not in seen:
+            seen.add(k)
+            out.append(x)
+    return out[:5]
 
 
-def score_badge(score):
-    if score >= 80:
-        return f"✅ <span style='color:#4CAF50; font-weight:700'>{score}% (Strong)</span>"
-    elif score >= 50:
-        return f"🟡 <span style='color:#FFC107; font-weight:700'>{score}% (Review)</span>"
-    else:
-        return f"🔴 <span style='color:#F44336; font-weight:700'>{score}% (Poor)</span>"
+def split_description_before_feature(section, features):
+    txt = clean_cvs_text(section)
+    if not txt:
+        return ""
+    if features:
+        first = features[0]
+        key = first.split()[0] if first.split() else first[:20]
+        idx = txt.find(key)
+        if idx > 0:
+            return clean_cvs_text(txt[:idx])
+    sents = split_sentences(txt)
+    if sents:
+        return clean_cvs_text(" ".join(sents[:2]))
+    return txt
 
 
-# =========================================
-# DESCRIPTION DEBUGGER
-# =========================================
-def debug_description(desc):
-    if not desc:
-        return {"length": 0, "quality_score": 0, "issues": ["Missing description"]}
-
-    desc_clean = normalize_text(desc)
-    length = len(desc_clean)
-
-    absorbency_keywords = ["absorb", "leak", "fluid", "protection"]
-    size_keywords = ["count", "ct", "pack", "roll", "sheets"]
-    benefit_keywords = ["soft", "comfort", "odor", "dry", "safe"]
-
-    has_absorbency = any(k in desc_clean for k in absorbency_keywords)
-    has_size = any(k in desc_clean for k in size_keywords)
-    has_benefits = any(k in desc_clean for k in benefit_keywords)
-
-    is_truncated = (not desc.strip().endswith((".", "!", "?")) or length < 80)
-
-    words = desc_clean.split()
-    unique_ratio = len(set(words)) / len(words) if words else 0
-
-    issues = []
-    if length < 80:
-        issues.append("Too short")
-    if not has_absorbency:
-        issues.append("Missing absorbency info")
-    if not has_size:
-        issues.append("Missing size/count")
-    if not has_benefits:
-        issues.append("Missing benefits")
-    if is_truncated:
-        issues.append("Possible truncation")
-    if unique_ratio < 0.5:
-        issues.append("Repetitive content")
-
-    quality_score = 100
-    if length < 80:
-        quality_score -= 20
-    if not has_absorbency:
-        quality_score -= 15
-    if not has_size:
-        quality_score -= 15
-    if not has_benefits:
-        quality_score -= 15
-    if is_truncated:
-        quality_score -= 20
-    if unique_ratio < 0.5:
-        quality_score -= 15
-
-    quality_score = max(0, quality_score)
-    return {"length": length, "quality_score": quality_score, "issues": issues}
+def description_first_sentence(section):
+    sents = split_sentences(section)
+    return clean_cvs_text(sents[0]) if sents else ""
 
 
-# =========================================
-# DESCRIPTION FIX SUGGESTIONS
-# =========================================
-def suggest_description_fix(debug):
-    suggestions = []
-    if "Missing absorbency info" in debug["issues"]:
-        suggestions.append("Add absorbency or protection level")
-    if "Missing size/count" in debug["issues"]:
-        suggestions.append("Include pack size and quantity")
-    if "Missing benefits" in debug["issues"]:
-        suggestions.append("Add comfort, odor or dryness benefits")
-    if "Too short" in debug["issues"]:
-        suggestions.append("Expand description with more detail")
-    if "Possible truncation" in debug["issues"]:
-        suggestions.append("Fix incomplete or cut-off sentence")
-    if "Repetitive content" in debug["issues"]:
-        suggestions.append("Reduce repetition and diversify wording")
-    return suggestions
+def description_first_two_sentences(section):
+    sents = split_sentences(section)
+    return clean_cvs_text(" ".join(sents[:2])) if sents else ""
 
 
-# =========================================
-# TRUE IMAGE VISUAL COMPARISON
-# =========================================
-def load_image_with_white_bg(img_data):
-    try:
-        img = Image.open(BytesIO(img_data))
-        img.thumbnail((128, 128))
-        img = img.convert("RGBA")
-    except Exception:
-        return None
-
-    white_bg = Image.new("RGBA", img.size, (255, 255, 255, 255))
-    if img.mode == "RGBA":
-        white_bg.paste(img, mask=img.split()[3])
-    else:
-        white_bg.paste(img)
-
-    return white_bg.convert("L")
+def description_first_three_sentences(section):
+    sents = split_sentences(section)
+    return clean_cvs_text(" ".join(sents[:3])) if sents else ""
 
 
-# =====================================
-# STREAMLIT IMAGE CACHE
-# =====================================
-@st.cache_data(show_spinner=False)
-def process_row_cached(row_dict):
-    return process_row(row_dict)
+def get_vendor_block_variants(raw_text, data_map):
+    normalized_raw = raw_text.replace('\\"', '"')
+    patterns = [
+        r'\{\s*"vendorDetailsBullets"\s*:\s*"(\$[0-9a-zA-Z]+)"\s*,\s*"vendorDetailsParagraph"\s*:\s*"(\$[0-9a-zA-Z]+)"\s*\}',
+        r'vendorDetailsBullets"\s*:\s*"(\$[0-9a-zA-Z]+)"\s*,\s*"vendorDetailsParagraph"\s*:\s*"(\$[0-9a-zA-Z]+)"'
+    ]
+    candidates = []
+    for v in data_map.values():
+        if isinstance(v, dict) and "vendorDetailsBullets" in v and "vendorDetailsParagraph" in v:
+            candidates.append((v.get("vendorDetailsBullets"), v.get("vendorDetailsParagraph"), "data_map", ""))
+    for pat in patterns:
+        for m in re.finditer(pat, normalized_raw):
+            b, p = m.group(1), m.group(2)
+            start = max(0, m.start() - 250)
+            end = min(len(normalized_raw), m.end() + 2500)
+            preview = clean_cvs_text(normalized_raw[start:end][:1000])
+            candidates.append((b, p, "vendor_regex", preview))
+    seen = set()
+    out = []
+    for b, p, source, preview in candidates:
+        key = (b, p)
+        if key in seen:
+            continue
+        seen.add(key)
+        bullets = resolve_ref_any(raw_text, data_map, b)
+        para = resolve_ref_any(raw_text, data_map, p)
+        feat = [clean_cvs_text(x) for x in bullets] if isinstance(bullets, list) else []
+        feat = [x for x in feat if len(x) > 20][:5]
+        desc = clean_cvs_text(para) if isinstance(para, str) else ""
+        out.append({
+            "source": source,
+            "bullets_ref": b,
+            "para_ref": p,
+            "preview": preview,
+            "desc": desc,
+            "features": feat,
+        })
+    return out
 
 
-def fetch_image_cached(url):
-    try:
-        resp = requests.get(url, timeout=5)
-        if resp.status_code == 200 and "image" in resp.headers.get("Content-Type", ""):
-            return resp.content
-    except Exception:
-        return None
-    return None
-
-
-# =====================================
-# IMAGE PREFETCH
-# =====================================
-def prefetch_images(urls):
-    with ThreadPoolExecutor(max_workers=12) as executor:
-        list(executor.map(fetch_image_cached, urls))
-
-
-def compare_images_visually(s_url, r_url):
-    try:
-        def fetch_and_cache(url):
-            return fetch_image_cached(url)
-
-        s_img_data = fetch_and_cache(s_url)
-        r_img_data = fetch_and_cache(r_url)
-        if not s_img_data or not r_img_data:
-            return 0
-
-        from PIL import ImageFilter
-        try:
-            s_img = load_image_with_white_bg(s_img_data)
-            r_img = load_image_with_white_bg(r_img_data)
-            if s_img is None or r_img is None:
-                return 0
-
-            s_img = s_img.resize((64, 64)).filter(ImageFilter.GaussianBlur(1))
-            r_img = r_img.resize((64, 64)).filter(ImageFilter.GaussianBlur(1))
-        except Exception:
-            return 0
-
-        import numpy as np
-        s_arr = np.array(s_img)
-        r_arr = np.array(r_img)
-        if s_arr.shape != r_arr.shape:
-            return 0
-
-        diff = float(np.mean(np.abs(s_arr.astype("float32") - r_arr.astype("float32"))))
-
-        if diff < 5:
-            return 100
-        elif diff < 15:
-            return 90
-        elif diff < 30:
-            return 75
-        elif diff < 45:
-            return 60
-        elif diff < 60:
-            return 45
-        elif diff < 80:
-            return 30
-        else:
-            return 15
-
-    except Exception:
+def best_feature_match_score(salsify_features, candidate_features):
+    if not candidate_features:
         return 0
+    scores = []
+    for s in salsify_features:
+        vals = [keyword_score(s or "", c) for c in candidate_features if isinstance(c, str)]
+        scores.append(max(vals) if vals else 0)
+    return int(sum(scores) / len(scores)) if scores else 0
 
 
-# =====================================
-# IMAGE MATCHING
-# =====================================
-def match_images_visual(s_images, r_images):
-    results = []
-    max_len = max(len(s_images), len(r_images))
+def choose_preview(*vals):
+    for v in vals:
+        if isinstance(v, str) and v.strip():
+            return clean_cvs_text(v[:1000])
+    return ""
 
-    for i in range(max_len):
-        s_url = (
-            s_images[i].get("url")
-            if i < len(s_images) and isinstance(s_images[i], dict)
-            else None
+
+def build_variants(salsify_text, retail_html):
+    raw_text = get_nextjs_chunks(retail_html)
+    data_map = build_data_map(raw_text)
+    visible_text = get_visible_text(retail_html)
+    title = salsify_text.get("title", "")
+
+    section_item = extract_section_after_item(visible_text)
+    section_title = extract_section_after_title(visible_text, title)
+    section_all = clean_cvs_text(visible_text[:4000])
+
+    meta_desc = extract_meta_description(retail_html)
+    jsonld_desc = extract_jsonld_description(retail_html)
+    vendor_variants = get_vendor_block_variants(raw_text, data_map)
+
+    variants = []
+
+    def append_variant(name, desc, feats, preview="", source="", bullets_ref="", para_ref=""):
+        variants.append({
+            "Variant": name,
+            "CVS Description Candidate": clean_cvs_text(desc),
+            "CVS Features Candidate": feats[:5] if isinstance(feats, list) else [],
+            "Variant Preview": choose_preview(preview, desc, " | ".join(feats) if isinstance(feats, list) else ""),
+            "Variant Source": source,
+            "Vendor Bullets Ref": bullets_ref,
+            "Vendor Paragraph Ref": para_ref,
+            "Raw Text Length": len(raw_text),
+            "Data Map Key Count": len(data_map),
+            "Has NextF": "self.__next_f.push([1," in retail_html,
+            "Has vendorDetailsBullets Token": "vendorDetailsBullets" in raw_text,
+            "Has vendorDetailsParagraph Token": "vendorDetailsParagraph" in raw_text,
+            "Raw Preview": clean_cvs_text(raw_text[:1000]),
+            "Visible Item Section Preview": clean_cvs_text(section_item[:1000]),
+            "Visible Title Section Preview": clean_cvs_text(section_title[:1000]),
+        })
+
+    s_features = [salsify_text.get(f"feature{i}", "") for i in range(1, 6)]
+
+    # Vendor-based variants.
+    for idx, vv in enumerate(vendor_variants[:8], start=1):
+        append_variant(
+            f"vendor_variant_{idx}",
+            vv.get("desc", ""),
+            vv.get("features", []),
+            preview=vv.get("preview", ""),
+            source=vv.get("source", ""),
+            bullets_ref=vv.get("bullets_ref", ""),
+            para_ref=vv.get("para_ref", ""),
         )
 
-        r_url = (
-            r_images[i]
-            if i < len(r_images) and isinstance(r_images[i], str)
-            else None
-        )
+    vendor_best = max(vendor_variants, key=lambda x: (len(x.get("features", [])), len(x.get("desc", "")))) if vendor_variants else {}
+    append_variant("vendor_best", vendor_best.get("desc", ""), vendor_best.get("features", []), vendor_best.get("preview", ""), vendor_best.get("source", ""), vendor_best.get("bullets_ref", ""), vendor_best.get("para_ref", ""))
 
-        if s_url and r_url:
-            score = compare_images_visually(s_url, r_url)
-        else:
-            score = 0
+    # Meta / JSON-LD.
+    append_variant("meta_desc", meta_desc, [])
+    append_variant("jsonld_desc", jsonld_desc, [])
 
-        results.append((s_url, r_url, score))
+    # Visible section variants based on Item # section.
+    feats_a_item = extract_feature_lines_pattern_a(section_item)
+    feats_b_item = extract_feature_lines_pattern_b(section_item)
+    feats_c_item = extract_feature_lines_pattern_c(section_item)
+    feats_d_item = extract_feature_lines_pattern_d(section_item)
 
-    return results
+    append_variant("visible_item_pattern_a", split_description_before_feature(section_item, feats_a_item), feats_a_item, preview=section_item, source="visible_item")
+    append_variant("visible_item_pattern_b", split_description_before_feature(section_item, feats_b_item), feats_b_item, preview=section_item, source="visible_item")
+    append_variant("visible_item_pattern_c", split_description_before_feature(section_item, feats_c_item), feats_c_item, preview=section_item, source="visible_item")
+    append_variant("visible_item_pattern_d", split_description_before_feature(section_item, feats_d_item), feats_d_item, preview=section_item, source="visible_item")
+    append_variant("visible_item_desc_1sent", description_first_sentence(section_item), [])
+    append_variant("visible_item_desc_2sent", description_first_two_sentences(section_item), [])
+    append_variant("visible_item_desc_3sent", description_first_three_sentences(section_item), [])
+
+    # Visible section variants based on title section.
+    feats_a_title = extract_feature_lines_pattern_a(section_title)
+    feats_b_title = extract_feature_lines_pattern_b(section_title)
+    feats_c_title = extract_feature_lines_pattern_c(section_title)
+    feats_d_title = extract_feature_lines_pattern_d(section_title)
+
+    append_variant("visible_title_pattern_a", split_description_before_feature(section_title, feats_a_title), feats_a_title, preview=section_title, source="visible_title")
+    append_variant("visible_title_pattern_b", split_description_before_feature(section_title, feats_b_title), feats_b_title, preview=section_title, source="visible_title")
+    append_variant("visible_title_pattern_c", split_description_before_feature(section_title, feats_c_title), feats_c_title, preview=section_title, source="visible_title")
+    append_variant("visible_title_pattern_d", split_description_before_feature(section_title, feats_d_title), feats_d_title, preview=section_title, source="visible_title")
+    append_variant("visible_title_desc_1sent", description_first_sentence(section_title), [])
+    append_variant("visible_title_desc_2sent", description_first_two_sentences(section_title), [])
+    append_variant("visible_title_desc_3sent", description_first_three_sentences(section_title), [])
+
+    # Coarse whole-visible-text sentence variants.
+    append_variant("visible_all_desc_1sent", description_first_sentence(section_all), [], preview=section_all)
+    append_variant("visible_all_desc_2sent", description_first_two_sentences(section_all), [], preview=section_all)
+    append_variant("visible_all_desc_3sent", description_first_three_sentences(section_all), [], preview=section_all)
+
+    # Add scoring fields.
+    enriched = []
+    for v in variants:
+        desc = v["CVS Description Candidate"]
+        feats = v["CVS Features Candidate"]
+        enriched.append({
+            **v,
+            "Desc Score vs Salsify": keyword_score(salsify_text.get("description", ""), desc),
+            "Feature Score vs Salsify": best_feature_match_score(s_features, feats),
+            "Candidate Feature Count": len(feats),
+            "Candidate Desc Length": len(clean_cvs_text(desc)),
+        })
+    return enriched
 
 
 def process_row(row):
-    try:
-        retail_html = get_html(row.get("retail_url", ""))
-        s_text = get_salsify_text(row.get("salsify_url", ""))
+    retail_url = row.get("retail_url", "")
+    salsify_url = row.get("salsify_url", "")
+    sku = row.get("sku", "")
+    cvs_rpc = row.get("cvs_rpc") or row.get("CVS RPC") or ""
 
-        r_text = get_cvs_text(retail_html) or {}
-        debug_data = r_text.get("debug", {})
+    retail_html = get_html(retail_url)
+    s = get_salsify_text(salsify_url)
+    variants = build_variants(s, retail_html)
 
-        desc_raw = r_text.get("description", "")
-        r_text["description"] = clean_cvs_text(desc_raw)
-
-        cleaned_features = []
-        for f in r_text.get("features", []):
-            if any(x in f for x in ["\\", "self.__next_f", "\\u0026", "\\n"]):
-                cleaned_features.append(clean_cvs_text(f))
-            else:
-                cleaned_features.append(f)
-        r_text["features"] = cleaned_features
-
-        s_images = get_salsify_images(row.get("salsify_url", ""))
-        r_images = get_cvs_images(row.get("retail_url", ""))
-
-        all_urls = []
-        for img in s_images:
-            if isinstance(img, dict) and img.get("url"):
-                all_urls.append(img["url"])
-        for img in r_images:
-            if isinstance(img, str):
-                all_urls.append(img)
-        prefetch_images(all_urls)
-
-        if not isinstance(s_images, list):
-            s_images = []
-        if not isinstance(r_images, list):
-            r_images = []
-
-        title_score = keyword_score(s_text.get("title", ""), r_text.get("title", ""))
-
-        r_desc_debug = debug_description(r_text.get("description", ""))
-
-        text_similarity = keyword_score(
-            s_text.get("description", ""),
-            r_text.get("description", "")
-        )
-
-        quality_penalty = int((100 - r_desc_debug["quality_score"]) * 0.5)
-        desc_score = max(0, text_similarity - quality_penalty)
-
-        cvs_features = r_text.get("features") if isinstance(r_text, dict) else []
-        if not isinstance(cvs_features, list):
-            cvs_features = []
-
-        feature_fields = ["feature1", "feature2", "feature3", "feature4", "feature5"]
-        feature_scores = []
-
-        for f_key in feature_fields:
-            s_val = s_text.get(f_key, "")
-            scores = [keyword_score(s_val, f) for f in cvs_features if isinstance(f, str)]
-            best = max(scores) if scores else 0
-            feature_scores.append(best)
-
-        avg_feature_score = int(sum(feature_scores) / len(feature_scores)) if feature_scores else 0
-
-        img_scores = []
-        for i in range(max(len(s_images), len(r_images))):
-            s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else None
-            r_url = r_images[i] if i < len(r_images) else None
-
-            if s_url and r_url:
-                sc = compare_images_visually(s_url, r_url)
-                if sc > 0:
-                    img_scores.append(sc)
-
-        avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
-        overall = int((title_score + desc_score + avg_feature_score + avg_img_score) / 4)
-
-        return {
-            "summary": {
-                "SKU": row.get("sku", ""),
-                "CVS RPC": row.get("cvs_rpc") or row.get("CVS RPC") or "",
-                "Salsify URL": row.get("salsify_url", ""),
-                "Retail URL": row.get("retail_url", ""),
-                "Title %": title_score,
-                "Description %": desc_score,
-                "Feature %": avg_feature_score,
-                "Image Match %": avg_img_score,
-                "Overall %": overall
-            },
-            "debug": {
-                "SKU": row.get("sku", ""),
-                "Desc Vendor": debug_data.get("Desc Vendor", ""),
-                "Desc Description Field": debug_data.get("Desc Description Field", ""),
-                "Desc Meta": debug_data.get("Desc Meta", ""),
-                "Desc Fallback": debug_data.get("Desc Fallback", ""),
-                "Desc Final": r_text.get("description", ""),
-                "Vendor Block Found": debug_data.get("Vendor Block Found", False),
-                "Vendor Bullets Ref": debug_data.get("Vendor Bullets Ref", ""),
-                "Vendor Paragraph Ref": debug_data.get("Vendor Paragraph Ref", ""),
-                "Vendor Feature Count": debug_data.get("Vendor Feature Count", 0),
-                "Vendor Candidate Count": debug_data.get("Vendor Candidate Count", 0),
-                "Has NextF": debug_data.get("Has NextF", False),
-                "Raw Text Length": debug_data.get("Raw Text Length", 0),
-                "Has vendorDetailsBullets Token": debug_data.get("Has vendorDetailsBullets Token", False),
-                "Has vendorDetailsParagraph Token": debug_data.get("Has vendorDetailsParagraph Token", False),
-                "Data Map Key Count": debug_data.get("Data Map Key Count", 0),
-                "Raw Preview": debug_data.get("Raw Preview", ""),
-                "Source Segment Preview": debug_data.get("Source Segment Preview", ""),
-                "Segment Start Marker Used": debug_data.get("Segment Start Marker Used", ""),
-                "Segment End Marker Used": debug_data.get("Segment End Marker Used", ""),
-                "Segment Length": debug_data.get("Segment Length", 0),
-                "Visible Section Preview": debug_data.get("Visible Section Preview", ""),
-                "Visible Section Length": debug_data.get("Visible Section Length", 0),
-                "Visible Fallback Description": debug_data.get("Visible Fallback Description", ""),
-                "Visible Fallback Features": debug_data.get("Visible Fallback Features", ""),
-                "Used Visible Fallback": debug_data.get("Used Visible Fallback", False),
-                "Feature Count Final": debug_data.get("Feature Count Final", 0),
-                "Desc Length Final": debug_data.get("Desc Length Final", 0),
-                "Failure Bucket": debug_data.get("Failure Bucket", ""),
-                "Desc Quality Score": r_desc_debug["quality_score"],
-                "Desc Length": r_desc_debug["length"],
-                "Desc Issues": ", ".join(r_desc_debug["issues"]),
-                "Final Features": " | ".join(r_text.get("features", []))
-            }
-        }
-
-    except Exception:
-        return None
-
-
-# =========================================
-# MAIN APP
-# =========================================
-st.markdown("## 🔎 QA Viewer Controls")
-
-view_mode = st.checkbox(
-    "👁️ View Full QA",
-    key="view_mode",
-    disabled=not st.session_state.processing_done
-)
-
-if st.session_state.get("processing_done", False) and not view_mode:
-    st.success("✅ Processing complete")
-
-show_only_issues = st.checkbox("❌ Show ONLY Issues", key="show_issues")
-hide_good = st.checkbox("✅ Hide Strong Matches (80%+)", key="hide_good")
+    rows = []
+    for v in variants:
+        rows.append({
+            "SKU": sku,
+            "CVS RPC": cvs_rpc,
+            "Salsify URL": salsify_url,
+            "Retail URL": retail_url,
+            "Salsify Title": s.get("title", ""),
+            "Salsify Description": s.get("description", ""),
+            "Salsify Feature 1": s.get("feature1", ""),
+            "Salsify Feature 2": s.get("feature2", ""),
+            "Salsify Feature 3": s.get("feature3", ""),
+            "Salsify Feature 4": s.get("feature4", ""),
+            "Salsify Feature 5": s.get("feature5", ""),
+            **v,
+            "CVS Features Candidate": " | ".join(v.get("CVS Features Candidate", [])),
+        })
+    return rows
 
 
 if uploaded_file:
-    try:
-        file_bytes = uploaded_file.getvalue()
-        file_id = hash(file_bytes)
-
-        if (
-            "last_file" not in st.session_state
-            or st.session_state.last_file != file_id
-        ):
-            st.session_state.summary_rows = []
-            st.session_state.export_rows = []
-            st.session_state.start_idx = 0
-            st.session_state.processing_done = False
-            st.session_state.last_file = file_id
-            st.session_state.debug_rows = []
-            st.session_state.progress_bar = None
-
-        df = pd.read_csv(uploaded_file)
-        df.columns = [c.strip().lower() for c in df.columns]
-
-        column_map = {
-            "salsify url": "salsify_url",
-            "retail url": "retail_url",
-            "sku id": "sku",
-            "product sku": "sku",
-            "cvs rpc": "cvs_rpc"
-        }
-        df.rename(columns=column_map, inplace=True)
-
-        if "brand" not in df.columns and len(df.columns) >= 5:
-            df.rename(columns={df.columns[4]: "brand"}, inplace=True)
-
-        required_cols = ["sku", "salsify_url", "retail_url"]
-        missing = [c for c in required_cols if c not in df.columns]
-
-        if missing:
-            st.error(f"❌ Missing required columns: {missing}")
-            st.write("Detected columns:", list(df.columns))
-            st.stop()
-
-        brands = sorted(df["brand"].dropna().unique()) if "brand" in df.columns else []
-        selected_brand = st.selectbox("🏷️ Select Brand", ["All"] + brands)
-
-        if selected_brand != "All":
-            df = df[df["brand"] == selected_brand]
-
-        BATCH_SIZE = 40
-        start = st.session_state.start_idx
-        end = start + BATCH_SIZE
-
-        if start >= len(df):
-            st.session_state.processing_done = True
-
-        batch_df = df.iloc[start:end]
-
-        if not st.session_state.processing_done:
-            st.write(f"Processing SKUs {start+1} to {min(end, len(df))} of {len(df)}")
-
-            if "progress_bar" not in st.session_state or st.session_state.progress_bar is None:
-                st.session_state.progress_bar = st.progress(0)
-
-            progress_bar = st.session_state.progress_bar
-            status_text = st.empty()
-            total = len(batch_df)
-            st.write("### Overall Progress")
-            overall_progress_bar = st.progress(0)
-
-        st.info("⚙️ Processing batch...")
-
-        if st.session_state.processing_done:
-            st.success("✅ Processing complete")
-
-        if not st.session_state.processing_done and not view_mode:
-            results = []
-
-            with ThreadPoolExecutor(max_workers=8) as executor:
-                futures = [
-                    executor.submit(process_row_cached, row.to_dict())
-                    for _, row in batch_df.iterrows()
-                ]
-
-                for i, future in enumerate(as_completed(futures)):
-                    result = future.result()
-
-                    if result:
-                        results.append(result)
-                        summary = result.get("summary")
-                        debug = result.get("debug")
-
-                        if summary and summary["SKU"] not in {r["SKU"] for r in st.session_state.summary_rows}:
-                            st.session_state.summary_rows.append(summary)
-
-                        if summary and summary["SKU"] not in {r["SKU"] for r in st.session_state.export_rows}:
-                            st.session_state.export_rows.append({
-                                "SKU": summary["SKU"],
-                                "CVS RPC": summary["CVS RPC"],
-                                "Salsify URL": summary["Salsify URL"],
-                                "Retail URL": summary["Retail URL"]
-                            })
-
-                        if "debug_rows" not in st.session_state:
-                            st.session_state.debug_rows = []
-
-                        if debug:
-                            st.session_state.debug_rows.append(debug)
-
-                    progress_bar.progress((i + 1) / total)
-                    status_text.markdown(f"Processed {i+1}/{total}")
-                    overall_progress = (start + i + 1) / len(df)
-                    overall_progress_bar.progress(overall_progress)
-
-            st.write(f"✅ Rows processed so far: {len(st.session_state.summary_rows)}")
-
-            if st.session_state.start_idx + BATCH_SIZE < len(df):
-                status_text.markdown("Loading next batch...")
-                st.session_state.start_idx += BATCH_SIZE
-                time.sleep(0.05)
-                st.rerun()
-            else:
-                st.session_state.processing_done = True
-                st.rerun()
-
-        elif view_mode:
-            if st.session_state.download_clicked:
-                st.session_state.download_clicked = False
-                st.stop()
-
-            for idx, (_, row) in enumerate(df.iterrows()):
-                sku = row.get("sku", "Missing SKU")
-
-                retail_html = get_html(row.get("retail_url", ""))
-                s_text = get_salsify_text(row.get("salsify_url", ""))
-                r_text = get_cvs_text(retail_html) or {}
-
-                desc_raw = r_text.get("description", "")
-                r_text["description"] = clean_cvs_text(desc_raw)
-
-                cleaned_features = []
-                for f in r_text.get("features", []):
-                    if any(x in f for x in ["\\", "self.__next_f", "\\u0026", "\\n"]):
-                        cleaned_features.append(clean_cvs_text(f))
-                    else:
-                        cleaned_features.append(f)
-                r_text["features"] = cleaned_features
-
-                s_images = get_salsify_images(row.get("salsify_url", ""))
-                r_images = get_cvs_images(row.get("retail_url", ""))
-
-                image_flags = []
-                if len(r_images) < len(s_images):
-                    image_flags.append(f"Missing {len(s_images) - len(r_images)} images")
-                elif len(r_images) > len(s_images):
-                    image_flags.append(f"{len(r_images) - len(s_images)} extra images")
-
-                if not isinstance(s_images, list):
-                    s_images = []
-                if not isinstance(r_images, list):
-                    r_images = []
-
-                s_title = s_text.get("title") if isinstance(s_text, dict) else ""
-                r_title = r_text.get("title") if isinstance(r_text, dict) else ""
-                s_desc = s_text.get("description") if isinstance(s_text, dict) else ""
-                r_desc = r_text.get("description") if isinstance(r_text, dict) else ""
-                cvs_features = r_text.get("features") or []
-
-                missing_flags = []
-                if not s_title or not r_title:
-                    missing_flags.append("Title")
-                if not s_desc.strip() or not r_desc.strip():
-                    missing_flags.append("Description")
-                if not cvs_features:
-                    missing_flags.append("Features")
-                if not s_images or not r_images:
-                    missing_flags.append("Images")
-
-                feature_fields = ["feature1", "feature2", "feature3", "feature4", "feature5"]
-                title_score = keyword_score(s_title, r_title)
-                desc_score = keyword_score(s_desc, r_desc)
-
-                feature_scores = []
-                max_features = max(len(feature_fields), len(cvs_features))
-                img_scores = []
-                max_images = max(len(s_images), len(r_images))
-
-                for i in range(max_images):
-                    s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else None
-                    r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else None
-                    if s_url and r_url:
-                        img_scores.append(compare_images_visually(s_url, r_url))
-
-                avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
-
-                for i in range(max_features):
-                    s_val = s_text.get(feature_fields[i], "") if i < len(feature_fields) else ""
-                    r_val = cvs_features[i] if i < len(cvs_features) else ""
-                    feature_scores.append(keyword_score(s_val, r_val))
-
-                avg_feature_score = int(sum(feature_scores) / len(feature_scores)) if feature_scores else 0
-                overall_score = int((title_score + desc_score + avg_feature_score + avg_img_score) / 4)
-                hard_fail = title_score < 40 or desc_score < 40
-                is_issue = overall_score < 80
-                if show_only_issues and not is_issue:
-                    continue
-                if hide_good and overall_score >= 80:
-                    continue
-
-                cvs_rpc = row.get("cvs_rpc") or row.get("CVS RPC") or "N/A"
-                st.subheader(f"SKU: {sku} | CVS RPC: {cvs_rpc}")
-                left, right = st.columns([2, 1])
-
-                if missing_flags:
-                    st.warning(f"⚠️ Missing: {', '.join(missing_flags)}")
-                if image_flags:
-                    st.warning(f"🖼️ Image Issue: {', '.join(image_flags)}")
-                if hard_fail:
-                    st.error("🚨 Critical content issue (possible wrong or broken PDP)")
-                elif overall_score < 50:
-                    st.warning("⚠️ Major quality issue")
-
-                st.markdown("""
-                <div style='display:flex; flex-direction:column; height:100%;'>
-                """, unsafe_allow_html=True)
-
-                with left:
-                    st.markdown(f"### 🏷️ Title {score_badge(title_score)}", unsafe_allow_html=True)
-                    c1, c2 = st.columns(2)
-                    c1.markdown(f"<div style='font-size:26px; line-height:1.5'>{s_title or '❌ Missing'}</div>", unsafe_allow_html=True)
-                    c2.markdown(f"<div style='font-size:26px; line-height:1.5'>{r_title or '❌ Missing'}</div>", unsafe_allow_html=True)
-
-                    st.markdown(f"### 📄 Description {score_badge(desc_score)}", unsafe_allow_html=True)
-                    c1, c2 = st.columns(2)
-                    c1.markdown(f"<div style='font-size:25px; line-height:1.5'>{s_desc or '❌ Missing'}</div>", unsafe_allow_html=True)
-                    c2.markdown(f"<div style='font-size:25px; line-height:1.5'>{r_desc or '❌ Missing'}</div>", unsafe_allow_html=True)
-
-                    r_desc_debug = debug_description(r_desc)
-                    if r_desc_debug["quality_score"] < 50:
-                        st.error("🚨 Poor description quality")
-                    elif r_desc_debug["quality_score"] < 75:
-                        st.warning("⚠️ Description needs improvement")
-
-                    if r_desc_debug["issues"]:
-                        st.info(f"🛠 Issues: {', '.join(r_desc_debug['issues'])}")
-
-                    fixes = suggest_description_fix(r_desc_debug)
-                    if fixes:
-                        st.markdown("### 💡 Suggested Fixes")
-                        for f in fixes:
-                            st.write(f"- {f}")
-
-                    st.markdown(f"### 📌 Features {score_badge(avg_feature_score)}", unsafe_allow_html=True)
-                    for i in range(max_features):
-                        s_val = s_text.get(feature_fields[i], "") if i < len(feature_fields) else ""
-                        r_val = cvs_features[i] if i < len(cvs_features) else ""
-
-                        scores = [keyword_score(s_val, f) for f in cvs_features]
-                        score = max(scores) if scores else 0
-
-                        c1, c2 = st.columns(2)
-                        c1.markdown(f"<div style='font-size:25px; line-height:1.5'>{s_val or '❌ Missing'}</div>", unsafe_allow_html=True)
-                        c2.markdown(f"<div style='font-size:25px; line-height:1.5'>{r_val or '❌ Missing'}</div>", unsafe_allow_html=True)
-                        st.markdown(score_badge(score), unsafe_allow_html=True)
-                        st.divider()
-
-                    st.markdown(score_bar(avg_feature_score), unsafe_allow_html=True)
-                    st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
-                    st.markdown("<div style='flex-grow:1'></div>", unsafe_allow_html=True)
-                    st.markdown("</div>", unsafe_allow_html=True)
-
-                    if len(r_images) > len(s_images):
-                        st.markdown(f"<div style='min-height:{len(r_images)*120}px'></div>", unsafe_allow_html=True)
-
-                with right:
-                    st.markdown(f"### 🖼️ Images — Avg {score_badge(avg_img_score)}", unsafe_allow_html=True)
-                    st.markdown(score_bar(avg_img_score), unsafe_allow_html=True)
-                    st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
-
-                    max_images = max(len(s_images), len(r_images))
-                    for i in range(max_images):
-                        col1, col2, col3 = st.columns([3, 3, 1])
-                        s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else None
-                        r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else None
-
-                        if s_url:
-                            col1.markdown(f"<img src='{s_url}' style='width:100%; max-width:200px; border-radius:6px;'>", unsafe_allow_html=True)
-                        else:
-                            col1.write("")
-
-                        if r_url:
-                            col2.markdown(f"<img src='{r_url}' style='width:100%; max-width:200px; border-radius:6px;'>", unsafe_allow_html=True)
-                        else:
-                            col2.write("")
-
-                        sc = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
-                        col3.markdown(score_badge(sc), unsafe_allow_html=True)
-
-                if overall_score >= 80:
-                    st.markdown(score_bar(overall_score), unsafe_allow_html=True)
-                    st.success(f"✅ Strong Match: {overall_score}%")
-                elif overall_score >= 50:
-                    st.markdown(score_bar(overall_score), unsafe_allow_html=True)
-                    st.warning(f"🟡 Needs Review: {overall_score}%")
-                else:
-                    st.markdown(score_bar(overall_score), unsafe_allow_html=True)
-                    st.error(f"🔴 Critical Issue: {overall_score}%")
-
-                st.caption(f"Title: {title_score}% | Desc: {desc_score}% | Feat: {avg_feature_score}% | Img: {avg_img_score}%")
-
-    except Exception as e:
-        st.error("🔥 CRITICAL APP ERROR")
-        st.text(str(e))
-        st.text(traceback.format_exc())
-
-
-# =====================================
-# EXPORT FILE
-# =====================================
-if st.session_state.processing_done and st.session_state.summary_rows:
-    summary_df = pd.DataFrame(st.session_state.summary_rows)
-    detail_df = pd.DataFrame(st.session_state.export_rows)
-    debug_df = pd.DataFrame(st.session_state.get("debug_rows", []))
-
-    file_name = "pdp_qa_results.xlsx"
-
-    with pd.ExcelWriter(file_name, engine="openpyxl") as writer:
-        summary_df.to_excel(writer, index=False, sheet_name="Summary")
-        detail_df.to_excel(writer, index=False, sheet_name="Details")
-        debug_df.to_excel(writer, index=False, sheet_name="Debug")
-
-    from openpyxl import load_workbook
-    from openpyxl.styles import PatternFill
-
-    wb = load_workbook(file_name)
-    ws = wb["Summary"]
-
-    green = PatternFill(start_color="C6EFCE", fill_type="solid")
-    yellow = PatternFill(start_color="FFEB9C", fill_type="solid")
-    red = PatternFill(start_color="FFC7CE", fill_type="solid")
-
-    for row in ws.iter_rows(min_row=2):
-        for cell in row:
-            val = cell.value
-            if isinstance(val, (int, float)):
-                if val >= 80:
-                    cell.fill = green
-                elif val >= 50:
-                    cell.fill = yellow
-                else:
-                    cell.fill = red
-
-    wb.save(file_name)
-
-    with open(file_name, "rb") as f:
-        st.markdown("## 📊 Export Results")
-        if download_placeholder.download_button(
-            label="📥 Download Excel Report",
-            data=f,
-            file_name=file_name,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        ):
-            st.session_state.download_clicked = True
+    df = pd.read_csv(uploaded_file)
+    df.columns = [c.strip().lower() for c in df.columns]
+    column_map = {
+        "salsify url": "salsify_url",
+        "retail url": "retail_url",
+        "sku id": "sku",
+        "product sku": "sku",
+        "cvs rpc": "cvs_rpc"
+    }
+    df.rename(columns=column_map, inplace=True)
+
+    required_cols = ["sku", "salsify_url", "retail_url"]
+    missing = [c for c in required_cols if c not in df.columns]
+    if missing:
+        st.error(f"Missing required columns: {missing}")
+        st.write(list(df.columns))
+        st.stop()
+
+    if st.button("Run extraction matrix v2"):
+        progress = st.progress(0)
+        status = st.empty()
+        rows = []
+        total = len(df)
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            futures = [ex.submit(process_row, row.to_dict()) for _, row in df.iterrows()]
+            for i, fut in enumerate(as_completed(futures), start=1):
+                try:
+                    res = fut.result()
+                    if res:
+                        rows.extend(res)
+                except Exception:
+                    pass
+                progress.progress(i / total)
+                status.write(f"Processed {i}/{total}")
+
+        if rows:
+            out_df = pd.DataFrame(rows)
+            best_desc = out_df.sort_values(["SKU", "Desc Score vs Salsify", "Candidate Desc Length"], ascending=[True, False, False]).groupby("SKU", as_index=False).first()
+            best_feat = out_df.sort_values(["SKU", "Feature Score vs Salsify", "Candidate Feature Count"], ascending=[True, False, False]).groupby("SKU", as_index=False).first()
+            variant_summary = out_df.groupby("Variant", as_index=False).agg(
+                rows=("SKU", "count"),
+                avg_desc_score=("Desc Score vs Salsify", "mean"),
+                avg_feat_score=("Feature Score vs Salsify", "mean"),
+                variants_with_desc=("Candidate Desc Length", lambda s: int((s > 20).sum())),
+                variants_with_feats=("Candidate Feature Count", lambda s: int((s > 0).sum())),
+            )
+            file_name = "cvs_extraction_matrix_v2.xlsx"
+            with pd.ExcelWriter(file_name, engine="openpyxl") as writer:
+                out_df.to_excel(writer, index=False, sheet_name="Extract Matrix")
+                best_desc.to_excel(writer, index=False, sheet_name="Best Desc By SKU")
+                best_feat.to_excel(writer, index=False, sheet_name="Best Feat By SKU")
+                variant_summary.to_excel(writer, index=False, sheet_name="Variant Summary")
+            with open(file_name, "rb") as f:
+                st.success("Done.")
+                st.download_button(
+                    "Download extraction matrix v2",
+                    data=f,
+                    file_name=file_name,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
