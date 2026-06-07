@@ -560,7 +560,7 @@ def main():
         "Rows to process",
         min_value=1,
         max_value=len(df),
-        value=min(25, len(df)),
+        value=min(100, len(df)),
         step=1
     )
 
