@@ -1,4 +1,5 @@
 import argparse
+import html
 import re
 import time
 import zipfile
@@ -14,12 +15,88 @@ HEADERS = {
 }
 
 EXCEL_CELL_LIMIT = 30000
+CONTEXT_WINDOW = 1200
+
+TITLE_PATTERNS = [
+    r"<title[^>]*>.*?</title>",
+    r"<h1[^>]*>.*?</h1>",
+    r'"title"\s*:',
+    r'"name"\s*:',
+    r'"productName"\s*:',
+]
+
+VENDOR_PATTERNS = [
+    r'"brand"\s*:',
+    r'"vendor"\s*:',
+    r'"manufacturer"\s*:',
+    r'>\s*From\s+[^<]+<',
+    r'from\s+[A-Za-z0-9 &._-]+',
+]
+
+DESCRIPTION_PATTERNS = [
+    r'"description"\s*:',
+    r'"longDescription"\s*:',
+    r'"shortDescription"\s*:',
+    r'"productDescription"\s*:',
+    r'description',
+]
+
+FEATURES_PATTERNS = [
+    r'"features"\s*:',
+    r'"feature"\s*:',
+    r'"benefits"\s*:',
+    r'"bullets"\s*:',
+    r'"bulletText"\s*:',
+    r'"keyFeatures"\s*:',
+    r'features',
+]
 
 
 def safe_name(text: str) -> str:
     text = str(text or "").strip()
     text = re.sub(r"[^A-Za-z0-9._-]+", "_", text)
     return text[:120] or "row"
+
+
+def clean_snippet(text: str) -> str:
+    text = html.unescape(str(text or ""))
+    text = text.replace("\x00", "")
+    return text.strip()
+
+
+def find_first_context(source: str, patterns: list, window: int = CONTEXT_WINDOW):
+    source = str(source or "")
+    if not source:
+        return "", ""
+
+    for pattern in patterns:
+        match = re.search(pattern, source, flags=re.IGNORECASE | re.DOTALL)
+        if match:
+            start = max(0, match.start() - window)
+            end = min(len(source), match.end() + window)
+            anchor = match.group(0)
+            context = source[start:end]
+            return clean_snippet(anchor), clean_snippet(context)
+
+    return "", ""
+
+
+def extract_source_contexts(source: str) -> dict:
+    title_anchor, title_context = find_first_context(source, TITLE_PATTERNS)
+    vendor_anchor, vendor_context = find_first_context(source, VENDOR_PATTERNS)
+    description_anchor, description_context = find_first_context(source, DESCRIPTION_PATTERNS)
+    features_anchor, features_context = find_first_context(source, FEATURES_PATTERNS)
+
+    return {
+        "title_anchor": title_anchor,
+        "title_source_context": title_context,
+        "vendor_anchor": vendor_anchor,
+        "vendor_source_context": vendor_context,
+        "description_anchor": description_anchor,
+        "description_source_context": description_context,
+        "features_anchor": features_anchor,
+        "features_source_context": features_context,
+    }
 
 
 def find_url_column(df: pd.DataFrame) -> str:
@@ -70,6 +147,7 @@ def fetch_all(input_path: str, out_dir: str, sleep_seconds: float = 0.5):
     cols_lower = {str(c).strip().lower(): c for c in df.columns}
     sku_col = cols_lower.get("sku") or cols_lower.get("sku id") or cols_lower.get("product sku")
     rpc_col = cols_lower.get("cvs rpc")
+    brand_col = cols_lower.get("brand")
 
     session = requests.Session()
     session.headers.update(HEADERS)
@@ -81,12 +159,14 @@ def fetch_all(input_path: str, out_dir: str, sleep_seconds: float = 0.5):
         url = str(row[url_col]).strip() if pd.notna(row[url_col]) else ""
         sku = str(row.get(sku_col, "")).strip() if sku_col else ""
         rpc = str(row.get(rpc_col, "")).strip() if rpc_col else ""
+        brand = str(row.get(brand_col, "")).strip() if brand_col else ""
 
         if not url:
             summary_rows.append({
                 "row_number": idx + 1,
                 "sku": sku,
                 "cvs_rpc": rpc,
+                "brand": brand,
                 "retail_url": "",
                 "final_url": "",
                 "status_code": "",
@@ -95,12 +175,21 @@ def fetch_all(input_path: str, out_dir: str, sleep_seconds: float = 0.5):
                 "source_file": "",
                 "source_bytes": 0,
                 "source_length": 0,
+                "title_anchor": "",
+                "title_source_context": "",
+                "vendor_anchor": "",
+                "vendor_source_context": "",
+                "description_anchor": "",
+                "description_source_context": "",
+                "features_anchor": "",
+                "features_source_context": "",
             })
 
             raw_rows.append({
                 "row_number": idx + 1,
                 "sku": sku,
                 "cvs_rpc": rpc,
+                "brand": brand,
                 "retail_url": "",
                 "raw_source_1": "",
             })
@@ -114,6 +203,17 @@ def fetch_all(input_path: str, out_dir: str, sleep_seconds: float = 0.5):
         capture_status = "failed"
         capture_error = ""
         source = ""
+
+        contexts = {
+            "title_anchor": "",
+            "title_source_context": "",
+            "vendor_anchor": "",
+            "vendor_source_context": "",
+            "description_anchor": "",
+            "description_source_context": "",
+            "features_anchor": "",
+            "features_source_context": "",
+        }
 
         try:
             resp = session.get(url, timeout=30, allow_redirects=True)
@@ -130,6 +230,8 @@ def fetch_all(input_path: str, out_dir: str, sleep_seconds: float = 0.5):
         except Exception as exc:
             capture_error = f"{type(exc).__name__}: {exc}"
 
+        contexts = extract_source_contexts(source)
+
         source_bytes = len(source.encode("utf-8", errors="ignore")) if source else 0
         source_length = len(source) if source else 0
 
@@ -137,6 +239,7 @@ def fetch_all(input_path: str, out_dir: str, sleep_seconds: float = 0.5):
             "row_number": idx + 1,
             "sku": sku,
             "cvs_rpc": rpc,
+            "brand": brand,
             "retail_url": url,
             "final_url": final_url,
             "status_code": status_code,
@@ -145,6 +248,14 @@ def fetch_all(input_path: str, out_dir: str, sleep_seconds: float = 0.5):
             "source_file": str(txt_path) if txt_path.exists() else "",
             "source_bytes": source_bytes,
             "source_length": source_length,
+            "title_anchor": contexts["title_anchor"],
+            "title_source_context": contexts["title_source_context"],
+            "vendor_anchor": contexts["vendor_anchor"],
+            "vendor_source_context": contexts["vendor_source_context"],
+            "description_anchor": contexts["description_anchor"],
+            "description_source_context": contexts["description_source_context"],
+            "features_anchor": contexts["features_anchor"],
+            "features_source_context": contexts["features_source_context"],
         })
 
         chunks = chunk_text(source)
@@ -153,6 +264,7 @@ def fetch_all(input_path: str, out_dir: str, sleep_seconds: float = 0.5):
             "row_number": idx + 1,
             "sku": sku,
             "cvs_rpc": rpc,
+            "brand": brand,
             "retail_url": url,
         }
 
@@ -168,7 +280,7 @@ def fetch_all(input_path: str, out_dir: str, sleep_seconds: float = 0.5):
 
     debugger_df = summary_df.merge(
         raw_df,
-        on=["row_number", "sku", "cvs_rpc", "retail_url"],
+        on=["row_number", "sku", "cvs_rpc", "brand", "retail_url"],
         how="left"
     )
 
@@ -189,7 +301,7 @@ def fetch_all(input_path: str, out_dir: str, sleep_seconds: float = 0.5):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Fetch raw CVS source for every URL and export debugger Excel with full source split across columns."
+        description="Fetch raw CVS source for every URL and export debugger Excel with raw source and source contexts."
     )
     parser.add_argument(
         "input_file",
