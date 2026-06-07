@@ -1,3 +1,4 @@
+
 import io
 import re
 from html import unescape
@@ -13,9 +14,9 @@ HEADERS = {
     "Connection": "keep-alive",
 }
 
-REQUEST_TIMEOUT = 20
+REQUEST_TIMEOUT = 15
 EXCEL_CELL_LIMIT = 30000
-CONTEXT_WINDOW = 1200
+CONTEXT_WINDOW = 1000
 
 
 def normalize_space(text):
@@ -48,7 +49,7 @@ def build_soup(html_source):
     return BeautifulSoup(html_source or "", "html.parser")
 
 
-def clean_soup_text(soup):
+def clean_page_text(soup):
     soup_copy = BeautifulSoup(str(soup), "html.parser")
     for tag in soup_copy(["script", "style", "noscript"]):
         tag.decompose()
@@ -64,13 +65,16 @@ def extract_title(soup, html_source):
     if title_tag:
         return normalize_space(title_tag.get_text(" ", strip=True))
 
-    m = re.search(r'"productName"\s*:\s*"([^"]+)"', html_source, flags=re.IGNORECASE)
-    if m:
-        return normalize_space(m.group(1))
+    patterns = [
+        r'"productName"\s*:\s*"([^"]+)"',
+        r'"name"\s*:\s*"([^"]+)"',
+        r'"title"\s*:\s*"([^"]+)"',
+    ]
 
-    m = re.search(r'"name"\s*:\s*"([^"]+)"', html_source, flags=re.IGNORECASE)
-    if m:
-        return normalize_space(m.group(1))
+    for pattern in patterns:
+        m = re.search(pattern, html_source, flags=re.IGNORECASE | re.DOTALL)
+        if m:
+            return normalize_space(m.group(1))
 
     return ""
 
@@ -87,7 +91,7 @@ def extract_vendor(soup, html_source):
     for pattern in patterns:
         m = re.search(pattern, html_source, flags=re.IGNORECASE | re.DOTALL)
         if m:
-            return normalize_space(m.group(1) if m.groups() else m.group(0))
+            return normalize_space(m.group(1))
 
     for a in soup.find_all("a", href=True):
         txt = normalize_space(a.get_text(" ", strip=True))
@@ -119,7 +123,8 @@ def extract_description(soup, html_source):
         if m:
             return normalize_space(m.group(1))
 
-    return clean_soup_text(soup)[:3000]
+    text = clean_page_text(soup)
+    return text[:2500]
 
 
 def extract_features(soup, html_source):
@@ -146,7 +151,7 @@ def extract_features(soup, html_source):
             bullets.append(txt)
 
     if bullets:
-        return " | ".join(bullets[:25])
+        return " | ".join(bullets[:20])
 
     return ""
 
@@ -161,23 +166,26 @@ def find_context(source, patterns, window=CONTEXT_WINDOW):
         if m:
             start = max(0, m.start() - window)
             end = min(len(source), m.end() + window)
-            return normalize_space(m.group(0)), normalize_space(source[start:end])
+            anchor = normalize_space(m.group(0))
+            context = normalize_space(source[start:end])
+            return anchor, context
 
     return "", ""
 
 
 def extract_contexts(html_source):
-    title_anchor, title_context = find_context(
+    title_anchor, title_source_context = find_context(
         html_source,
         [
             r"<title[^>]*>.*?</title>",
             r"<h1[^>]*>.*?</h1>",
             r'"productName"\s*:\s*"[^"]+"',
             r'"name"\s*:\s*"[^"]+"',
+            r'"title"\s*:\s*"[^"]+"',
         ],
     )
 
-    vendor_anchor, vendor_context = find_context(
+    vendor_anchor, vendor_source_context = find_context(
         html_source,
         [
             r'>\s*From\s+[^<]+<',
@@ -188,7 +196,7 @@ def extract_contexts(html_source):
         ],
     )
 
-    description_anchor, description_context = find_context(
+    description_anchor, description_source_context = find_context(
         html_source,
         [
             r'"longDescription"\s*:\s*"[^"]+"',
@@ -200,7 +208,7 @@ def extract_contexts(html_source):
         ],
     )
 
-    features_anchor, features_context = find_context(
+    features_anchor, features_source_context = find_context(
         html_source,
         [
             r'"features"\s*:\s*\[[^\]]+\]',
@@ -215,13 +223,13 @@ def extract_contexts(html_source):
 
     return {
         "title_anchor": title_anchor,
-        "title_source_context": title_context,
+        "title_source_context": title_source_context,
         "vendor_anchor": vendor_anchor,
-        "vendor_source_context": vendor_context,
+        "vendor_source_context": vendor_source_context,
         "description_anchor": description_anchor,
-        "description_source_context": description_context,
+        "description_source_context": description_source_context,
         "features_anchor": features_anchor,
-        "features_source_context": features_context,
+        "features_source_context": features_source_context,
     }
 
 
@@ -242,7 +250,7 @@ def make_excel_bytes(results_df):
     return output.getvalue()
 
 
-def process_items(df):
+def process_items(df, max_rows):
     cols = validate_columns(df)
 
     retail_col = cols["retail_url"]
@@ -250,13 +258,14 @@ def process_items(df):
     rpc_col = cols.get("cvs rpc")
     brand_col = cols.get("brand")
 
+    work_df = df.head(max_rows).copy()
     results = []
 
     progress = st.progress(0.0)
     status_box = st.empty()
-    total = len(df)
+    total = len(work_df)
 
-    for i, (_, row) in enumerate(df.iterrows(), start=1):
+    for i, (_, row) in enumerate(work_df.iterrows(), start=1):
         retail_url = str(row[retail_col]).strip() if pd.notna(row[retail_col]) else ""
         sku = str(row[sku_col]).strip() if sku_col and pd.notna(row[sku_col]) else ""
         cvs_rpc = str(row[rpc_col]).strip() if rpc_col and pd.notna(row[rpc_col]) else ""
@@ -313,7 +322,7 @@ def process_items(df):
             "status_code": status_code,
             "source_capture_status": source_capture_status,
             "source_capture_error": error_text,
-            "source_bytes": len(html_source.encode('utf-8', errors='ignore')) if html_source else 0,
+            "source_bytes": len(html_source.encode("utf-8", errors="ignore")) if html_source else 0,
             "source_length": len(html_source) if html_source else 0,
             "title_extracted": title_extracted,
             "vendor_extracted": vendor_extracted,
@@ -325,60 +334,4 @@ def process_items(df):
             "vendor_source_context": contexts["vendor_source_context"],
             "description_anchor": contexts["description_anchor"],
             "description_source_context": contexts["description_source_context"],
-            "features_anchor": contexts["features_anchor"],
-            "features_source_context": contexts["features_source_context"],
-        }
-
-        source_chunks = chunk_text(html_source)
-        for idx_chunk, chunk in enumerate(source_chunks, start=1):
-            row_dict[f"raw_source_{idx_chunk}"] = chunk
-
-        results.append(row_dict)
-        progress.progress(i / total)
-
-    progress.empty()
-    status_box.empty()
-    return pd.DataFrame(results)
-
-
-def main():
-    st.set_page_config(page_title="PDP QA Tool", layout="wide")
-    st.title("PDP QA Tool")
-
-    uploaded_file = st.file_uploader("Upload CVS CSV", type=["csv"])
-
-    if uploaded_file is None:
-        st.info("Upload a CVS CSV file to begin.")
-        st.stop()
-
-    try:
-        df = pd.read_csv(uploaded_file)
-    except Exception as exc:
-        st.error(f"Could not read uploaded CSV: {exc}")
-        st.stop()
-
-    st.write("Preview of uploaded data:")
-    st.dataframe(df.head(), width="stretch")
-
-    if st.button("Run Extraction"):
-        with st.spinner("Fetching CVS pages and extracting title, vendor, description, and features..."):
-            try:
-                results_df = process_items(df)
-            except Exception as exc:
-                st.error(f"Extraction run failed: {exc}")
-                st.stop()
-
-        st.success("Extraction run complete.")
-        st.dataframe(results_df.head(50), width="stretch")
-
-        excel_bytes = make_excel_bytes(results_df)
-        st.download_button(
-            label="Download Debugger Excel",
-            data=excel_bytes,
-            file_name="cvs_debugger_with_source.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
-
-
-if __name__ == "__main__":
-    main()
+            "features_anchor
