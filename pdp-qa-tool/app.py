@@ -1,3 +1,4 @@
+
 # =========================================
 # IMPORTS (TOP OF FILE)
 # =========================================
@@ -16,6 +17,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 
 
+# =========================================
+# CVS RAW SOURCE HELPERS
+# =========================================
 def get_nextjs_chunks(html_text):
     pattern = r'self\.__next_f\.push\(\[1,(.*?)\]\)'
     matches = re.findall(pattern, html_text, re.DOTALL)
@@ -25,17 +29,30 @@ def get_nextjs_chunks(html_text):
     for m in matches:
         try:
             text = m.strip()
-
-            # remove wrapping quotes only
             if text.startswith('"') and text.endswith('"'):
                 text = text[1:-1]
-
-            # keep escaped quotes intact here; we normalize later only where needed
             chunks.append(text)
         except Exception:
             continue
 
     return "\n".join(chunks)
+
+
+def clean_cvs_text(text):
+    if not text:
+        return ""
+
+    text = text.replace("\\u0026", "&")
+    text = text.replace("\\n", " ")
+    text = text.replace("\\/", "/")
+    text = text.replace('\\"', '"')
+    text = html.unescape(text)
+    text = re.sub(r'^T\d+,', '', text)
+    text = re.sub(r'\]\).*?self\.__next_f\.push\(\[1,"', '', text)
+    text = re.sub(r'"\]\).*', '', text)
+    text = re.sub(r'\$\w+', '', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
 
 
 def try_parse_jsonish(val):
@@ -46,25 +63,15 @@ def try_parse_jsonish(val):
     if not vv:
         return None
 
-    # try raw first
-    try:
-        return json.loads(vv)
-    except Exception:
-        pass
-
-    # try with escaped quotes normalized
-    try:
-        vv2 = vv.replace('\\"', '"')
-        return json.loads(vv2)
-    except Exception:
-        pass
-
-    # try html-unescaped + escaped quotes normalized
-    try:
-        vv3 = html.unescape(vv).replace('\\"', '"')
-        return json.loads(vv3)
-    except Exception:
-        pass
+    for candidate in [
+        vv,
+        vv.replace('\\"', '"'),
+        html.unescape(vv).replace('\\"', '"')
+    ]:
+        try:
+            return json.loads(candidate)
+        except Exception:
+            continue
 
     return None
 
@@ -75,8 +82,6 @@ def build_data_map(raw_text):
     i = 0
 
     def is_key_start(pos):
-        # top-level key pattern like 32:, 3a:, ab:
-        # accepts values starting with [, {, T, or "
         return re.match(r'([0-9a-zA-Z]{1,3}):(?=[\[\{T"])', raw_text[pos:])
 
     while i < n:
@@ -114,17 +119,13 @@ def build_data_map(raw_text):
                     m2 = is_key_start(j)
                     if m2:
                         break
-
             j += 1
 
         val = raw_text[val_start:j].strip()
 
         if val.startswith("{") or val.startswith("["):
             parsed = try_parse_jsonish(val)
-            if parsed is not None:
-                data_map[key] = parsed
-            else:
-                data_map[key] = val
+            data_map[key] = parsed if parsed is not None else val
         else:
             if val.startswith("T") and "," in val:
                 data_map[key] = val.split(",", 1)[1].strip().strip('"')
@@ -139,20 +140,14 @@ def build_data_map(raw_text):
 def parse_top_level_value(val):
     if val is None:
         return None
-
     val = val.strip()
     if not val:
         return None
-
     if val.startswith("{") or val.startswith("["):
         parsed = try_parse_jsonish(val)
-        if parsed is not None:
-            return parsed
-        return val
-
+        return parsed if parsed is not None else val
     if val.startswith("T") and "," in val:
         return val.split(",", 1)[1].strip().strip('"')
-
     return val.strip().strip('"')
 
 
@@ -174,7 +169,6 @@ def get_top_level_value(raw_text, target_key):
 
     while j < n:
         ch = raw_text[j]
-
         if in_str:
             if escape:
                 escape = False
@@ -192,65 +186,62 @@ def get_top_level_value(raw_text, target_key):
             elif depth == 0:
                 if is_key_start(j):
                     break
-
         j += 1
 
     return raw_text[start:j].strip()
 
 
-def resolve_ref(data_map, value):
-    if isinstance(value, str) and value.startswith("$"):
-        return data_map.get(value[1:], [])
-    return value
-
-
 def resolve_ref_any(raw_text, data_map, value):
     if value is None:
         return None
-
     if isinstance(value, str) and value.startswith("$"):
         ref_key = value[1:]
-
         if ref_key in data_map:
             return data_map.get(ref_key)
-
         raw_val = get_top_level_value(raw_text, ref_key)
         return parse_top_level_value(raw_val)
-
     return value
 
 
-def find_vendor_block(data_map):
-    for v in data_map.values():
-        if isinstance(v, dict):
-            if (
-                "vendorDetailsBullets" in v
-                and "vendorDetailsParagraph" in v
-            ):
-                return v
-    return None
+def get_marker_windows(raw_text, markers, back=300, forward=3500):
+    windows = []
+    seen = set()
+    for marker in markers:
+        for m in re.finditer(re.escape(marker), raw_text):
+            start = max(0, m.start() - back)
+            end = min(len(raw_text), m.end() + forward)
+            key = (start, end)
+            if key not in seen:
+                seen.add(key)
+                windows.append(raw_text[start:end])
+    return windows
 
 
 def get_vendor_candidates(raw_text, data_map):
     candidates = []
 
     for v in data_map.values():
-        if isinstance(v, dict):
-            if "vendorDetailsBullets" in v and "vendorDetailsParagraph" in v:
-                candidates.append(v)
+        if isinstance(v, dict) and "vendorDetailsBullets" in v and "vendorDetailsParagraph" in v:
+            candidates.append(v)
 
     normalized_raw = raw_text.replace('\\"', '"')
+    windows = get_marker_windows(
+        normalized_raw,
+        ["vendorDetailsBullets", "vendorDetailsParagraph"],
+        back=250,
+        forward=2500
+    )
+    windows.insert(0, normalized_raw)
 
     regex_patterns = [
-        r'\{"vendorDetailsBullets":"(\$[0-9a-zA-Z]+)","vendorDetailsParagraph":"(\$[0-9a-zA-Z]+)"\}',
         r'\{\s*"vendorDetailsBullets"\s*:\s*"(\$[0-9a-zA-Z]+)"\s*,\s*"vendorDetailsParagraph"\s*:\s*"(\$[0-9a-zA-Z]+)"\s*\}',
         r'vendorDetailsBullets"\s*:\s*"(\$[0-9a-zA-Z]+)"\s*,\s*"vendorDetailsParagraph"\s*:\s*"(\$[0-9a-zA-Z]+)"'
     ]
 
-    for rx in regex_patterns:
-        for source in (raw_text, normalized_raw):
-            regex_matches = re.findall(rx, source)
-            for bullets_ref, para_ref in regex_matches:
+    for source in windows:
+        for rx in regex_patterns:
+            matches = re.findall(rx, source)
+            for bullets_ref, para_ref in matches:
                 candidates.append({
                     "vendorDetailsBullets": bullets_ref,
                     "vendorDetailsParagraph": para_ref
@@ -258,12 +249,8 @@ def get_vendor_candidates(raw_text, data_map):
 
     seen = set()
     unique_candidates = []
-
     for c in candidates:
-        key = (
-            c.get("vendorDetailsBullets", ""),
-            c.get("vendorDetailsParagraph", "")
-        )
+        key = (c.get("vendorDetailsBullets", ""), c.get("vendorDetailsParagraph", ""))
         if key not in seen:
             seen.add(key)
             unique_candidates.append(c)
@@ -271,32 +258,6 @@ def get_vendor_candidates(raw_text, data_map):
     return unique_candidates
 
 
-# =========================================
-# CVS TEXT CLEANER
-# =========================================
-def clean_cvs_text(text):
-    if not text:
-        return ""
-
-    text = text.replace("\\u0026", "&")
-    text = text.replace("\\n", " ")
-    text = text.replace("\\/", "/")
-    text = text.replace('\\"', '"')
-
-    text = html.unescape(text)
-
-    text = re.sub(r'^T\d+,', '', text)
-    text = re.sub(r'\]\).*?self\.__next_f\.push\(\[1,"', '', text)
-    text = re.sub(r'"\]\).*', '', text)
-    text = re.sub(r'\$\w+', '', text)
-    text = re.sub(r'\s+', ' ', text).strip()
-
-    return text
-
-
-# =========================================
-# VALID VENDOR BLOCK (FILTERED)
-# =========================================
 def get_valid_vendor_block(raw_text, data_map):
     candidates = get_vendor_candidates(raw_text, data_map)
 
@@ -327,6 +288,75 @@ def get_valid_vendor_block(raw_text, data_map):
                 best_block = v
 
     return best_block
+
+
+# =========================================
+# VISIBLE TEXT FALLBACK HELPERS
+# =========================================
+def get_visible_text(html_text):
+    soup = BeautifulSoup(html_text, "html.parser")
+    for tag in soup(["script", "style", "noscript"]):
+        tag.decompose()
+    text = soup.get_text("\n", strip=True)
+    text = html.unescape(text)
+    text = re.sub(r'\n+', '\n', text)
+    return text
+
+
+def extract_section_after_item(visible_text):
+    txt = visible_text.replace('\xa0', ' ')
+    m = re.search(r'Item\s*#\s*\d+\s*(.*)', txt, re.S)
+    if not m:
+        return ""
+    section = m.group(1)
+
+    stops = [
+        "Rating & reviews", "Ingredients", "Directions", "Warnings", "Specifications",
+        "Same-Day Delivery policies", "Shipping restrictions", "FAQ", "Q:", "A:",
+        "Delivery Details", "Explore more at CVS.com", "From ", "Show Hidden Columns"
+    ]
+    cut = len(section)
+    for stop in stops:
+        idx = section.find(stop)
+        if idx != -1 and idx < cut:
+            cut = idx
+    section = section[:cut].strip()
+    return section
+
+
+def split_bullets_from_section(section):
+    if not section:
+        return [], ""
+
+    section = clean_cvs_text(section)
+
+    # most CVS pages use all-caps heading + dash/colon bullets
+    bullet_pattern = re.compile(
+        r'((?:[A-Z0-9#&/\+\-\'\u2019\u2018\s]{4,60})\s*(?:—|-|:)\s*.+?)(?=(?:[A-Z0-9#&/\+\-\'\u2019\u2018\s]{4,60}\s*(?:—|-|:)\s*)|$)',
+        re.S
+    )
+
+    matches = [clean_cvs_text(m[0]) for m in bullet_pattern.findall(section)]
+    matches = [m for m in matches if len(m) > 20]
+
+    if matches:
+        first_idx = section.find(matches[0][:20].split()[0])
+        desc = section[:first_idx].strip() if first_idx > 0 else ""
+        return matches[:5], clean_cvs_text(desc)
+
+    return [], clean_cvs_text(section)
+
+
+def extract_visible_fallback(html_text):
+    visible_text = get_visible_text(html_text)
+    section = extract_section_after_item(visible_text)
+    bullets, desc = split_bullets_from_section(section)
+    return {
+        "visible_text": visible_text,
+        "section": section,
+        "bullets": bullets,
+        "desc": desc
+    }
 
 
 requests.adapters.DEFAULT_RETRIES = 2
@@ -440,12 +470,7 @@ def get_salsify_images(url):
                 return v
         return None
 
-    ordered = [
-        find("online"),
-        find("back"),
-        find("left"),
-    ]
-
+    ordered = [find("online"), find("back"), find("left")]
     atf_io = find("atf io")
 
     if atf_io:
@@ -469,7 +494,7 @@ def get_cvs_images(url):
     html_text = get_html(url)
 
     matches = re.findall(
-        r'/bizcontent/merchandising/productimages/high_res/[^\s"]+\.jpg\?[^"]*',
+        r'/bizcontent/merchandising/productimages/high_res/[^\s"]+\.jpg\?[^\"]*',
         html_text
     )
 
@@ -513,7 +538,6 @@ def get_salsify_text(url):
         return {}
 
     text_map = {}
-
     for p in props:
         key = p.get("property")
         values = p.get("values", [])
@@ -532,7 +556,7 @@ def get_salsify_text(url):
 
 
 # =========================================
-# CVS COPY EXTRACTION (FINAL WITH TITLE + RAW DEBUG)
+# CVS COPY EXTRACTION (SOURCE SEGMENT FIRST)
 # =========================================
 def get_cvs_text(html_text):
     debug = {
@@ -551,7 +575,9 @@ def get_cvs_text(html_text):
         "Has vendorDetailsBullets Token": False,
         "Has vendorDetailsParagraph Token": False,
         "Data Map Key Count": 0,
-        "Raw Preview": ""
+        "Raw Preview": "",
+        "Visible Section Preview": "",
+        "Used Visible Fallback": False
     }
 
     if not html_text:
@@ -596,6 +622,21 @@ def get_cvs_text(html_text):
         features = [f for f in features if f]
         features = features[:5]
         debug["Vendor Feature Count"] = len(features)
+
+        # visible text fallback when source segment resolution fails
+        if not desc or not features:
+            fallback = extract_visible_fallback(html_text)
+            debug["Visible Section Preview"] = clean_cvs_text(fallback.get("section", "")[:800])
+
+            if not desc and fallback.get("desc"):
+                desc = clean_cvs_text(fallback["desc"])
+                debug["Desc Fallback"] = desc
+                debug["Used Visible Fallback"] = True
+
+            if (not features) and fallback.get("bullets"):
+                features = [clean_cvs_text(x) for x in fallback["bullets"]][:5]
+                debug["Vendor Feature Count"] = len(features)
+                debug["Used Visible Fallback"] = True
 
         try:
             soup = BeautifulSoup(html_text, "html.parser")
@@ -999,6 +1040,8 @@ def process_row(row):
                 "Has vendorDetailsParagraph Token": debug_data.get("Has vendorDetailsParagraph Token", False),
                 "Data Map Key Count": debug_data.get("Data Map Key Count", 0),
                 "Raw Preview": debug_data.get("Raw Preview", ""),
+                "Visible Section Preview": debug_data.get("Visible Section Preview", ""),
+                "Used Visible Fallback": debug_data.get("Used Visible Fallback", False),
                 "Desc Quality Score": r_desc_debug["quality_score"],
                 "Desc Length": r_desc_debug["length"],
                 "Desc Issues": ", ".join(r_desc_debug["issues"]),
