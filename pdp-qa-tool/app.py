@@ -18,6 +18,14 @@ HEADERS = {
 REQUEST_TIMEOUT = 15
 CONTEXT_WINDOW = 1000
 
+GENERIC_BRAND_WORDS = {
+    "brand", "co", "company", "corp", "corporation", "inc", "llc", "ltd", "the"
+}
+
+TITLE_STOPWORDS = {
+    "buy", "shop", "now", "with", "and", "the", "a", "an", "for", "of"
+}
+
 
 # -----------------------------
 # Generic helpers
@@ -30,6 +38,25 @@ def normalize_space(text):
     return text.strip()
 
 
+def clean_for_compare(text):
+    text = normalize_space(text).lower()
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def normalize_vendor_name(text):
+    text = clean_for_compare(text)
+    parts = [p for p in text.split() if p not in GENERIC_BRAND_WORDS]
+    return " ".join(parts).strip()
+
+
+def normalize_title_text(text):
+    text = clean_for_compare(text)
+    parts = [p for p in text.split() if p not in TITLE_STOPWORDS]
+    return " ".join(parts).strip()
+
+
 def similarity_score(a, b):
     a = normalize_space(a)
     b = normalize_space(b)
@@ -38,10 +65,38 @@ def similarity_score(a, b):
     return int(round(SequenceMatcher(None, a, b).ratio() * 100))
 
 
-def fetch_page(url):
+def vendor_score(a, b):
+    a = normalize_vendor_name(a)
+    b = normalize_vendor_name(b)
+    if not a or not b:
+        return 0
+    if a == b:
+        return 100
+    return int(round(SequenceMatcher(None, a, b).ratio() * 100))
+
+
+def title_score(a, b):
+    a = normalize_title_text(a)
+    b = normalize_title_text(b)
+    if not a or not b:
+        return 0
+    if a == b:
+        return 100
+    return int(round(SequenceMatcher(None, a, b).ratio() * 100))
+
+
+def description_score(a, b):
+    return similarity_score(a, b)
+
+
+def features_score(a, b):
+    return similarity_score(a, b)
+
+
+def fetch_page(session, url):
     if not url or not str(url).strip():
         return 0, "", ""
-    resp = requests.get(
+    resp = session.get(
         url,
         headers=HEADERS,
         timeout=REQUEST_TIMEOUT,
@@ -351,7 +406,7 @@ def extract_contexts(html_source):
 
 
 # -----------------------------
-# Main comparison logic
+# Comparison / debugger logic
 # -----------------------------
 
 def validate_columns(df):
@@ -371,6 +426,25 @@ def make_excel_bytes(results_df):
     return output.getvalue()
 
 
+def build_mapping_warning(sku, cvs_rpc, s_title, r_title, s_vendor, r_vendor):
+    warnings = []
+
+    if not sku:
+        warnings.append("missing_sku")
+    if not cvs_rpc:
+        warnings.append("missing_cvs_rpc")
+
+    t_score = title_score(s_title, r_title)
+    v_score = vendor_score(s_vendor, r_vendor)
+
+    if v_score == 0 and s_vendor and r_vendor:
+        warnings.append("vendor_zero_match")
+    if t_score < 40 and s_title and r_title:
+        warnings.append("title_low_match")
+
+    return " | ".join(warnings)
+
+
 def process_items(df, max_rows):
     cols = validate_columns(df)
 
@@ -382,6 +456,9 @@ def process_items(df, max_rows):
 
     work_df = df.head(max_rows).copy()
     results = []
+
+    session = requests.Session()
+    session.headers.update(HEADERS)
 
     progress = st.progress(0.0)
     status_box = st.empty()
@@ -426,8 +503,8 @@ def process_items(df, max_rows):
         }
 
         try:
-            s_status, s_final_url, s_html = fetch_page(salsify_url)
-            r_status, r_final_url, r_html = fetch_page(retail_url)
+            s_status, s_final_url, s_html = fetch_page(session, salsify_url)
+            r_status, r_final_url, r_html = fetch_page(session, retail_url)
 
             if s_status == 200:
                 s_soup = build_soup(s_html)
@@ -447,10 +524,19 @@ def process_items(df, max_rows):
         except Exception as exc:
             error_text = f"{type(exc).__name__}: {exc}"
 
-        title_score = similarity_score(s_title, r_title)
-        vendor_score = similarity_score(s_vendor, r_vendor)
-        description_score = similarity_score(s_description, r_description)
-        features_score = similarity_score(s_features, r_features)
+        t_score = title_score(s_title, r_title)
+        v_score = vendor_score(s_vendor, r_vendor)
+        d_score = description_score(s_description, r_description)
+        f_score = features_score(s_features, r_features)
+
+        mapping_warning = build_mapping_warning(
+            sku,
+            cvs_rpc,
+            s_title,
+            r_title,
+            s_vendor,
+            r_vendor,
+        )
 
         if error_text:
             compare_status = "ERROR"
@@ -460,10 +546,10 @@ def process_items(df, max_rows):
             compare_status = "SALSIFY_FAIL"
         else:
             compare_status = "PASS" if (
-                title_score >= 80 and
-                vendor_score >= 80 and
-                description_score >= 60 and
-                features_score >= 45
+                t_score >= 80 and
+                v_score >= 70 and
+                d_score >= 60 and
+                f_score >= 45
             ) else "FAIL"
 
         row_dict = {
@@ -477,6 +563,7 @@ def process_items(df, max_rows):
             "salsify_status_code": s_status,
             "retail_status_code": r_status,
             "compare_status": compare_status,
+            "mapping_warning": mapping_warning,
             "error": error_text,
 
             "salsify_title": s_title,
@@ -489,10 +576,10 @@ def process_items(df, max_rows):
             "cvs_description": r_description,
             "cvs_features": r_features,
 
-            "title_score": title_score,
-            "vendor_score": vendor_score,
-            "description_score": description_score,
-            "features_score": features_score,
+            "title_score": t_score,
+            "vendor_score": v_score,
+            "description_score": d_score,
+            "features_score": f_score,
 
             "source_bytes": len(r_html.encode("utf-8", errors="ignore")) if r_html else 0,
             "source_length": len(r_html) if r_html else 0,
