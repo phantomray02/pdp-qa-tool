@@ -156,10 +156,11 @@ def prepare_input_df(df):
     return df
 
 
+
 def clear_in_memory_caches():
     html_cache.clear()
-    image_bytes_cache.clear()
     image_hash_cache.clear()
+
 
 # =========================================
 # HTML FETCH
@@ -846,55 +847,41 @@ def debug_description(desc):
 # =========================================
 # IMAGE HASHING (FAST IMAGE COMPARE)
 # =========================================
-def fetch_image_bytes(url):
-    if not url:
-        return None
-
-    if url in image_bytes_cache:
-        return image_bytes_cache[url]
-
-    try:
-        r = requests.get(url, headers=HEADERS, timeout=IMAGE_TIMEOUT)
-        if r.status_code == 200 and "image" in r.headers.get("Content-Type", ""):
-            image_bytes_cache[url] = r.content
-            while len(image_bytes_cache) > MAX_CACHE:
-                image_bytes_cache.pop(next(iter(image_bytes_cache)))
-            return r.content
-    except Exception:
-        pass
-
-    return None
-
-
 def get_image_dhash(url):
+    """
+    Compute a tiny difference hash directly from the downloaded image,
+    then discard the bytes immediately to reduce memory usage.
+    """
     if not url:
         return None
 
     if url in image_hash_cache:
         return image_hash_cache[url]
 
-    img_bytes = fetch_image_bytes(url)
-    if not img_bytes:
-        return None
-
     try:
-        img = Image.open(BytesIO(img_bytes))
+        r = requests.get(url, headers=HEADERS, timeout=IMAGE_TIMEOUT)
+        if r.status_code != 200:
+            return None
+        if "image" not in r.headers.get("Content-Type", ""):
+            return None
+
+        img = Image.open(BytesIO(r.content))
         img = img.convert("L").resize((IMAGE_HASH_WIDTH, IMAGE_HASH_HEIGHT))
-        pixels = list(img.getdata())
 
-        rows = [pixels[i * IMAGE_HASH_WIDTH:(i + 1) * IMAGE_HASH_WIDTH] for i in range(IMAGE_HASH_HEIGHT)]
         bits = []
-
-        for row in rows:
-            for i in range(IMAGE_HASH_WIDTH - 1):
-                bits.append(1 if row[i] > row[i + 1] else 0)
+        for y in range(IMAGE_HASH_HEIGHT):
+            for x in range(IMAGE_HASH_WIDTH - 1):
+                left_pixel = img.getpixel((x, y))
+                right_pixel = img.getpixel((x + 1, y))
+                bits.append(1 if left_pixel > right_pixel else 0)
 
         h = 0
         for bit in bits:
             h = (h << 1) | bit
 
         image_hash_cache[url] = h
-        while len(image_hash_cache) > MAX_CACHE:
+
+        while len(image_hash_cache) > IMAGE_HASH_CACHE_MAX:
             image_hash_cache.pop(next(iter(image_hash_cache)))
 
         return h
