@@ -39,16 +39,19 @@ MAX_CACHE = 400
 # =========================================
 # PERFORMANCE SETTINGS
 # =========================================
-BATCH_SIZE = 8
-MAX_WORKERS = 2
+BATCH_SIZE = 6
+MAX_WORKERS = 1
 UI_UPDATE_EVERY = 1
 
 # Faster image compare via tiny difference hash.
 IMAGE_HASH_WIDTH = 9
 IMAGE_HASH_HEIGHT = 8
 
+# Keep caches smaller to prevent Streamlit Cloud memory pressure.
+HTML_CACHE_MAX = 80
+IMAGE_HASH_CACHE_MAX = 300
+
 html_cache = {}
-image_bytes_cache = {}
 image_hash_cache = {}
 
 # =========================================
