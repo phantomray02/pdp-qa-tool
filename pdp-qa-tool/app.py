@@ -290,46 +290,56 @@ def get_salsify_images(url):
 # =========================================
 # CVS PARSERS
 # =========================================
-def clean_cvs_text_refined(text):
+def clean_cvs_text(text):
     if not text:
         return ""
 
     text = str(text)
+
+    # Basic escape normalization.
     text = text.replace("\\u0026", "&")
     text = text.replace("\\n", " ")
     text = text.replace("\\/", "/")
     text = text.replace('\\"', '"')
     text = html.unescape(text)
 
-    text = re.sub(
+    # Remove split Next.js wrapper fragments if they leaked into the extracted text.
+    wrapper_patterns = [
         r'"\]\)\s*</script>\s*<script>\s*self\.__next_f\.push\(\[1,\s*"',
-        "",
-        text,
-        flags=re.DOTALL,
-    )
-    text = re.sub(
         r'"\]\)&lt;/script&gt;&lt;script&gt;self\.__next_f\.push\(\[1,\s*"',
-        "",
-        text,
-        flags=re.DOTALL,
-    )
-    text = re.sub(
         r'"\]\)&lt;\/script&gt;&lt;script&gt;self\.__next_f\.push\(\[1,\s*"',
-        "",
-        text,
-        flags=re.DOTALL,
-    )
-    text = re.sub(
         r'"\]\)\s*self\.__next_f\.push\(\[1,\s*"',
-        "",
-        text,
-        flags=re.DOTALL,
-    )
+        r'</script>\s*<script>\s*self\.__next_f\.push\(\[1,\s*"',
+        r'&lt;/script&gt;&lt;script&gt;self\.__next_f\.push\(\[1,\s*"',
+    ]
+    for pattern in wrapper_patterns:
+        text = re.sub(pattern, "", text, flags=re.DOTALL)
 
+    # Remove transport tokens at the start, e.g. T4b2,
     text = re.sub(r'^(?:T[0-9A-Za-z]+,)+', "", text)
-    text = re.sub(r"\s+", " ", text)
-    return text.strip(' \t\r\n"')
 
+    # Strip any trailing top-level key object/list bleed, e.g.:
+    #   ... Packaging may vary.27:{"locationAvailabilityStatus":"In Stock"}
+    #   ... coverage details.32:{...
+    #   ... something15:[...
+    text = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:\{.*$', "", text, flags=re.DOTALL)
+    text = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:\[.*$', "", text, flags=re.DOTALL)
+
+    # Also strip trailing orphan key starts if they sneak in.
+    text = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:$', "", text, flags=re.DOTALL)
+
+    # Remove leftover script-ish fragments if any remain.
+    text = re.sub(r'self\.__next_f\.push\(\[1,.*$', "", text, flags=re.DOTALL)
+    text = re.sub(r'<script[^>]*>.*?</script>', " ", text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'</?script[^>]*>', " ", text, flags=re.IGNORECASE)
+
+    # Remove escaped markdown-style asterisks from copy.
+    text = text.replace("\\*", "*")
+
+    # Normalize whitespace.
+    text = re.sub(r"\s+", " ", text).strip()
+
+    return text
 
 def get_nextjs_chunks(html_text):
     if not html_text:
@@ -454,6 +464,14 @@ def looks_like_next_newline_key(source, idx):
 
 
 def extract_newline_anchored_value_block(source, key):
+    """
+    Find:
+    \n34:
+    and keep going until the next newline-anchored key such as:
+    \n32:{
+    \n27:
+    \n15:[
+    """
     m = find_newline_anchored_key(source, key, for_array=False)
     if not m:
         return ""
@@ -512,13 +530,21 @@ def extract_newline_anchored_value_block(source, key):
             i += 1
             continue
 
+        # Break as soon as the next newline-anchored top-level key starts.
         if bracket_depth == 0 and brace_depth == 0 and paren_depth == 0:
             if looks_like_next_newline_key(source, i):
                 break
 
         i += 1
 
-    return source[start:i].strip()
+    block = source[start:i].strip()
+
+    # Extra safety: trim trailing key-object/list bleed if it still slipped through.
+    block = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:\{.*$', "", block, flags=re.DOTALL)
+    block = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:\[.*$', "", block, flags=re.DOTALL)
+    block = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:$', "", block, flags=re.DOTALL)
+
+    return block.strip()
 
 
 def extract_vendor_copy_from_source(source, source_name=""):
@@ -597,7 +623,8 @@ def extract_vendor_copy_from_source(source, source_name=""):
                 debug["featuresArrayFound"] = bool(array_text)
                 debug["featuresArrayExcerpt"] = normalize_space(array_text)[:2000]
                 features = parse_jsonish_array_text(array_text)
-
+                
+# DESCRIPTION
         if paragraph_ref_match:
             ref_token = paragraph_ref_match.group(1)
             ref_key = ref_token.replace("$", "")
@@ -607,9 +634,14 @@ def extract_vendor_copy_from_source(source, source_name=""):
             debug["descriptionKey"] = ref_key
 
             desc_block = extract_newline_anchored_value_block(working_source, ref_key)
+
+            # Clean immediately after extraction so trailing key junk is removed.
+            desc_block = clean_cvs_text(desc_block)
+
             debug["descriptionBlockFound"] = bool(desc_block)
             debug["descriptionBlockExcerpt"] = normalize_space(desc_block)[:2000]
             description = desc_block
+
         elif paragraph_direct_match:
             raw_para = paragraph_direct_match.group(1)
             try:
@@ -617,9 +649,11 @@ def extract_vendor_copy_from_source(source, source_name=""):
             except Exception:
                 description = raw_para
 
+            description = clean_cvs_text(description)
+
             debug["descriptionBlockFound"] = bool(description)
             debug["descriptionBlockExcerpt"] = normalize_space(description)[:2000]
-
+            
         cleaned_features = dedupe_preserve_order([clean_cvs_text_refined(x) for x in features])
         cleaned_description = clean_cvs_text_refined(description)
 
