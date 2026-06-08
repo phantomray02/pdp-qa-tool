@@ -186,95 +186,163 @@ def get_salsify_text(url):
 def clean_cvs_text(text):
     if not text:
         return ""
+
+    text = str(text)
+
+    # decode common escaped sequences
     text = text.replace("\\u0026", "&")
     text = text.replace("\\n", " ")
     text = text.replace("\\/", "/")
     text = text.replace('\\"', '"')
+
+    # decode HTML entities
     text = html.unescape(text)
-    text = re.sub(r'\]\).*?self\.__next_f\.push\(\[1,"', ' ', text, flags=re.DOTALL)
-    text = re.sub(r'<\/script><script>self\.__next_f\.push\(\[1,"', ' ', text, flags=re.DOTALL)
-    text = re.sub(r'</script><script>self\.__next_f\.push\(\[1,"', ' ', text, flags=re.DOTALL)
-    text = re.sub(r'^T[0-9a-zA-Z]+,', '', text)
-    text = re.sub(r'\s+', ' ', text)
+
+    # remove Next.js chunk join wrappers that appear inside descriptions
+    text = re.sub(
+        r'"\]\)\s*</script>\s*<script>\s*self\.__next_f\.push\(\[1,\s*"',
+        "",
+        text,
+        flags=re.DOTALL,
+    )
+    text = re.sub(
+        r'"\]\)&lt;/script&gt;&lt;script&gt;self\.__next_f\.push\(\[1,\s*"',
+        "",
+        text,
+        flags=re.DOTALL,
+    )
+    text = re.sub(
+        r'"\]\)&lt;\/script&gt;&lt;script&gt;self\.__next_f\.push\(\[1,\s*"',
+        "",
+        text,
+        flags=re.DOTALL,
+    )
+
+    # remove transport prefixes like T40f, T1a, etc.
+    text = re.sub(r'^(?:T[0-9A-Za-z]+,)+', "", text)
+
+    # normalize whitespace
+    text = re.sub(r"\s+", " ", text)
+
     return text.strip(' \t\r\n"')
 
 
 def get_nextjs_chunks(html_text):
-    patterns = [
-        r'self\.__next_f\.push\(\[1,(.*?)\]\)</script>',
-        r'self\.__next_f\.push\(\[1,(.*?)\]\)',
-    ]
+    """
+    Decode all self.__next_f.push([1,"..."]) chunks into one joined source string.
+    This is more reliable than regexing partially escaped HTML.
+    """
+    if not html_text:
+        return ""
+
+    source = html.unescape(html_text)
+    pattern = r'self\.__next_f\.push\(\[1,\s*"((?:\\.|[^"\\])*)"\s*\]\)'
     chunks = []
-    for pattern in patterns:
-        matches = re.findall(pattern, html_text or "", re.DOTALL)
-        for m in matches:
-            block = m.strip()
-            if block.startswith('"') and block.endswith('"'):
-                block = block[1:-1]
-            chunks.append(block)
-        if chunks:
-            break
+
+    for m in re.finditer(pattern, source, re.DOTALL):
+        payload = m.group(1)
+        try:
+            decoded = json.loads(f'"{payload}"')
+        except Exception:
+            decoded = payload
+            decoded = decoded.replace("\\n", "\n")
+            decoded = decoded.replace("\\/", "/")
+            decoded = decoded.replace('\\"', '"')
+        chunks.append(decoded)
+
     return "\n".join(chunks)
 
 
 def extract_balanced_bracket_block(source, start_index):
-    if start_index < 0 or start_index >= len(source) or source[start_index] != '[':
+    if start_index < 0 or start_index >= len(source) or source[start_index] != "[":
         return ""
+
     depth = 0
     in_str = False
     escape = False
+
     for i in range(start_index, len(source)):
         ch = source[i]
+
         if in_str:
             if escape:
                 escape = False
-            elif ch == '\\':
+            elif ch == "\\":
                 escape = True
             elif ch == '"':
                 in_str = False
         else:
             if ch == '"':
                 in_str = True
-            elif ch == '[':
+            elif ch == "[":
                 depth += 1
-            elif ch == ']':
+            elif ch == "]":
                 depth -= 1
                 if depth == 0:
                     return source[start_index:i + 1]
+
     return ""
 
 
+def is_top_level_key_at_position(source, idx):
+    """
+    Detect top-level Next.js key lines like:
+    32:{...}
+    33:[...]
+    34:T40f,...
+    a1:"..."
+    """
+    if idx < 0 or idx >= len(source):
+        return False
+
+    return bool(
+        re.match(
+            r'[0-9A-Za-z]{1,3}:(?=[\[{"]|T[0-9A-Za-z]+,)',
+            source[idx:]
+        )
+    )
+
+
 def extract_top_level_value_block(source, key):
+    """
+    Find a top-level key like:
+    34:T40f,Description text...
+    and return everything after '34:' until the next top-level key line.
+    """
     pattern = rf'(?m)(?:^|\n){re.escape(str(key))}:'
     m = re.search(pattern, source)
     if not m:
         return ""
+
     start = m.end()
     i = start
     depth = 0
     in_str = False
     escape = False
+
     while i < len(source):
         ch = source[i]
+
         if in_str:
             if escape:
                 escape = False
-            elif ch == '\\':
+            elif ch == "\\":
                 escape = True
             elif ch == '"':
                 in_str = False
         else:
             if ch == '"':
                 in_str = True
-            elif ch in '[{(':
+            elif ch in "[{(":
                 depth += 1
-            elif ch in ']})':
+            elif ch in "]})":
                 depth = max(0, depth - 1)
-            elif depth == 0:
-                next_key = re.match(r'\n[0-9a-zA-Z]{1,3}:(?=[\[{T"])', source[i:])
-                if next_key:
+            elif ch == "\n" and depth == 0:
+                if is_top_level_key_at_position(source, i + 1):
                     break
+
         i += 1
+
     return source[start:i].strip()
 
 
@@ -282,11 +350,13 @@ def parse_jsonish_array_text(array_text):
     array_text = normalize_space(array_text)
     if not array_text:
         return []
+
     candidates = [
         array_text,
         array_text.replace('\\"', '"'),
         html.unescape(array_text).replace('\\"', '"'),
     ]
+
     for candidate in candidates:
         try:
             value = json.loads(candidate)
@@ -294,25 +364,112 @@ def parse_jsonish_array_text(array_text):
                 return [clean_cvs_text(x) for x in value if isinstance(x, str)]
         except Exception:
             pass
-    inner = array_text[1:-1] if array_text.startswith('[') and array_text.endswith(']') else array_text
+
+    inner = array_text[1:-1] if array_text.startswith("[") and array_text.endswith("]") else array_text
     parts = re.split(r'"\s*,\s*"', inner)
+
     cleaned = []
     for part in parts:
         val = clean_cvs_text(part.strip().strip('"'))
         if val:
             cleaned.append(val)
+
     return cleaned
+
+
+def find_vendor_mapping(source):
+    if not source:
+        return None
+
+    patterns = [
+        r'\{"vendorDetailsBullets":"\$([0-9A-Za-z]{1,3})","vendorDetailsParagraph":"\$([0-9A-Za-z]{1,3})"\}',
+        r'vendorDetailsBullets"\s*:\s*"\$([0-9A-Za-z]{1,3})"\s*,\s*"vendorDetailsParagraph"\s*:\s*"\$([0-9A-Za-z]{1,3})"',
+    ]
+
+    for pattern in patterns:
+        m = re.search(pattern, source)
+        if m:
+            return m
+
+    return None
+
+
+def extract_vendor_copy_from_source(source, source_name=""):
+    debug = {
+        "vendorPatternFound": False,
+        "vendorDetailsBulletsRef": "",
+        "vendorDetailsParagraphRef": "",
+        "featuresKey": "",
+        "descriptionKey": "",
+        "featuresArrayFound": False,
+        "descriptionBlockFound": False,
+        "Source Used": source_name,
+        "vendorPatternExcerpt": "",
+        "featuresArrayExcerpt": "",
+        "descriptionBlockExcerpt": "",
+    }
+
+    vendor_match = find_vendor_mapping(source)
+    if not vendor_match:
+        return {"features": [], "description": "", "debug": debug}
+
+    features_key = vendor_match.group(1)
+    description_key = vendor_match.group(2)
+
+    debug["vendorPatternFound"] = True
+    debug["vendorDetailsBulletsRef"] = f"${features_key}"
+    debug["vendorDetailsParagraphRef"] = f"${description_key}"
+    debug["featuresKey"] = features_key
+    debug["descriptionKey"] = description_key
+    debug["vendorPatternExcerpt"] = normalize_space(
+        source[max(0, vendor_match.start() - 200): vendor_match.end() + 600]
+    )[:2000]
+
+    # -------------------------
+    # FEATURES
+    # start right after XX:[
+    # end at matching ]
+    # -------------------------
+    features = []
+    features_marker = re.search(rf'(?m)(?:^|\n){re.escape(features_key)}:\[', source)
+
+    if features_marker:
+        array_start = features_marker.end() - 1
+        array_text = extract_balanced_bracket_block(source, array_start)
+        debug["featuresArrayFound"] = bool(array_text)
+        debug["featuresArrayExcerpt"] = normalize_space(array_text)[:2000]
+        features = parse_jsonish_array_text(array_text)
+
+    # -------------------------
+    # DESCRIPTION
+    # start right after YY:
+    # remove Txxxx, prefix
+    # end at next top-level key
+    # -------------------------
+    desc_block = extract_top_level_value_block(source, description_key)
+    debug["descriptionBlockFound"] = bool(desc_block)
+    debug["descriptionBlockExcerpt"] = normalize_space(desc_block)[:2000]
+
+    description = clean_cvs_text(desc_block)
+
+    return {
+        "features": dedupe_preserve_order(features),
+        "description": description,
+        "debug": debug,
+    }
 
 
 def extract_vendor_copy_from_nextjs(html_text):
     raw_text = get_nextjs_chunks(html_text)
+    raw_html = html.unescape(html_text or "")
+
     debug = {
-        "rawHtmlLength": len(html_text or ""),
+        "rawHtmlLength": len(raw_html or ""),
         "rawTextLength": len(raw_text or ""),
         "nextjsChunkFound": bool(raw_text),
-        "rawHtmlHasSelfNextF": "self.__next_f.push([1," in (html_text or ""),
-        "rawHtmlHasVendorDetailsBullets": "vendorDetailsBullets" in (html_text or ""),
-        "rawHtmlHasVendorDetailsParagraph": "vendorDetailsParagraph" in (html_text or ""),
+        "rawHtmlHasSelfNextF": "self.__next_f.push([1," in (raw_html or ""),
+        "rawHtmlHasVendorDetailsBullets": "vendorDetailsBullets" in (raw_html or ""),
+        "rawHtmlHasVendorDetailsParagraph": "vendorDetailsParagraph" in (raw_html or ""),
         "rawTextHasVendorDetailsBullets": "vendorDetailsBullets" in (raw_text or ""),
         "rawTextHasVendorDetailsParagraph": "vendorDetailsParagraph" in (raw_text or ""),
         "vendorPatternFound": False,
@@ -330,106 +487,64 @@ def extract_vendor_copy_from_nextjs(html_text):
         "rawTextVendorExcerpt": "",
     }
 
-    html_source = html_text or ""
-    raw_source = raw_text or ""
+    if "vendorDetailsBullets" in raw_html:
+        idx = raw_html.find("vendorDetailsBullets")
+        debug["rawHtmlVendorExcerpt"] = normalize_space(raw_html[max(0, idx - 250): idx + 1500])[:2000]
 
-    if "vendorDetailsBullets" in html_source:
-        idx = html_source.find("vendorDetailsBullets")
-        debug["rawHtmlVendorExcerpt"] = normalize_space(html_source[max(0, idx - 250): idx + 1200])[:2000]
-    if "vendorDetailsBullets" in raw_source:
-        idx = raw_source.find("vendorDetailsBullets")
-        debug["rawTextVendorExcerpt"] = normalize_space(raw_source[max(0, idx - 250): idx + 1200])[:2000]
+    if "vendorDetailsBullets" in raw_text:
+        idx = raw_text.find("vendorDetailsBullets")
+        debug["rawTextVendorExcerpt"] = normalize_space(raw_text[max(0, idx - 250): idx + 1500])[:2000]
 
-    source_used = raw_source
-    source_name = "raw_text"
-    vendor_match = re.search(
-        r'\{"vendorDetailsBullets":"\$([0-9a-zA-Z]{1,3})","vendorDetailsParagraph":"\$([0-9a-zA-Z]{1,3})"\}',
-        raw_source,
-    )
-    if not vendor_match:
-        vendor_match = re.search(
-            r'vendorDetailsBullets"\s*:\s*"\$([0-9a-zA-Z]{1,3})"\s*,\s*"vendorDetailsParagraph"\s*:\s*"\$([0-9a-zA-Z]{1,3})"',
-            raw_source,
-        )
+    # Prefer decoded chunk text first because it removes chunk wrappers.
+    result = extract_vendor_copy_from_source(raw_text, "raw_text")
+    result_debug = result.get("debug", {})
 
-    if not vendor_match:
-        source_used = html_source
-        source_name = "raw_html"
-        vendor_match = re.search(
-            r'\{"vendorDetailsBullets":"\$([0-9a-zA-Z]{1,3})","vendorDetailsParagraph":"\$([0-9a-zA-Z]{1,3})"\}',
-            html_source,
-        )
-        if not vendor_match:
-            vendor_match = re.search(
-                r'vendorDetailsBullets"\s*:\s*"\$([0-9a-zA-Z]{1,3})"\s*,\s*"vendorDetailsParagraph"\s*:\s*"\$([0-9a-zA-Z]{1,3})"',
-                html_source,
-            )
+    # Fallback to raw HTML if decoded chunk text does not produce enough copy.
+    if not result.get("description") and not result.get("features"):
+        result = extract_vendor_copy_from_source(raw_html, "raw_html")
+        result_debug = result.get("debug", {})
 
-    debug["Source Used"] = source_name
-    if not vendor_match:
-        return {"features": [], "description": "", "debug": debug}
+    debug.update(result_debug)
 
-    features_key = vendor_match.group(1)
-    description_key = vendor_match.group(2)
-    debug["vendorPatternFound"] = True
-    debug["vendorDetailsBulletsRef"] = f'${features_key}'
-    debug["vendorDetailsParagraphRef"] = f'${description_key}'
-    debug["featuresKey"] = features_key
-    debug["descriptionKey"] = description_key
-    debug["vendorPatternExcerpt"] = normalize_space(source_used[max(0, vendor_match.start() - 200): vendor_match.end() + 500])[:2000]
-
-    features = []
-    features_marker = re.search(rf'(?m)(?:^|\n){re.escape(features_key)}:\[', source_used)
-    if not features_marker and source_name == "raw_html":
-        features_marker = re.search(rf'{re.escape(features_key)}:\[', source_used)
-    if features_marker:
-        array_start = features_marker.end() - 1
-        array_text = extract_balanced_bracket_block(source_used, array_start)
-        debug["featuresArrayFound"] = bool(array_text)
-        debug["featuresArrayExcerpt"] = normalize_space(array_text)[:2000]
-        features = parse_jsonish_array_text(array_text)
-
-    desc_block = extract_top_level_value_block(source_used, description_key)
-    if not desc_block and source_name == "raw_html":
-        m_desc = re.search(
-            rf'{re.escape(description_key)}:(.*?)(?=\n[0-9a-zA-Z]{{1,3}}:(?=[\[\{{T"]))',
-            source_used,
-            flags=re.DOTALL,
-        )
-        if m_desc:
-            desc_block = m_desc.group(1).strip()
-    debug["descriptionBlockFound"] = bool(desc_block)
-    debug["descriptionBlockExcerpt"] = normalize_space(desc_block)[:2000]
-    description = clean_cvs_text(desc_block)
-
-    return {"features": dedupe_preserve_order(features), "description": description, "debug": debug}
+    return {
+        "features": result.get("features", []),
+        "description": result.get("description", ""),
+        "debug": debug,
+    }
 
 
 def get_cvs_images(url):
     html_text = get_html(url)
     matches = re.findall(r'/bizcontent/merchandising/productimages/high_res/[^\s"]+\.jpg\?[^\"]*', html_text)
+
     best_images = {}
     order = []
+
     for m in matches:
         full = "https://www.cvs.com" + m
         base = full.split("?")[0]
         name = base.split("/")[-1]
         size_match = re.search(r'Resize=\((\d+)', m)
         size = int(size_match.group(1)) if size_match else 0
+
         if name not in best_images:
             order.append(name)
             best_images[name] = {"url": base, "size": size}
         elif size > best_images[name]["size"]:
             best_images[name] = {"url": base, "size": size}
+
     return [best_images[name]["url"] for name in order]
 
 
 def get_cvs_text(html_text, retail_url=""):
     debug = {"Title Path": "", "Description Path": "", "Features Path": ""}
+
     if not html_text:
         return {"title": "", "description": "", "features": [], "debug": debug}
+
     soup = BeautifulSoup(html_text, "html.parser")
     title = ""
+
     h1 = soup.find("h1")
     if h1:
         title = normalize_space(h1.get_text(" ", strip=True))
@@ -441,10 +556,17 @@ def get_cvs_text(html_text, retail_url=""):
     vendor_copy = extract_vendor_copy_from_nextjs(html_text)
     description = vendor_copy.get("description", "")
     features = vendor_copy.get("features", [])
+
     debug.update(vendor_copy.get("debug", {}))
     debug["Description Path"] = "vendorDetailsParagraph" if description else "description_empty"
     debug["Features Path"] = "vendorDetailsBullets" if features else "features_empty"
-    return {"title": title, "description": description, "features": features[:5], "debug": debug}
+
+    return {
+        "title": title,
+        "description": description,
+        "features": features[:5],
+        "debug": debug,
+    }
 
 # =========================================
 # QUALITY HELPERS
