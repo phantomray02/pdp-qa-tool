@@ -1,6 +1,7 @@
 import io
 import json
 import re
+from difflib import SequenceMatcher
 from html import unescape
 from urllib.parse import urljoin
 
@@ -153,6 +154,22 @@ DETAILS_PATTERNS = [
     r"Ingredients",
 ]
 
+SOURCE_TITLE_ALIASES = [
+    "product name", "title", "product_title", "salsify title", "salsify_title", "name"
+]
+SOURCE_DESCRIPTION_ALIASES = [
+    "description", "product description", "long description", "long_description",
+    "salsify description", "salsify_description"
+]
+SOURCE_FEATURE_ALIASES = [
+    "features", "feature", "bullets", "benefits", "key features", "key_features",
+    "general feature 1", "general feature 2", "general feature 3", "general feature 4", "general feature 5",
+    "salsify features", "salsify_features"
+]
+SOURCE_IMAGE_ALIASES = [
+    "image", "image url", "image_url", "primary image", "primary_image", "main image", "main_image"
+]
+
 
 def normalize_space(text):
     text = str(text or "")
@@ -183,7 +200,7 @@ def simple_sentence_split(text):
     text = normalize_space(text)
     if not text:
         return []
-    parts = re.split(r"(?<=[\.\!\?])\s+|\s+\|\s+|;\s+|\s{2,}", text)
+    parts = re.split(r"(?<=[\.!\?])\s+|\s+\|\s+|;\s+|\s{2,}", text)
     return [normalize_space(p) for p in parts if normalize_space(p)]
 
 
@@ -200,7 +217,6 @@ def clean_section_lines(section_text):
 
     for line in lines:
         lowered = line.lower()
-
         if len(line) < 8:
             continue
         if contains_noise(line):
@@ -209,7 +225,6 @@ def clean_section_lines(section_text):
             continue
         if lowered in {"home", "shop", "household", "paper & plastic", "toilet paper"}:
             continue
-
         output.append(line)
 
     return dedupe_preserve_order(output)
@@ -241,7 +256,7 @@ def clean_page_text(soup):
 def make_excel_bytes(results_df):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        results_df.to_excel(writer, index=False, sheet_name="cvs_copy")
+        results_df.to_excel(writer, index=False, sheet_name="comparison")
     output.seek(0)
     return output.getvalue()
 
@@ -250,14 +265,12 @@ def pull_big_section(source, patterns, window=SECTION_WINDOW):
     source = str(source or "")
     if not source:
         return ""
-
     for pattern in patterns:
         match = re.search(pattern, source, flags=re.IGNORECASE | re.DOTALL)
         if match:
             start = max(0, match.start() - window)
             end = min(len(source), match.end() + window)
             return normalize_space(source[start:end])
-
     return ""
 
 
@@ -303,21 +316,17 @@ def extract_from_jsonld(soup, final_url):
     for block in parse_jsonld_blocks(soup):
         for node in iter_json_nodes(block):
             node_type = str(node.get("@type", "")).lower()
-
             if "product" in node_type or node.get("name") or node.get("description"):
                 if not title and node.get("name"):
                     title = normalize_space(node.get("name"))
-
                 if not description and node.get("description"):
                     description = normalize_space(node.get("description"))
-
                 if not image and node.get("image"):
                     img = node.get("image")
                     if isinstance(img, list) and img:
                         image = normalize_image_url(str(img[0]), final_url)
                     else:
                         image = normalize_image_url(str(img), final_url)
-
                 for key in ["features", "feature", "benefits", "bullets", "bulletText", "keyFeatures"]:
                     if key in node:
                         value = node[key]
@@ -345,26 +354,21 @@ def extract_title(soup, html_source, final_url):
         text = normalize_space(h1.get_text(" ", strip=True))
         if text:
             return text, "h1"
-
     jsonld = extract_from_jsonld(soup, final_url)
     if jsonld["title"]:
         return jsonld["title"], "jsonld_title"
-
     og_title = soup.find("meta", attrs={"property": "og:title"})
     if og_title and og_title.get("content"):
         return normalize_space(og_title.get("content")), "og_title"
-
     title_tag = soup.find("title")
     if title_tag:
         text = normalize_space(title_tag.get_text(" ", strip=True))
         if text:
             return text, "html_title"
-
     section = pull_big_section(html_source, TITLE_PATTERNS)
     lines = clean_section_lines(section)
     if lines:
         return lines[0], "title_section_line"
-
     return "", "title_empty"
 
 
@@ -375,7 +379,6 @@ def extract_description(soup, html_source, final_url):
 
     details_section = pull_big_section(html_source, DETAILS_PATTERNS)
     details_lines = clean_section_lines(details_section)
-
     details_keep = []
     for line in details_lines:
         lowered = line.lower()
@@ -383,7 +386,6 @@ def extract_description(soup, html_source, final_url):
             details_keep.append(line)
         elif len(line) >= 25 and not contains_noise(line):
             details_keep.append(line)
-
     details_keep = dedupe_preserve_order(details_keep)
     if details_keep:
         return " ".join(details_keep[:8]), "details_section_lines"
@@ -415,7 +417,6 @@ def synthesize_features_from_text(title_text, description_text, details_text):
         normalize_space(description_text),
         normalize_space(details_text),
     ]).lower()
-
     features = []
 
     phrase_patterns = [
@@ -441,7 +442,6 @@ def synthesize_features_from_text(title_text, description_text, details_text):
         r"vitamin e",
         r"chamomile",
     ]
-
     for pattern in phrase_patterns:
         for match in re.finditer(pattern, combined, flags=re.IGNORECASE):
             features.append(normalize_space(match.group(0)))
@@ -463,7 +463,6 @@ def synthesize_features_from_text(title_text, description_text, details_text):
         r"\bgray\b",
         r"\bblush\b",
     ]
-
     for pattern in count_patterns:
         for match in re.finditer(pattern, combined, flags=re.IGNORECASE):
             features.append(normalize_space(match.group(0)))
@@ -493,11 +492,9 @@ def extract_features(soup, html_source, final_url, title_text, description_text)
     bullets = []
     section_soup = build_soup(source_for_features)
     seen = set()
-
     for li in section_soup.find_all("li"):
         text = normalize_space(li.get_text(" ", strip=True))
         lowered = text.lower()
-
         if not text:
             continue
         if len(text) < 20:
@@ -509,7 +506,6 @@ def extract_features(soup, html_source, final_url, title_text, description_text)
         if text not in seen:
             seen.add(text)
             bullets.append(text)
-
     if bullets:
         return " | ".join(bullets[:20]), "features_html_bullets"
 
@@ -519,16 +515,11 @@ def extract_features(soup, html_source, final_url, title_text, description_text)
         lowered = line.lower()
         if any(hint in lowered for hint in FEATURE_HINTS):
             keep.append(line)
-
     keep = dedupe_preserve_order(keep)
     if keep:
         return " | ".join(keep[:20]), "features_section_lines"
 
-    synthesized = synthesize_features_from_text(
-        title_text,
-        description_text,
-        details_section,
-    )
+    synthesized = synthesize_features_from_text(title_text, description_text, details_section)
     if synthesized:
         return synthesized, "features_synthesized"
 
@@ -539,38 +530,101 @@ def extract_image(soup, final_url):
     jsonld = extract_from_jsonld(soup, final_url)
     if jsonld["image"]:
         return jsonld["image"], "jsonld_image"
-
     og_image = soup.find("meta", attrs={"property": "og:image"})
     if og_image and og_image.get("content"):
         return normalize_image_url(og_image.get("content"), final_url), "og_image"
-
     twitter_image = soup.find("meta", attrs={"name": "twitter:image"})
     if twitter_image and twitter_image.get("content"):
         return normalize_image_url(twitter_image.get("content"), final_url), "twitter_image"
-
     for img in soup.find_all("img"):
         src = img.get("src")
         if src and "productimages" in src:
             return normalize_image_url(src, final_url), "img_tag"
-
     return "", "image_empty"
+
+
+def normalize_compare_text(text):
+    text = normalize_space(text).lower()
+    text = text.replace("&", " and ")
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def string_similarity(a, b):
+    a = normalize_compare_text(a)
+    b = normalize_compare_text(b)
+    if not a and not b:
+        return 100
+    if not a or not b:
+        return 0
+    return round(100 * SequenceMatcher(None, a, b).ratio())
+
+
+def token_overlap_score(a, b):
+    a_tokens = set(normalize_compare_text(a).split())
+    b_tokens = set(normalize_compare_text(b).split())
+    if not a_tokens and not b_tokens:
+        return 100
+    if not a_tokens or not b_tokens:
+        return 0
+    return round(100 * len(a_tokens & b_tokens) / len(a_tokens | b_tokens))
+
+
+def detect_column(df, aliases):
+    cols = {c.strip().lower(): c for c in df.columns}
+    for alias in aliases:
+        if alias in cols:
+            return cols[alias]
+    for c in df.columns:
+        cl = c.strip().lower()
+        for alias in aliases:
+            if alias in cl:
+                return c
+    return None
+
+
+def collect_source_features(row, feature_cols):
+    values = []
+    for col in feature_cols:
+        if col in row and pd.notna(row[col]):
+            val = normalize_space(row[col])
+            if val:
+                values.append(val)
+    return " | ".join(dedupe_preserve_order(values))
+
+
+def compare_status(title_score, desc_score, feat_score, img_match):
+    passes = sum([
+        title_score >= 70,
+        desc_score >= 50,
+        feat_score >= 35,
+        img_match,
+    ])
+    return "PASS" if passes >= 3 else "FAIL"
 
 
 def validate_columns(df):
     cols = {c.strip().lower(): c for c in df.columns}
-    required = ["retail_url"]
-    missing = [col for col in required if col not in cols]
-    if missing:
-        raise ValueError(f"Missing required columns: {missing}")
+    if "retail_url" not in cols:
+        raise ValueError("Missing required column: retail_url")
     return cols
 
 
 def process_items(df, max_rows):
     cols = validate_columns(df)
-
     retail_col = cols["retail_url"]
     sku_col = cols.get("sku")
     rpc_col = cols.get("cvs rpc")
+
+    source_title_col = detect_column(df, SOURCE_TITLE_ALIASES)
+    source_description_col = detect_column(df, SOURCE_DESCRIPTION_ALIASES)
+    source_image_col = detect_column(df, SOURCE_IMAGE_ALIASES)
+    source_feature_cols = []
+    for alias in SOURCE_FEATURE_ALIASES:
+        found = detect_column(df, [alias])
+        if found and found not in source_feature_cols:
+            source_feature_cols.append(found)
 
     work_df = df.head(max_rows).copy()
     results = []
@@ -586,6 +640,11 @@ def process_items(df, max_rows):
         retail_url = str(row[retail_col]).strip() if pd.notna(row[retail_col]) else ""
         sku = str(row[sku_col]).strip() if sku_col and pd.notna(row[sku_col]) else ""
         cvs_rpc = str(row[rpc_col]).strip() if rpc_col and pd.notna(row[rpc_col]) else ""
+
+        source_title = normalize_space(row[source_title_col]) if source_title_col and pd.notna(row[source_title_col]) else ""
+        source_description = normalize_space(row[source_description_col]) if source_description_col and pd.notna(row[source_description_col]) else ""
+        source_features = collect_source_features(row, source_feature_cols)
+        source_image = normalize_space(row[source_image_col]) if source_image_col and pd.notna(row[source_image_col]) else ""
 
         status_box.write(f"Processing row {i} of {total}: CVS RPC = {cvs_rpc or '(blank)'}")
 
@@ -605,11 +664,14 @@ def process_items(df, max_rows):
         features_extraction_path = ""
         image_extraction_path = ""
 
-        cleaning_flags = []
+        title_score = 0
+        description_score = 0
+        features_score = 0
+        image_match = False
+        compare_status_value = "FAIL"
 
         try:
             status_code, final_url, html_source = fetch_page(session, retail_url)
-
             if status_code == 200:
                 source_capture_status = "success"
                 soup = build_soup(html_source)
@@ -625,20 +687,18 @@ def process_items(df, max_rows):
                 )
                 image_extracted, image_extraction_path = extract_image(soup, final_url)
 
-                if not title_extracted:
-                    cleaning_flags.append("missing_title")
-                if not description_extracted:
-                    cleaning_flags.append("missing_description")
-                if not features_extracted:
-                    cleaning_flags.append("missing_features")
-                if not image_extracted:
-                    cleaning_flags.append("missing_image")
-                if features_extraction_path == "features_empty":
-                    cleaning_flags.append("weak_features")
+                title_score = string_similarity(source_title, title_extracted)
+                description_score = token_overlap_score(source_description, description_extracted)
+                features_score = token_overlap_score(source_features, features_extracted)
 
+                if source_image and image_extracted:
+                    image_match = normalize_compare_text(source_image).split("?")[0] in normalize_compare_text(image_extracted)
+                else:
+                    image_match = False
+
+                compare_status_value = compare_status(title_score, description_score, features_score, image_match)
             else:
                 source_capture_error = f"http_{status_code}"
-
         except Exception as exc:
             source_capture_error = f"{type(exc).__name__}: {exc}"
 
@@ -650,6 +710,10 @@ def process_items(df, max_rows):
             "status_code": status_code,
             "source_capture_status": source_capture_status,
             "source_capture_error": source_capture_error,
+            "source_title": source_title,
+            "source_description": source_description,
+            "source_features": source_features,
+            "source_image": source_image,
             "title_extracted": title_extracted,
             "description_extracted": description_extracted,
             "features_extracted": features_extracted,
@@ -658,7 +722,11 @@ def process_items(df, max_rows):
             "description_extraction_path": description_extraction_path,
             "features_extraction_path": features_extraction_path,
             "image_extraction_path": image_extraction_path,
-            "cleaning_flags": " | ".join(cleaning_flags),
+            "title_score": title_score,
+            "description_score": description_score,
+            "features_score": features_score,
+            "image_match": image_match,
+            "compare_status": compare_status_value,
         })
 
         progress.progress(i / total)
@@ -669,13 +737,13 @@ def process_items(df, max_rows):
 
 
 def main():
-    st.set_page_config(page_title="CVS Copy Extractor", layout="wide")
-    st.title("CVS Copy Extractor")
+    st.set_page_config(page_title="PDP QA Comparison Tool", layout="wide")
+    st.title("PDP QA Comparison Tool")
 
-    uploaded_file = st.file_uploader("Upload CVS CSV", type=["csv"])
+    uploaded_file = st.file_uploader("Upload source CSV", type=["csv"])
 
     if uploaded_file is None:
-        st.info("Upload a CSV with at least a retail_url column.")
+        st.info("Upload a CSV with at least a retail_url column and your source title/description/features/image fields.")
         st.stop()
 
     try:
@@ -695,22 +763,22 @@ def main():
         step=1,
     )
 
-    if st.button("Pull CVS Copy"):
-        with st.spinner("Fetching CVS pages and extracting title, description, features, and image..."):
+    if st.button("Run Comparison"):
+        with st.spinner("Fetching CVS pages, extracting live PDP copy, and comparing against your source fields..."):
             try:
                 results_df = process_items(df, int(max_rows))
             except Exception as exc:
                 st.error(f"Run failed: {exc}")
                 st.stop()
 
-        st.success("Extraction complete.")
+        st.success("Comparison complete.")
         st.dataframe(results_df.head(50), width="stretch")
 
         excel_bytes = make_excel_bytes(results_df)
         st.download_button(
-            label="Download CVS Copy Excel",
+            label="Download Comparison Excel",
             data=excel_bytes,
-            file_name="cvs_copy_extracted.xlsx",
+            file_name="pdp_qa_comparison.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
