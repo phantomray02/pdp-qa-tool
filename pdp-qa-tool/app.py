@@ -156,11 +156,9 @@ def prepare_input_df(df):
     return df
 
 
-
 def clear_in_memory_caches():
     html_cache.clear()
     image_hash_cache.clear()
-
 
 # =========================================
 # HTML FETCH
@@ -177,14 +175,15 @@ def get_html(url):
         r = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
         if r.status_code == 200 and r.text:
             html_cache[url] = r.text
-            while len(html_cache) > MAX_CACHE:
+
+            while len(html_cache) > HTML_CACHE_MAX:
                 html_cache.pop(next(iter(html_cache)))
+
             return r.text
     except Exception:
         pass
 
     return ""
-
 # =========================================
 # SALSIFY PARSERS
 # =========================================
@@ -288,6 +287,7 @@ def get_salsify_images(url):
     return get_salsify_bundle(url)["images"]
 
 # =========================================
+# =========================================
 # CVS PARSERS
 # =========================================
 def clean_cvs_text(text):
@@ -318,28 +318,30 @@ def clean_cvs_text(text):
     # Remove transport tokens at the start, e.g. T4b2,
     text = re.sub(r'^(?:T[0-9A-Za-z]+,)+', "", text)
 
-    # Strip any trailing top-level key object/list bleed, e.g.:
-    #   ... Packaging may vary.27:{"locationAvailabilityStatus":"In Stock"}
-    #   ... coverage details.32:{...
-    #   ... something15:[...
+    # Strip trailing key bleed like:
+    # ... Packaging may vary.27:{"locationAvailabilityStatus":"In Stock"}
     text = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:\{.*$', "", text, flags=re.DOTALL)
     text = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:\[.*$', "", text, flags=re.DOTALL)
-
-    # Also strip trailing orphan key starts if they sneak in.
     text = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:$', "", text, flags=re.DOTALL)
 
-    # Remove leftover script-ish fragments if any remain.
+    # Remove leftover script fragments.
     text = re.sub(r'self\.__next_f\.push\(\[1,.*$', "", text, flags=re.DOTALL)
     text = re.sub(r'<script[^>]*>.*?</script>', " ", text, flags=re.DOTALL | re.IGNORECASE)
     text = re.sub(r'</?script[^>]*>', " ", text, flags=re.IGNORECASE)
 
-    # Remove escaped markdown-style asterisks from copy.
+    # Remove escaped markdown-style asterisks.
     text = text.replace("\\*", "*")
 
     # Normalize whitespace.
     text = re.sub(r"\s+", " ", text).strip()
 
     return text
+
+
+# Compatibility alias in case old references still exist.
+def clean_cvs_text_refined(text):
+    return clean_cvs_text(text)
+
 
 def get_nextjs_chunks(html_text):
     if not html_text:
@@ -409,7 +411,7 @@ def parse_jsonish_array_text(array_text):
         try:
             value = json.loads(candidate)
             if isinstance(value, list):
-                return [clean_cvs_text_refined(x) for x in value if isinstance(x, str)]
+                return [clean_cvs_text(x) for x in value if isinstance(x, str)]
         except Exception:
             pass
 
@@ -418,7 +420,7 @@ def parse_jsonish_array_text(array_text):
 
     cleaned = []
     for part in parts:
-        val = clean_cvs_text_refined(part.strip().strip('"'))
+        val = clean_cvs_text(part.strip().strip('"'))
         if val:
             cleaned.append(val)
 
@@ -464,14 +466,6 @@ def looks_like_next_newline_key(source, idx):
 
 
 def extract_newline_anchored_value_block(source, key):
-    """
-    Find:
-    \n34:
-    and keep going until the next newline-anchored key such as:
-    \n32:{
-    \n27:
-    \n15:[
-    """
     m = find_newline_anchored_key(source, key, for_array=False)
     if not m:
         return ""
@@ -530,7 +524,6 @@ def extract_newline_anchored_value_block(source, key):
             i += 1
             continue
 
-        # Break as soon as the next newline-anchored top-level key starts.
         if bracket_depth == 0 and brace_depth == 0 and paren_depth == 0:
             if looks_like_next_newline_key(source, i):
                 break
@@ -539,7 +532,6 @@ def extract_newline_anchored_value_block(source, key):
 
     block = source[start:i].strip()
 
-    # Extra safety: trim trailing key-object/list bleed if it still slipped through.
     block = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:\{.*$', "", block, flags=re.DOTALL)
     block = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:\[.*$', "", block, flags=re.DOTALL)
     block = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:$', "", block, flags=re.DOTALL)
@@ -603,11 +595,13 @@ def extract_vendor_copy_from_source(source, source_name=""):
         features = []
         description = ""
 
+        # FEATURES
         if bullets_array_match:
             array_text = bullets_array_match.group(1)
             debug["featuresArrayFound"] = True
             debug["featuresArrayExcerpt"] = normalize_space(array_text)[:2000]
             features = parse_jsonish_array_text(array_text)
+
         elif bullets_ref_match:
             ref_token = bullets_ref_match.group(1)
             ref_key = ref_token.replace("$", "")
@@ -623,8 +617,8 @@ def extract_vendor_copy_from_source(source, source_name=""):
                 debug["featuresArrayFound"] = bool(array_text)
                 debug["featuresArrayExcerpt"] = normalize_space(array_text)[:2000]
                 features = parse_jsonish_array_text(array_text)
-                
-# DESCRIPTION
+
+        # DESCRIPTION
         if paragraph_ref_match:
             ref_token = paragraph_ref_match.group(1)
             ref_key = ref_token.replace("$", "")
@@ -634,8 +628,6 @@ def extract_vendor_copy_from_source(source, source_name=""):
             debug["descriptionKey"] = ref_key
 
             desc_block = extract_newline_anchored_value_block(working_source, ref_key)
-
-            # Clean immediately after extraction so trailing key junk is removed.
             desc_block = clean_cvs_text(desc_block)
 
             debug["descriptionBlockFound"] = bool(desc_block)
@@ -653,9 +645,9 @@ def extract_vendor_copy_from_source(source, source_name=""):
 
             debug["descriptionBlockFound"] = bool(description)
             debug["descriptionBlockExcerpt"] = normalize_space(description)[:2000]
-            
-        cleaned_features = dedupe_preserve_order([clean_cvs_text_refined(x) for x in features])
-        cleaned_description = clean_cvs_text_refined(description)
+
+        cleaned_features = dedupe_preserve_order([clean_cvs_text(x) for x in features])
+        cleaned_description = clean_cvs_text(description)
 
         if cleaned_features or cleaned_description:
             return {
@@ -691,13 +683,14 @@ def extract_vendor_copy_from_source(source, source_name=""):
         features = parse_jsonish_array_text(array_text)
 
     desc_block = extract_newline_anchored_value_block(working_source, description_key)
+    desc_block = clean_cvs_text(desc_block)
+
     debug["descriptionBlockFound"] = bool(desc_block)
     debug["descriptionBlockExcerpt"] = normalize_space(desc_block)[:2000]
-    description = clean_cvs_text_refined(desc_block)
 
     return {
-        "features": dedupe_preserve_order([clean_cvs_text_refined(x) for x in features]),
-        "description": description,
+        "features": dedupe_preserve_order([clean_cvs_text(x) for x in features]),
+        "description": desc_block,
         "debug": debug,
     }
 
@@ -796,8 +789,8 @@ def _extract_cvs_text_from_html(html_text, retail_url=""):
 
     vendor_copy = extract_vendor_copy_from_nextjs(html_text)
 
-    description = clean_cvs_text_refined(vendor_copy.get("description", ""))
-    features = [clean_cvs_text_refined(x) for x in vendor_copy.get("features", [])]
+    description = clean_cvs_text(vendor_copy.get("description", ""))
+    features = [clean_cvs_text(x) for x in vendor_copy.get("features", [])]
 
     debug.update(vendor_copy.get("debug", {}))
     debug["Description Path"] = debug.get("Source Used", "") if description else "description_empty"
@@ -811,6 +804,14 @@ def _extract_cvs_text_from_html(html_text, retail_url=""):
     }
 
 
+@st.cache_data(show_spinner=False)
+def get_cvs_bundle(retail_url):
+    html_text = get_html(retail_url)
+    return {
+        "text": _extract_cvs_text_from_html(html_text, retail_url=retail_url),
+        "images": extract_cvs_images_from_html(html_text),
+    }
+    
 @st.cache_data(show_spinner=False)
 def get_cvs_bundle(retail_url):
     html_text = get_html(retail_url)
@@ -971,8 +972,8 @@ def process_row(row):
 
         debug_data = r_text.get("debug", {})
 
-        r_text["description"] = clean_cvs_text_refined(r_text.get("description", ""))
-        r_text["features"] = [clean_cvs_text_refined(f) for f in r_text.get("features", [])]
+        r_text["description"] = clean_cvs_text(r_text.get("description", ""))
+        r_text["features"] = [clean_cvs_text(f) for f in r_text.get("features", [])]
 
         title_score = keyword_score(s_text.get("title", ""), r_text.get("title", ""))
 
@@ -1269,37 +1270,35 @@ if st.session_state.processing_done and st.session_state.summary_rows:
     debug_df = pd.DataFrame(st.session_state.debug_rows)
 
     output = BytesIO()
+
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         summary_df.to_excel(writer, index=False, sheet_name="Summary")
         detail_df.to_excel(writer, index=False, sheet_name="Details")
         debug_df.to_excel(writer, index=False, sheet_name="Debug")
+
+        wb = writer.book
+        ws = wb["Summary"]
+
+        green = PatternFill(start_color="C6EFCE", fill_type="solid")
+        yellow = PatternFill(start_color="FFEB9C", fill_type="solid")
+        red = PatternFill(start_color="FFC7CE", fill_type="solid")
+
+        for row in ws.iter_rows(min_row=2):
+            for cell in row:
+                if isinstance(cell.value, (int, float)):
+                    if cell.value >= 80:
+                        cell.fill = green
+                    elif cell.value >= 50:
+                        cell.fill = yellow
+                    else:
+                        cell.fill = red
+
     output.seek(0)
-
-    wb = load_workbook(output)
-    ws = wb["Summary"]
-
-    green = PatternFill(start_color="C6EFCE", fill_type="solid")
-    yellow = PatternFill(start_color="FFEB9C", fill_type="solid")
-    red = PatternFill(start_color="FFC7CE", fill_type="solid")
-
-    for row in ws.iter_rows(min_row=2):
-        for cell in row:
-            if isinstance(cell.value, (int, float)):
-                if cell.value >= 80:
-                    cell.fill = green
-                elif cell.value >= 50:
-                    cell.fill = yellow
-                else:
-                    cell.fill = red
-
-    final_output = BytesIO()
-    wb.save(final_output)
-    final_output.seek(0)
 
     st.markdown("## 📊 Export Results")
     st.download_button(
         label="📥 Download Excel Report",
-        data=final_output.getvalue(),
+        data=output.getvalue(),
         file_name="pdp_qa_results.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key="download_excel_report_top",
@@ -1343,8 +1342,8 @@ if uploaded_file and st.session_state.processing_done and view_mode:
 
             debug_data = r_text.get("debug", {})
 
-            r_text["description"] = clean_cvs_text_refined(r_text.get("description", ""))
-            r_text["features"] = [clean_cvs_text_refined(f) for f in r_text.get("features", [])]
+            r_text["description"] = clean_cvs_text(r_text.get("description", ""))
+            r_text["features"] = [clean_cvs_text(f) for f in r_text.get("features", [])]
 
             s_title = s_text.get("title") or ""
             r_title = r_text.get("title") or ""
