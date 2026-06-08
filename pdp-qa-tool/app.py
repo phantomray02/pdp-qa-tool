@@ -36,13 +36,21 @@ REQUEST_TIMEOUT = 12
 IMAGE_TIMEOUT = 6
 MAX_CACHE = 500
 
-# Performance controls.
-BATCH_SIZE = 40
-MAX_WORKERS = 10
+# =========================================
+# PERFORMANCE CONTROLS
+# =========================================
+# 10 is usually too aggressive for your workload.
+# 6 is a much smoother default with HTML + images + PIL + NumPy.
+BATCH_SIZE = 30
+MAX_WORKERS = 6
 
-# Keep all image positions. Only reduce internal compare resolution.
-IMAGE_THUMBNAIL_SIZE = 96
-IMAGE_COMPARE_SIZE = 48
+# Keep all image positions.
+# Only reduce the internal comparison size for speed.
+IMAGE_THUMBNAIL_SIZE = 72
+IMAGE_COMPARE_SIZE = 40
+
+# Reduce UI redraw stutter.
+UI_UPDATE_EVERY = 2
 
 html_cache = {}
 image_bytes_cache = {}
@@ -1150,6 +1158,12 @@ if uploaded_file:
             st.session_state.last_file = file_id
             st.session_state.selected_brand = "All"
 
+            # Also clear in-memory caches when file changes.
+            html_cache.clear()
+            image_bytes_cache.clear()
+            processed_image_cache.clear()
+            image_score_cache.clear()
+
         # Always read from bytes, never directly from uploaded_file again.
         df = read_uploaded_csv_from_bytes(file_bytes)
         df = prepare_input_df(df)
@@ -1158,7 +1172,6 @@ if uploaded_file:
         brands = sorted(df["brand"].dropna().astype(str).unique().tolist()) if "brand" in df.columns else []
         brand_options = ["All"] + brands
 
-        # Keep selected brand valid.
         if st.session_state.selected_brand not in brand_options:
             st.session_state.selected_brand = "All"
 
@@ -1171,7 +1184,6 @@ if uploaded_file:
         if selected_brand != "All" and "brand" in df.columns:
             df = df[df["brand"].astype(str) == selected_brand]
 
-        # If there is nothing after filtering, stop cleanly.
         if df.empty:
             st.warning("No rows found for the selected brand.")
             st.stop()
@@ -1189,6 +1201,10 @@ if uploaded_file:
         # =====================================
         if not st.session_state.processing_done:
             st.write(f"Processing SKUs {start + 1} to {min(end, len(df))} of {len(df)}")
+            st.caption(
+                f"Workers: {MAX_WORKERS} | Batch Size: {BATCH_SIZE} | "
+                f"Internal Image Compare: {IMAGE_COMPARE_SIZE}x{IMAGE_COMPARE_SIZE}"
+            )
 
             if st.session_state.progress_bar is None:
                 st.session_state.progress_bar = st.progress(0)
@@ -1199,13 +1215,16 @@ if uploaded_file:
             overall_progress_bar = st.progress(0)
             total = len(batch_df)
 
+            completed = 0
+
             with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                 futures = [
                     executor.submit(process_row_cached, row.to_dict())
                     for _, row in batch_df.iterrows()
                 ]
 
-                for i, future in enumerate(as_completed(futures)):
+                for future in as_completed(futures):
+                    completed += 1
                     result = future.result()
 
                     if result:
@@ -1225,12 +1244,14 @@ if uploaded_file:
                             st.session_state.debug_rows.append(debug)
                             st.session_state.debug_skus.add(debug["SKU"])
 
-                    progress_bar.progress((i + 1) / max(total, 1))
-                    status_text.markdown(
-                        f"**Processed:** {i + 1}/{total}  \n"
-                        f"**Overall:** {start + i + 1}/{len(df)}"
-                    )
-                    overall_progress_bar.progress((start + i + 1) / max(len(df), 1))
+                    # Throttle Streamlit redraws to reduce stutter.
+                    if completed % UI_UPDATE_EVERY == 0 or completed == total:
+                        progress_bar.progress(completed / max(total, 1))
+                        status_text.markdown(
+                            f"**Processed:** {completed}/{total}  \n"
+                            f"**Overall:** {start + completed}/{len(df)}"
+                        )
+                        overall_progress_bar.progress((start + completed) / max(len(df), 1))
 
             # Move to next batch automatically.
             if start + BATCH_SIZE < len(df):
@@ -1250,7 +1271,6 @@ if uploaded_file:
         st.error("🔥 CRITICAL APP ERROR")
         st.text(str(e))
         st.text(traceback.format_exc())
-
 # =========================================
 # TOP EXPORT SECTION
 # =========================================
