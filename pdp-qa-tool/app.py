@@ -59,9 +59,7 @@ NOISE_PHRASES = [
     "media exchange",
     "supplier",
     "privacy practices",
-    "weekly ad",
     "extra big deals",
-    "wellness zone",
     "use the cvs app",
 ]
 
@@ -98,7 +96,9 @@ FEATURE_HINTS = [
     "free of added dyes",
     "maximum absorbency",
     "light absorbency",
-    "incontinence",
+    "ultra clean",
+    "ultra comfort",
+    "ultra soft",
     "trusted care",
     "soothing lotion",
     "cooling aloe",
@@ -176,10 +176,7 @@ def contains_noise(text):
     lowered = normalize_space(text).lower()
     if not lowered:
         return True
-    for phrase in NOISE_PHRASES:
-        if phrase in lowered:
-            return True
-    return False
+    return any(phrase in lowered for phrase in NOISE_PHRASES)
 
 
 def simple_sentence_split(text):
@@ -421,7 +418,6 @@ def synthesize_features_from_text(title_text, description_text, details_text):
 
     features = []
 
-    # Claims / phrases.
     phrase_patterns = [
         r"3x [a-z\- ]+",
         r"septic[- ]safe",
@@ -450,7 +446,6 @@ def synthesize_features_from_text(title_text, description_text, details_text):
         for match in re.finditer(pattern, combined, flags=re.IGNORECASE):
             features.append(normalize_space(match.group(0)))
 
-    # Count / size / pack cues.
     count_patterns = [
         r"\b\d+\s*mega rolls?\b",
         r"\b\d+\s*ct\b",
@@ -473,8 +468,7 @@ def synthesize_features_from_text(title_text, description_text, details_text):
         for match in re.finditer(pattern, combined, flags=re.IGNORECASE):
             features.append(normalize_space(match.group(0)))
 
-    features = dedupe_preserve_order(features)
-    return " | ".join(features[:20])
+    return " | ".join(dedupe_preserve_order(features)[:20])
 
 
 def extract_features(soup, html_source, final_url, title_text, description_text):
@@ -482,21 +476,20 @@ def extract_features(soup, html_source, final_url, title_text, description_text)
     if jsonld["features"]:
         return jsonld["features"], "jsonld_features"
 
-    # Old logic we want back: arrays + big sections + bullets + hints.
-    whole_text = html_source
-
     for pattern in FEATURE_ARRAY_PATTERNS:
-        match = re.search(pattern, whole_text, flags=re.IGNORECASE | re.DOTALL)
+        match = re.search(pattern, html_source, flags=re.IGNORECASE | re.DOTALL)
         if match:
             payload = normalize_space(match.group(1))
             if payload and not contains_noise(payload):
                 return payload, "features_json_array"
 
-    features_section = pull_big_section(html_source, FEATURE_PATTERNS)
     details_section = pull_big_section(html_source, DETAILS_PATTERNS)
+    features_section = pull_big_section(
+        html_source,
+        FEATURE_ARRAY_PATTERNS + DETAILS_PATTERNS + [r"<li[^>]*>.*?</li>"]
+    )
     source_for_features = f"{features_section} {details_section}"
 
-    # Parse bullets from section HTML first.
     bullets = []
     section_soup = build_soup(source_for_features)
     seen = set()
@@ -520,7 +513,6 @@ def extract_features(soup, html_source, final_url, title_text, description_text)
     if bullets:
         return " | ".join(bullets[:20]), "features_html_bullets"
 
-    # Clean general section lines and keep product-claim lines.
     lines = clean_section_lines(source_for_features)
     keep = []
     for line in lines:
@@ -532,7 +524,6 @@ def extract_features(soup, html_source, final_url, title_text, description_text)
     if keep:
         return " | ".join(keep[:20]), "features_section_lines"
 
-    # Final structured fallback from title + description + details.
     synthesized = synthesize_features_from_text(
         title_text,
         description_text,
@@ -643,7 +634,7 @@ def process_items(df, max_rows):
                 if not image_extracted:
                     cleaning_flags.append("missing_image")
 
-                if features_extraction_path in ("features_empty",):
+                if features_extraction_path == "features_empty":
                     cleaning_flags.append("weak_features")
 
             else:
@@ -727,3 +718,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+``
