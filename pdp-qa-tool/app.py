@@ -286,20 +286,17 @@ def get_salsify_images(url):
 # =========================================
 # CVS PARSERS
 # =========================================
-def clean_cvs_text(text):
+def clean_cvs_text_refined(text):
     if not text:
         return ""
 
     text = str(text)
-
     text = text.replace("\\u0026", "&")
     text = text.replace("\\n", " ")
     text = text.replace("\\/", "/")
     text = text.replace('\\"', '"')
-
     text = html.unescape(text)
 
-    # Remove split chunk wrappers if they leaked into the extracted text.
     text = re.sub(
         r'"\]\)\s*</script>\s*<script>\s*self\.__next_f\.push\(\[1,\s*"',
         "",
@@ -325,20 +322,12 @@ def clean_cvs_text(text):
         flags=re.DOTALL,
     )
 
-    # Remove transport token like T4b2,
     text = re.sub(r'^(?:T[0-9A-Za-z]+,)+', "", text)
-
     text = re.sub(r"\s+", " ", text)
     return text.strip(' \t\r\n"')
 
 
 def get_nextjs_chunks(html_text):
-    """
-    Decode all self.__next_f.push([1,"..."]) chunks into one combined source string.
-    Joining chunks with newlines is important because we want to anchor ref lookups on:
-    \n33:[
-    \n34:
-    """
     if not html_text:
         return ""
 
@@ -361,9 +350,6 @@ def get_nextjs_chunks(html_text):
 
 
 def extract_balanced_bracket_block(source, start_index):
-    """
-    If source[start_index] is '[', return the full balanced [...] block.
-    """
     if start_index < 0 or start_index >= len(source) or source[start_index] != "[":
         return ""
 
@@ -409,7 +395,7 @@ def parse_jsonish_array_text(array_text):
         try:
             value = json.loads(candidate)
             if isinstance(value, list):
-                return [clean_cvs_text(x) for x in value if isinstance(x, str)]
+                return [clean_cvs_text_refined(x) for x in value if isinstance(x, str)]
         except Exception:
             pass
 
@@ -418,7 +404,7 @@ def parse_jsonish_array_text(array_text):
 
     cleaned = []
     for part in parts:
-        val = clean_cvs_text(part.strip().strip('"'))
+        val = clean_cvs_text_refined(part.strip().strip('"'))
         if val:
             cleaned.append(val)
 
@@ -426,11 +412,6 @@ def parse_jsonish_array_text(array_text):
 
 
 def extract_vendor_details_local_block(source):
-    """
-    Always look first for:
-    "vendorContent":{"vendorDetails":{
-    This is the shared area you pointed out.
-    """
     if not source:
         return ""
 
@@ -447,35 +428,16 @@ def extract_vendor_details_local_block(source):
 
 
 def find_newline_anchored_key(source, key, for_array=False):
-    """
-    Focus on newline before the number.
-
-    Examples:
-    \n33:[
-    \n34:
-    """
     key = str(key)
-
     if for_array:
         pattern = rf'(?:^|\n){re.escape(key)}:\['
     else:
         pattern = rf'(?:^|\n){re.escape(key)}:'
 
-    m = re.search(pattern, source)
-    if not m:
-        return None
-
-    return m
+    return re.search(pattern, source)
 
 
 def looks_like_next_newline_key(source, idx):
-    """
-    True when source[idx:] starts like a newline-anchored top-level key:
-    \n32:{
-    \n33:[
-    \n34:T4b2,
-    \n27:
-    """
     if idx < 0 or idx >= len(source):
         return False
 
@@ -488,14 +450,6 @@ def looks_like_next_newline_key(source, idx):
 
 
 def extract_newline_anchored_value_block(source, key):
-    """
-    Find:
-    \n34:
-    and keep going until the next newline-anchored key:
-    \n32:{
-    \n27:
-    etc.
-    """
     m = find_newline_anchored_key(source, key, for_array=False)
     if not m:
         return ""
@@ -564,15 +518,6 @@ def extract_newline_anchored_value_block(source, key):
 
 
 def extract_vendor_copy_from_source(source, source_name=""):
-    """
-    Logic:
-    1. Look inside vendorContent.vendorDetails first.
-    2. Bullet / paragraph can be direct values.
-    3. Or can be refs like "$33" / "$34".
-    4. If refs, go to:
-       - \n33:[
-       - \n34:
-    """
     debug = {
         "vendorPatternFound": False,
         "vendorDetailsBulletsRef": "",
@@ -604,7 +549,6 @@ def extract_vendor_copy_from_source(source, source_name=""):
         debug["directVendorDetailsFound"] = True
         debug["directVendorContentExcerpt"] = normalize_space(local_block[:2500])
 
-        # BULLETS
         bullets_array_match = re.search(
             r'"vendorDetailsBullets"\s*:\s*(\[[^\]]*\])',
             local_block,
@@ -615,8 +559,6 @@ def extract_vendor_copy_from_source(source, source_name=""):
             local_block,
             flags=re.DOTALL,
         )
-
-        # PARAGRAPH
         paragraph_direct_match = re.search(
             r'"vendorDetailsParagraph"\s*:\s*"((?:\\.|[^"\\])*)"',
             local_block,
@@ -631,13 +573,11 @@ def extract_vendor_copy_from_source(source, source_name=""):
         features = []
         description = ""
 
-        # FEATURES
         if bullets_array_match:
             array_text = bullets_array_match.group(1)
             debug["featuresArrayFound"] = True
             debug["featuresArrayExcerpt"] = normalize_space(array_text)[:2000]
             features = parse_jsonish_array_text(array_text)
-
         elif bullets_ref_match:
             ref_token = bullets_ref_match.group(1)
             ref_key = ref_token.replace("$", "")
@@ -654,7 +594,6 @@ def extract_vendor_copy_from_source(source, source_name=""):
                 debug["featuresArrayExcerpt"] = normalize_space(array_text)[:2000]
                 features = parse_jsonish_array_text(array_text)
 
-        # DESCRIPTION
         if paragraph_ref_match:
             ref_token = paragraph_ref_match.group(1)
             ref_key = ref_token.replace("$", "")
@@ -667,7 +606,6 @@ def extract_vendor_copy_from_source(source, source_name=""):
             debug["descriptionBlockFound"] = bool(desc_block)
             debug["descriptionBlockExcerpt"] = normalize_space(desc_block)[:2000]
             description = desc_block
-
         elif paragraph_direct_match:
             raw_para = paragraph_direct_match.group(1)
             try:
@@ -678,8 +616,8 @@ def extract_vendor_copy_from_source(source, source_name=""):
             debug["descriptionBlockFound"] = bool(description)
             debug["descriptionBlockExcerpt"] = normalize_space(description)[:2000]
 
-        cleaned_features = dedupe_preserve_order([clean_cvs_text(x) for x in features])
-        cleaned_description = clean_cvs_text(description)
+        cleaned_features = dedupe_preserve_order([clean_cvs_text_refined(x) for x in features])
+        cleaned_description = clean_cvs_text_refined(description)
 
         if cleaned_features or cleaned_description:
             return {
@@ -688,10 +626,9 @@ def extract_vendor_copy_from_source(source, source_name=""):
                 "debug": debug,
             }
 
-    # FINAL FALLBACK
     vendor_match = re.search(
         r'\{"vendorDetailsBullets":"\$([0-9A-Za-z]{1,3})","vendorDetailsParagraph":"\$([0-9A-Za-z]{1,3})"\}',
-        working_source
+        working_source,
     )
 
     if not vendor_match:
@@ -718,10 +655,10 @@ def extract_vendor_copy_from_source(source, source_name=""):
     desc_block = extract_newline_anchored_value_block(working_source, description_key)
     debug["descriptionBlockFound"] = bool(desc_block)
     debug["descriptionBlockExcerpt"] = normalize_space(desc_block)[:2000]
-    description = clean_cvs_text(desc_block)
+    description = clean_cvs_text_refined(desc_block)
 
     return {
-        "features": dedupe_preserve_order([clean_cvs_text(x) for x in features]),
+        "features": dedupe_preserve_order([clean_cvs_text_refined(x) for x in features]),
         "description": description,
         "debug": debug,
     }
@@ -821,904 +758,8 @@ def _extract_cvs_text_from_html(html_text, retail_url=""):
 
     vendor_copy = extract_vendor_copy_from_nextjs(html_text)
 
-    description = clean_cvs_text(vendor_copy.get("description", ""))
-    features = [clean_cvs_text(x) for x in vendor_copy.get("features", [])]
-
-    debug.update(vendor_copy.get("debug", {}))
-    debug["Description Path"] = debug.get("Source Used", "") if description else "description_empty"
-    debug["Features Path"] = debug.get("Source Used", "") if features else "features_empty"
-
-    return {
-        "title": title,
-        "description": description,
-        "features": features[:5],
-        "debug": debug,
-    }
-
-
-@st.cache_data(show_spinner=False)
-def get_cvs_bundle(retail_url):
-    html_text = get_html(retail_url)
-    return {
-        "text": _extract_cvs_text_from_html(html_text, retail_url=retail_url),
-        "images": extract_cvs_images_from_html(html_text),
-    }
-
-
-def get_cvs_text(html_text, retail_url=""):
-    return _extract_cvs_text_from_html(html_text, retail_url=retail_url)
-
-
-def get_cvs_images(url):
-    return get_cvs_bundle(url)["images"]
-
-# =========================================
-# QUALITY HELPERS
-# =========================================
-def debug_description(desc):
-    if not desc:
-        return {"length": 0, "quality_score": 0, "issues": ["Missing description"]}
-
-    desc_clean = normalize_text(desc)
-    length = len(desc_clean)
-
-    absorbency_keywords = ["absorb", "leak", "fluid", "protection", "flushable", "soft", "care"]
-    size_keywords = ["count", "ct", "pack", "roll", "sheets", "wipes", "megabsolutely — here is **one full copy-paste `app.py`** that keeps the things you said you need:
-
-- compares **Salsify vs CVS** for:
-  - **Title**
-  - **Description**
-  - **Features**
-  - **Images**
-- keeps **Summary / Details / Debug** Excel export
-- keeps **Brand filter**
-- keeps **Full Visual QA mode**
-- keeps the **CVS parser** with both:
-  - direct format:
-    - `"vendorContent":{"vendorDetails":{"vendorDetailsBullets":[...],"vendorDetailsParagraph":"..."}}`
-  - ref format:
-    - `"vendorDetailsBullets":"$33"`
-    - `"vendorDetailsParagraph":"$34"`
-- uses the **newline-anchored ref lookup** you described:
-  - bullets from `\n33:[`
-  - description from `\n34:`
-- uses a **faster image hash compare** instead of heavy pixel-array diff
-- avoids the duplicate setup / duplicate config issues from before
-
-## Replace your entire `app.py` with this
-
-```python
-# =========================================
-# IMPORTS
-# =========================================
-import re
-import html
-import json
-import time
-import hashlib
-import traceback
-from io import BytesIO
-from difflib import SequenceMatcher
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
-import pandas as pd
-import requests
-import streamlit as st
-from bs4 import BeautifulSoup
-from PIL import Image
-from openpyxl import load_workbook
-from openpyxl.styles import PatternFill
-from pandas.errors import EmptyDataError
-
-# =========================================
-# APP SETUP
-# =========================================
-st.set_page_config(layout="wide")
-st.title("PDP QA Tool ✅")
-
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Connection": "keep-alive",
-}
-
-REQUEST_TIMEOUT = 6
-IMAGE_TIMEOUT = 2.5
-MAX_CACHE = 400
-
-# Conservative but smoother defaults.
-BATCH_SIZE = 8
-MAX_WORKERS = 2
-UI_UPDATE_EVERY = 1
-
-# Keep all images, but use fast image hashing.
-IMAGE_HASH_WIDTH = 9
-IMAGE_HASH_HEIGHT = 8
-
-html_cache = {}
-image_bytes_cache = {}
-image_hash_cache = {}
-
-# =========================================
-# GENERIC HELPERS
-# =========================================
-def normalize_space(text):
-    text = str(text or "")
-    text = html.unescape(text)
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
-
-
-def normalize_text(text):
-    if not isinstance(text, str):
-        return ""
-    return re.sub(r"[^a-z0-9\s]", "", text.lower())
-
-
-def dedupe_preserve_order(items):
-    seen = set()
-    out = []
-    for item in items:
-        item = normalize_space(item)
-        if item and item not in seen:
-            seen.add(item)
-            out.append(item)
-    return out
-
-
-def keyword_score(a, b):
-    return int(SequenceMatcher(None, normalize_text(a), normalize_text(b)).ratio() * 100)
-
-
-def equal_height_block(text):
-    return f"<div style='min-height:180px; display:flex; align-items:flex-start;'>{text}</div>"
-
-
-def equal_feature_block(text):
-    return f"<div style='min-height:70px; display:flex; align-items:flex-start;'>{text}</div>"
-
-
-def score_badge(score):
-    if score >= 80:
-        return f"✅ <span style='color:#4CAF50; font-weight:700'>{score}% (Strong)</span>"
-    if score >= 50:
-        return f"🟡 <span style='color:#FFC107; font-weight:700'>{score}% (Review)</span>"
-    return f"🔴 <span style='color:#F44336; font-weight:700'>{score}% (Poor)</span>"
-
-
-def score_bar(score):
-    if score >= 80:
-        color = "#2E7D32"
-    elif score >= 50:
-        color = "#F9A825"
-    else:
-        color = "#C62828"
-
-    return (
-        f"<div style='background-color:{color}; padding:6px 10px; border-radius:6px; "
-        f"color:white; font-weight:600; margin-top:6px; margin-bottom:6px;'>Score: {score}%</div>"
-    )
-
-
-def read_uploaded_csv_from_bytes(file_bytes):
-    if not file_bytes:
-        raise EmptyDataError("Uploaded file is empty.")
-    if len(file_bytes.strip()) == 0:
-        raise EmptyDataError("Uploaded file is empty.")
-
-    last_error = None
-    for encoding in ["utf-8-sig", "utf-8", "latin1"]:
-        try:
-            return pd.read_csv(BytesIO(file_bytes), encoding=encoding)
-        except Exception as e:
-            last_error = e
-
-    raise last_error if last_error else EmptyDataError("Could not parse uploaded CSV.")
-
-
-def prepare_input_df(df):
-    df = df.copy()
-    df.columns = [c.strip().lower() for c in df.columns]
-    df.rename(
-        columns={
-            "salsify url": "salsify_url",
-            "retail url": "retail_url",
-            "sku id": "sku",
-            "product sku": "sku",
-            "cvs rpc": "cvs_rpc",
-        },
-        inplace=True,
-    )
-
-    if "brand" not in df.columns and len(df.columns) >= 5:
-        df.rename(columns={df.columns"brand"}, inplace=True)
-
-    required = ["sku", "salsify_url", "retail_url"]
-    missing = [c for c in required if c not in df.columns]
-    if missing:
-        raise ValueError(f"Missing required columns: {missing}")
-
-    return df
-
-
-def clear_in_memory_caches():
-    html_cache.clear()
-    image_bytes_cache.clear()
-    image_hash_cache.clear()
-
-# =========================================
-# HTML FETCH
-# =========================================
-def get_html(url):
-    if not url:
-        return ""
-
-    if url in html_cache:
-        html_cache[url] = html_cache.pop(url)
-        return html_cache[url]
-
-    try:
-        r = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
-        if r.status_code == 200 and r.text:
-            html_cache[url] = r.text
-            while len(html_cache) > MAX_CACHE:
-                html_cache.pop(next(iter(html_cache)))
-            return r.text
-    except Exception:
-        pass
-
-    return ""
-
-# =========================================
-# SALSIFY PARSERS
-# =========================================
-def _parse_salsify_page(html_text):
-    empty = {
-        "text": {
-            "title": "",
-            "description": "",
-            "feature1": "",
-            "feature2": "",
-            "feature3": "",
-            "feature4": "",
-            "feature5": "",
-        },
-        "images": [],
-    }
-
-    if not html_text:
-        return empty
-
-    soup = BeautifulSoup(html_text, "html.parser")
-    script = soup.find("script", {"id": "__NEXT_DATA__"})
-    if not script:
-        return empty
-
-    try:
-        data = json.loads(script.string)
-    except Exception:
-        return empty
-
-    text_map = {}
-    try:
-        props = data["props"]["pageProps"]["product"]["propertySets"][0]["properties"]
-        for p in props:
-            key = p.get("property")
-            values = p.get("values", [])
-            if values:
-                text_map[key] = values[0]
-    except Exception:
-        pass
-
-    text = {
-        "title": text_map.get("PRODUCT_TITLE", ""),
-        "description": text_map.get("DESCRIPTION", ""),
-        "feature1": text_map.get("FEATURE_1", ""),
-        "feature2": text_map.get("FEATURE_2", ""),
-        "feature3": text_map.get("FEATURE_3", ""),
-        "feature4": text_map.get("FEATURE_4", ""),
-        "feature5": text_map.get("FEATURE_5", ""),
-    }
-
-    asset_map = {}
-    try:
-        properties = data["props"]["pageProps"]["product"]["digitalAssets"]["properties"]
-        for prop in properties:
-            name = prop.get("property", "").lower()
-            values = prop.get("values", [])
-            if values:
-                val = values[0].get("value", "")
-                if val:
-                    asset_map[name] = val.split("?")[0]
-    except Exception:
-        pass
-
-    def find(keyword):
-        for k, v in asset_map.items():
-            if keyword in k:
-                return v
-        return None
-
-    ordered = [find("online"), find("back"), find("left")]
-    atf_io = find("atf io")
-
-    if atf_io:
-        ordered.append(atf_io)
-        for k in ["atf 2", "atf 3", "atf 4", "atf 5", "atf 6"]:
-            ordered.append(find(k))
-    else:
-        for k in ["atf 2", "atf 3", "atf 4", "atf 5", "atf 6"]:
-            ordered.append(find(k))
-
-    images = [{"url": x} for x in ordered[:8] if x]
-
-    return {
-        "text": text,
-        "images": images,
-    }
-
-
-@st.cache_data(show_spinner=False)
-def get_salsify_bundle(url):
-    html_text = get_html(url)
-    return _parse_salsify_page(html_text)
-
-
-def get_salsify_text(url):
-    return get_salsify_bundle(url)["text"]
-
-
-def get_salsify_images(url):
-    return get_salsify_bundle(url)["images"]
-
-# =========================================
-# CVS PARSERS
-# =========================================
-def clean_cvs_text(text):
-    if not text:
-        return ""
-
-    text = str(text)
-
-    text = text.replace("\\u0026", "&")
-    text = text.replace("\\n", " ")
-    text = text.replace("\\/", "/")
-    text = text.replace('\\"', '"')
-    text = html.unescape(text)
-
-    # Remove split chunk wrappers if they leaked into the extracted text.
-    text = re.sub(
-        r'"\]\)\s*</script>\s*<script>\s*self\.__next_f\.push\(\[1,\s*"',
-        "",
-        text,
-        flags=re.DOTALL,
-    )
-    text = re.sub(
-        r'"\]\)&lt;/script&gt;&lt;script&gt;self\.__next_f\.push\(\[1,\s*"',
-        "",
-        text,
-        flags=re.DOTALL,
-    )
-    text = re.sub(
-        r'"\]\)&lt;\/script&gt;&lt;script&gt;self\.__next_f\.push\(\[1,\s*"',
-        "",
-        text,
-        flags=re.DOTALL,
-    )
-    text = re.sub(
-        r'"\]\)\s*self\.__next_f\.push\(\[1,\s*"',
-        "",
-        text,
-        flags=re.DOTALL,
-    )
-
-    # Remove transport token like T4b2,
-    text = re.sub(r'^(?:T[0-9A-Za-z]+,)+', "", text)
-
-    text = re.sub(r"\s+", " ", text)
-    return text.strip(' \t\r\n"')
-
-
-def get_nextjs_chunks(html_text):
-    """
-    Decode all self.__next_f.push([1,"..."]) chunks into one combined source string.
-    Joining chunks with newlines is important because we want to anchor ref lookups on:
-    \n33:[
-    \n34:
-    """
-    if not html_text:
-        return ""
-
-    source = html.unescape(html_text)
-    pattern = r'self\.__next_f\.push\(\[1,\s*"((?:\\.|[^"\\])*)"\s*\]\)'
-    chunks = []
-
-    for m in re.finditer(pattern, source, re.DOTALL):
-        payload = m.group(1)
-        try:
-            decoded = json.loads(f'"{payload}"')
-        except Exception:
-            decoded = payload
-            decoded = decoded.replace("\\n", "\n")
-            decoded = decoded.replace("\\/", "/")
-            decoded = decoded.replace('\\"', '"')
-        chunks.append(decoded)
-
-    return "\n".join(chunks)
-
-
-def extract_balanced_bracket_block(source, start_index):
-    """
-    If source[start_index] is '[', return the full balanced [...] block.
-    """
-    if start_index < 0 or start_index >= len(source) or source[start_index] != "[":
-        return ""
-
-    depth = 0
-    in_str = False
-    escape = False
-
-    for i in range(start_index, len(source)):
-        ch = source[i]
-
-        if in_str:
-            if escape:
-                escape = False
-            elif ch == "\\":
-                escape = True
-            elif ch == '"':
-                in_str = False
-        else:
-            if ch == '"':
-                in_str = True
-            elif ch == "[":
-                depth += 1
-            elif ch == "]":
-                depth -= 1
-                if depth == 0:
-                    return source[start_index:i + 1]
-
-    return ""
-
-
-def parse_jsonish_array_text(array_text):
-    array_text = normalize_space(array_text)
-    if not array_text:
-        return []
-
-    candidates = [
-        array_text,
-        array_text.replace('\\"', '"'),
-        html.unescape(array_text).replace('\\"', '"'),
-    ]
-
-    for candidate in candidates:
-        try:
-            value = json.loads(candidate)
-            if isinstance(value, list):
-                return [clean_cvs_text(x) for x in value if isinstance(x, str)]
-        except Exception:
-            pass
-
-    inner = array_text[1:-1] if array_text.startswith("[") and array_text.endswith("]") else array_text
-    parts = re.split(r'"\s*,\s*"', inner)
-
-    cleaned = []
-    for part in parts:
-        val = clean_cvs_text(part.strip().strip('"'))
-        if val:
-            cleaned.append(val)
-
-    return cleaned
-
-
-def extract_vendor_details_local_block(source):
-    """
-    Always look first for:
-    "vendorContent":{"vendorDetails":{
-    This is the shared area you pointed out.
-    """
-    if not source:
-        return ""
-
-    m = re.search(
-        r'"vendorContent"\s*:\s*\{\s*"vendorDetails"\s*:\s*\{',
-        source,
-        flags=re.DOTALL,
-    )
-    if not m:
-        return ""
-
-    start = m.start()
-    # Large local window so we capture direct values and nearby refs.
-    return source[start:start + 25000]
-
-
-def find_newline_anchored_key(source, key, for_array=False):
-    """
-    Focus on newline before the number.
-
-    Examples:
-    \n33:[
-    \n34:
-    """
-    key = str(key)
-
-    if for_array:
-        pattern = rf'(?:^|\n){re.escape(key)}:\['
-    else:
-        pattern = rf'(?:^|\n){re.escape(key)}:'
-
-    m = re.search(pattern, source)
-    if not m:
-        return None
-
-    return m
-
-
-def looks_like_next_newline_key(source, idx):
-    """
-    True when source[idx:] starts like a newline-anchored top-level key:
-    \n32:{
-    \n33:[
-    \n34:T4b2,
-    \n27:
-    """
-    if idx < 0 or idx >= len(source):
-        return False
-
-    return bool(
-        re.match(
-            r'(?:\n)([0-9A-Za-z]{1,3}):(?=[\[{"]|T[0-9A-Za-z]+,|null|true|false|\d)',
-            source[idx:],
-        )
-    )
-
-
-def extract_newline_anchored_value_block(source, key):
-    """
-    Find:
-    \n34:
-    and keep going until the next newline-anchored key:
-    \n32:{
-    \n27:
-    etc.
-    """
-    m = find_newline_anchored_key(source, key, for_array=False)
-    if not m:
-        return ""
-
-    start = m.end()
-    i = start
-
-    in_str = False
-    escape = False
-    bracket_depth = 0
-    brace_depth = 0
-    paren_depth = 0
-
-    while i < len(source):
-        ch = source[i]
-
-        if in_str:
-            if escape:
-                escape = False
-            elif ch == "\\":
-                escape = True
-            elif ch == '"':
-                in_str = False
-            i += 1
-            continue
-
-        if ch == '"':
-            in_str = True
-            i += 1
-            continue
-
-        if ch == "[":
-            bracket_depth += 1
-            i += 1
-            continue
-        if ch == "]":
-            bracket_depth = max(0, bracket_depth - 1)
-            i += 1
-            continue
-
-        if ch == "{":
-            brace_depth += 1
-            i += 1
-            continue
-        if ch == "}":
-            brace_depth = max(0, brace_depth - 1)
-            i += 1
-            continue
-
-        if ch == "(":
-            paren_depth += 1
-            i += 1
-            continue
-        if ch == ")":
-            paren_depth = max(0, paren_depth - 1)
-            i += 1
-            continue
-
-        if bracket_depth == 0 and brace_depth == 0 and paren_depth == 0:
-            if looks_like_next_newline_key(source, i):
-                break
-
-        i += 1
-
-    return source[start:i].strip()
-
-
-def extract_vendor_copy_from_source(source, source_name=""):
-    """
-    Logic:
-    1. Look inside vendorContent.vendorDetails first.
-    2. Bullet / paragraph can be direct values.
-    3. Or can be refs like "$33" / "$34".
-    4. If refs, go to:
-       - \n33:[
-       - \n34:
-    """
-    debug = {
-        "vendorPatternFound": False,
-        "vendorDetailsBulletsRef": "",
-        "vendorDetailsParagraphRef": "",
-        "featuresKey": "",
-        "descriptionKey": "",
-        "featuresArrayFound": False,
-        "descriptionBlockFound": False,
-        "directVendorContentFound": False,
-        "directVendorDetailsFound": False,
-        "Source Used": source_name,
-        "vendorPatternExcerpt": "",
-        "featuresArrayExcerpt": "",
-        "descriptionBlockExcerpt": "",
-        "directVendorContentExcerpt": "",
-    }
-
-    if not source:
-        return {"features": [], "description": "", "debug": debug}
-
-    working_source = html.unescape(source)
-    working_source = working_source.replace('\\"', '"')
-    working_source = working_source.replace("\\u0026", "&")
-
-    local_block = extract_vendor_details_local_block(working_source)
-
-    if local_block:
-        debug["directVendorContentFound"] = True
-        debug["directVendorDetailsFound"] = True
-        debug["directVendorContentExcerpt"] = normalize_space(local_block[:2500])
-
-        # Direct array:
-        bullets_array_match = re.search(
-            r'"vendorDetailsBullets"\s*:\s*(\[[^\]]*\])',
-            local_block,
-            flags=re.DOTALL,
-        )
-
-        # Ref token:
-        bullets_ref_match = re.search(
-            r'"vendorDetailsBullets"\s*:\s*"(\$[0-9A-Za-z]{1,3})"',
-            local_block,
-            flags=re.DOTALL,
-        )
-
-        # Direct paragraph:
-        paragraph_direct_match = re.search(
-            r'"vendorDetailsParagraph"\s*:\s*"((?:\\.|[^"\\])*)"',
-            local_block,
-            flags=re.DOTALL,
-        )
-
-        # Ref token:
-        paragraph_ref_match = re.search(
-            r'"vendorDetailsParagraph"\s*:\s*"(\$[0-9A-Za-z]{1,3})"',
-            local_block,
-            flags=re.DOTALL,
-        )
-
-        features = []
-        description = ""
-
-        # FEATURES
-        if bullets_array_match:
-            array_text = bullets_array_match.group(1)
-            debug["featuresArrayFound"] = True
-            debug["featuresArrayExcerpt"] = normalize_space(array_text)[:2000]
-            features = parse_jsonish_array_text(array_text)
-
-        elif bullets_ref_match:
-            ref_token = bullets_ref_match.group(1)
-            ref_key = ref_token.replace("$", "")
-
-            debug["vendorPatternFound"] = True
-            debug["vendorDetailsBulletsRef"] = ref_token
-            debug["featuresKey"] = ref_key
-
-            # Anchor on newline before the number.
-            features_marker = find_newline_anchored_key(working_source, ref_key, for_array=True)
-            if features_marker:
-                array_start = features_marker.end() - 1
-                array_text = extract_balanced_bracket_block(working_source, array_start)
-                debug["featuresArrayFound"] = bool(array_text)
-                debug["featuresArrayExcerpt"] = normalize_space(array_text)[:2000]
-                features = parse_jsonish_array_text(array_text)
-
-        # DESCRIPTION
-        if paragraph_ref_match:
-            ref_token = paragraph_ref_match.group(1)
-            ref_key = ref_token.replace("$", "")
-
-            debug["vendorPatternFound"] = True
-            debug["vendorDetailsParagraphRef"] = ref_token
-            debug["descriptionKey"] = ref_key
-
-            # Anchor on newline before the number.
-            desc_block = extract_newline_anchored_value_block(working_source, ref_key)
-            debug["descriptionBlockFound"] = bool(desc_block)
-            debug["descriptionBlockExcerpt"] = normalize_space(desc_block)[:2000]
-            description = desc_block
-
-        elif paragraph_direct_match:
-            raw_para = paragraph_direct_match.group(1)
-            try:
-                description = json.loads(f'"{raw_para}"')
-            except Exception:
-                description = raw_para
-
-            debug["descriptionBlockFound"] = bool(description)
-            debug["descriptionBlockExcerpt"] = normalize_space(description)[:2000]
-
-        cleaned_features = dedupe_preserve_order([clean_cvs_text(x) for x in features])
-        cleaned_description = clean_cvs_text(description)
-
-        if cleaned_features or cleaned_description:
-            return {
-                "features": cleaned_features,
-                "description": cleaned_description,
-                "debug": debug,
-            }
-
-    # Final fallback: try old global ref mapping one more time.
-    vendor_match = re.search(
-        r'\{"vendorDetailsBullets":"\$([0-9A-Za-z]{1,3})","vendorDetailsParagraph":"\$([0-9A-Za-z]{1,3})"\}',
-        working_source
-    )
-
-    if not vendor_match:
-        return {"features": [], "description": "", "debug": debug}
-
-    features_key = vendor_match.group(1)
-    description_key = vendor_match.group(2)
-
-    debug["vendorPatternFound"] = True
-    debug["vendorDetailsBulletsRef"] = f"${features_key}"
-    debug["vendorDetailsParagraphRef"] = f"${description_key}"
-    debug["featuresKey"] = features_key
-    debug["descriptionKey"] = description_key
-
-    features = []
-    features_marker = find_newline_anchored_key(working_source, features_key, for_array=True)
-    if features_marker:
-        array_start = features_marker.end() - 1
-        array_text = extract_balanced_bracket_block(working_source, array_start)
-        debug["featuresArrayFound"] = bool(array_text)
-        debug["featuresArrayExcerpt"] = normalize_space(array_text)[:2000]
-        features = parse_jsonish_array_text(array_text)
-
-    desc_block = extract_newline_anchored_value_block(working_source, description_key)
-    debug["descriptionBlockFound"] = bool(desc_block)
-    debug["descriptionBlockExcerpt"] = normalize_space(desc_block)[:2000]
-    description = clean_cvs_text(desc_block)
-
-    return {
-        "features": dedupe_preserve_order([clean_cvs_text(x) for x in features]),
-        "description": description,
-        "debug": debug,
-    }
-
-
-def extract_vendor_copy_from_nextjs(html_text):
-    raw_text = get_nextjs_chunks(html_text)
-    raw_html = html.unescape(html_text or "")
-
-    debug = {
-        "rawHtmlLength": len(raw_html or ""),
-        "rawTextLength": len(raw_text or ""),
-        "nextjsChunkFound": bool(raw_text),
-        "rawHtmlHasSelfNextF": "self.__next_f.push([1," in (raw_html or ""),
-        "rawHtmlHasVendorDetailsBullets": "vendorDetailsBullets" in (raw_html or ""),
-        "rawHtmlHasVendorDetailsParagraph": "vendorDetailsParagraph" in (raw_html or ""),
-        "rawTextHasVendorDetailsBullets": "vendorDetailsBullets" in (raw_text or ""),
-        "rawTextHasVendorDetailsParagraph": "vendorDetailsParagraph" in (raw_text or ""),
-        "vendorPatternFound": False,
-        "vendorDetailsBulletsRef": "",
-        "vendorDetailsParagraphRef": "",
-        "featuresKey": "",
-        "descriptionKey": "",
-        "featuresArrayFound": False,
-        "descriptionBlockFound": False,
-        "directVendorContentFound": False,
-        "directVendorDetailsFound": False,
-        "Source Used": "",
-        "vendorPatternExcerpt": "",
-        "featuresArrayExcerpt": "",
-        "descriptionBlockExcerpt": "",
-        "directVendorContentExcerpt": "",
-        "rawHtmlVendorExcerpt": "",
-        "rawTextVendorExcerpt": "",
-    }
-
-    if "vendorDetailsBullets" in raw_html:
-        idx = raw_html.find("vendorDetailsBullets")
-        debug["rawHtmlVendorExcerpt"] = normalize_space(raw_html[max(0, idx - 250): idx + 1500])[:2000]
-
-    if "vendorDetailsBullets" in raw_text:
-        idx = raw_text.find("vendorDetailsBullets")
-        debug["rawTextVendorExcerpt"] = normalize_space(raw_text[max(0, idx - 250): idx + 1500])[:2000]
-
-    # Prefer decoded chunk text first.
-    result = extract_vendor_copy_from_source(raw_text, "raw_text")
-
-    # Fall back to raw html if needed.
-    if not result.get("description") and not result.get("features"):
-        result = extract_vendor_copy_from_source(raw_html, "raw_html")
-
-    debug.update(result.get("debug", {}))
-
-    return {
-        "features": result.get("features", []),
-        "description": result.get("description", ""),
-        "debug": debug,
-    }
-
-
-def extract_cvs_images_from_html(html_text):
-    matches = re.findall(r'/bizcontent/merchandising/productimages/high_res/[^\s"]+\.jpg\?[^\"]*', html_text or "")
-
-    best_images = {}
-    order = []
-
-    for m in matches:
-        full = "https://www.cvs.com" + m
-        base = full.split("?")[0]
-        name = base.split("/")[-1]
-        size_match = re.search(r"Resize=\((\d+)", m)
-        size = int(size_match.group(1)) if size_match else 0
-
-        if name not in best_images:
-            order.append(name)
-            best_images[name] = {"url": base, "size": size}
-        elif size > best_images[name]["size"]:
-            best_images[name] = {"url": base, "size": size}
-
-    return [best_images[name]["url"] for name in order]
-
-
-def _extract_cvs_text_from_html(html_text, retail_url=""):
-    debug = {"Title Path": "", "Description Path": "", "Features Path": ""}
-
-    if not html_text:
-        return {"title": "", "description": "", "features": [], "debug": debug}
-
-    soup = BeautifulSoup(html_text, "html.parser")
-    title = ""
-
-    h1 = soup.find("h1")
-    if h1:
-        title = normalize_space(h1.get_text(" ", strip=True))
-        debug["Title Path"] = "h1"
-    elif soup.title:
-        title = normalize_space(soup.title.get_text(" ", strip=True))
-        debug["Title Path"] = "html_title"
-
-    vendor_copy = extract_vendor_copy_from_nextjs(html_text)
-
-    description = clean_cvs_text(vendor_copy.get("description", ""))
-    features = [clean_cvs_text(x) for x in vendor_copy.get("features", [])]
+    description = clean_cvs_text_refined(vendor_copy.get("description", ""))
+    features = [clean_cvs_text_refined(x) for x in vendor_copy.get("features", [])]
 
     debug.update(vendor_copy.get("debug", {}))
     debug["Description Path"] = debug.get("Source Used", "") if description else "description_empty"
@@ -1906,8 +947,8 @@ def process_row(row):
 
         debug_data = r_text.get("debug", {})
 
-        r_text["description"] = clean_cvs_text(r_text.get("description", ""))
-        r_text["features"] = [clean_cvs_text(f) for f in r_text.get("features", [])]
+        r_text["description"] = clean_cvs_text_refined(r_text.get("description", ""))
+        r_text["features"] = [clean_cvs_text_refined(f) for f in r_text.get("features", [])]
 
         title_score = keyword_score(s_text.get("title", ""), r_text.get("title", ""))
 
@@ -2041,37 +1082,26 @@ uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
 if "start_idx" not in st.session_state:
     st.session_state.start_idx = 0
-
 if "summary_rows" not in st.session_state:
     st.session_state.summary_rows = []
-
 if "export_rows" not in st.session_state:
     st.session_state.export_rows = []
-
 if "debug_rows" not in st.session_state:
     st.session_state.debug_rows = []
-
 if "summary_skus" not in st.session_state:
     st.session_state.summary_skus = set()
-
 if "detail_skus" not in st.session_state:
     st.session_state.detail_skus = set()
-
 if "debug_skus" not in st.session_state:
     st.session_state.debug_skus = set()
-
 if "processing_done" not in st.session_state:
     st.session_state.processing_done = False
-
 if "progress_bar" not in st.session_state:
     st.session_state.progress_bar = None
-
 if "last_file_hash" not in st.session_state:
     st.session_state.last_file_hash = None
-
 if "uploaded_file_bytes" not in st.session_state:
     st.session_state.uploaded_file_bytes = None
-
 if "selected_brand" not in st.session_state:
     st.session_state.selected_brand = "All"
 
@@ -2086,15 +1116,8 @@ view_mode = st.checkbox(
     disabled=not st.session_state.processing_done,
 )
 
-show_only_issues = st.checkbox(
-    "❌ Show ONLY Issues",
-    key="show_issues",
-)
-
-hide_good = st.checkbox(
-    "✅ Hide Strong Matches (80%+)",
-    key="hide_good",
-)
+show_only_issues = st.checkbox("❌ Show ONLY Issues", key="show_issues")
+hide_good = st.checkbox("✅ Hide Strong Matches (80%+)", key="hide_good")
 
 # =========================================
 # FILE + PROCESSING
@@ -2128,11 +1151,7 @@ if uploaded_file:
         if st.session_state.selected_brand not in brand_options:
             st.session_state.selected_brand = "All"
 
-        selected_brand = st.selectbox(
-            "🏷️ Select Brand",
-            brand_options,
-            key="selected_brand",
-        )
+        selected_brand = st.selectbox("🏷️ Select Brand", brand_options, key="selected_brand")
 
         if selected_brand != "All" and "brand" in df.columns:
             df = df[df["brand"].astype(str) == selected_brand]
@@ -2151,16 +1170,13 @@ if uploaded_file:
 
         if not view_mode and not st.session_state.processing_done:
             st.write(f"Processing SKUs {start + 1} to {min(end, len(df))} of {len(df)}")
-            st.caption(
-                f"Batch Size: {BATCH_SIZE} | Workers: {MAX_WORKERS}"
-            )
+            st.caption(f"Batch Size: {BATCH_SIZE} | Workers: {MAX_WORKERS}")
 
             if st.session_state.progress_bar is None:
                 st.session_state.progress_bar = st.progress(0)
 
             progress_bar = st.session_state.progress_bar
             status_text = st.empty()
-
             st.write("### Overall Progress")
             overall_progress_bar = st.progress(0)
 
@@ -2168,10 +1184,7 @@ if uploaded_file:
             completed = 0
 
             with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-                futures = [
-                    executor.submit(process_row, row.to_dict())
-                    for _, row in batch_df.iterrows()
-                ]
+                futures = [executor.submit(process_row, row.to_dict()) for _, row in batch_df.iterrows()]
 
                 for future in as_completed(futures):
                     completed += 1
@@ -2306,8 +1319,8 @@ if uploaded_file and st.session_state.processing_done and view_mode:
 
             debug_data = r_text.get("debug", {})
 
-            r_text["description"] = clean_cvs_text(r_text.get("description", ""))
-            r_text["features"] = [clean_cvs_text(f) for f in r_text.get("features", [])]
+            r_text["description"] = clean_cvs_text_refined(r_text.get("description", ""))
+            r_text["features"] = [clean_cvs_text_refined(f) for f in r_text.get("features", [])]
 
             s_title = s_text.get("title") or ""
             r_title = r_text.get("title") or ""
@@ -2321,10 +1334,7 @@ if uploaded_file and st.session_state.processing_done and view_mode:
             title_score = keyword_score(s_title, r_title)
 
             r_desc_debug = debug_description(r_desc)
-            desc_score = max(
-                0,
-                keyword_score(s_desc, r_desc) - int((100 - r_desc_debug["quality_score"]) * 0.5)
-            )
+            desc_score = max(0, keyword_score(s_desc, r_desc) - int((100 - r_desc_debug["quality_score"]) * 0.5))
 
             max_features = max(len(feature_fields), len(cvs_features))
             feature_scores = []
