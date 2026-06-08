@@ -16,7 +16,7 @@ HEADERS = {
 }
 
 REQUEST_TIMEOUT = 15
-SECTION_WINDOW = 4000
+SECTION_WINDOW = 4500
 
 NOISE_PHRASES = [
     "manage prescriptions",
@@ -633,7 +633,6 @@ def process_items(df, max_rows):
                     cleaning_flags.append("missing_features")
                 if not image_extracted:
                     cleaning_flags.append("missing_image")
-
                 if features_extraction_path == "features_empty":
                     cleaning_flags.append("weak_features")
 
@@ -718,4 +717,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-``
