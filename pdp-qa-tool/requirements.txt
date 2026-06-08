@@ -2,4 +2,6 @@ streamlit
 pandas
 requests
 beautifulsoup4
+pillow
 openpyxl
+numpy
