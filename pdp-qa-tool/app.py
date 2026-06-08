@@ -1,5 +1,5 @@
 # =========================================
-# ✅ IMPORTS (TOP OF FILE)
+# IMPORTS
 # =========================================
 import re
 import html
@@ -21,13 +21,6 @@ from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
 from pandas.errors import EmptyDataError
 
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-
-
-st.set_page_config(layout="wide")
-st.title("PDP QA Tool ✅")
-
 # =========================================
 # APP SETUP
 # =========================================
@@ -40,47 +33,25 @@ HEADERS = {
     "Connection": "keep-alive",
 }
 
-REQUEST_TIMEOUT = 12
-IMAGE_TIMEOUT = 6
-MAX_CACHE = 500
+# Keep timeouts tight so one slow page or image does not stall the batch.
+REQUEST_TIMEOUT = 6
+IMAGE_TIMEOUT = 2.5
 
-# =========================================
-# PERFORMANCE CONTROLS
-# =========================================
-# 10 is usually too aggressive for your workload.
-# 6 is a much smoother default with HTML + images + PIL + NumPy.
-BATCH_SIZE = 20
-MAX_WORKERS = 3
+# Smaller and smoother batch settings.
+BATCH_SIZE = 6
+MAX_WORKERS = 1
+UI_UPDATE_EVERY = 1
 
-# Keep all image positions.
-# Only reduce the internal comparison size for speed.
-IMAGE_THUMBNAIL_SIZE = 72
-IMAGE_COMPARE_SIZE = 40
+# Keep ALL image slots. Only reduce internal compare resolution.
+IMAGE_THUMBNAIL_SIZE = 96
+IMAGE_COMPARE_SIZE = 48
 
-# Reduce UI redraw stutter.
-UI_UPDATE_EVERY = 2
+MAX_CACHE = 300
 
 html_cache = {}
 image_bytes_cache = {}
 processed_image_cache = {}
 image_score_cache = {}
-
-# Shared requests session with connection pooling + retry.
-session = requests.Session()
-retry_strategy = Retry(
-    total=2,
-    backoff_factor=0.2,
-    status_forcelist=[429, 500, 502, 503, 504],
-    allowed_methods=["GET"],
-)
-adapter = HTTPAdapter(
-    max_retries=retry_strategy,
-    pool_connections=50,
-    pool_maxsize=50,
-)
-session.mount("https://", adapter)
-session.mount("http://", adapter)
-session.headers.update(HEADERS)
 
 # =========================================
 # GENERIC HELPERS
@@ -136,6 +107,7 @@ def score_bar(score):
         color = "#F9A825"
     else:
         color = "#C62828"
+
     return (
         f"<div style='background-color:{color}; padding:6px 10px; border-radius:6px; "
         f"color:white; font-weight:600; margin-top:6px; margin-bottom:6px;'>Score: {score}%</div>"
@@ -182,6 +154,13 @@ def prepare_input_df(df):
 
     return df
 
+
+def clear_in_memory_caches():
+    html_cache.clear()
+    image_bytes_cache.clear()
+    processed_image_cache.clear()
+    image_score_cache.clear()
+
 # =========================================
 # HTML FETCH
 # =========================================
@@ -194,7 +173,7 @@ def get_html(url):
         return html_cache[url]
 
     try:
-        r = session.get(url, timeout=REQUEST_TIMEOUT)
+        r = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
         if r.status_code == 200 and r.text:
             html_cache[url] = r.text
             while len(html_cache) > MAX_CACHE:
@@ -235,9 +214,7 @@ def _parse_salsify_page(html_text):
     except Exception:
         return empty
 
-    # -------------------------
     # TEXT
-    # -------------------------
     text_map = {}
     try:
         props = data["props"]["pageProps"]["product"]["propertySets"][0]["properties"]
@@ -259,9 +236,7 @@ def _parse_salsify_page(html_text):
         "feature5": text_map.get("FEATURE_5", ""),
     }
 
-    # -------------------------
     # IMAGES
-    # -------------------------
     asset_map = {}
     try:
         properties = data["props"]["pageProps"]["product"]["digitalAssets"]["properties"]
@@ -321,17 +296,13 @@ def clean_cvs_text(text):
         return ""
 
     text = str(text)
-
-    # Common escaped characters.
     text = text.replace("\\u0026", "&")
     text = text.replace("\\n", " ")
     text = text.replace("\\/", "/")
     text = text.replace('\\"', '"')
-
-    # Decode HTML entities.
     text = html.unescape(text)
 
-    # Remove embedded Next.js chunk wrappers that split description text.
+    # Remove split chunk wrappers.
     text = re.sub(
         r'"\]\)\s*</script>\s*<script>\s*self\.__next_f\.push\(\[1,\s*"',
         "",
@@ -350,8 +321,6 @@ def clean_cvs_text(text):
         text,
         flags=re.DOTALL,
     )
-
-    # Remove repeated transport wrapper fragments if still present.
     text = re.sub(
         r'"\]\)\s*self\.__next_f\.push\(\[1,\s*"',
         "",
@@ -359,20 +328,14 @@ def clean_cvs_text(text):
         flags=re.DOTALL,
     )
 
-    # Remove transport tokens like T40f, T7, T1ab, etc.
+    # Remove transport tokens like T40f,
     text = re.sub(r'^(?:T[0-9A-Za-z]+,)+', "", text)
-
-    # Normalize whitespace.
     text = re.sub(r"\s+", " ", text)
 
     return text.strip(' \t\r\n"')
 
 
 def get_nextjs_chunks(html_text):
-    """
-    Decode all self.__next_f.push([1,"..."]) chunks into one combined source string.
-    This is the preferred source because it removes the split chunk wrappers.
-    """
     if not html_text:
         return ""
 
@@ -395,9 +358,6 @@ def get_nextjs_chunks(html_text):
 
 
 def extract_balanced_bracket_block(source, start_index):
-    """
-    If source[start_index] is '[', return the full balanced [...] block.
-    """
     if start_index < 0 or start_index >= len(source) or source[start_index] != "[":
         return ""
 
@@ -477,23 +437,13 @@ def find_vendor_mapping(source):
 
 
 def looks_like_top_level_key_at(source, idx):
-    """
-    Detect top-level keys like:
-    32:{...}
-    33:[...]
-    34:T40f,...
-    a1:"..."
-    and allow them to appear immediately after punctuation, not just on a new line.
-    """
     if idx < 0 or idx >= len(source):
         return False
 
-    # Must look like "<1-3 chars>:"
     m = re.match(r'([0-9A-Za-z]{1,3}):(?=[\[{"]|T[0-9A-Za-z]+,)', source[idx:])
     if not m:
         return False
 
-    # Previous character should not be alphanumeric.
     if idx > 0 and re.match(r"[0-9A-Za-z]", source[idx - 1]):
         return False
 
@@ -501,17 +451,6 @@ def looks_like_top_level_key_at(source, idx):
 
 
 def extract_top_level_value_block(source, key):
-    """
-    Extract everything after 'key:' until the next top-level key.
-    This works even when the next key starts immediately after the text, e.g.:
-
-    ... Packaging may vary. (*vs previous Depend Guards for Men)32:{"vendorDetailsBullets":"$33",...}
-
-    So for 34:T40f,... it will:
-    - start right after "34:"
-    - keep the text
-    - stop right before "32:{...}"
-    """
     pattern = rf'{re.escape(str(key))}:'
     m = re.search(pattern, source)
     if not m:
@@ -567,7 +506,6 @@ def extract_top_level_value_block(source, key):
             continue
         if ch == ")":
             paren_depth = max(0, paren_depth - 1)
-            # Allow a key to begin immediately after this char.
             if bracket_depth == 0 and brace_depth == 0 and paren_depth == 0:
                 if looks_like_top_level_key_at(source, i + 1):
                     break
@@ -614,11 +552,6 @@ def extract_vendor_copy_from_source(source, source_name=""):
         source[max(0, vendor_match.start() - 200): vendor_match.end() + 600]
     )[:2000]
 
-    # ---------------------------------
-    # FEATURES
-    # Start exactly at XX:[
-    # End at matching ]
-    # ---------------------------------
     features = []
     features_marker = re.search(rf'{re.escape(features_key)}:\[', source)
 
@@ -629,12 +562,6 @@ def extract_vendor_copy_from_source(source, source_name=""):
         debug["featuresArrayExcerpt"] = normalize_space(array_text)[:2000]
         features = parse_jsonish_array_text(array_text)
 
-    # ---------------------------------
-    # DESCRIPTION
-    # Start exactly after YY:
-    # Remove T40f,
-    # Stop at next top-level key, even if same line.
-    # ---------------------------------
     desc_block = extract_top_level_value_block(source, description_key)
     debug["descriptionBlockFound"] = bool(desc_block)
     debug["descriptionBlockExcerpt"] = normalize_space(desc_block)[:2000]
@@ -683,10 +610,8 @@ def extract_vendor_copy_from_nextjs(html_text):
         idx = raw_text.find("vendorDetailsBullets")
         debug["rawTextVendorExcerpt"] = normalize_space(raw_text[max(0, idx - 250): idx + 1500])[:2000]
 
-    # Prefer raw_text first because its chunks are already rejoined.
     result = extract_vendor_copy_from_source(raw_text, "raw_text")
 
-    # Only fall back if raw_text truly failed.
     if not result.get("description") and not result.get("features"):
         result = extract_vendor_copy_from_source(raw_html, "raw_html")
 
@@ -764,7 +689,6 @@ def get_cvs_bundle(retail_url):
 
 
 def get_cvs_text(html_text, retail_url=""):
-    # Kept for compatibility if needed elsewhere.
     return _extract_cvs_text_from_html(html_text, retail_url=retail_url)
 
 
@@ -858,7 +782,7 @@ def fetch_image_cached(url):
         return image_bytes_cache[url]
 
     try:
-        resp = session.get(url, timeout=IMAGE_TIMEOUT)
+        resp = requests.get(url, headers=HEADERS, timeout=IMAGE_TIMEOUT)
         if resp.status_code == 200 and "image" in resp.headers.get("Content-Type", ""):
             image_bytes_cache[url] = resp.content
             while len(image_bytes_cache) > MAX_CACHE:
@@ -955,11 +879,6 @@ def compare_images_visually(s_url, r_url):
 # =========================================
 # PROCESS ROW
 # =========================================
-@st.cache_data(show_spinner=False)
-def process_row_cached(row_dict):
-    return process_row(row_dict)
-
-
 def process_row(row):
     try:
         retail_url = row.get("retail_url", "")
@@ -997,7 +916,6 @@ def process_row(row):
 
         avg_feature_score = int(sum(feature_scores) / len(feature_scores)) if feature_scores else 0
 
-        # Compare ALL image positions.
         img_scores = []
         max_img_positions = max(len(s_images), len(r_images))
 
@@ -1124,22 +1042,14 @@ if "processing_done" not in st.session_state:
 if "progress_bar" not in st.session_state:
     st.session_state.progress_bar = None
 
-if "last_file" not in st.session_state:
-    st.session_state.last_file = None
+if "last_file_hash" not in st.session_state:
+    st.session_state.last_file_hash = None
 
 if "uploaded_file_bytes" not in st.session_state:
     st.session_state.uploaded_file_bytes = None
 
 if "selected_brand" not in st.session_state:
     st.session_state.selected_brand = "All"
-
-# =========================================
-# BATCH / PERFORMANCE SETTINGS
-# =========================================
-# These are intentionally conservative so the batch does not stall.
-BATCH_SIZE = 8
-MAX_WORKERS = 2
-UI_UPDATE_EVERY = 2
 
 # =========================================
 # VIEW + FILTER CONTROLS
@@ -1163,43 +1073,31 @@ hide_good = st.checkbox(
 )
 
 # =========================================
-# PROCESSING
+# FILE + PROCESSING
 # =========================================
 if uploaded_file:
     try:
         file_bytes = uploaded_file.getvalue()
         st.session_state.uploaded_file_bytes = file_bytes
+        file_hash = hashlib.md5(file_bytes).hexdigest()
 
-        # Stable file identity by actual content, not filename.
-        file_id = hashlib.md5(file_bytes).hexdigest()
-
-        # Reset state only when the uploaded file actually changes.
-        if st.session_state.last_file != file_id:
+        if st.session_state.last_file_hash != file_hash:
             st.session_state.summary_rows = []
             st.session_state.export_rows = []
             st.session_state.debug_rows = []
-
             st.session_state.summary_skus = set()
             st.session_state.detail_skus = set()
             st.session_state.debug_skus = set()
-
             st.session_state.start_idx = 0
             st.session_state.processing_done = False
             st.session_state.progress_bar = None
-            st.session_state.last_file = file_id
+            st.session_state.last_file_hash = file_hash
             st.session_state.selected_brand = "All"
+            clear_in_memory_caches()
 
-            # Clear caches so old runs do not drag into the new one.
-            html_cache.clear()
-            image_bytes_cache.clear()
-            processed_image_cache.clear()
-            image_score_cache.clear()
-
-        # Always read from bytes.
         df = read_uploaded_csv_from_bytes(file_bytes)
         df = prepare_input_df(df)
 
-        # Brand filter.
         brands = sorted(df["brand"].dropna().astype(str).unique().tolist()) if "brand" in df.columns else []
         brand_options = ["All"] + brands
 
@@ -1227,9 +1125,6 @@ if uploaded_file:
 
         batch_df = df.iloc[start:end]
 
-        # =====================================
-        # PROCESSING MODE
-        # =====================================
         if not view_mode and not st.session_state.processing_done:
             st.write(f"Processing SKUs {start + 1} to {min(end, len(df))} of {len(df)}")
             st.caption(
@@ -1251,7 +1146,7 @@ if uploaded_file:
 
             with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                 futures = [
-                    executor.submit(process_row_cached, row.to_dict())
+                    executor.submit(process_row, row.to_dict())
                     for _, row in batch_df.iterrows()
                 ]
 
@@ -1276,7 +1171,6 @@ if uploaded_file:
                             st.session_state.debug_rows.append(debug)
                             st.session_state.debug_skus.add(debug["SKU"])
 
-                    # Throttle redraws so Streamlit does not hitch every completion.
                     if completed % UI_UPDATE_EVERY == 0 or completed == total:
                         progress_bar.progress(completed / max(total, 1))
                         status_text.markdown(
@@ -1285,7 +1179,6 @@ if uploaded_file:
                         )
                         overall_progress_bar.progress((start + completed) / max(len(df), 1))
 
-            # Advance to next batch.
             if start + BATCH_SIZE < len(df):
                 st.session_state.start_idx += BATCH_SIZE
                 time.sleep(0.05)
@@ -1510,5 +1403,3 @@ if uploaded_file and st.session_state.processing_done and view_mode:
         st.error("🔥 CRITICAL APP ERROR")
         st.text(str(e))
         st.text(traceback.format_exc())
-
-
