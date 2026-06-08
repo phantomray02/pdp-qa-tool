@@ -4,9 +4,9 @@ import json
 import time
 import traceback
 from io import BytesIO
-from difflib import SequenceMatcher
 from html import unescape
 from urllib.parse import urljoin
+from difflib import SequenceMatcher
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
@@ -15,7 +15,6 @@ import requests
 import streamlit as st
 from bs4 import BeautifulSoup
 from PIL import Image, ImageFilter
-
 
 # =========================================
 # GLOBALS
@@ -127,7 +126,7 @@ FEATURE_HINTS = [
     "gentleplus",
     "fresh care",
     "overnight",
-    "trusted care",
+    "anti-viral",
     "cooling",
     "lotion",
 ]
@@ -135,19 +134,19 @@ FEATURE_HINTS = [
 TITLE_PATTERNS = [
     r"<h1[^>]*>.*?</h1>",
     r"<title[^>]*>.*?</title>",
-    r'"productName"\\s*:\\s*"[^\"]+"',
-    r'"name"\\s*:\\s*"[^\"]+"',
-    r'"title"\\s*:\\s*"[^\"]+"',
-    r'<meta[^>]+property="og:title"[^>]+content="[^\"]+"',
+    r'"productName"\s*:\s*"[^"]+"',
+    r'"name"\s*:\s*"[^"]+"',
+    r'"title"\s*:\s*"[^"]+"',
+    r'<meta[^>]+property="og:title"[^>]+content="[^"]+"',
 ]
 
 DESCRIPTION_PATTERNS = [
-    r'"longDescription"\\s*:\\s*"[^\"]+"',
-    r'"shortDescription"\\s*:\\s*"[^\"]+"',
-    r'"description"\\s*:\\s*"[^\"]+"',
-    r'"productDescription"\\s*:\\s*"[^\"]+"',
-    r'<meta[^>]+name="description"[^>]+content="[^\"]+"',
-    r'<meta[^>]+property="og:description"[^>]+content="[^\"]+"',
+    r'"longDescription"\s*:\s*"[^"]+"',
+    r'"shortDescription"\s*:\s*"[^"]+"',
+    r'"description"\s*:\s*"[^"]+"',
+    r'"productDescription"\s*:\s*"[^"]+"',
+    r'<meta[^>]+name="description"[^>]+content="[^"]+"',
+    r'<meta[^>]+property="og:description"[^>]+content="[^"]+"',
     r"Details",
     r"Specifications",
     r"Directions",
@@ -156,15 +155,21 @@ DESCRIPTION_PATTERNS = [
 ]
 
 FEATURE_ARRAY_PATTERNS = [
-    r'"features"\\s*:\\s*\\[([^\\]]+)\\]',
-    r'"feature"\\s*:\\s*\\[([^\\]]+)\\]',
-    r'"benefits"\\s*:\\s*\\[([^\\]]+)\\]',
-    r'"bullets"\\s*:\\s*\\[([^\\]]+)\\]',
-    r'"bulletText"\\s*:\\s*\\[([^\\]]+)\\]',
-    r'"keyFeatures"\\s*:\\s*\\[([^\\]]+)\\]',
+    r'"features"\s*:\s*\[([^\]]+)\]',
+    r'"feature"\s*:\s*\[([^\]]+)\]',
+    r'"benefits"\s*:\s*\[([^\]]+)\]',
+    r'"bullets"\s*:\s*\[([^\]]+)\]',
+    r'"bulletText"\s*:\s*\[([^\]]+)\]',
+    r'"keyFeatures"\s*:\s*\[([^\]]+)\]',
 ]
 
-DETAILS_PATTERNS = [r"Details", r"Specifications", r"Directions", r"Warnings", r"Ingredients"]
+DETAILS_PATTERNS = [
+    r"Details",
+    r"Specifications",
+    r"Directions",
+    r"Warnings",
+    r"Ingredients",
+]
 
 st.set_page_config(layout="wide")
 st.title("PDP QA Tool ✅")
@@ -238,6 +243,18 @@ def clean_section_lines(section_text):
     return dedupe_preserve_order(output)
 
 
+def equal_height_block(text):
+    return f"""
+    <div style="min-height: 180px; display: flex; align-items: flex-start;">{text}</div>
+    """
+
+
+def equal_feature_block(text):
+    return f"""
+    <div style="min-height: 70px; display: flex; align-items: flex-start;">{text}</div>
+    """
+
+
 def score_bar(score):
     if score >= 80:
         color = "#2E7D32"
@@ -246,15 +263,7 @@ def score_bar(score):
     else:
         color = "#C62828"
     return f"""
-    <div style="
-        background-color:{color};
-        padding:6px 10px;
-        border-radius:6px;
-        color:white;
-        font-weight:600;
-        margin-top:6px;
-        margin-bottom:6px;
-    ">
+    <div style="background-color:{color}; padding:6px 10px; border-radius:6px; color:white; font-weight:600; margin-top:6px; margin-bottom:6px;">
         Score: {score}%
     </div>
     """
@@ -318,13 +327,11 @@ def clean_page_text(soup):
 def get_salsify_images(url):
     html_text = get_html(url)
     soup = BeautifulSoup(html_text, "html.parser")
-
     script = soup.find("script", {"id": "__NEXT_DATA__"})
     if not script:
         return []
 
     data = json.loads(script.string)
-
     try:
         properties = data["props"]["pageProps"]["product"]["digitalAssets"]["properties"]
     except Exception:
@@ -391,7 +398,7 @@ def get_salsify_text(url):
 
 
 # =========================================
-# NEW / GOOD CVS COPY CODE
+# GOOD CVS COPY EXTRACTION
 # =========================================
 def parse_jsonld_blocks(soup):
     blocks = []
@@ -541,21 +548,26 @@ def extract_title(soup, html_source, final_url):
         text = normalize_space(h1.get_text(" ", strip=True))
         if text:
             return text, "h1"
+
     jsonld = extract_from_jsonld(soup, final_url)
     if jsonld["title"]:
         return jsonld["title"], "jsonld_title"
+
     og_title = soup.find("meta", attrs={"property": "og:title"})
     if og_title and og_title.get("content"):
         return normalize_space(og_title.get("content")), "og_title"
+
     title_tag = soup.find("title")
     if title_tag:
         text = normalize_space(title_tag.get_text(" ", strip=True))
         if text:
             return text, "html_title"
+
     section = pull_big_section(html_source, TITLE_PATTERNS)
     lines = clean_section_lines(section)
     if lines:
         return lines[0], "title_section_line"
+
     return "", "title_empty"
 
 
@@ -600,11 +612,14 @@ def extract_description(soup, html_source, final_url):
 
 def extract_features(html_source, final_title, final_description):
     for pattern in FEATURE_ARRAY_PATTERNS:
-        match = re.search(pattern, html_source, flags=re.IGNORECASE | re.DOTALL)
+        try:
+            match = re.search(pattern, html_source, flags=re.IGNORECASE | re.DOTALL)
+        except re.error:
+            continue
         if match:
             payload = normalize_space(match.group(1))
             if payload and not contains_noise(payload):
-                parts = [clean_cvs_text(x) for x in payload.split('","')]
+                parts = [clean_cvs_text(x) for x in payload.split('\",\"')]
                 parts = [p for p in dedupe_preserve_order(parts) if p]
                 if parts:
                     return parts[:5], "features_json_array"
@@ -612,7 +627,7 @@ def extract_features(html_source, final_title, final_description):
     details_section = pull_big_section(html_source, DETAILS_PATTERNS)
     features_section = pull_big_section(
         html_source,
-        FEATURE_ARRAY_PATTERNS + DETAILS_PATTERNS + [r"<li[^>]*>.*?</li>"]
+        DETAILS_PATTERNS + [r"<li[^>]*>.*?</li>"]
     )
     source_for_features = f"{features_section} {details_section}"
 
@@ -653,24 +668,26 @@ def extract_primary_image(soup, final_url):
     jsonld = extract_from_jsonld(soup, final_url)
     if jsonld["image"]:
         return jsonld["image"], "jsonld_image"
+
     og_image = soup.find("meta", attrs={"property": "og:image"})
     if og_image and og_image.get("content"):
         return normalize_image_url(og_image.get("content"), final_url), "og_image"
+
     twitter_image = soup.find("meta", attrs={"name": "twitter:image"})
     if twitter_image and twitter_image.get("content"):
         return normalize_image_url(twitter_image.get("content"), final_url), "twitter_image"
+
     for img in soup.find_all("img"):
         src = img.get("src")
         if src and "productimages" in src:
             return normalize_image_url(src, final_url), "img_tag"
+
     return "", "image_empty"
 
 
 def get_cvs_images(url):
     html_text = get_html(url)
     soup = build_soup(html_text)
-    title, _ = extract_title(soup, html_text, url)
-    description, _ = extract_description(soup, html_text, url)
     primary_image, _ = extract_primary_image(soup, url)
 
     matches = re.findall(r'/bizcontent/merchandising/productimages/high_res/[^\s"]+\.jpg\?[^\"]*', html_text)
@@ -736,7 +753,6 @@ def get_cvs_text(html_text, retail_url=""):
     debug["Primary Image"] = primary_image
     debug["Desc Final"] = description
     debug["Vendor Feature Count"] = len(features)
-
     if not features:
         debug["Raw Preview"] = clean_page_text(soup)[:800]
 
@@ -904,10 +920,20 @@ def compare_images_visually(s_url, r_url):
             return 45
         elif diff < 80:
             return 30
-        else:
-            return 15
+        return 15
     except Exception:
         return 0
+
+
+def match_images_visual(s_images, r_images):
+    results = []
+    max_len = max(len(s_images), len(r_images))
+    for i in range(max_len):
+        s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else None
+        r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else None
+        score = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
+        results.append((s_url, r_url, score))
+    return results
 
 
 # =========================================
@@ -1003,6 +1029,11 @@ def process_row(row):
                 "Brand": row.get("brand", ""),
                 "Salsify URL": row.get("salsify_url", ""),
                 "Retail URL": retail_url,
+                "Title %": title_score,
+                "Description %": desc_score,
+                "Feature %": avg_feature_score,
+                "Image Match %": avg_img_score,
+                "Overall %": overall,
                 "Salsify Title": s_text.get("title", ""),
                 "CVS Title": r_text.get("title", ""),
                 "Salsify Description": s_text.get("description", ""),
@@ -1046,6 +1077,7 @@ def process_row(row):
                 "Description Path": debug_data.get("Description Path", ""),
                 "Features Path": debug_data.get("Features Path", ""),
                 "Image Path": debug_data.get("Image Path", ""),
+                "Primary Image": debug_data.get("Primary Image", ""),
             },
         }
     except Exception:
@@ -1096,7 +1128,6 @@ if uploaded_file:
 
         df = pd.read_csv(uploaded_file)
         df.columns = [c.strip().lower() for c in df.columns]
-
         column_map = {
             "salsify url": "salsify_url",
             "retail url": "retail_url",
@@ -1320,11 +1351,11 @@ if uploaded_file:
                         score = keyword_score(s_val, r_val)
                         c1, c2 = st.columns(2)
                         c1.markdown(
-                            f"<div style='font-size:25px; line-height:1.5'>{s_val or '❌ Missing'}</div>",
+                            equal_feature_block(s_val or '❌ Missing'),
                             unsafe_allow_html=True,
                         )
                         c2.markdown(
-                            f"<div style='font-size:25px; line-height:1.5'>{r_val or '❌ Missing'}</div>",
+                            equal_feature_block(r_val or '❌ Missing'),
                             unsafe_allow_html=True,
                         )
                         st.markdown(score_badge(score), unsafe_allow_html=True)
