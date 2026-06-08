@@ -204,14 +204,18 @@ def get_salsify_text(url):
 def clean_cvs_text(text):
     if not text:
         return ""
+
     text = str(text)
+
     # Common escaped characters.
     text = text.replace("\\u0026", "&")
     text = text.replace("\\n", " ")
     text = text.replace("\\/", "/")
     text = text.replace('\\"', '"')
+
     # Decode HTML entities.
     text = html.unescape(text)
+
     # Remove embedded Next.js chunk wrappers that split description text.
     text = re.sub(
         r'"\]\)\s*</script>\s*<script>\s*self\.__next_f\.push\(\[1,\s*"',
@@ -231,22 +235,36 @@ def clean_cvs_text(text):
         text,
         flags=re.DOTALL,
     )
+
     # Remove repeated transport wrapper fragments if still present.
-    text = re.sub(r'"\]\)\s*self\.__next_f\.push\(\[1,\s*"', "", text, flags=re.DOTALL)
-    # Remove transport tokens like T40f, T123, etc.
+    text = re.sub(
+        r'"\]\)\s*self\.__next_f\.push\(\[1,\s*"',
+        "",
+        text,
+        flags=re.DOTALL,
+    )
+
+    # Remove transport tokens like T40f, T7, T1ab, etc.
     text = re.sub(r'^(?:T[0-9A-Za-z]+,)+', "", text)
+
+    # Normalize whitespace.
     text = re.sub(r"\s+", " ", text)
+
     return text.strip(' \t\r\n"')
+
 
 def get_nextjs_chunks(html_text):
     """
     Decode all self.__next_f.push([1,"..."]) chunks into one combined source string.
+    This is the preferred source because it removes the split chunk wrappers.
     """
     if not html_text:
         return ""
+
     source = html.unescape(html_text)
     pattern = r'self\.__next_f\.push\(\[1,\s*"((?:\\.|[^"\\])*)"\s*\]\)'
     chunks = []
+
     for m in re.finditer(pattern, source, re.DOTALL):
         payload = m.group(1)
         try:
@@ -257,16 +275,24 @@ def get_nextjs_chunks(html_text):
             decoded = decoded.replace("\\/", "/")
             decoded = decoded.replace('\\"', '"')
         chunks.append(decoded)
+
     return "\n".join(chunks)
 
+
 def extract_balanced_bracket_block(source, start_index):
+    """
+    If source[start_index] is '[', return the full balanced [...] block.
+    """
     if start_index < 0 or start_index >= len(source) or source[start_index] != "[":
         return ""
+
     depth = 0
     in_str = False
     escape = False
+
     for i in range(start_index, len(source)):
         ch = source[i]
+
         if in_str:
             if escape:
                 escape = False
@@ -283,66 +309,21 @@ def extract_balanced_bracket_block(source, start_index):
                 depth -= 1
                 if depth == 0:
                     return source[start_index:i + 1]
+
     return ""
 
-def is_top_level_key_at_position(source, idx):
-    """
-    Detect keys like:
-    32:{...}
-    33:[...]
-    34:T40f,...
-    a1:"..."
-    """
-    if idx < 0 or idx >= len(source):
-        return False
-    return bool(re.match(r'[0-9A-Za-z]{1,3}:(?=[\[{"]|T[0-9A-Za-z]+,)', source[idx:]))
-
-def extract_top_level_value_block(source, key):
-    """
-    Extract everything after 'key:' until the next top-level key line.
-    Example:
-    34:T40f,Description...
-    """
-    pattern = rf'(?m)(?:^|\n){re.escape(str(key))}:'
-    m = re.search(pattern, source)
-    if not m:
-        return ""
-    start = m.end()
-    i = start
-    depth = 0
-    in_str = False
-    escape = False
-    while i < len(source):
-        ch = source[i]
-        if in_str:
-            if escape:
-                escape = False
-            elif ch == "\\":
-                escape = True
-            elif ch == '"':
-                in_str = False
-        else:
-            if ch == '"':
-                in_str = True
-            elif ch in "[{(":
-                depth += 1
-            elif ch in "]})":
-                depth = max(0, depth - 1)
-            elif ch == "\n" and depth == 0:
-                if is_top_level_key_at_position(source, i + 1):
-                    break
-        i += 1
-    return source[start:i].strip()
 
 def parse_jsonish_array_text(array_text):
     array_text = normalize_space(array_text)
     if not array_text:
         return []
+
     candidates = [
         array_text,
         array_text.replace('\\"', '"'),
         html.unescape(array_text).replace('\\"', '"'),
     ]
+
     for candidate in candidates:
         try:
             value = json.loads(candidate)
@@ -350,27 +331,143 @@ def parse_jsonish_array_text(array_text):
                 return [clean_cvs_text(x) for x in value if isinstance(x, str)]
         except Exception:
             pass
+
     inner = array_text[1:-1] if array_text.startswith("[") and array_text.endswith("]") else array_text
     parts = re.split(r'"\s*,\s*"', inner)
+
     cleaned = []
     for part in parts:
         val = clean_cvs_text(part.strip().strip('"'))
         if val:
             cleaned.append(val)
+
     return cleaned
+
 
 def find_vendor_mapping(source):
     if not source:
         return None
+
     patterns = [
         r'\{"vendorDetailsBullets":"\$([0-9A-Za-z]{1,3})","vendorDetailsParagraph":"\$([0-9A-Za-z]{1,3})"\}',
         r'vendorDetailsBullets"\s*:\s*"\$([0-9A-Za-z]{1,3})"\s*,\s*"vendorDetailsParagraph"\s*:\s*"\$([0-9A-Za-z]{1,3})"',
     ]
+
     for pattern in patterns:
         m = re.search(pattern, source)
         if m:
             return m
+
     return None
+
+
+def looks_like_top_level_key_at(source, idx):
+    """
+    Detect top-level keys like:
+    32:{...}
+    33:[...]
+    34:T40f,...
+    a1:"..."
+    and allow them to appear immediately after punctuation, not just on a new line.
+    """
+    if idx < 0 or idx >= len(source):
+        return False
+
+    # Must look like "<1-3 chars>:"
+    m = re.match(r'([0-9A-Za-z]{1,3}):(?=[\[{"]|T[0-9A-Za-z]+,)', source[idx:])
+    if not m:
+        return False
+
+    # Previous character should not be alphanumeric.
+    if idx > 0 and re.match(r"[0-9A-Za-z]", source[idx - 1]):
+        return False
+
+    return True
+
+
+def extract_top_level_value_block(source, key):
+    """
+    Extract everything after 'key:' until the next top-level key.
+    This works even when the next key starts immediately after the text, e.g.:
+
+    ... Packaging may vary. (*vs previous Depend Guards for Men)32:{"vendorDetailsBullets":"$33",...}
+
+    So for 34:T40f,... it will:
+    - start right after "34:"
+    - keep the text
+    - stop right before "32:{...}"
+    """
+    pattern = rf'{re.escape(str(key))}:'
+    m = re.search(pattern, source)
+    if not m:
+        return ""
+
+    start = m.end()
+    i = start
+    in_str = False
+    escape = False
+    bracket_depth = 0
+    brace_depth = 0
+    paren_depth = 0
+
+    while i < len(source):
+        ch = source[i]
+
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+            i += 1
+            continue
+
+        if ch == '"':
+            in_str = True
+            i += 1
+            continue
+
+        if ch == "[":
+            bracket_depth += 1
+            i += 1
+            continue
+        if ch == "]":
+            bracket_depth = max(0, bracket_depth - 1)
+            i += 1
+            continue
+
+        if ch == "{":
+            brace_depth += 1
+            i += 1
+            continue
+        if ch == "}":
+            brace_depth = max(0, brace_depth - 1)
+            i += 1
+            continue
+
+        if ch == "(":
+            paren_depth += 1
+            i += 1
+            continue
+        if ch == ")":
+            paren_depth = max(0, paren_depth - 1)
+            # We still want to allow a key to begin immediately after this char,
+            # like "...Men)32:{...}"
+            if bracket_depth == 0 and brace_depth == 0 and paren_depth == 0:
+                if looks_like_top_level_key_at(source, i + 1):
+                    break
+            i += 1
+            continue
+
+        if bracket_depth == 0 and brace_depth == 0 and paren_depth == 0:
+            if looks_like_top_level_key_at(source, i):
+                break
+
+        i += 1
+
+    return source[start:i].strip()
+
 
 def extract_vendor_copy_from_source(source, source_name=""):
     debug = {
@@ -386,11 +483,14 @@ def extract_vendor_copy_from_source(source, source_name=""):
         "featuresArrayExcerpt": "",
         "descriptionBlockExcerpt": "",
     }
+
     vendor_match = find_vendor_mapping(source)
     if not vendor_match:
         return {"features": [], "description": "", "debug": debug}
+
     features_key = vendor_match.group(1)
     description_key = vendor_match.group(2)
+
     debug["vendorPatternFound"] = True
     debug["vendorDetailsBulletsRef"] = f"${features_key}"
     debug["vendorDetailsParagraphRef"] = f"${description_key}"
@@ -399,29 +499,44 @@ def extract_vendor_copy_from_source(source, source_name=""):
     debug["vendorPatternExcerpt"] = normalize_space(
         source[max(0, vendor_match.start() - 200): vendor_match.end() + 600]
     )[:2000]
-    # FEATURES.
+
+    # ---------------------------------
+    # FEATURES
+    # Start exactly at XX:[
+    # End at matching ]
+    # ---------------------------------
     features = []
-    features_marker = re.search(rf'(?m)(?:^|\n){re.escape(features_key)}:\[', source)
+    features_marker = re.search(rf'{re.escape(features_key)}:\[', source)
+
     if features_marker:
         array_start = features_marker.end() - 1
         array_text = extract_balanced_bracket_block(source, array_start)
         debug["featuresArrayFound"] = bool(array_text)
         debug["featuresArrayExcerpt"] = normalize_space(array_text)[:2000]
         features = parse_jsonish_array_text(array_text)
-    # DESCRIPTION.
+
+    # ---------------------------------
+    # DESCRIPTION
+    # Start exactly after YY:
+    # Remove T40f,
+    # Stop at next top-level key, even if same line
+    # ---------------------------------
     desc_block = extract_top_level_value_block(source, description_key)
     debug["descriptionBlockFound"] = bool(desc_block)
     debug["descriptionBlockExcerpt"] = normalize_space(desc_block)[:2000]
     description = clean_cvs_text(desc_block)
+
     return {
         "features": dedupe_preserve_order(features),
         "description": description,
         "debug": debug,
     }
 
+
 def extract_vendor_copy_from_nextjs(html_text):
     raw_text = get_nextjs_chunks(html_text)
     raw_html = html.unescape(html_text or "")
+
     debug = {
         "rawHtmlLength": len(raw_html or ""),
         "rawTextLength": len(raw_text or ""),
@@ -445,48 +560,63 @@ def extract_vendor_copy_from_nextjs(html_text):
         "rawHtmlVendorExcerpt": "",
         "rawTextVendorExcerpt": "",
     }
+
     if "vendorDetailsBullets" in raw_html:
         idx = raw_html.find("vendorDetailsBullets")
         debug["rawHtmlVendorExcerpt"] = normalize_space(raw_html[max(0, idx - 250): idx + 1500])[:2000]
+
     if "vendorDetailsBullets" in raw_text:
         idx = raw_text.find("vendorDetailsBullets")
         debug["rawTextVendorExcerpt"] = normalize_space(raw_text[max(0, idx - 250): idx + 1500])[:2000]
-    # Prefer decoded text source because chunks are already rejoined.
+
+    # Prefer raw_text first because its chunks are already rejoined.
     result = extract_vendor_copy_from_source(raw_text, "raw_text")
-    # Fallback to raw html if needed.
+
+    # Only fall back if raw_text truly failed.
     if not result.get("description") and not result.get("features"):
         result = extract_vendor_copy_from_source(raw_html, "raw_html")
+
     debug.update(result.get("debug", {}))
+
     return {
         "features": result.get("features", []),
         "description": result.get("description", ""),
         "debug": debug,
     }
 
+
 def get_cvs_images(url):
     html_text = get_html(url)
     matches = re.findall(r'/bizcontent/merchandising/productimages/high_res/[^\s"]+\.jpg\?[^\"]*', html_text)
+
     best_images = {}
     order = []
+
     for m in matches:
         full = "https://www.cvs.com" + m
         base = full.split("?")[0]
         name = base.split("/")[-1]
         size_match = re.search(r"Resize=\((\d+)", m)
         size = int(size_match.group(1)) if size_match else 0
+
         if name not in best_images:
             order.append(name)
             best_images[name] = {"url": base, "size": size}
         elif size > best_images[name]["size"]:
             best_images[name] = {"url": base, "size": size}
+
     return [best_images[name]["url"] for name in order]
+
 
 def get_cvs_text(html_text, retail_url=""):
     debug = {"Title Path": "", "Description Path": "", "Features Path": ""}
+
     if not html_text:
         return {"title": "", "description": "", "features": [], "debug": debug}
+
     soup = BeautifulSoup(html_text, "html.parser")
     title = ""
+
     h1 = soup.find("h1")
     if h1:
         title = normalize_space(h1.get_text(" ", strip=True))
@@ -494,12 +624,15 @@ def get_cvs_text(html_text, retail_url=""):
     elif soup.title:
         title = normalize_space(soup.title.get_text(" ", strip=True))
         debug["Title Path"] = "html_title"
+
     vendor_copy = extract_vendor_copy_from_nextjs(html_text)
-    description = vendor_copy.get("description", "")
-    features = vendor_copy.get("features", [])
+    description = clean_cvs_text(vendor_copy.get("description", ""))
+    features = [clean_cvs_text(x) for x in vendor_copy.get("features", [])]
+
     debug.update(vendor_copy.get("debug", {}))
     debug["Description Path"] = "vendorDetailsParagraph" if description else "description_empty"
     debug["Features Path"] = "vendorDetailsBullets" if features else "features_empty"
+
     return {
         "title": title,
         "description": description,
