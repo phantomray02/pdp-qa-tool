@@ -21,6 +21,10 @@ from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
 from pandas.errors import EmptyDataError
 
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+
 st.set_page_config(layout="wide")
 st.title("PDP QA Tool ✅")
 
