@@ -1,3 +1,6 @@
+# =========================================
+# ✅ IMPORTS (TOP OF FILE)
+# =========================================
 import re
 import html
 import json
@@ -17,8 +20,9 @@ from PIL import Image, ImageFilter
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
 from pandas.errors import EmptyDataError
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+
+st.set_page_config(layout="wide")
+st.title("PDP QA Tool ✅")
 
 # =========================================
 # APP SETUP
@@ -41,8 +45,8 @@ MAX_CACHE = 500
 # =========================================
 # 10 is usually too aggressive for your workload.
 # 6 is a much smoother default with HTML + images + PIL + NumPy.
-BATCH_SIZE = 30
-MAX_WORKERS = 6
+BATCH_SIZE = 20
+MAX_WORKERS = 3
 
 # Keep all image positions.
 # Only reduce the internal comparison size for speed.
@@ -1091,28 +1095,47 @@ uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
 if "start_idx" not in st.session_state:
     st.session_state.start_idx = 0
+
 if "summary_rows" not in st.session_state:
     st.session_state.summary_rows = []
+
 if "export_rows" not in st.session_state:
     st.session_state.export_rows = []
+
 if "debug_rows" not in st.session_state:
     st.session_state.debug_rows = []
+
 if "summary_skus" not in st.session_state:
     st.session_state.summary_skus = set()
+
 if "detail_skus" not in st.session_state:
     st.session_state.detail_skus = set()
+
 if "debug_skus" not in st.session_state:
     st.session_state.debug_skus = set()
+
 if "processing_done" not in st.session_state:
     st.session_state.processing_done = False
+
 if "progress_bar" not in st.session_state:
     st.session_state.progress_bar = None
+
 if "last_file" not in st.session_state:
     st.session_state.last_file = None
+
 if "uploaded_file_bytes" not in st.session_state:
     st.session_state.uploaded_file_bytes = None
+
 if "selected_brand" not in st.session_state:
     st.session_state.selected_brand = "All"
+
+# =========================================
+# BATCH / PERFORMANCE SETTINGS
+# =========================================
+# Conservative settings to reduce UI stalls/hiccups.
+BATCH_SIZE = 20
+MAX_WORKERS = 3
+UI_UPDATE_EVERY = 2
 
 # =========================================
 # VIEW + FILTER CONTROLS
@@ -1136,12 +1159,15 @@ hide_good = st.checkbox(
 )
 
 # =========================================
+# =========================================
 # FILE + PROCESSING
 # =========================================
 if uploaded_file:
     try:
         file_bytes = uploaded_file.getvalue()
         st.session_state.uploaded_file_bytes = file_bytes
+
+        # Use file content hash instead of file name only.
         file_id = hashlib.md5(file_bytes).hexdigest()
 
         # Reset all state if a new file is uploaded.
@@ -1149,24 +1175,41 @@ if uploaded_file:
             st.session_state.summary_rows = []
             st.session_state.export_rows = []
             st.session_state.debug_rows = []
+
             st.session_state.summary_skus = set()
             st.session_state.detail_skus = set()
             st.session_state.debug_skus = set()
+
             st.session_state.start_idx = 0
             st.session_state.processing_done = False
             st.session_state.progress_bar = None
             st.session_state.last_file = file_id
             st.session_state.selected_brand = "All"
 
-            # Also clear in-memory caches when file changes.
-            html_cache.clear()
-            image_bytes_cache.clear()
-            processed_image_cache.clear()
-            image_score_cache.clear()
+        # Read from bytes every time.
+        df = pd.read_csv(BytesIO(file_bytes))
+        df.columns = [c.strip().lower() for c in df.columns]
 
-        # Always read from bytes, never directly from uploaded_file again.
-        df = read_uploaded_csv_from_bytes(file_bytes)
-        df = prepare_input_df(df)
+        column_map = {
+            "salsify url": "salsify_url",
+            "retail url": "retail_url",
+            "sku id": "sku",
+            "product sku": "sku",
+            "cvs rpc": "cvs_rpc",
+        }
+        df.rename(columns=column_map, inplace=True)
+
+        # Ensure brand column exists (fallback to 5th column if needed).
+        if "brand" not in df.columns and len(df.columns) >= 5:
+            df.rename(columns={df.columns[4]: "brand"}, inplace=True)
+
+        required_cols = ["sku", "salsify_url", "retail_url"]
+        missing = [c for c in required_cols if c not in df.columns]
+
+        if missing:
+            st.error(f"❌ Missing required columns: {missing}")
+            st.write("Detected columns:", list(df.columns))
+            st.stop()
 
         # Brand filter.
         brands = sorted(df["brand"].dropna().astype(str).unique().tolist()) if "brand" in df.columns else []
@@ -1199,22 +1242,19 @@ if uploaded_file:
         # =====================================
         # PROCESSING MODE
         # =====================================
-        if not st.session_state.processing_done:
+        if not view_mode and not st.session_state.processing_done:
             st.write(f"Processing SKUs {start + 1} to {min(end, len(df))} of {len(df)}")
-            st.caption(
-                f"Workers: {MAX_WORKERS} | Batch Size: {BATCH_SIZE} | "
-                f"Internal Image Compare: {IMAGE_COMPARE_SIZE}x{IMAGE_COMPARE_SIZE}"
-            )
 
             if st.session_state.progress_bar is None:
                 st.session_state.progress_bar = st.progress(0)
 
             progress_bar = st.session_state.progress_bar
             status_text = st.empty()
+
             st.write("### Overall Progress")
             overall_progress_bar = st.progress(0)
-            total = len(batch_df)
 
+            total = len(batch_df)
             completed = 0
 
             with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
@@ -1228,23 +1268,23 @@ if uploaded_file:
                     result = future.result()
 
                     if result:
-                        summary = result.get("summary")
-                        detail = result.get("detail")
-                        debug = result.get("debug")
+                        # Your current process_row returns a flat row.
+                        sku = result.get("SKU", "")
 
-                        if summary and summary["SKU"] not in st.session_state.summary_skus:
-                            st.session_state.summary_rows.append(summary)
-                            st.session_state.summary_skus.add(summary["SKU"])
+                        if sku and sku not in st.session_state.summary_skus:
+                            st.session_state.summary_rows.append(result)
+                            st.session_state.summary_skus.add(sku)
 
-                        if detail and detail["SKU"] not in st.session_state.detail_skus:
-                            st.session_state.export_rows.append(detail)
-                            st.session_state.detail_skus.add(detail["SKU"])
+                        if sku and sku not in st.session_state.detail_skus:
+                            st.session_state.export_rows.append({
+                                "SKU": result.get("SKU", ""),
+                                "CVS RPC": result.get("CVS RPC", ""),
+                                "Salsify URL": result.get("Salsify URL", ""),
+                                "Retail URL": result.get("Retail URL", ""),
+                            })
+                            st.session_state.detail_skus.add(sku)
 
-                        if debug and debug["SKU"] not in st.session_state.debug_skus:
-                            st.session_state.debug_rows.append(debug)
-                            st.session_state.debug_skus.add(debug["SKU"])
-
-                    # Throttle Streamlit redraws to reduce stutter.
+                    # Throttle UI redraws to prevent batch stalls/hiccups.
                     if completed % UI_UPDATE_EVERY == 0 or completed == total:
                         progress_bar.progress(completed / max(total, 1))
                         status_text.markdown(
@@ -1253,13 +1293,193 @@ if uploaded_file:
                         )
                         overall_progress_bar.progress((start + completed) / max(len(df), 1))
 
-            # Move to next batch automatically.
-            if start + BATCH_SIZE < len(df):
+            st.write(f"✅ Rows processed so far: {len(st.session_state.summary_rows)}")
+
+            # Auto-batch.
+            if st.session_state.start_idx + BATCH_SIZE < len(df):
                 st.session_state.start_idx += BATCH_SIZE
+                time.sleep(0.15)
                 st.rerun()
             else:
                 st.session_state.processing_done = True
                 st.rerun()
+
+        # =====================================
+        # FULL VISUAL MODE
+        # =====================================
+        else:
+            if st.session_state.processing_done:
+                st.success("✅ Processing complete")
+
+            for idx, (_, row) in enumerate(df.iterrows()):
+                sku = row.get("sku", "Missing SKU")
+
+                retail_html = get_html(row.get("retail_url", ""))
+                s_text = get_salsify_text(row.get("salsify_url", ""))
+                r_text = get_cvs_text(retail_html) or {}
+                r_text["description"] = clean_cvs_text(r_text.get("description", ""))
+                r_text["features"] = [clean_cvs_text(f) for f in r_text.get("features", [])]
+
+                s_images = get_salsify_images(row.get("salsify_url", ""))
+                r_images = get_cvs_images(row.get("retail_url", ""))
+
+                if not isinstance(s_images, list):
+                    s_images = []
+
+                if not isinstance(r_images, list):
+                    r_images = []
+
+                s_title = s_text.get("title") if isinstance(s_text, dict) else ""
+                r_title = r_text.get("title") if isinstance(r_text, dict) else ""
+
+                s_desc = s_text.get("description") if isinstance(s_text, dict) else ""
+                r_desc = r_text.get("description") if isinstance(r_text, dict) else ""
+
+                cvs_features = r_text.get("features") or []
+                feature_fields = ["feature1", "feature2", "feature3", "feature4", "feature5"]
+
+                title_score = keyword_score(s_title, r_title)
+                desc_score = keyword_score(s_desc, r_desc)
+
+                feature_scores = []
+                max_features = max(len(feature_fields), len(cvs_features))
+
+                img_scores = []
+                max_images = max(len(s_images), len(r_images))
+
+                for i in range(max_images):
+                    s_url = (
+                        s_images[i].get("url")
+                        if i < len(s_images) and isinstance(s_images[i], dict)
+                        else None
+                    )
+                    r_url = (
+                        r_images[i]
+                        if i < len(r_images) and isinstance(r_images[i], str)
+                        else None
+                    )
+
+                    if s_url and r_url:
+                        sc = compare_images_visually(s_url, r_url)
+                        img_scores.append(sc)
+
+                avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
+
+                for i in range(max_features):
+                    s_val = s_text.get(feature_fields[i], "") if i < len(feature_fields) else ""
+                    r_val = cvs_features[i] if i < len(cvs_features) else ""
+                    feature_scores.append(keyword_score(s_val, r_val))
+
+                avg_feature_score = int(sum(feature_scores) / len(feature_scores)) if feature_scores else 0
+                overall_score = int((title_score + desc_score + avg_feature_score + avg_img_score) / 4)
+
+                is_issue = overall_score < 80
+                if show_only_issues and not is_issue:
+                    continue
+                if hide_good and overall_score >= 80:
+                    continue
+
+                cvs_rpc = row.get("cvs_rpc") or row.get("CVS RPC") or "N/A"
+                st.subheader(f"SKU: {sku} | CVS RPC: {cvs_rpc}")
+
+                left, right = st.columns([2, 1])
+
+                with left:
+                    st.markdown(f"### 🏷️ Title {score_badge(title_score)}", unsafe_allow_html=True)
+                    c1, c2 = st.columns(2)
+                    c1.markdown(
+                        f"<div style='font-size:18px; line-height:1.5'>{s_title or '❌ Missing'}</div>",
+                        unsafe_allow_html=True
+                    )
+                    c2.markdown(
+                        f"<div style='font-size:18px; line-height:1.5'>{r_title or '❌ Missing'}</div>",
+                        unsafe_allow_html=True
+                    )
+
+                    st.markdown(f"### 📄 Description {score_badge(desc_score)}", unsafe_allow_html=True)
+                    c1, c2 = st.columns(2)
+                    c1.markdown(
+                        f"<div style='font-size:14px; line-height:1.5'>{s_desc or '❌ Missing'}</div>",
+                        unsafe_allow_html=True
+                    )
+                    c2.markdown(
+                        f"<div style='font-size:14px; line-height:1.5'>{r_desc or '❌ Missing'}</div>",
+                        unsafe_allow_html=True
+                    )
+
+                    st.markdown(f"### 📌 Features {score_badge(avg_feature_score)}", unsafe_allow_html=True)
+
+                    for i in range(max_features):
+                        s_val = s_text.get(feature_fields[i], "") if i < len(feature_fields) else ""
+                        r_val = cvs_features[i] if i < len(cvs_features) else ""
+                        score = keyword_score(s_val, r_val)
+
+                        c1, c2 = st.columns(2)
+                        c1.markdown(
+                            f"<div style='font-size:14px; line-height:1.5'>{s_val or '❌ Missing'}</div>",
+                            unsafe_allow_html=True
+                        )
+                        c2.markdown(
+                            f"<div style='font-size:14px; line-height:1.5'>{r_val or '❌ Missing'}</div>",
+                            unsafe_allow_html=True
+                        )
+
+                        st.markdown(score_badge(score), unsafe_allow_html=True)
+                        st.divider()
+
+                with right:
+                    st.markdown(f"### 🖼️ Images — Avg {score_badge(avg_img_score)}", unsafe_allow_html=True)
+                    st.markdown(score_bar(avg_img_score), unsafe_allow_html=True)
+
+                    for i in range(max_images):
+                        col1, col2, col3 = st.columns([3, 3, 1])
+
+                        s_url = (
+                            s_images[i].get("url")
+                            if i < len(s_images) and isinstance(s_images[i], dict)
+                            else None
+                        )
+                        r_url = (
+                            r_images[i]
+                            if i < len(r_images) and isinstance(r_images[i], str)
+                            else None
+                        )
+
+                        if s_url:
+                            col1.markdown(
+                                f"<img src='{s_url}' style='width:100%; max-width:200px; border-radius:6px;'>",
+                                unsafe_allow_html=True
+                            )
+                        else:
+                            col1.write("")
+
+                        if r_url:
+                            col2.markdown(
+                                f"<img src='{r_url}' style='width:100%; max-width:200px; border-radius:6px;'>",
+                                unsafe_allow_html=True
+                            )
+                        else:
+                            col2.write("")
+
+                        sc = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
+                        col3.markdown(score_badge(sc), unsafe_allow_html=True)
+
+                if overall_score >= 80:
+                    st.markdown(score_bar(overall_score), unsafe_allow_html=True)
+                    st.success(f"✅ Strong Match: {overall_score}%")
+                elif overall_score >= 50:
+                    st.markdown(score_bar(overall_score), unsafe_allow_html=True)
+                    st.warning(f"🟡 Needs Review: {overall_score}%")
+                else:
+                    st.markdown(score_bar(overall_score), unsafe_allow_html=True)
+                    st.error(f"🔴 Critical Issue: {overall_score}%")
+
+                st.caption(
+                    f"Title: {title_score}% | "
+                    f"Desc: {desc_score}% | "
+                    f"Feat: {avg_feature_score}% | "
+                    f"Img: {avg_img_score}%"
+                )
 
     except EmptyDataError:
         st.error("🔥 CRITICAL APP ERROR")
