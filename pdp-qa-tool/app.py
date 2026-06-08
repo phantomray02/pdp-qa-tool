@@ -1,3 +1,4 @@
+
 import re
 import html
 import json
@@ -6,7 +7,6 @@ import traceback
 from io import BytesIO
 from difflib import SequenceMatcher
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
 import numpy as np
 import pandas as pd
 import requests
@@ -15,13 +15,12 @@ from bs4 import BeautifulSoup
 from PIL import Image, ImageFilter
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
-
+from pandas.errors import EmptyDataError
 # =========================================
 # APP SETUP
 # =========================================
 st.set_page_config(layout="wide")
 st.title("PDP QA Tool ✅")
-
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
     "Accept-Language": "en-US,en;q=0.9",
@@ -31,7 +30,6 @@ REQUEST_TIMEOUT = 12
 MAX_CACHE = 100
 html_cache = {}
 requests.adapters.DEFAULT_RETRIES = 2
-
 # =========================================
 # GENERIC HELPERS
 # =========================================
@@ -41,12 +39,10 @@ def normalize_space(text):
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
-
 def normalize_text(text):
     if not isinstance(text, str):
         return ""
     return re.sub(r"[^a-z0-9\s]", "", text.lower())
-
 
 def dedupe_preserve_order(items):
     seen = set()
@@ -58,18 +54,14 @@ def dedupe_preserve_order(items):
             out.append(item)
     return out
 
-
 def keyword_score(a, b):
     return int(SequenceMatcher(None, normalize_text(a), normalize_text(b)).ratio() * 100)
-
 
 def equal_height_block(text):
     return f"<div style='min-height:180px; display:flex; align-items:flex-start;'>{text}</div>"
 
-
 def equal_feature_block(text):
     return f"<div style='min-height:70px; display:flex; align-items:flex-start;'>{text}</div>"
-
 
 def score_badge(score):
     if score >= 80:
@@ -77,7 +69,6 @@ def score_badge(score):
     if score >= 50:
         return f"🟡 <span style='color:#FFC107; font-weight:700'>{score}% (Review)</span>"
     return f"🔴 <span style='color:#F44336; font-weight:700'>{score}% (Poor)</span>"
-
 
 def score_bar(score):
     if score >= 80:
@@ -91,10 +82,45 @@ def score_bar(score):
         f"color:white; font-weight:600; margin-top:6px; margin-bottom:6px;'>Score: {score}%</div>"
     )
 
+def read_uploaded_csv_from_bytes(file_bytes):
+    if not file_bytes:
+        raise EmptyDataError("Uploaded file is empty.")
+    if len(file_bytes.strip()) == 0:
+        raise EmptyDataError("Uploaded file is empty.")
+    last_error = None
+    for encoding in ["utf-8-sig", "utf-8", "latin1"]:
+        try:
+            return pd.read_csv(BytesIO(file_bytes), encoding=encoding)
+        except Exception as e:
+            last_error = e
+    raise last_error if last_error else EmptyDataError("Could not parse uploaded CSV.")
+
+def prepare_input_df(df):
+    df = df.copy()
+    df.columns = [c.strip().lower() for c in df.columns]
+    df.rename(
+        columns={
+            "salsify url": "salsify_url",
+            "retail url": "retail_url",
+            "sku id": "sku",
+            "product sku": "sku",
+            "cvs rpc": "cvs_rpc",
+        },
+        inplace=True,
+    )
+    if "brand" not in df.columns and len(df.columns) >= 5:
+        df.rename(columns={df.columns[4]: "brand"}, inplace=True)
+    required = ["sku", "salsify_url", "retail_url"]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing required columns: {missing}")
+    return df
 # =========================================
 # HTML FETCH
 # =========================================
 def get_html(url):
+    if not url:
+        return ""
     if url in html_cache:
         html_cache[url] = html_cache.pop(url)
         return html_cache[url]
@@ -108,7 +134,6 @@ def get_html(url):
     except Exception:
         pass
     return ""
-
 # =========================================
 # SALSIFY PARSERS
 # =========================================
@@ -123,7 +148,6 @@ def get_salsify_images(url):
         properties = data["props"]["pageProps"]["product"]["digitalAssets"]["properties"]
     except Exception:
         return []
-
     asset_map = {}
     for prop in properties:
         name = prop.get("property", "").lower()
@@ -132,13 +156,11 @@ def get_salsify_images(url):
             val = values[0].get("value", "")
             if val:
                 asset_map[name] = val.split("?")[0]
-
     def find(keyword):
         for k, v in asset_map.items():
             if keyword in k:
                 return v
         return None
-
     ordered = [find("online"), find("back"), find("left")]
     atf_io = find("atf io")
     if atf_io:
@@ -149,7 +171,6 @@ def get_salsify_images(url):
         for k in ["atf 2", "atf 3", "atf 4", "atf 5", "atf 6"]:
             ordered.append(find(k))
     return [{"url": x} for x in ordered[:8] if x]
-
 
 def get_salsify_text(url):
     html_text = get_html(url)
@@ -162,14 +183,12 @@ def get_salsify_text(url):
         props = data["props"]["pageProps"]["product"]["propertySets"][0]["properties"]
     except Exception:
         return {}
-
     text_map = {}
     for p in props:
         key = p.get("property")
         values = p.get("values", [])
         if values:
             text_map[key] = values[0]
-
     return {
         "title": text_map.get("PRODUCT_TITLE", ""),
         "description": text_map.get("DESCRIPTION", ""),
@@ -179,26 +198,21 @@ def get_salsify_text(url):
         "feature4": text_map.get("FEATURE_4", ""),
         "feature5": text_map.get("FEATURE_5", ""),
     }
-
 # =========================================
 # CVS PARSERS
 # =========================================
 def clean_cvs_text(text):
     if not text:
         return ""
-
     text = str(text)
-
-    # decode common escaped sequences
+    # Common escaped characters.
     text = text.replace("\\u0026", "&")
     text = text.replace("\\n", " ")
     text = text.replace("\\/", "/")
     text = text.replace('\\"', '"')
-
-    # decode HTML entities
+    # Decode HTML entities.
     text = html.unescape(text)
-
-    # remove Next.js chunk join wrappers that appear inside descriptions
+    # Remove embedded Next.js chunk wrappers that split description text.
     text = re.sub(
         r'"\]\)\s*</script>\s*<script>\s*self\.__next_f\.push\(\[1,\s*"',
         "",
@@ -217,28 +231,22 @@ def clean_cvs_text(text):
         text,
         flags=re.DOTALL,
     )
-
-    # remove transport prefixes like T40f, T1a, etc.
+    # Remove repeated transport wrapper fragments if still present.
+    text = re.sub(r'"\]\)\s*self\.__next_f\.push\(\[1,\s*"', "", text, flags=re.DOTALL)
+    # Remove transport tokens like T40f, T123, etc.
     text = re.sub(r'^(?:T[0-9A-Za-z]+,)+', "", text)
-
-    # normalize whitespace
     text = re.sub(r"\s+", " ", text)
-
     return text.strip(' \t\r\n"')
-
 
 def get_nextjs_chunks(html_text):
     """
-    Decode all self.__next_f.push([1,"..."]) chunks into one joined source string.
-    This is more reliable than regexing partially escaped HTML.
+    Decode all self.__next_f.push([1,"..."]) chunks into one combined source string.
     """
     if not html_text:
         return ""
-
     source = html.unescape(html_text)
     pattern = r'self\.__next_f\.push\(\[1,\s*"((?:\\.|[^"\\])*)"\s*\]\)'
     chunks = []
-
     for m in re.finditer(pattern, source, re.DOTALL):
         payload = m.group(1)
         try:
@@ -249,21 +257,16 @@ def get_nextjs_chunks(html_text):
             decoded = decoded.replace("\\/", "/")
             decoded = decoded.replace('\\"', '"')
         chunks.append(decoded)
-
     return "\n".join(chunks)
-
 
 def extract_balanced_bracket_block(source, start_index):
     if start_index < 0 or start_index >= len(source) or source[start_index] != "[":
         return ""
-
     depth = 0
     in_str = False
     escape = False
-
     for i in range(start_index, len(source)):
         ch = source[i]
-
         if in_str:
             if escape:
                 escape = False
@@ -280,13 +283,11 @@ def extract_balanced_bracket_block(source, start_index):
                 depth -= 1
                 if depth == 0:
                     return source[start_index:i + 1]
-
     return ""
-
 
 def is_top_level_key_at_position(source, idx):
     """
-    Detect top-level Next.js key lines like:
+    Detect keys like:
     32:{...}
     33:[...]
     34:T40f,...
@@ -294,35 +295,25 @@ def is_top_level_key_at_position(source, idx):
     """
     if idx < 0 or idx >= len(source):
         return False
-
-    return bool(
-        re.match(
-            r'[0-9A-Za-z]{1,3}:(?=[\[{"]|T[0-9A-Za-z]+,)',
-            source[idx:]
-        )
-    )
-
+    return bool(re.match(r'[0-9A-Za-z]{1,3}:(?=[\[{"]|T[0-9A-Za-z]+,)', source[idx:]))
 
 def extract_top_level_value_block(source, key):
     """
-    Find a top-level key like:
-    34:T40f,Description text...
-    and return everything after '34:' until the next top-level key line.
+    Extract everything after 'key:' until the next top-level key line.
+    Example:
+    34:T40f,Description...
     """
     pattern = rf'(?m)(?:^|\n){re.escape(str(key))}:'
     m = re.search(pattern, source)
     if not m:
         return ""
-
     start = m.end()
     i = start
     depth = 0
     in_str = False
     escape = False
-
     while i < len(source):
         ch = source[i]
-
         if in_str:
             if escape:
                 escape = False
@@ -340,23 +331,18 @@ def extract_top_level_value_block(source, key):
             elif ch == "\n" and depth == 0:
                 if is_top_level_key_at_position(source, i + 1):
                     break
-
         i += 1
-
     return source[start:i].strip()
-
 
 def parse_jsonish_array_text(array_text):
     array_text = normalize_space(array_text)
     if not array_text:
         return []
-
     candidates = [
         array_text,
         array_text.replace('\\"', '"'),
         html.unescape(array_text).replace('\\"', '"'),
     ]
-
     for candidate in candidates:
         try:
             value = json.loads(candidate)
@@ -364,35 +350,27 @@ def parse_jsonish_array_text(array_text):
                 return [clean_cvs_text(x) for x in value if isinstance(x, str)]
         except Exception:
             pass
-
     inner = array_text[1:-1] if array_text.startswith("[") and array_text.endswith("]") else array_text
     parts = re.split(r'"\s*,\s*"', inner)
-
     cleaned = []
     for part in parts:
         val = clean_cvs_text(part.strip().strip('"'))
         if val:
             cleaned.append(val)
-
     return cleaned
-
 
 def find_vendor_mapping(source):
     if not source:
         return None
-
     patterns = [
         r'\{"vendorDetailsBullets":"\$([0-9A-Za-z]{1,3})","vendorDetailsParagraph":"\$([0-9A-Za-z]{1,3})"\}',
         r'vendorDetailsBullets"\s*:\s*"\$([0-9A-Za-z]{1,3})"\s*,\s*"vendorDetailsParagraph"\s*:\s*"\$([0-9A-Za-z]{1,3})"',
     ]
-
     for pattern in patterns:
         m = re.search(pattern, source)
         if m:
             return m
-
     return None
-
 
 def extract_vendor_copy_from_source(source, source_name=""):
     debug = {
@@ -408,14 +386,11 @@ def extract_vendor_copy_from_source(source, source_name=""):
         "featuresArrayExcerpt": "",
         "descriptionBlockExcerpt": "",
     }
-
     vendor_match = find_vendor_mapping(source)
     if not vendor_match:
         return {"features": [], "description": "", "debug": debug}
-
     features_key = vendor_match.group(1)
     description_key = vendor_match.group(2)
-
     debug["vendorPatternFound"] = True
     debug["vendorDetailsBulletsRef"] = f"${features_key}"
     debug["vendorDetailsParagraphRef"] = f"${description_key}"
@@ -424,45 +399,29 @@ def extract_vendor_copy_from_source(source, source_name=""):
     debug["vendorPatternExcerpt"] = normalize_space(
         source[max(0, vendor_match.start() - 200): vendor_match.end() + 600]
     )[:2000]
-
-    # -------------------------
-    # FEATURES
-    # start right after XX:[
-    # end at matching ]
-    # -------------------------
+    # FEATURES.
     features = []
     features_marker = re.search(rf'(?m)(?:^|\n){re.escape(features_key)}:\[', source)
-
     if features_marker:
         array_start = features_marker.end() - 1
         array_text = extract_balanced_bracket_block(source, array_start)
         debug["featuresArrayFound"] = bool(array_text)
         debug["featuresArrayExcerpt"] = normalize_space(array_text)[:2000]
         features = parse_jsonish_array_text(array_text)
-
-    # -------------------------
-    # DESCRIPTION
-    # start right after YY:
-    # remove Txxxx, prefix
-    # end at next top-level key
-    # -------------------------
+    # DESCRIPTION.
     desc_block = extract_top_level_value_block(source, description_key)
     debug["descriptionBlockFound"] = bool(desc_block)
     debug["descriptionBlockExcerpt"] = normalize_space(desc_block)[:2000]
-
     description = clean_cvs_text(desc_block)
-
     return {
         "features": dedupe_preserve_order(features),
         "description": description,
         "debug": debug,
     }
 
-
 def extract_vendor_copy_from_nextjs(html_text):
     raw_text = get_nextjs_chunks(html_text)
     raw_html = html.unescape(html_text or "")
-
     debug = {
         "rawHtmlLength": len(raw_html or ""),
         "rawTextLength": len(raw_text or ""),
@@ -486,65 +445,48 @@ def extract_vendor_copy_from_nextjs(html_text):
         "rawHtmlVendorExcerpt": "",
         "rawTextVendorExcerpt": "",
     }
-
     if "vendorDetailsBullets" in raw_html:
         idx = raw_html.find("vendorDetailsBullets")
         debug["rawHtmlVendorExcerpt"] = normalize_space(raw_html[max(0, idx - 250): idx + 1500])[:2000]
-
     if "vendorDetailsBullets" in raw_text:
         idx = raw_text.find("vendorDetailsBullets")
         debug["rawTextVendorExcerpt"] = normalize_space(raw_text[max(0, idx - 250): idx + 1500])[:2000]
-
-    # Prefer decoded chunk text first because it removes chunk wrappers.
+    # Prefer decoded text source because chunks are already rejoined.
     result = extract_vendor_copy_from_source(raw_text, "raw_text")
-    result_debug = result.get("debug", {})
-
-    # Fallback to raw HTML if decoded chunk text does not produce enough copy.
+    # Fallback to raw html if needed.
     if not result.get("description") and not result.get("features"):
         result = extract_vendor_copy_from_source(raw_html, "raw_html")
-        result_debug = result.get("debug", {})
-
-    debug.update(result_debug)
-
+    debug.update(result.get("debug", {}))
     return {
         "features": result.get("features", []),
         "description": result.get("description", ""),
         "debug": debug,
     }
 
-
 def get_cvs_images(url):
     html_text = get_html(url)
     matches = re.findall(r'/bizcontent/merchandising/productimages/high_res/[^\s"]+\.jpg\?[^\"]*', html_text)
-
     best_images = {}
     order = []
-
     for m in matches:
         full = "https://www.cvs.com" + m
         base = full.split("?")[0]
         name = base.split("/")[-1]
-        size_match = re.search(r'Resize=\((\d+)', m)
+        size_match = re.search(r"Resize=\((\d+)", m)
         size = int(size_match.group(1)) if size_match else 0
-
         if name not in best_images:
             order.append(name)
             best_images[name] = {"url": base, "size": size}
         elif size > best_images[name]["size"]:
             best_images[name] = {"url": base, "size": size}
-
     return [best_images[name]["url"] for name in order]
-
 
 def get_cvs_text(html_text, retail_url=""):
     debug = {"Title Path": "", "Description Path": "", "Features Path": ""}
-
     if not html_text:
         return {"title": "", "description": "", "features": [], "debug": debug}
-
     soup = BeautifulSoup(html_text, "html.parser")
     title = ""
-
     h1 = soup.find("h1")
     if h1:
         title = normalize_space(h1.get_text(" ", strip=True))
@@ -552,22 +494,18 @@ def get_cvs_text(html_text, retail_url=""):
     elif soup.title:
         title = normalize_space(soup.title.get_text(" ", strip=True))
         debug["Title Path"] = "html_title"
-
     vendor_copy = extract_vendor_copy_from_nextjs(html_text)
     description = vendor_copy.get("description", "")
     features = vendor_copy.get("features", [])
-
     debug.update(vendor_copy.get("debug", {}))
     debug["Description Path"] = "vendorDetailsParagraph" if description else "description_empty"
     debug["Features Path"] = "vendorDetailsBullets" if features else "features_empty"
-
     return {
         "title": title,
         "description": description,
         "features": features[:5],
         "debug": debug,
     }
-
 # =========================================
 # QUALITY HELPERS
 # =========================================
@@ -582,7 +520,7 @@ def debug_description(desc):
     has_absorbency = any(k in desc_clean for k in absorbency_keywords)
     has_size = any(k in desc_clean for k in size_keywords)
     has_benefits = any(k in desc_clean for k in benefit_keywords)
-    is_truncated = (not desc.strip().endswith((".", "!", "?")) or length < 80)
+    is_truncated = not desc.strip().endswith((".", "!", "?")) or length < 80
     words = desc_clean.split()
     unique_ratio = len(set(words)) / len(words) if words else 0
     issues = []
@@ -612,8 +550,11 @@ def debug_description(desc):
     if unique_ratio < 0.5:
         quality_score -= 15
     quality_score = max(0, quality_score)
-    return {"length": length, "quality_score": quality_score, "issues": issues}
-
+    return {
+        "length": length,
+        "quality_score": quality_score,
+        "issues": issues,
+    }
 
 def suggest_description_fix(debug_info):
     suggestions = []
@@ -630,11 +571,12 @@ def suggest_description_fix(debug_info):
     if "Repetitive content" in debug_info["issues"]:
         suggestions.append("Reduce repetition and diversify wording")
     return suggestions
-
 # =========================================
 # IMAGE COMPARISON
 # =========================================
 def fetch_image_cached(url):
+    if not url:
+        return None
     try:
         resp = requests.get(url, timeout=5)
         if resp.status_code == 200 and "image" in resp.headers.get("Content-Type", ""):
@@ -642,7 +584,6 @@ def fetch_image_cached(url):
     except Exception:
         return None
     return None
-
 
 def load_image_with_white_bg(img_data):
     try:
@@ -657,7 +598,6 @@ def load_image_with_white_bg(img_data):
     else:
         white_bg.paste(img)
     return white_bg.convert("L")
-
 
 def compare_images_visually(s_url, r_url):
     try:
@@ -691,14 +631,12 @@ def compare_images_visually(s_url, r_url):
         return 15
     except Exception:
         return 0
-
 # =========================================
 # PROCESS ROW
 # =========================================
 @st.cache_data(show_spinner=False)
 def process_row_cached(row_dict):
     return process_row(row_dict)
-
 
 def process_row(row):
     try:
@@ -707,18 +645,15 @@ def process_row(row):
         s_text = get_salsify_text(row.get("salsify_url", ""))
         r_text = get_cvs_text(retail_html, retail_url=retail_url) or {}
         debug_data = r_text.get("debug", {})
-
         r_text["description"] = clean_cvs_text(r_text.get("description", ""))
         r_text["features"] = [clean_cvs_text(f) for f in r_text.get("features", [])]
         s_images = get_salsify_images(row.get("salsify_url", ""))
         r_images = get_cvs_images(retail_url)
-
         title_score = keyword_score(s_text.get("title", ""), r_text.get("title", ""))
         s_desc_debug = debug_description(s_text.get("description", ""))
         r_desc_debug = debug_description(r_text.get("description", ""))
         text_similarity = keyword_score(s_text.get("description", ""), r_text.get("description", ""))
         desc_score = max(0, text_similarity - int((100 - r_desc_debug["quality_score"]) * 0.5))
-
         cvs_features = r_text.get("features", []) if isinstance(r_text, dict) else []
         feature_fields = ["feature1", "feature2", "feature3", "feature4", "feature5"]
         feature_scores = []
@@ -727,7 +662,6 @@ def process_row(row):
             scores = [keyword_score(s_val, f) for f in cvs_features if isinstance(f, str)]
             feature_scores.append(max(scores) if scores else 0)
         avg_feature_score = int(sum(feature_scores) / len(feature_scores)) if feature_scores else 0
-
         img_scores = []
         for i in range(max(len(s_images), len(r_images))):
             s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else None
@@ -738,7 +672,6 @@ def process_row(row):
                     img_scores.append(sc)
         avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
         overall = int((title_score + desc_score + avg_feature_score + avg_img_score) / 4)
-
         return {
             "summary": {
                 "SKU": row.get("sku", ""),
@@ -836,22 +769,36 @@ if "progress_bar" not in st.session_state:
     st.session_state.progress_bar = None
 if "last_file" not in st.session_state:
     st.session_state.last_file = None
-
+if "uploaded_file_bytes" not in st.session_state:
+    st.session_state.uploaded_file_bytes = None
+if "selected_brand" not in st.session_state:
+    st.session_state.selected_brand = "All"
 # =========================================
-# CONTROLS
+# VIEW + FILTER CONTROLS
 # =========================================
 st.markdown("## 🔎 QA Viewer Controls")
-view_mode = st.checkbox("👁️ View Full QA", key="view_mode", disabled=not st.session_state.processing_done)
-show_only_issues = st.checkbox("❌ Show ONLY Issues", key="show_issues")
-hide_good = st.checkbox("✅ Hide Strong Matches (80%+)", key="hide_good")
-
+view_mode = st.checkbox(
+    "👁️ View Full QA (after processing)",
+    key="view_mode",
+    disabled=not st.session_state.processing_done,
+)
+show_only_issues = st.checkbox(
+    "❌ Show ONLY Issues",
+    key="show_issues",
+)
+hide_good = st.checkbox(
+    "✅ Hide Strong Matches (80%+)",
+    key="hide_good",
+)
 # =========================================
-# INPUT / PROCESSING
+# FILE + PROCESSING
 # =========================================
 if uploaded_file:
     try:
         file_bytes = uploaded_file.getvalue()
+        st.session_state.uploaded_file_bytes = file_bytes
         file_id = hash(file_bytes)
+        # Reset all state if a new file is uploaded.
         if st.session_state.last_file != file_id:
             st.session_state.summary_rows = []
             st.session_state.export_rows = []
@@ -860,49 +807,50 @@ if uploaded_file:
             st.session_state.processing_done = False
             st.session_state.progress_bar = None
             st.session_state.last_file = file_id
-
-        df = pd.read_csv(uploaded_file)
-        df.columns = [c.strip().lower() for c in df.columns]
-        df.rename(columns={
-            "salsify url": "salsify_url",
-            "retail url": "retail_url",
-            "sku id": "sku",
-            "product sku": "sku",
-            "cvs rpc": "cvs_rpc",
-        }, inplace=True)
-        if "brand" not in df.columns and len(df.columns) >= 5:
-            df.rename(columns={df.columns[4]: "brand"}, inplace=True)
-
-        required = ["sku", "salsify_url", "retail_url"]
-        missing = [c for c in required if c not in df.columns]
-        if missing:
-            st.error(f"❌ Missing required columns: {missing}")
-            st.write("Detected columns:", list(df.columns))
+            st.session_state.selected_brand = "All"
+        # Always read from bytes, never directly from uploaded_file again.
+        df = read_uploaded_csv_from_bytes(file_bytes)
+        df = prepare_input_df(df)
+        # Brand filter.
+        brands = sorted(df["brand"].dropna().astype(str).unique().tolist()) if "brand" in df.columns else []
+        brand_options = ["All"] + brands
+        # Keep selected brand valid.
+        if st.session_state.selected_brand not in brand_options:
+            st.session_state.selected_brand = "All"
+        selected_brand = st.selectbox(
+            "🏷️ Select Brand",
+            brand_options,
+            key="selected_brand",
+        )
+        if selected_brand != "All" and "brand" in df.columns:
+            df = df[df["brand"].astype(str) == selected_brand]
+        # If there is nothing after filtering, stop cleanly.
+        if df.empty:
+            st.warning("No rows found for the selected brand.")
             st.stop()
-
-        brands = sorted(df["brand"].dropna().unique()) if "brand" in df.columns else []
-        selected_brand = st.selectbox("🏷️ Select Brand", ["All"] + brands)
-        if selected_brand != "All":
-            df = df[df["brand"] == selected_brand]
-
-        BATCH_SIZE = 40
+        BATCH_SIZE = 20
         start = st.session_state.start_idx
         end = start + BATCH_SIZE
         if start >= len(df):
             st.session_state.processing_done = True
         batch_df = df.iloc[start:end]
-
+        # =====================================
+        # PROCESSING MODE
+        # =====================================
         if not st.session_state.processing_done:
             st.write(f"Processing SKUs {start + 1} to {min(end, len(df))} of {len(df)}")
             if st.session_state.progress_bar is None:
                 st.session_state.progress_bar = st.progress(0)
             progress_bar = st.session_state.progress_bar
             status_text = st.empty()
+            st.write("### Overall Progress")
             overall_progress_bar = st.progress(0)
             total = len(batch_df)
-
             with ThreadPoolExecutor(max_workers=8) as executor:
-                futures = [executor.submit(process_row_cached, row.to_dict()) for _, row in batch_df.iterrows()]
+                futures = [
+                    executor.submit(process_row_cached, row.to_dict())
+                    for _, row in batch_df.iterrows()
+                ]
                 for i, future in enumerate(as_completed(futures)):
                     result = future.result()
                     if result:
@@ -913,11 +861,15 @@ if uploaded_file:
                             st.session_state.summary_rows.append(summary)
                         if detail and detail["SKU"] not in {r["SKU"] for r in st.session_state.export_rows}:
                             st.session_state.export_rows.append(detail)
-                        if debug:
+                        if debug and debug["SKU"] not in {r["SKU"] for r in st.session_state.debug_rows}:
                             st.session_state.debug_rows.append(debug)
                     progress_bar.progress((i + 1) / max(total, 1))
-                    status_text.markdown(f"Processed {i + 1}/{total}")
+                    status_text.markdown(
+                        f"**Processed:** {i + 1}/{total}  \n"
+                        f"**Overall:** {start + i + 1}/{len(df)}"
+                    )
                     overall_progress_bar.progress((start + i + 1) / max(len(df), 1))
+            # Move to next batch automatically.
             if start + BATCH_SIZE < len(df):
                 st.session_state.start_idx += BATCH_SIZE
                 time.sleep(0.05)
@@ -925,28 +877,30 @@ if uploaded_file:
             else:
                 st.session_state.processing_done = True
                 st.rerun()
-
+    except EmptyDataError:
+        st.error("🔥 CRITICAL APP ERROR")
+        st.text("The uploaded CSV is empty or could not be read.")
+    except ValueError as e:
+        st.error("❌ INPUT FILE ERROR")
+        st.text(str(e))
     except Exception as e:
         st.error("🔥 CRITICAL APP ERROR")
         st.text(str(e))
         st.text(traceback.format_exc())
-
 # =========================================
 # TOP EXPORT SECTION
 # =========================================
 if st.session_state.processing_done and st.session_state.summary_rows:
-    st.success("✅ Processing complete")
+    st.success("✅ Processing complete.")
     summary_df = pd.DataFrame(st.session_state.summary_rows)
     detail_df = pd.DataFrame(st.session_state.export_rows)
     debug_df = pd.DataFrame(st.session_state.debug_rows)
-
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         summary_df.to_excel(writer, index=False, sheet_name="Summary")
         detail_df.to_excel(writer, index=False, sheet_name="Details")
         debug_df.to_excel(writer, index=False, sheet_name="Debug")
     output.seek(0)
-
     wb = load_workbook(output)
     ws = wb["Summary"]
     green = PatternFill(start_color="C6EFCE", fill_type="solid")
@@ -961,11 +915,9 @@ if st.session_state.processing_done and st.session_state.summary_rows:
                     cell.fill = yellow
                 else:
                     cell.fill = red
-
     final_output = BytesIO()
     wb.save(final_output)
     final_output.seek(0)
-
     st.markdown("## 📊 Export Results")
     st.download_button(
         label="📥 Download Excel Report",
@@ -974,58 +926,48 @@ if st.session_state.processing_done and st.session_state.summary_rows:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key="download_excel_report_top",
     )
-
 # =========================================
-# FULL QA VIEW
+# FULL VISUAL MODE
 # =========================================
 if uploaded_file and st.session_state.processing_done and view_mode:
     try:
-        df = pd.read_csv(uploaded_file)
-        df.columns = [c.strip().lower() for c in df.columns]
-        df.rename(columns={
-            "salsify url": "salsify_url",
-            "retail url": "retail_url",
-            "sku id": "sku",
-            "product sku": "sku",
-            "cvs rpc": "cvs_rpc",
-        }, inplace=True)
-        if "brand" not in df.columns and len(df.columns) >= 5:
-            df.rename(columns={df.columns[4]: "brand"}, inplace=True)
-        brands = sorted(df["brand"].dropna().unique()) if "brand" in df.columns else []
-        selected_brand = st.session_state.get("Select Brand", None)
-        # preserve current filtered df by reading selectbox state directly if available
-        if "brand" in df.columns:
-            current_brand = st.session_state.get("Select Brand")
-            if current_brand and current_brand != "All":
-                df = df[df["brand"] == current_brand]
-
+        if not st.session_state.uploaded_file_bytes:
+            st.error("Uploaded CSV data is missing from session state.")
+            st.stop()
+        df = read_uploaded_csv_from_bytes(st.session_state.uploaded_file_bytes)
+        df = prepare_input_df(df)
+        if st.session_state.selected_brand != "All" and "brand" in df.columns:
+            df = df[df["brand"].astype(str) == st.session_state.selected_brand]
+        if df.empty:
+            st.warning("No rows found for the selected brand.")
+            st.stop()
+        st.markdown("## 👁️ Full Visual QA Review")
         for _, row in df.iterrows():
             sku = row.get("sku", "Missing SKU")
+            cvs_rpc = row.get("cvs_rpc") or row.get("CVS RPC") or "N/A"
             retail_url = row.get("retail_url", "")
             retail_html = get_html(retail_url)
             s_text = get_salsify_text(row.get("salsify_url", ""))
             r_text = get_cvs_text(retail_html, retail_url=retail_url) or {}
             debug_data = r_text.get("debug", {})
-
             r_text["description"] = clean_cvs_text(r_text.get("description", ""))
             r_text["features"] = [clean_cvs_text(f) for f in r_text.get("features", [])]
             s_images = get_salsify_images(row.get("salsify_url", ""))
             r_images = get_cvs_images(retail_url)
-            s_images = s_images if isinstance(s_images, list) else []
-            r_images = r_images if isinstance(r_images, list) else []
-
-            s_title = s_text.get("title", "")
-            r_title = r_text.get("title", "")
-            s_desc = s_text.get("description", "")
-            r_desc = r_text.get("description", "")
-            cvs_features = r_text.get("features", [])
-
+            s_title = s_text.get("title") or ""
+            r_title = r_text.get("title") or ""
+            s_desc = s_text.get("description") or ""
+            r_desc = r_text.get("description") or ""
+            cvs_features = r_text.get("features") or []
+            feature_fields = ["feature1", "feature2", "feature3", "feature4", "feature5"]
             title_score = keyword_score(s_title, r_title)
             r_desc_debug = debug_description(r_desc)
-            desc_score = max(0, keyword_score(s_desc, r_desc) - int((100 - r_desc_debug["quality_score"]) * 0.5))
-            feature_fields = ["feature1", "feature2", "feature3", "feature4", "feature5"]
-            feature_scores = []
+            desc_score = max(
+                0,
+                keyword_score(s_desc, r_desc) - int((100 - r_desc_debug["quality_score"]) * 0.5)
+            )
             max_features = max(len(feature_fields), len(cvs_features))
+            feature_scores = []
             for i in range(max_features):
                 s_val = s_text.get(feature_fields[i], "") if i < len(feature_fields) else ""
                 r_val = cvs_features[i] if i < len(cvs_features) else ""
@@ -1037,26 +979,26 @@ if uploaded_file and st.session_state.processing_done and view_mode:
                 s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else None
                 r_url = r_images[i] if i < len(r_images) else None
                 if s_url and r_url:
-                    img_scores.append(compare_images_visually(s_url, r_url))
+                    sc = compare_images_visually(s_url, r_url)
+                    if sc > 0:
+                        img_scores.append(sc)
             avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
             overall_score = int((title_score + desc_score + avg_feature_score + avg_img_score) / 4)
             if show_only_issues and overall_score >= 80:
                 continue
             if hide_good and overall_score >= 80:
                 continue
-
-            cvs_rpc = row.get("cvs_rpc") or row.get("CVS RPC") or "N/A"
             st.subheader(f"SKU: {sku} | CVS RPC: {cvs_rpc}")
             left, right = st.columns([2, 1])
             with left:
                 st.markdown(f"### 🏷️ Title {score_badge(title_score)}", unsafe_allow_html=True)
                 c1, c2 = st.columns(2)
-                c1.markdown(equal_height_block(s_title or '❌ Missing'), unsafe_allow_html=True)
-                c2.markdown(equal_height_block(r_title or '❌ Missing'), unsafe_allow_html=True)
+                c1.markdown(equal_height_block(s_title or "❌ Missing"), unsafe_allow_html=True)
+                c2.markdown(equal_height_block(r_title or "❌ Missing"), unsafe_allow_html=True)
                 st.markdown(f"### 📄 Description {score_badge(desc_score)}", unsafe_allow_html=True)
                 c1, c2 = st.columns(2)
-                c1.markdown(equal_height_block(s_desc or '❌ Missing'), unsafe_allow_html=True)
-                c2.markdown(equal_height_block(r_desc or '❌ Missing'), unsafe_allow_html=True)
+                c1.markdown(equal_height_block(s_desc or "❌ Missing"), unsafe_allow_html=True)
+                c2.markdown(equal_height_block(r_desc or "❌ Missing"), unsafe_allow_html=True)
                 st.caption(
                     f"CVS extraction paths → Title: {debug_data.get('Title Path', '')} | "
                     f"Description: {debug_data.get('Description Path', '')} | "
@@ -1068,8 +1010,8 @@ if uploaded_file and st.session_state.processing_done and view_mode:
                     r_val = cvs_features[i] if i < len(cvs_features) else ""
                     score = keyword_score(s_val, r_val)
                     c1, c2 = st.columns(2)
-                    c1.markdown(equal_feature_block(s_val or '❌ Missing'), unsafe_allow_html=True)
-                    c2.markdown(equal_feature_block(r_val or '❌ Missing'), unsafe_allow_html=True)
+                    c1.markdown(equal_feature_block(s_val or "❌ Missing"), unsafe_allow_html=True)
+                    c2.markdown(equal_feature_block(r_val or "❌ Missing"), unsafe_allow_html=True)
                     st.markdown(score_badge(score), unsafe_allow_html=True)
                     st.divider()
             with right:
@@ -1080,14 +1022,25 @@ if uploaded_file and st.session_state.processing_done and view_mode:
                     s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else None
                     r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else None
                     if s_url:
-                        col1.markdown(f"<img src='{s_url}' style='width:100%; max-width:200px; border-radius:6px;'>", unsafe_allow_html=True)
+                        col1.image(s_url)
+                    else:
+                        col1.write("❌ Missing")
                     if r_url:
-                        col2.markdown(f"<img src='{r_url}' style='width:100%; max-width:200px; border-radius:6px;'>", unsafe_allow_html=True)
+                        col2.image(r_url)
+                    else:
+                        col2.write("❌ Missing")
                     sc = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
                     col3.markdown(score_badge(sc), unsafe_allow_html=True)
-            st.caption(f"Title: {title_score}% | Desc: {desc_score}% | Feat: {avg_feature_score}% | Img: {avg_img_score}%")
+            st.caption(
+                f"Title: {title_score}% | "
+                f"Desc: {desc_score}% | "
+                f"Feat: {avg_feature_score}% | "
+                f"Img: {avg_img_score}% | "
+                f"Overall: {overall_score}%"
+            )
             st.divider()
     except Exception as e:
         st.error("🔥 CRITICAL APP ERROR")
         st.text(str(e))
         st.text(traceback.format_exc())
+
