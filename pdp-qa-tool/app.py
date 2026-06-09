@@ -305,11 +305,8 @@ def clean_cvs_text(text):
     # Remove split Next.js wrapper fragments if they leaked into the extracted text.
     wrapper_patterns = [
         r'"\]\)\s*</script>\s*<script>\s*self\.__next_f\.push\(\[1,\s*"',
-        r'"\]\)&lt;/script&gt;&lt;script&gt;self\.__next_f\.push\(\[1,\s*"',
-        r'"\]\)&lt;\/script&gt;&lt;script&gt;self\.__next_f\.push\(\[1,\s*"',
         r'"\]\)\s*self\.__next_f\.push\(\[1,\s*"',
         r'</script>\s*<script>\s*self\.__next_f\.push\(\[1,\s*"',
-        r'&lt;/script&gt;&lt;script&gt;self\.__next_f\.push\(\[1,\s*"',
     ]
     for pattern in wrapper_patterns:
         text = re.sub(pattern, "", text, flags=re.DOTALL)
@@ -317,11 +314,16 @@ def clean_cvs_text(text):
     # Remove transport tokens at the start, e.g. T4b2,
     text = re.sub(r'^(?:T[0-9A-Za-z]+,)+', "", text)
 
-    # Strip trailing key bleed like:
+    # Strip trailing keyed bleed like:
     # ... Packaging may vary.27:{"locationAvailabilityStatus":"In Stock"}
     text = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:\{.*$', "", text, flags=re.DOTALL)
     text = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:\[.*$', "", text, flags=re.DOTALL)
     text = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:$', "", text, flags=re.DOTALL)
+
+    # NEW: strip transport tails like:
+    # ... more comfortable than ever before"] 38:T421,Experience underwear-like comfort...
+    text = re.sub(r'"\]\s*[0-9A-Za-z]{1,3}:T[0-9A-Za-z]+,.*$', "", text, flags=re.DOTALL)
+    text = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:T[0-9A-Za-z]+,.*$', "", text, flags=re.DOTALL)
 
     # Remove leftover script fragments.
     text = re.sub(r'self\.__next_f\.push\(\[1,.*$', "", text, flags=re.DOTALL)
@@ -1384,20 +1386,16 @@ def process_row(row):
         feature_fields = ["feature1", "feature2", "feature3", "feature4", "feature5"]
 
         feature_scores = []
-        feature_summary_fields = {}
-        cvs_feature_slots = []
+        feature_score_fields = {}
 
         for i, f_key in enumerate(feature_fields, start=1):
             s_val = s_text.get(f_key, "")
             r_val = cvs_features[i - 1] if i - 1 < len(cvs_features) else ""
-            cvs_feature_slots.append(r_val)
 
             score = keyword_score(s_val, r_val) if r_val else 0
             feature_scores.append(score)
 
-            feature_summary_fields[f"Salsify Feature {i}"] = s_val
-            feature_summary_fields[f"CVS Feature {i}"] = r_val
-            feature_summary_fields[f"Feature {i} %"] = score
+            feature_score_fields[f"Feature {i} %"] = score
 
         avg_feature_score = int(sum(feature_scores) / len(feature_scores)) if feature_scores else 0
 
@@ -1416,8 +1414,6 @@ def process_row(row):
                     img_scores.append(sc)
 
             image_position_scores[f"Image {i + 1} %"] = sc
-            image_position_scores[f"Salsify Image {i + 1}"] = s_url or ""
-            image_position_scores[f"CVS Image {i + 1}"] = r_url or ""
 
         avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
         overall = int((title_score + desc_score + avg_feature_score + avg_img_score) / 4)
@@ -1434,7 +1430,7 @@ def process_row(row):
                 "Feature %": avg_feature_score,
                 "Image Match %": avg_img_score,
                 "Overall %": overall,
-                **feature_summary_fields,
+                **feature_score_fields,
                 **image_position_scores,
             },
             "detail": {
