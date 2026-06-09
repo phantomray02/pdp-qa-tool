@@ -443,7 +443,36 @@ def extract_balanced_bracket_block(source, start_index):
                     return source[start_index:i + 1]
 
     return ""
+    
+def extract_balanced_brace_block(source, start_index):
+    if start_index < 0 or start_index >= len(source) or source[start_index] != "{":
+        return ""
 
+    depth = 0
+    in_str = False
+    escape = False
+
+    for i in range(start_index, len(source)):
+        ch = source[i]
+
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+        else:
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return source[start_index:i + 1]
+
+    return ""
 
 def find_newline_anchored_key(source, key, for_array=False):
     key = str(key)
@@ -465,7 +494,6 @@ def looks_like_next_newline_key(source, idx):
             source[idx:],
         )
     )
-
 
 def extract_newline_anchored_value_block(source, key):
     """
@@ -549,7 +577,64 @@ def extract_newline_anchored_value_block(source, key):
 
     return block.strip()
 
+def extract_object_block_for_key(source, key):
+    """
+    Resolve a ref key like 36:
+    and return the full balanced object block if it starts with {.
+    """
+    m = find_newline_anchored_key(source, key, for_array=False)
+    if not m:
+        return ""
 
+    start = m.end()
+    while start < len(source) and source[start].isspace():
+        start += 1
+
+    if start < len(source) and source[start] == "{":
+        return extract_balanced_brace_block(source, start)
+
+    return extract_newline_anchored_value_block(source, key)
+
+
+def extract_rpc_anchor_windows(source, target_rpc="", context_before=3500, context_after=12000):
+    """
+    Build candidate windows around exact SKU/image anchors.
+    This catches cases like 841289 where vendorDetails is referenced
+    through numeric ref objects instead of direct vendorContent blocks.
+    """
+    if not source or not target_rpc:
+        return []
+
+    rpc = re.escape(str(target_rpc))
+    patterns = [
+        rf'skuId={rpc}\b',
+        rf'/{rpc}(?:_[0-9]+)?\.jpg',
+        rf'"dynamicMediaUrl"\s*:\s*"[^"]*?/{rpc}(?:_[0-9]+)?\.jpg[^"]*"',
+    ]
+
+    hits = []
+    seen = set()
+
+    for pattern in patterns:
+        for m in re.finditer(pattern, source, flags=re.IGNORECASE):
+            start = max(0, m.start() - context_before)
+            end = min(len(source), m.end() + context_after)
+            key = (start, end)
+            if key in seen:
+                continue
+            seen.add(key)
+            hits.append({
+                "start": start,
+                "end": end,
+                "anchor_start": m.start(),
+                "anchor_end": m.end(),
+                "window": source[start:end],
+                "anchor_text": source[m.start():m.end()],
+            })
+
+    hits.sort(key=lambda x: x["start"])
+    return hits
+    
 def merge_feature_continuations(items, max_features=5):
     """
     Merge true continuation fragments back into the previous feature bullet,
@@ -828,6 +913,12 @@ def parse_vendor_details_from_block(local_block, working_source, debug):
     """
     Parse vendor details from a chosen local block, but always resolve any $refs
     against the full working_source.
+
+    Important:
+    - handles direct vendorDetailsBullets / vendorDetailsParagraph
+    - also handles a parent ref chain like:
+      "vendorDetails":"$36"
+      36:{"vendorDetailsBullets":"$37","vendorDetailsParagraph":"..."}
     """
     if not local_block:
         return {"features": [], "description": "", "debug": debug}
@@ -836,6 +927,25 @@ def parse_vendor_details_from_block(local_block, working_source, debug):
     local_debug["directVendorContentFound"] = True
     local_debug["directVendorDetailsFound"] = True
     local_debug["directVendorContentExcerpt"] = normalize_space(local_block[:2500])
+
+    # ---------------------------------
+    # 0) Resolve vendorDetails parent ref first if present
+    # ---------------------------------
+    vendor_details_ref_match = re.search(
+        r'"vendorDetails"\s*:\s*"(\$[0-9A-Za-z]{1,3})"',
+        local_block,
+        flags=re.DOTALL,
+    )
+
+    if vendor_details_ref_match:
+        ref_token = vendor_details_ref_match.group(1)
+        ref_key = ref_token.replace("$", "")
+        resolved_block = extract_object_block_for_key(working_source, ref_key)
+
+        if resolved_block:
+            local_debug["vendorDetailsRef"] = ref_token
+            local_debug["vendorDetailsResolvedKey"] = ref_key
+            return parse_vendor_details_from_block(resolved_block, working_source, local_debug)
 
     features = []
     description = ""
@@ -931,7 +1041,6 @@ def parse_vendor_details_from_block(local_block, working_source, debug):
         "debug": local_debug,
     }
 
-
 def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retail_url=""):
     debug = {
         "vendorPatternFound": False,
@@ -964,27 +1073,25 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
     working_source = working_source.replace("\\u0026", "&")
 
     # ---------------------------------
-    # 1) Parse best matched variant window
+    # 1) First try RPC/image-anchor windows
     # ---------------------------------
     variant_features = []
     variant_description = ""
 
-    sorted_candidates = get_sorted_variant_windows(
+    anchor_windows = extract_rpc_anchor_windows(
         working_source,
         target_rpc=target_rpc,
-        retail_url=retail_url,
+        context_before=3500,
+        context_after=12000,
     )
 
-    fallback_top_candidate = sorted_candidates[0] if sorted_candidates else None
-
-    for candidate in sorted_candidates:
+    for candidate in anchor_windows:
         candidate_debug = debug.copy()
-        candidate_debug["variantWindowMatched"] = candidate.get("match_score", 0) > 0
-        candidate_debug["variantMatchScore"] = candidate.get("match_score", 0)
-        candidate_debug["variantMatchReason"] = " | ".join(candidate.get("match_reason", []))
-        candidate_debug["matchedDynamicMediaUrl"] = candidate.get("matched_dynamic_media", "")
-        candidate_debug["matchedVariantUrl"] = candidate.get("matched_variant_url", "")
-        candidate_debug["matchedNearbyImage"] = candidate.get("matched_nearby_image", "")
+        candidate_debug["variantWindowMatched"] = True
+        candidate_debug["variantMatchScore"] = 999
+        candidate_debug["variantMatchReason"] = "rpc_anchor_window"
+        candidate_debug["matchedDynamicMediaUrl"] = candidate.get("anchor_text", "")
+        candidate_debug["matchedNearbyImage"] = candidate.get("anchor_text", "")
 
         parsed = parse_vendor_details_from_block(
             candidate.get("window", ""),
@@ -998,17 +1105,52 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
             variant_description = parsed.get("description", "") or ""
             break
 
-    if fallback_top_candidate and not debug.get("variantWindowMatched"):
-        debug["variantWindowMatched"] = fallback_top_candidate.get("match_score", 0) > 0
-        debug["variantMatchScore"] = fallback_top_candidate.get("match_score", 0)
-        debug["variantMatchReason"] = " | ".join(fallback_top_candidate.get("match_reason", []))
-        debug["matchedDynamicMediaUrl"] = fallback_top_candidate.get("matched_dynamic_media", "")
-        debug["matchedVariantUrl"] = fallback_top_candidate.get("matched_variant_url", "")
-        debug["matchedNearbyImage"] = fallback_top_candidate.get("matched_nearby_image", "")
-        debug["directVendorContentExcerpt"] = normalize_space(fallback_top_candidate.get("window", "")[:2500])
+    # ---------------------------------
+    # 2) Fallback to scored vendorContent windows
+    # ---------------------------------
+    if not variant_features and not variant_description:
+        sorted_candidates = get_sorted_variant_windows(
+            working_source,
+            target_rpc=target_rpc,
+            retail_url=retail_url,
+        )
+
+        fallback_top_candidate = sorted_candidates[0] if sorted_candidates else None
+
+        for candidate in sorted_candidates:
+            candidate_debug = debug.copy()
+            candidate_debug["variantWindowMatched"] = candidate.get("match_score", 0) > 0
+            candidate_debug["variantMatchScore"] = candidate.get("match_score", 0)
+            candidate_debug["variantMatchReason"] = " | ".join(candidate.get("match_reason", []))
+            candidate_debug["matchedDynamicMediaUrl"] = candidate.get("matched_dynamic_media", "")
+            candidate_debug["matchedVariantUrl"] = candidate.get("matched_variant_url", "")
+            candidate_debug["matchedNearbyImage"] = candidate.get("matched_nearby_image", "")
+
+            parsed = parse_vendor_details_from_block(
+                candidate.get("window", ""),
+                working_source,
+                candidate_debug,
+            )
+
+            if parsed.get("description") or parsed.get("features"):
+                debug = parsed.get("debug", candidate_debug)
+                variant_features = parsed.get("features", []) or []
+                variant_description = parsed.get("description", "") or ""
+                break
+
+        if fallback_top_candidate and not debug.get("variantWindowMatched"):
+            debug["variantWindowMatched"] = fallback_top_candidate.get("match_score", 0) > 0
+            debug["variantMatchScore"] = fallback_top_candidate.get("match_score", 0)
+            debug["variantMatchReason"] = " | ".join(fallback_top_candidate.get("match_reason", []))
+            debug["matchedDynamicMediaUrl"] = fallback_top_candidate.get("matched_dynamic_media", "")
+            debug["matchedVariantUrl"] = fallback_top_candidate.get("matched_variant_url", "")
+            debug["matchedNearbyImage"] = fallback_top_candidate.get("matched_nearby_image", "")
+            debug["directVendorContentExcerpt"] = normalize_space(
+                fallback_top_candidate.get("window", "")[:2500]
+            )
 
     # ---------------------------------
-    # 2) Parse shared/global family copy
+    # 3) Parse shared/global family copy
     # ---------------------------------
     shared_features = []
     shared_description = ""
@@ -1090,24 +1232,33 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
             debug["descriptionBlockExcerpt"] = normalize_space(shared_description)[:2000]
 
     # ---------------------------------
-    # 3) Merge rule:
-    #    bullet 1 from variant
-    #    bullets 2-5 from shared
-    #    description from shared
+    # 4) Merge rule with safe fallback
     # ---------------------------------
     final_description = shared_description or variant_description
 
     final_features = []
 
-    # Bullet 1
-    if variant_features and len(variant_features) >= 1:
+    # Bullet 1 = variant first, else shared first
+    if variant_features:
         final_features.append(variant_features[0])
-    elif shared_features and len(shared_features) >= 1:
+    elif shared_features:
         final_features.append(shared_features[0])
 
-    # Bullets 2-5 from shared
+    # Bullets 2-5 from shared if available
     if shared_features:
         final_features.extend(shared_features[1:5])
+
+    # Fallback: if shared parse missed anything, fill from variant bullets
+    if len(final_features) < 5 and variant_features:
+        start_idx = 1 if final_features else 0
+        for item in variant_features[start_idx:5]:
+            if len(final_features) >= 5:
+                break
+            final_features.append(item)
+
+    # Last fallback if shared was completely empty
+    if not final_features:
+        final_features = (variant_features or shared_features)[:5]
 
     final_features = normalize_cvs_features(final_features)
 
