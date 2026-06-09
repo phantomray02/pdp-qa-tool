@@ -40,7 +40,7 @@ IMAGE_TIMEOUT = 2.5
 # Keep logic the same, but reduce rerun overhead and UI churn.
 BATCH_SIZE = 10
 MAX_WORKERS = 2
-UI_UPDATE_EVERY = 5
+UI_UPDATE_EVERY = 1
 
 # Faster image compare via tiny difference hash.
 IMAGE_HASH_WIDTH = 9
@@ -338,7 +338,8 @@ def clean_cvs_text(text):
 def build_reduced_search_source(html_text):
     """
     Build one reduced search source per CVS page.
-    This is much faster than repeatedly scanning full raw HTML.
+    This is faster than repeatedly scanning full raw HTML,
+    while preserving newline structure needed by keyed ref parsing.
     """
     if not html_text:
         return "", ""
@@ -369,10 +370,16 @@ def build_reduced_search_source(html_text):
     source = re.sub(r'<script[^>]*>.*?</script>', " ", source, flags=re.DOTALL | re.IGNORECASE)
     source = re.sub(r'</?script[^>]*>', " ", source, flags=re.IGNORECASE)
 
-    # Collapse whitespace once.
-    source = re.sub(r"\s+", " ", source).strip()
+    # Preserve newlines for keyed parsing.
+    source = source.replace("\r\n", "\n").replace("\r", "\n")
 
-    return source, source_name
+    # Collapse only horizontal whitespace, not newlines.
+    source = re.sub(r"[ \t\f\v]+", " ", source)
+
+    # Collapse repeated blank lines.
+    source = re.sub(r"\n{2,}", "\n", source)
+
+    return source.strip(), source_name
     
 def get_nextjs_chunks(html_text):
     if not html_text:
@@ -886,16 +893,7 @@ def extract_vendor_copy_from_anchor_region(working_source, anchor_region, source
     )
 
     return parsed
-
-
 def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retail_url=""):
-    # Fast reject if the page doesn't even contain likely vendor copy markers.
-    if (
-        "vendorDetailsBullets" not in working_source
-        and "vendorDetailsParagraph" not in working_source
-        and "vendorContent" not in working_source
-    ):
-        return {"features": [], "description": "", "debug": debug}
     debug = {
         "vendorDetailsBulletsRef": "",
         "vendorDetailsParagraphRef": "",
@@ -915,15 +913,29 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
     if not source:
         return {"features": [], "description": "", "debug": debug}
 
+    # Build working_source FIRST before any checks.
     working_source = html.unescape(source)
     working_source = working_source.replace('\\"', '"')
     working_source = working_source.replace("\\u0026", "&")
+    working_source = working_source.replace("\\/", "/")
 
+    # Fast reject if the page doesn't contain likely vendor copy markers.
+    if (
+        "vendorDetailsBullets" not in working_source
+        and "vendorDetailsParagraph" not in working_source
+        and "vendorContent" not in working_source
+    ):
+        return {"features": [], "description": "", "debug": debug}
+
+    # ---------------------------------
+    # 1) TOP REQUIREMENT:
+    #    Use only the LAST exact RPC image URL anchor first.
+    # ---------------------------------
     anchor_region = find_last_rpc_image_anchor_region(
         working_source,
         target_rpc=target_rpc,
-        before=1600,
-        after=12000,
+        before=600,
+        after=5000,
     )
 
     if anchor_region:
@@ -936,6 +948,9 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
         if anchored.get("description") or anchored.get("features"):
             return anchored
 
+    # ---------------------------------
+    # 2) Fallback: try all candidate windows in score order
+    # ---------------------------------
     sorted_candidates = get_sorted_variant_windows(
         working_source,
         target_rpc=target_rpc,
@@ -962,6 +977,7 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
         if parsed.get("description") or parsed.get("features"):
             return parsed
 
+    # Keep best fallback candidate info if no content found.
     if fallback_top_candidate:
         debug["variantWindowMatched"] = fallback_top_candidate.get("match_score", 0) > 0
         debug["variantMatchScore"] = fallback_top_candidate.get("match_score", 0)
@@ -970,6 +986,9 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
         debug["matchedVariantUrl"] = fallback_top_candidate.get("matched_variant_url", "")
         debug["matchedNearbyImage"] = fallback_top_candidate.get("matched_nearby_image", "")
 
+    # ---------------------------------
+    # 3) Final loose whole-page fallback
+    # ---------------------------------
     features = []
     description = ""
 
@@ -1051,7 +1070,6 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
         "description": cleaned_description,
         "debug": debug,
     }
-
 
 def extract_vendor_copy_from_nextjs(html_text, target_rpc="", retail_url=""):
     search_source, source_name = build_reduced_search_source(html_text)
@@ -1242,6 +1260,47 @@ def get_image_dhash(url):
 
     except Exception:
         return None
+
+def hamming_distance(a, b):
+    return bin(a ^ b).count("1")
+
+
+def compare_images_visually(s_url, r_url):
+    if not s_url or not r_url:
+        return 0
+
+    pair_key = (s_url, r_url)
+    cached = image_compare_cache.get(pair_key)
+    if cached is not None:
+        return cached
+
+    s_hash = get_image_dhash(s_url)
+    r_hash = get_image_dhash(r_url)
+
+    if s_hash is None or r_hash is None:
+        return 0
+
+    dist = hamming_distance(s_hash, r_hash)
+
+    if dist <= 2:
+        score = 100
+    elif dist <= 6:
+        score = 90
+    elif dist <= 10:
+        score = 75
+    elif dist <= 16:
+        score = 60
+    elif dist <= 22:
+        score = 45
+    else:
+        score = 25
+
+    image_compare_cache[pair_key] = score
+
+    while len(image_compare_cache) > IMAGE_COMPARE_CACHE_MAX:
+        image_compare_cache.pop(next(iter(image_compare_cache)))
+
+    return score
 # =========================================
 # PROCESS ROW
 # =========================================
