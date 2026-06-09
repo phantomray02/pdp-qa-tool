@@ -434,7 +434,42 @@ def get_nextjs_chunks(html_text):
 
     return "\n".join(chunks)
 
+def extract_balanced_bracket_block(source, start_index):
+    """
+    Return the full balanced [...] block starting at start_index.
 
+    Works even when strings inside the array contain commas, brackets,
+    escaped quotes, or escaped characters.
+    """
+    if start_index < 0 or start_index >= len(source) or source[start_index] != "[":
+        return ""
+
+    depth = 0
+    in_str = False
+    escape = False
+
+    for i in range(start_index, len(source)):
+        ch = source[i]
+
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+        else:
+            if ch == '"':
+                in_str = True
+            elif ch == "[":
+                depth += 1
+            elif ch == "]":
+                depth -= 1
+                if depth == 0:
+                    return source[start_index:i + 1]
+
+    return ""
+    
 def extract_array_block_for_key(source, key):
     """
     Resolve a keyed array like:
