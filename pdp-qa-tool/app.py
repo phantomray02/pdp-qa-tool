@@ -103,26 +103,48 @@ def dedupe_preserve_order(items):
 def keyword_score(a, b):
     return int(SequenceMatcher(None, normalize_text(a), normalize_text(b)).ratio() * 100)
 
-equal_height_block
+def equal_height_block(text, min_height=180, font_px=14):
+    safe_text = text or "❌ Missing"
+    return f"""
+    <div style="
+        min-height:{min_height}px;
+        padding:10px 12px;
+        border:1px solid #E0E0E0;
+        border-radius:8px;
+        background:#FFFFFF;
+        font-size:{font_px}px;
+        line-height:1.45;
+        overflow-wrap:anywhere;
+        word-break:break-word;
+    ">
+        {safe_text}
+    </div>
+    """
+    
+def equal_feature_block(text, min_height=70, font_px=14):
+    safe_text = text or "❌ Missing"
+    return f"""
+    <div style="
+        min-height:{min_height}px;
+        padding:8px 10px;
+        border:1px solid #E0E0E0;
+        border-radius:8px;
+        background:#FFFFFF;
+        font-size:{font_px}px;
+        line-height:1.4;
+        overflow-wrap:anywhere;
+        word-break:break-word;
+    ">
+        {safe_text}
+    </div>
+    """
+    
 def score_badge(score):
     if score >= 80:
         return f"✅ <span style='color:#4CAF50; font-weight:700'>{score}% (Strong)</span>"
     if score >= 50:
         return f"🟡 <span style='color:#FFC107; font-weight:700'>{score}% (Review)</span>"
     return f"🔴 <span style='color:#F44336; font-weight:700'>{score}% (Poor)</span>"
-
-def score_bar(score):
-    if score >= 80:
-        color = "#2E7D32"
-    elif score >= 50:
-        color = "#F9A825"
-    else:
-        color = "#C62828"
-
-    return (
-        f"<div style='background-color:{color}; padding:6px 10px; border-radius:6px; "
-        f"color:white; font-weight:600; margin-top:6px; margin-bottom:6px;'>Score: {score}%</div>"
-    )
 
 def read_uploaded_csv_from_bytes(file_bytes):
     if not file_bytes:
@@ -1291,12 +1313,6 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
         search_after=30000,
     )
 
-    # Do NOT return the direct fast-path result immediately.
-    # On shared women’s Depend PDPs, the first nearby vendorDetails block
-    # can belong to the wrong variant (for example small/32ct instead of large/28ct).
-    # Keep it only as a fallback candidate if later exact windows fail.
-    direct_fastpath_result = None
-
     if direct_variant_block:
         direct_debug = debug.copy()
         direct_debug["variantWindowMatched"] = True
@@ -2199,6 +2215,7 @@ if st.session_state.processing_done and st.session_state.summary_rows:
     )
 
 # =========================================
+# =========================================
 # FULL VISUAL MODE
 # =========================================
 if uploaded_file and st.session_state.processing_done and view_mode:
@@ -2244,7 +2261,7 @@ if uploaded_file and st.session_state.processing_done and view_mode:
 
             r_text["description"] = clean_cvs_text(r_text.get("description", ""))
             r_text["features"] = normalize_cvs_features(r_text.get("features", []))
-            
+
             s_title = s_text.get("title") or ""
             r_title = r_text.get("title") or ""
 
@@ -2257,7 +2274,10 @@ if uploaded_file and st.session_state.processing_done and view_mode:
             title_score = keyword_score(s_title, r_title)
 
             r_desc_debug = debug_description(r_desc)
-            desc_score = max(0, keyword_score(s_desc, r_desc) - int((100 - r_desc_debug["quality_score"]) * 0.5))
+            desc_score = max(
+                0,
+                keyword_score(s_desc, r_desc) - int((100 - r_desc_debug["quality_score"]) * 0.5),
+            )
 
             max_features = max(len(feature_fields), len(cvs_features))
             feature_scores = []
@@ -2289,7 +2309,7 @@ if uploaded_file and st.session_state.processing_done and view_mode:
             if hide_good and overall_score >= 80:
                 continue
 
-        zoom = st.session_state.get("viewer_zoom", 100)
+            zoom = st.session_state.get("viewer_zoom", 100)
 
             text_font_px = max(12, int(14 * (zoom / 100)))
             desc_min_height = int(180 * (zoom / 100))
@@ -2360,9 +2380,7 @@ if uploaded_file and st.session_state.processing_done and view_mode:
                     st.markdown(f"### 🖼️ Images — Avg {score_badge(avg_img_score)}", unsafe_allow_html=True)
                     st.markdown(score_bar(avg_img_score), unsafe_allow_html=True)
 
-                    # Lock image review with the item by showing all item images in a grid.
-                    image_rows = max_images
-                    for i in range(image_rows):
+                    for i in range(max_images):
                         slot_s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else ""
                         slot_r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else ""
                         slot_score = compare_images_visually(slot_s_url, slot_r_url) if (slot_s_url and slot_r_url) else 0
@@ -2376,7 +2394,11 @@ if uploaded_file and st.session_state.processing_done and view_mode:
                                 st.image(slot_s_url, width=image_width)
                             else:
                                 st.markdown(
-                                    equal_feature_block("❌ Missing", min_height=int(90 * (zoom / 100)), font_px=text_font_px),
+                                    equal_feature_block(
+                                        "❌ Missing",
+                                        min_height=int(90 * (zoom / 100)),
+                                        font_px=text_font_px,
+                                    ),
                                     unsafe_allow_html=True,
                                 )
 
@@ -2386,7 +2408,11 @@ if uploaded_file and st.session_state.processing_done and view_mode:
                                 st.image(slot_r_url, width=image_width)
                             else:
                                 st.markdown(
-                                    equal_feature_block("❌ Missing", min_height=int(90 * (zoom / 100)), font_px=text_font_px),
+                                    equal_feature_block(
+                                        "❌ Missing",
+                                        min_height=int(90 * (zoom / 100)),
+                                        font_px=text_font_px,
+                                    ),
                                     unsafe_allow_html=True,
                                 )
 
