@@ -616,14 +616,20 @@ def extract_object_block_for_key(source, key):
 
     return extract_newline_anchored_value_block(source, key)
 
-def find_direct_vendor_details_block_near_sku(source, target_rpc="", search_after=25000):
+def find_direct_vendor_details_block_near_sku(source, target_rpc="", search_after=30000):
     """
     Fast path:
-    find a skuId anchor, then look shortly after it for a direct
-    vendorContent -> vendorDetails block and return that object.
+    find a sku/image anchor, then look shortly after it for either:
 
-    This is specifically useful for rows like 841289 where the direct
-    nested vendorDetails block already contains the correct bullets.
+    1) direct nested vendorDetails object:
+       "vendorContent":{"vendorDetails":{...}}
+
+    2) ref-style vendorDetails:
+       "vendorContent":{"vendorDetails":"$36"}
+       then resolve 36:{...}
+
+    This is especially important for Depend women FIT-FLEX rows, which often
+    appear to use the ref-style vendorDetails representation.
     """
     if not source or not target_rpc:
         return ""
@@ -631,25 +637,54 @@ def find_direct_vendor_details_block_near_sku(source, target_rpc="", search_afte
     source = str(source)
     rpc = re.escape(str(target_rpc))
 
-    sku_match = re.search(rf'skuId={rpc}\b', source)
-    if not sku_match:
+    # Allow either skuId anchor or image filename anchor.
+    anchor_patterns = [
+        rf'skuId={rpc}\b',
+        rf'/{rpc}(?:_[0-9]+)?\.jpg',
+    ]
+
+    anchors = []
+    for pattern in anchor_patterns:
+        anchors.extend(list(re.finditer(pattern, source, flags=re.IGNORECASE)))
+
+    if not anchors:
         return ""
 
-    segment_start = sku_match.start()
-    segment_end = min(len(source), sku_match.start() + search_after)
-    segment = source[segment_start:segment_end]
+    for anchor in anchors:
+        segment_start = anchor.start()
+        segment_end = min(len(source), anchor.start() + search_after)
+        segment = source[segment_start:segment_end]
 
-    # Look for direct nested vendorDetails after the skuId anchor.
-    m = re.search(
-        r'"vendorContent"\s*:\s*\{\s*"vendorDetails"\s*:\s*\{',
-        segment,
-        flags=re.DOTALL,
-    )
-    if not m:
-        return ""
+        # ---------------------------------
+        # A) direct object form
+        # ---------------------------------
+        direct_match = re.search(
+            r'"vendorContent"\s*:\s*\{\s*"vendorDetails"\s*:\s*\{',
+            segment,
+            flags=re.DOTALL,
+        )
+        if direct_match:
+            brace_start = segment_start + direct_match.end() - 1
+            block = extract_balanced_brace_block(source, brace_start)
+            if block:
+                return block
 
-    brace_start = segment_start + m.end() - 1
-    return extract_balanced_brace_block(source, brace_start)
+        # ---------------------------------
+        # B) ref-style form:
+        #    "vendorContent":{"vendorDetails":"$36"}
+        # ---------------------------------
+        ref_match = re.search(
+            r'"vendorContent"\s*:\s*\{\s*"vendorDetails"\s*:\s*"(\$[0-9A-Za-z]{1,3})"',
+            segment,
+            flags=re.DOTALL,
+        )
+        if ref_match:
+            ref_key = ref_match.group(1).replace("$", "")
+            resolved = extract_object_block_for_key(source, ref_key)
+            if resolved:
+                return resolved
+
+    return ""
     
 def extract_rpc_anchor_windows(source, target_rpc="", context_before=3500, context_after=12000):
     """
@@ -810,27 +845,43 @@ def parse_jsonish_array_text(array_text):
 
     return normalize_cvs_features(cleaned)
 
-
 def extract_candidate_variant_windows(source, context_before=4500, context_after=22000):
     """
     Find every occurrence of vendorContent.vendorDetails and return a local window
     around each one so we can match the correct variant.
+
+    Supports both:
+    - direct object form:
+      "vendorContent":{"vendorDetails":{...}}
+    - ref-style form:
+      "vendorContent":{"vendorDetails":"$36"}
     """
     windows = []
 
-    pattern = r'"vendorContent"\s*:\s*\{\s*"vendorDetails"\s*:\s*\{'
-    for m in re.finditer(pattern, source, flags=re.DOTALL):
-        start = max(0, m.start() - context_before)
-        end = min(len(source), m.start() + context_after)
-        windows.append({
-            "start": start,
-            "end": end,
-            "vendor_start": m.start(),
-            "window": source[start:end],
-        })
+    patterns = [
+        r'"vendorContent"\s*:\s*\{\s*"vendorDetails"\s*:\s*\{',
+        r'"vendorContent"\s*:\s*\{\s*"vendorDetails"\s*:\s*"(\$[0-9A-Za-z]{1,3})"',
+    ]
+
+    seen = set()
+
+    for pattern in patterns:
+        for m in re.finditer(pattern, source, flags=re.DOTALL):
+            start = max(0, m.start() - context_before)
+            end = min(len(source), m.start() + context_after)
+            key = (start, end)
+            if key in seen:
+                continue
+            seen.add(key)
+
+            windows.append({
+                "start": start,
+                "end": end,
+                "vendor_start": m.start(),
+                "window": source[start:end],
+            })
 
     return windows
-
 
 def score_variant_window(window_text, vendor_start, window_start, target_rpc="", retail_url=""):
     """
