@@ -16,7 +16,6 @@ import requests
 import streamlit as st
 from bs4 import BeautifulSoup
 from PIL import Image
-from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
 from pandas.errors import EmptyDataError
 
@@ -34,14 +33,14 @@ HEADERS = {
 
 REQUEST_TIMEOUT = 6
 IMAGE_TIMEOUT = 2.5
-MAX_CACHE = 400
 
 # =========================================
 # PERFORMANCE SETTINGS
 # =========================================
-BATCH_SIZE = 6
+# Keep logic the same, but reduce rerun overhead and UI churn.
+BATCH_SIZE = 10
 MAX_WORKERS = 2
-UI_UPDATE_EVERY = 1
+UI_UPDATE_EVERY = 2
 
 # Faster image compare via tiny difference hash.
 IMAGE_HASH_WIDTH = 9
@@ -50,9 +49,21 @@ IMAGE_HASH_HEIGHT = 8
 # Keep caches smaller to prevent Streamlit Cloud memory pressure.
 HTML_CACHE_MAX = 80
 IMAGE_HASH_CACHE_MAX = 300
+IMAGE_COMPARE_CACHE_MAX = 500
 
 html_cache = {}
 image_hash_cache = {}
+image_compare_cache = {}
+
+# Shared HTTP session for connection reuse.
+HTTP_SESSION = requests.Session()
+HTTP_ADAPTER = requests.adapters.HTTPAdapter(
+    pool_connections=20,
+    pool_maxsize=20,
+    max_retries=0,
+)
+HTTP_SESSION.mount("http://", HTTP_ADAPTER)
+HTTP_SESSION.mount("https://", HTTP_ADAPTER)
 
 # =========================================
 # GENERIC HELPERS
@@ -159,6 +170,7 @@ def prepare_input_df(df):
 def clear_in_memory_caches():
     html_cache.clear()
     image_hash_cache.clear()
+    image_compare_cache.clear()
 
 # =========================================
 # HTML FETCH
@@ -167,12 +179,13 @@ def get_html(url):
     if not url:
         return ""
 
-    if url in html_cache:
+    cached = html_cache.get(url)
+    if cached is not None:
         html_cache[url] = html_cache.pop(url)
-        return html_cache[url]
+        return cached
 
     try:
-        r = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+        r = HTTP_SESSION.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
         if r.status_code == 200 and r.text:
             html_cache[url] = r.text
 
@@ -184,6 +197,7 @@ def get_html(url):
         pass
 
     return ""
+
 # =========================================
 # SALSIFY PARSERS
 # =========================================
@@ -612,14 +626,16 @@ def parse_jsonish_array_text(array_text):
     return normalize_cvs_features(cleaned)
 
 
-def find_rpc_image_anchor_regions(source, target_rpc="", before=2500, after=26000):
+def find_last_rpc_image_anchor_region(source, target_rpc="", before=1600, after=12000):
     """
     Top requirement:
     Find the LAST image URL in the source that contains the exact CVS RPC,
     then use the copy immediately after that anchor as the first-choice region.
+
+    Return only the single last region, not all regions, to reduce work.
     """
     if not source or not target_rpc:
-        return []
+        return None
 
     rpc = re.escape(str(target_rpc))
 
@@ -629,26 +645,24 @@ def find_rpc_image_anchor_regions(source, target_rpc="", before=2500, after=2600
     # /330111_8.jpg
     pattern = rf'[^"\s]*?/{rpc}(?:_[0-9]+)?\.jpg'
 
-    matches = list(re.finditer(pattern, source, flags=re.IGNORECASE))
-    if not matches:
-        return []
+    last_match = None
+    for m in re.finditer(pattern, source, flags=re.IGNORECASE):
+        last_match = m
 
-    regions = []
-    for m in matches:
-        start = max(0, m.start() - before)
-        end = min(len(source), m.end() + after)
-        regions.append({
-            "anchor_start": m.start(),
-            "anchor_end": m.end(),
-            "anchor_text": source[m.start():m.end()],
-            "region_start": start,
-            "region_end": end,
-            "region": source[start:end],
-        })
+    if not last_match:
+        return None
 
-    # Highest priority = last occurrence in source order.
-    regions.sort(key=lambda x: x["anchor_start"], reverse=True)
-    return regions
+    start = max(0, last_match.start() - before)
+    end = min(len(source), last_match.end() + after)
+
+    return {
+        "anchor_start": last_match.start(),
+        "anchor_end": last_match.end(),
+        "anchor_text": source[last_match.start():last_match.end()],
+        "region_start": start,
+        "region_end": end,
+        "region": source[start:end],
+    }
 
 
 def extract_candidate_variant_windows(source, context_before=4500, context_after=22000):
@@ -961,16 +975,16 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
 
     # ---------------------------------
     # 1) TOP REQUIREMENT:
-    #    Try the region immediately after the LAST exact RPC image URL.
+    #    Use only the LAST exact RPC image URL anchor first.
     # ---------------------------------
-    anchor_regions = find_rpc_image_anchor_regions(
+    anchor_region = find_last_rpc_image_anchor_region(
         working_source,
         target_rpc=target_rpc,
-        before=2500,
-        after=26000,
+        before=1600,
+        after=12000,
     )
 
-    for anchor_region in anchor_regions:
+    if anchor_region:
         anchored = extract_vendor_copy_from_anchor_region(
             working_source,
             anchor_region,
@@ -1251,7 +1265,7 @@ def get_cvs_bundle(retail_url, target_rpc=""):
         ),
         "images": extract_cvs_images_from_html(html_text),
     }
-    
+
 # =========================================
 # QUALITY HELPERS
 # =========================================
@@ -1322,11 +1336,12 @@ def get_image_dhash(url):
     if not url:
         return None
 
-    if url in image_hash_cache:
-        return image_hash_cache[url]
+    cached = image_hash_cache.get(url)
+    if cached is not None:
+        return cached
 
     try:
-        r = requests.get(url, headers=HEADERS, timeout=IMAGE_TIMEOUT)
+        r = HTTP_SESSION.get(url, headers=HEADERS, timeout=IMAGE_TIMEOUT)
         if r.status_code != 200:
             return None
         if "image" not in r.headers.get("Content-Type", ""):
@@ -1365,6 +1380,11 @@ def compare_images_visually(s_url, r_url):
     if not s_url or not r_url:
         return 0
 
+    pair_key = (s_url, r_url)
+    cached = image_compare_cache.get(pair_key)
+    if cached is not None:
+        return cached
+
     s_hash = get_image_dhash(s_url)
     r_hash = get_image_dhash(r_url)
 
@@ -1374,17 +1394,23 @@ def compare_images_visually(s_url, r_url):
     dist = hamming_distance(s_hash, r_hash)
 
     if dist <= 2:
-        return 100
+        score = 100
     elif dist <= 6:
-        return 90
+        score = 90
     elif dist <= 10:
-        return 75
+        score = 75
     elif dist <= 16:
-        return 60
+        score = 60
     elif dist <= 22:
-        return 45
+        score = 45
     else:
-        return 25
+        score = 25
+
+    image_compare_cache[pair_key] = score
+    while len(image_compare_cache) > IMAGE_COMPARE_CACHE_MAX:
+        image_compare_cache.pop(next(iter(image_compare_cache)))
+
+    return score
 
 # =========================================
 # PROCESS ROW
@@ -1406,7 +1432,7 @@ def process_row(row):
         debug_data = r_text.get("debug", {})
 
         r_text["description"] = clean_cvs_text(r_text.get("description", ""))
-        r_text["features"] = normalize_cvs_features(r_text.get("features", []))
+        r_text["features"] = r_text.get("features", []) or []
 
         title_score = keyword_score(s_text.get("title", ""), r_text.get("title", ""))
 
@@ -1544,6 +1570,7 @@ def process_row(row):
 
     except Exception:
         return None
+
 # =========================================
 # SESSION STATE
 # =========================================
@@ -1788,8 +1815,8 @@ if uploaded_file and st.session_state.processing_done and view_mode:
             debug_data = r_text.get("debug", {})
 
             r_text["description"] = clean_cvs_text(r_text.get("description", ""))
-            r_text["features"] = normalize_cvs_features(r_text.get("features", []))
-            
+            r_text["features"] = r_text.get("features", []) or []
+
             s_title = s_text.get("title") or ""
             r_title = r_text.get("title") or ""
 
