@@ -1183,14 +1183,90 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
                 fallback_top_candidate.get("window", "")[:2500]
             )
 
-# ---------------------------------
-    # 3) Merge rule with safe fallback
-    #    Preferred:
-    #      bullet 1 from variant
-    #      bullets 2-5 from shared
-    #      description from shared
-    #
-    #    But if shared bullets are missing, keep the full variant bullet set.
+    # ---------------------------------
+    # 3) Parse shared/global family copy
+    # ---------------------------------
+    shared_features = []
+    shared_description = ""
+
+    global_bullets_ref_match = re.search(
+        r'"vendorDetailsBullets"\s*:\s*"(\$[0-9A-Za-z]{1,3})"',
+        working_source,
+        flags=re.DOTALL,
+    )
+    global_paragraph_ref_match = re.search(
+        r'"vendorDetailsParagraph"\s*:\s*"(\$[0-9A-Za-z]{1,3})"',
+        working_source,
+        flags=re.DOTALL,
+    )
+
+    global_bullets_array_text = ""
+    global_bullets_array_marker = re.search(
+        r'"vendorDetailsBullets"\s*:\s*\[',
+        working_source,
+        flags=re.DOTALL,
+    )
+    if global_bullets_array_marker:
+        array_start = global_bullets_array_marker.end() - 1
+        global_bullets_array_text = extract_balanced_bracket_block(working_source, array_start)
+
+    global_paragraph_direct_match = re.search(
+        r'"vendorDetailsParagraph"\s*:\s*"((?:\\.|[^"\\])*)"',
+        working_source,
+        flags=re.DOTALL,
+    )
+
+    if global_bullets_ref_match:
+        ref_token = global_bullets_ref_match.group(1)
+        ref_key = ref_token.replace("$", "")
+
+        debug["vendorPatternFound"] = True
+        debug["vendorDetailsBulletsRef"] = ref_token
+        debug["featuresKey"] = ref_key
+
+        features_marker = find_newline_anchored_key(working_source, ref_key, for_array=True)
+        if features_marker:
+            array_start = features_marker.end() - 1
+            array_text = extract_balanced_bracket_block(working_source, array_start)
+            debug["featuresArrayFound"] = bool(array_text)
+            debug["featuresArrayExcerpt"] = normalize_space(array_text)[:2000]
+            shared_features = parse_jsonish_array_text(array_text)
+
+    elif global_bullets_array_text:
+        debug["featuresArrayFound"] = True
+        debug["featuresArrayExcerpt"] = normalize_space(global_bullets_array_text)[:2000]
+        shared_features = parse_jsonish_array_text(global_bullets_array_text)
+
+    if global_paragraph_ref_match:
+        ref_token = global_paragraph_ref_match.group(1)
+        ref_key = ref_token.replace("$", "")
+
+        debug["vendorPatternFound"] = True
+        debug["vendorDetailsParagraphRef"] = ref_token
+        debug["descriptionKey"] = ref_key
+
+        desc_block = extract_newline_anchored_value_block(working_source, ref_key)
+        desc_block = clean_cvs_text(desc_block)
+
+        debug["descriptionBlockFound"] = bool(desc_block)
+        debug["descriptionBlockExcerpt"] = normalize_space(desc_block)[:2000]
+        shared_description = desc_block
+
+    elif global_paragraph_direct_match:
+        raw_para = global_paragraph_direct_match.group(1)
+
+        if not re.fullmatch(r'\$[0-9A-Za-z]{1,3}', raw_para or ""):
+            try:
+                shared_description = json.loads(f'"{raw_para}"')
+            except Exception:
+                shared_description = raw_para
+
+            shared_description = clean_cvs_text(shared_description)
+            debug["descriptionBlockFound"] = bool(shared_description)
+            debug["descriptionBlockExcerpt"] = normalize_space(shared_description)[:2000]
+
+    # ---------------------------------
+    # 4) Merge rule with safe fallback
     # ---------------------------------
     final_description = shared_description or variant_description
 
