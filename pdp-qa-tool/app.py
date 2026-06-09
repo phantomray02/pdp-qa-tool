@@ -191,6 +191,9 @@ def get_html(url):
 # =========================================
 # SALSIFY PARSERS
 # =========================================
+# =========================================
+# SALSIFY PARSERS
+# =========================================
 def _parse_salsify_page(html_text):
     empty = {
         "text": {
@@ -218,6 +221,9 @@ def _parse_salsify_page(html_text):
     except Exception:
         return empty
 
+    # -------------------------
+    # TEXT
+    # -------------------------
     text_map = {}
     try:
         props = data["props"]["pageProps"]["product"]["propertySets"][0]["properties"]
@@ -239,37 +245,77 @@ def _parse_salsify_page(html_text):
         "feature5": text_map.get("FEATURE_5", ""),
     }
 
-    asset_map = {}
+    # -------------------------
+    # IMAGES
+    # -------------------------
+    asset_items = []
     try:
         properties = data["props"]["pageProps"]["product"]["digitalAssets"]["properties"]
         for prop in properties:
-            name = prop.get("property", "").lower()
+            name = str(prop.get("property", "")).strip()
+            name_l = name.lower()
             values = prop.get("values", [])
             if values:
                 val = values[0].get("value", "")
                 if val:
-                    asset_map[name] = val.split("?")[0]
+                    asset_items.append({
+                        "name": name,
+                        "name_l": name_l,
+                        "url": val.split("?")[0],
+                    })
     except Exception:
         pass
 
-    def find(keyword):
-        for k, v in asset_map.items():
-            if keyword in k:
-                return v
+    used_urls = set()
+
+    def claim_first_match(keywords):
+        """
+        Claim the first unused asset whose lowercased property name
+        contains any keyword in the provided list.
+        Preserves source order and prevents duplicates.
+        """
+        for item in asset_items:
+            if item["url"] in used_urls:
+                continue
+            if any(k in item["name_l"] for k in keywords):
+                used_urls.add(item["url"])
+                return item["url"]
         return None
 
-    ordered = [find("online"), find("back"), find("left")]
-    atf_io = find("atf io")
+    ordered_urls = []
 
-    if atf_io:
-        ordered.append(atf_io)
-        for k in ["atf 2", "atf 3", "atf 4", "atf 5", "atf 6"]:
-            ordered.append(find(k))
-    else:
-        for k in ["atf 2", "atf 3", "atf 4", "atf 5", "atf 6"]:
-            ordered.append(find(k))
+    # Top 3 fixed priority, bumping up if missing.
+    for keywords in [
+        ["online"],
+        ["back"],
+        ["left"],
+    ]:
+        u = claim_first_match(keywords)
+        if u:
+            ordered_urls.append(u)
 
-    images = [{"url": x} for x in ordered[:8] if x]
+    # Then ATF family in intended order.
+    for keywords in [
+        ["atf io", "atf i/o"],
+        ["atf 2"],
+        ["atf 3"],
+        ["atf 4"],
+        ["atf 5"],
+        ["atf 6"],
+    ]:
+        u = claim_first_match(keywords)
+        if u:
+            ordered_urls.append(u)
+
+    # Fill remaining slots with any unused assets in source order.
+    for item in asset_items:
+        if len(ordered_urls) >= 8:
+            break
+        if item["url"] not in used_urls:
+            used_urls.add(item["url"])
+            ordered_urls.append(item["url"])
+
+    images = [{"url": u} for u in ordered_urls[:8]]
 
     return {
         "text": text,
@@ -282,6 +328,78 @@ def get_salsify_bundle(url):
     html_text = get_html(url)
     return _parse_salsify_page(html_text)
 
+
+def extract_cvs_images_from_html(html_text):
+    """
+    Grab all CVS product image URLs we can find, keep source/page order,
+    dedupe by basename, and prefer the better version when duplicates appear.
+    No cap on CVS image count.
+    """
+    if not html_text:
+        return []
+
+    source = html.unescape(html_text)
+
+    patterns = [
+        # Absolute URLs
+        r'https://www\.cvs\.com/bizcontent/merchandising/productimages/(?:high_res|as)/[^\s"\']+\.jpg(?:\?[^"\']*)?',
+        # Relative URLs
+        r'/bizcontent/merchandising/productimages/(?:high_res|as)/[^\s"\']+\.jpg(?:\?[^"\']*)?',
+    ]
+
+    matches = []
+    for pattern in patterns:
+        matches.extend(re.findall(pattern, source, flags=re.IGNORECASE))
+
+    if not matches:
+        return []
+
+    best_images = {}
+    order = []
+
+    def normalize_full_url(m):
+        if m.startswith("http"):
+            return m
+        return "https://www.cvs.com" + m
+
+    def score_variant(url):
+        """
+        Prefer higher-quality variants:
+        - high_res beats /as/
+        - larger Resize value beats smaller
+        """
+        base_score = 0
+        if "/high_res/" in url:
+            base_score += 1000
+        elif "/as/" in url:
+            base_score += 100
+
+        size_match = re.search(r"Resize=\((\d+)", url, flags=re.IGNORECASE)
+        resize_score = int(size_match.group(1)) if size_match else 0
+
+        return base_score + resize_score
+
+    for m in matches:
+        full = normalize_full_url(m)
+        base = full.split("?")[0]
+        name = base.split("/")[-1]
+        variant_score = score_variant(full)
+
+        if name not in best_images:
+            order.append(name)
+            best_images[name] = {
+                "url": base,
+                "score": variant_score,
+            }
+        else:
+            if variant_score > best_images[name]["score"]:
+                best_images[name] = {
+                    "url": base,
+                    "score": variant_score,
+                }
+
+    return [best_images[name]["url"] for name in order]
+    
 # =========================================
 # CVS PARSERS
 # =========================================
@@ -1089,23 +1207,73 @@ def extract_vendor_copy_from_nextjs(html_text, target_rpc="", retail_url=""):
 
 
 def extract_cvs_images_from_html(html_text):
-    matches = re.findall(r'/bizcontent/merchandising/productimages/high_res/[^\s"]+\.jpg\?[^\"]*', html_text or "")
+    """
+    Grab all CVS product image URLs we can find, keep source/page order,
+    dedupe by basename, and prefer the better version when duplicates appear.
+    No cap on CVS image count.
+    """
+    if not html_text:
+        return []
+
+    source = html.unescape(html_text)
+
+    patterns = [
+        # Absolute URLs
+        r'https://www\.cvs\.com/bizcontent/merchandising/productimages/(?:high_res|as)/[^\s"\']+\.jpg(?:\?[^"\']*)?',
+        # Relative URLs
+        r'/bizcontent/merchandising/productimages/(?:high_res|as)/[^\s"\']+\.jpg(?:\?[^"\']*)?',
+    ]
+
+    matches = []
+    for pattern in patterns:
+        matches.extend(re.findall(pattern, source, flags=re.IGNORECASE))
+
+    if not matches:
+        return []
 
     best_images = {}
     order = []
 
+    def normalize_full_url(m):
+        if m.startswith("http"):
+            return m
+        return "https://www.cvs.com" + m
+
+    def score_variant(url):
+        """
+        Prefer higher-quality variants:
+        - high_res beats /as/
+        - larger Resize value beats smaller
+        """
+        base_score = 0
+        if "/high_res/" in url:
+            base_score += 1000
+        elif "/as/" in url:
+            base_score += 100
+
+        size_match = re.search(r"Resize=\((\d+)", url, flags=re.IGNORECASE)
+        resize_score = int(size_match.group(1)) if size_match else 0
+
+        return base_score + resize_score
+
     for m in matches:
-        full = "https://www.cvs.com" + m
+        full = normalize_full_url(m)
         base = full.split("?")[0]
         name = base.split("/")[-1]
-        size_match = re.search(r"Resize=\((\d+)", m)
-        size = int(size_match.group(1)) if size_match else 0
+        variant_score = score_variant(full)
 
         if name not in best_images:
             order.append(name)
-            best_images[name] = {"url": base, "size": size}
-        elif size > best_images[name]["size"]:
-            best_images[name] = {"url": base, "size": size}
+            best_images[name] = {
+                "url": base,
+                "score": variant_score,
+            }
+        else:
+            if variant_score > best_images[name]["score"]:
+                best_images[name] = {
+                    "url": base,
+                    "score": variant_score,
+                }
 
     return [best_images[name]["url"] for name in order]
 
