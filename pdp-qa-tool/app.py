@@ -1392,10 +1392,10 @@ def debug_description(desc):
 # IMAGE HASHING (FAST IMAGE COMPARE)
 # =========================================
 def get_compare_fetch_candidates(url):
-    """
-    Return preferred compare-fetch URLs in order.
-    Lower-res first when possible, then original as fallback.
-    This keeps:    This keeps display/export URLs unchanged.
+    # Return preferred compare-fetch URLs in order.
+    # Lower-res first when possible, then original as fallback.
+    # This keeps display/export URLs unchanged.
+    if not url:
         return []
 
     candidates = []
@@ -1505,7 +1505,7 @@ def compare_images_visually(s_url, r_url):
         image_compare_cache.pop(next(iter(image_compare_cache)))
 
     return score
-    ""
+    
 # =========================================
 # PROCESS ROW
 # =========================================
