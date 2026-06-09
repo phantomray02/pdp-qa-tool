@@ -340,6 +340,38 @@ def clean_cvs_text(text):
     text = re.sub(r"\s+", " ", text).strip()
 
     return text
+def clean_cvs_feature_text(text):
+    """
+    Lighter cleaner for individual feature bullets.
+    Do NOT over-strip valid feature text just because nearby description/script
+    transport junk exists elsewhere in the page.
+    """
+    if not text:
+        return ""
+
+    text = str(text)
+
+    text = text.replace("\\u0026", "&")
+    text = text.replace("\\n", " ")
+    text = text.replace("\\/", "/")
+    text = text.replace('\\"', '"')
+    text = html.unescape(text)
+
+    # Remove only obvious transport/script tails if they leaked into a bullet.
+    text = re.sub(r'"\]\s*[0-9A-Za-z]{1,3}:T[0-9A-Za-z]+,.*$', "", text, flags=re.DOTALL)
+    text = re.sub(r'\]\)\s*</script>\s*<script>\s*self\.__next_f\.push\(\[1,\s*".*$', "", text, flags=re.DOTALL)
+    text = re.sub(r'</script>\s*<script>\s*self\.__next_f\.push\(\[1,\s*".*$', "", text, flags=re.DOTALL)
+    text = re.sub(r'self\.__next_f\.push\(\[1,.*$', "", text, flags=re.DOTALL)
+
+    # Remove dangling ref/key tails only if they clearly start after a closed item.
+    text = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:\{.*$', "", text, flags=re.DOTALL)
+    text = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:\[.*$', "", text, flags=re.DOTALL)
+    text = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:$', "", text, flags=re.DOTALL)
+
+    text = text.replace("\\*", "*")
+    text = re.sub(r"\s+", " ", text).strip()
+
+    return text
 
 def get_target_sku_from_inputs(retail_url="", cvs_rpc=""):
     """
@@ -520,8 +552,8 @@ def extract_newline_anchored_value_block(source, key):
 
 def merge_feature_continuations(items, max_features=5):
     """
-    Merge short continuation fragments back into the previous feature bullet,
-    but do NOT let trailing junk get merged into bullet 5.
+    Merge true continuation fragments back into the previous feature bullet,
+    but never let bullet 5 absorb transport/description bleed.
     """
     merged = []
 
@@ -531,10 +563,23 @@ def merge_feature_continuations(items, max_features=5):
         r'^packaging may vary\.?$',
     ]
 
+    hard_stop_patterns = [
+        r'^[0-9A-Za-z]{1,3}:T[0-9A-Za-z]+,',
+        r'^self\.__next_f\.push',
+        r'^</script>',
+        r'^<script>',
+        r'^vendorDetailsParagraph',
+        r'^\]\)\s*</script>',
+    ]
+
     for raw_item in items:
-        item = clean_cvs_text(raw_item)
+        item = clean_cvs_feature_text(raw_item)
         if not item:
             continue
+
+        # If the item looks like transport junk, stop entirely.
+        if any(re.search(p, item, flags=re.IGNORECASE) for p in hard_stop_patterns):
+            break
 
         is_continuation = any(
             re.match(pattern, item, flags=re.IGNORECASE)
@@ -546,13 +591,13 @@ def merge_feature_continuations(items, max_features=5):
                 merged
                 and len(item) <= 60
                 and "—" not in item
-                and not re.match(r'^[A-Z0-9][A-Z0-9\s\'"&/\-\(\)\*]+(?:\s—|\s-)', item)
+                and not re.match(r'^[A-Z0-9][A-Z0-9\s\'"&/\-\(\)\*:]+(?:\s—|\s-|\s:)', item)
                 and item[:1].islower()
             ):
                 is_continuation = True
 
         if is_continuation and merged:
-            # Do NOT merge extra trailing junk into bullet 5.
+            # Never append continuation into an already-full 5th bullet set.
             if len(merged) >= max_features:
                 continue
 
@@ -569,7 +614,7 @@ def merge_feature_continuations(items, max_features=5):
     return dedupe_preserve_order(merged[:max_features])
 
 def normalize_cvs_features(items):
-    cleaned = [clean_cvs_text(x) for x in items if isinstance(x, str)]
+    cleaned = [clean_cvs_feature_text(x) for x in items if isinstance(x, str)]
     cleaned = [x for x in cleaned if x]
     cleaned = merge_feature_continuations(cleaned, max_features=5)
     return dedupe_preserve_order(cleaned[:5])
@@ -579,7 +624,7 @@ def split_feature_blob_preserve_semicolons(text):
     Split only on actual feature delimiters.
     Never split on semicolons because semicolons appear inside valid bullets.
     """
-    text = clean_cvs_text(text)
+    text = clean_cvs_feature_text(text)
     if not text:
         return []
 
@@ -613,14 +658,13 @@ def parse_jsonish_array_text(array_text):
             pass
 
     inner = array_text[1:-1] if array_text.startswith("[") and array_text.endswith("]") else array_text
-    inner = clean_cvs_text(inner)
+    inner = clean_cvs_feature_text(inner)
 
-    # Try quoted item split first.
     parts = re.split(r'"\s*,\s*"', inner)
 
     cleaned = []
     for part in parts:
-        val = clean_cvs_text(part.strip().strip('"'))
+        val = clean_cvs_feature_text(part.strip().strip('"'))
         if val:
             cleaned.extend(split_feature_blob_preserve_semicolons(val))
 
