@@ -287,7 +287,6 @@ def get_salsify_images(url):
     return get_salsify_bundle(url)["images"]
 
 # =========================================
-# =========================================
 # CVS PARSERS
 # =========================================
 def clean_cvs_text(text):
@@ -332,13 +331,16 @@ def clean_cvs_text(text):
     # Remove escaped markdown-style asterisks.
     text = text.replace("\\*", "*")
 
+    # Optional: clean common split-word artifact seen in output.
+    text = re.sub(r"\binconti\s+nence\b", "incontinence", text, flags=re.IGNORECASE)
+
     # Normalize whitespace.
     text = re.sub(r"\s+", " ", text).strip()
 
     return text
 
 
-# Compatibility alias in case old references still exist.
+# Compatibility alias in case any old references still exist.
 def clean_cvs_text_refined(text):
     return clean_cvs_text(text)
 
@@ -425,22 +427,6 @@ def parse_jsonish_array_text(array_text):
             cleaned.append(val)
 
     return cleaned
-
-
-def extract_vendor_details_local_block(source):
-    if not source:
-        return ""
-
-    m = re.search(
-        r'"vendorContent"\s*:\s*\{\s*"vendorDetails"\s*:\s*\{',
-        source,
-        flags=re.DOTALL,
-    )
-    if not m:
-        return ""
-
-    start = m.start()
-    return source[start:start + 25000]
 
 
 def find_newline_anchored_key(source, key, for_array=False):
@@ -532,6 +518,7 @@ def extract_newline_anchored_value_block(source, key):
 
     block = source[start:i].strip()
 
+    # Extra safety trimming.
     block = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:\{.*$', "", block, flags=re.DOTALL)
     block = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:\[.*$', "", block, flags=re.DOTALL)
     block = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:$', "", block, flags=re.DOTALL)
@@ -539,7 +526,127 @@ def extract_newline_anchored_value_block(source, key):
     return block.strip()
 
 
-def extract_vendor_copy_from_source(source, source_name=""):
+def extract_candidate_variant_windows(source, context_before=4500, context_after=22000):
+    """
+    Find every occurrence of vendorContent.vendorDetails and return a local window
+    around each one so we can match the correct variant.
+    """
+    windows = []
+
+    pattern = r'"vendorContent"\s*:\s*\{\s*"vendorDetails"\s*:\s*\{'
+    for m in re.finditer(pattern, source, flags=re.DOTALL):
+        start = max(0, m.start() - context_before)
+        end = min(len(source), m.start() + context_after)
+        windows.append({
+            "start": start,
+            "end": end,
+            "window": source[start:end],
+        })
+
+    return windows
+
+
+def score_variant_window(window_text, target_rpc="", retail_url=""):
+    """
+    Score a candidate variant window against the current CVS RPC / skuId.
+
+    Strongest signals:
+    1) skuId=target_rpc in nearby URL
+    2) dynamicMediaUrl contains /target_rpc_#.jpg
+    3) nearby image URL contains target_rpc in file name
+    """
+    score = 0
+    reason = []
+    matched_dynamic_media = ""
+    matched_variant_url = ""
+    matched_nearby_image = ""
+
+    if not target_rpc:
+        return {
+            "score": 0,
+            "reason": [],
+            "matched_dynamic_media": "",
+            "matched_variant_url": "",
+            "matched_nearby_image": "",
+        }
+
+    rpc = re.escape(str(target_rpc))
+
+    # Strongest signal: exact skuId match in nearby URL context.
+    sku_match = re.search(rf'skuId={rpc}\b', window_text)
+    if sku_match:
+        score += 100
+        reason.append("skuId_match")
+
+    # Strong signal: dynamicMediaUrl with /841269_8.jpg pattern.
+    dm_match = re.search(
+        rf'"dynamicMediaUrl"\s*:\s*"([^"]*?/({rpc})(?:_[0-9]+)?\.jpg[^"]*)"',
+        window_text,
+        flags=re.IGNORECASE,
+    )
+    if dm_match:
+        score += 90
+        matched_dynamic_media = dm_match.group(1)
+        reason.append("dynamicMediaUrl_rpc_match")
+
+    # Secondary signal: nearby image / file name with rpc.
+    img_match = re.search(
+        rf'"(?:imageUrl|image|src|url)"\s*:\s*"([^"]*?/({rpc})(?:_[0-9]+)?\.jpg[^"]*)"',
+        window_text,
+        flags=re.IGNORECASE,
+    )
+    if img_match:
+        score += 60
+        matched_nearby_image = img_match.group(1)
+        reason.append("nearby_image_rpc_match")
+
+    # Smaller signal: same shop path family as the retail URL.
+    if retail_url:
+        path_match = re.search(r'https?://www\.cvs\.com(/shop/[^?\s"]+)', retail_url)
+        if path_match:
+            retail_path = path_match.group(1)
+            if retail_path and retail_path in window_text:
+                score += 10
+                matched_variant_url = retail_path
+                reason.append("retail_path_match")
+
+    return {
+        "score": score,
+        "reason": reason,
+        "matched_dynamic_media": matched_dynamic_media,
+        "matched_variant_url": matched_variant_url,
+        "matched_nearby_image": matched_nearby_image,
+    }
+
+
+def choose_best_variant_window(source, target_rpc="", retail_url=""):
+    """
+    Select the candidate vendorContent block that best matches the CVS RPC.
+    """
+    candidates = extract_candidate_variant_windows(source)
+
+    if not candidates:
+        return None
+
+    best = None
+    best_score = -1
+
+    for candidate in candidates:
+        scored = score_variant_window(candidate["window"], target_rpc=target_rpc, retail_url=retail_url)
+        candidate["match_score"] = scored["score"]
+        candidate["match_reason"] = scored["reason"]
+        candidate["matched_dynamic_media"] = scored["matched_dynamic_media"]
+        candidate["matched_variant_url"] = scored["matched_variant_url"]
+        candidate["matched_nearby_image"] = scored["matched_nearby_image"]
+
+        if candidate["match_score"] > best_score:
+            best = candidate
+            best_score = candidate["match_score"]
+
+    return best
+
+
+def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retail_url=""):
     debug = {
         "vendorPatternFound": False,
         "vendorDetailsBulletsRef": "",
@@ -550,6 +657,12 @@ def extract_vendor_copy_from_source(source, source_name=""):
         "descriptionBlockFound": False,
         "directVendorContentFound": False,
         "directVendorDetailsFound": False,
+        "variantWindowMatched": False,
+        "variantMatchScore": 0,
+        "variantMatchReason": "",
+        "matchedDynamicMediaUrl": "",
+        "matchedVariantUrl": "",
+        "matchedNearbyImage": "",
         "Source Used": source_name,
         "vendorPatternExcerpt": "",
         "featuresArrayExcerpt": "",
@@ -564,8 +677,33 @@ def extract_vendor_copy_from_source(source, source_name=""):
     working_source = working_source.replace('\\"', '"')
     working_source = working_source.replace("\\u0026", "&")
 
-    local_block = extract_vendor_details_local_block(working_source)
+    # ---------------------------------
+    # 1) Prefer the best-matching variant window when possible
+    # ---------------------------------
+    chosen_window = choose_best_variant_window(
+        working_source,
+        target_rpc=target_rpc,
+        retail_url=retail_url,
+    )
 
+    local_block = ""
+    if chosen_window and chosen_window.get("match_score", 0) > 0:
+        local_block = chosen_window["window"]
+        debug["variantWindowMatched"] = True
+        debug["variantMatchScore"] = chosen_window.get("match_score", 0)
+        debug["variantMatchReason"] = " | ".join(chosen_window.get("match_reason", []))
+        debug["matchedDynamicMediaUrl"] = chosen_window.get("matched_dynamic_media", "")
+        debug["matchedVariantUrl"] = chosen_window.get("matched_variant_url", "")
+        debug["matchedNearbyImage"] = chosen_window.get("matched_nearby_image", "")
+    else:
+        # Fall back to first visible vendorContent block if no exact variant match found.
+        first_window_list = extract_candidate_variant_windows(working_source)
+        if first_window_list:
+            local_block = first_window_list[0]["window"]
+
+    # ---------------------------------
+    # 2) Parse vendorContent.vendorDetails from the chosen local block
+    # ---------------------------------
     if local_block:
         debug["directVendorContentFound"] = True
         debug["directVendorDetailsFound"] = True
@@ -642,7 +780,6 @@ def extract_vendor_copy_from_source(source, source_name=""):
                 description = raw_para
 
             description = clean_cvs_text(description)
-
             debug["descriptionBlockFound"] = bool(description)
             debug["descriptionBlockExcerpt"] = normalize_space(description)[:2000]
 
@@ -656,6 +793,9 @@ def extract_vendor_copy_from_source(source, source_name=""):
                 "debug": debug,
             }
 
+    # ---------------------------------
+    # 3) Final fallback: older global ref pattern across the whole page
+    # ---------------------------------
     vendor_match = re.search(
         r'\{"vendorDetailsBullets":"\$([0-9A-Za-z]{1,3})","vendorDetailsParagraph":"\$([0-9A-Za-z]{1,3})"\}',
         working_source,
@@ -695,7 +835,7 @@ def extract_vendor_copy_from_source(source, source_name=""):
     }
 
 
-def extract_vendor_copy_from_nextjs(html_text):
+def extract_vendor_copy_from_nextjs(html_text, target_rpc="", retail_url=""):
     raw_text = get_nextjs_chunks(html_text)
     raw_html = html.unescape(html_text or "")
 
@@ -717,6 +857,12 @@ def extract_vendor_copy_from_nextjs(html_text):
         "descriptionBlockFound": False,
         "directVendorContentFound": False,
         "directVendorDetailsFound": False,
+        "variantWindowMatched": False,
+        "variantMatchScore": 0,
+        "variantMatchReason": "",
+        "matchedDynamicMediaUrl": "",
+        "matchedVariantUrl": "",
+        "matchedNearbyImage": "",
         "Source Used": "",
         "vendorPatternExcerpt": "",
         "featuresArrayExcerpt": "",
@@ -734,10 +880,20 @@ def extract_vendor_copy_from_nextjs(html_text):
         idx = raw_text.find("vendorDetailsBullets")
         debug["rawTextVendorExcerpt"] = normalize_space(raw_text[max(0, idx - 250): idx + 1500])[:2000]
 
-    result = extract_vendor_copy_from_source(raw_text, "raw_text")
+    result = extract_vendor_copy_from_source(
+        raw_text,
+        source_name="raw_text",
+        target_rpc=target_rpc,
+        retail_url=retail_url,
+    )
 
     if not result.get("description") and not result.get("features"):
-        result = extract_vendor_copy_from_source(raw_html, "raw_html")
+        result = extract_vendor_copy_from_source(
+            raw_html,
+            source_name="raw_html",
+            target_rpc=target_rpc,
+            retail_url=retail_url,
+        )
 
     debug.update(result.get("debug", {}))
 
@@ -770,7 +926,7 @@ def extract_cvs_images_from_html(html_text):
     return [best_images[name]["url"] for name in order]
 
 
-def _extract_cvs_text_from_html(html_text, retail_url=""):
+def _extract_cvs_text_from_html(html_text, retail_url="", target_rpc=""):
     debug = {"Title Path": "", "Description Path": "", "Features Path": ""}
 
     if not html_text:
@@ -787,7 +943,11 @@ def _extract_cvs_text_from_html(html_text, retail_url=""):
         title = normalize_space(soup.title.get_text(" ", strip=True))
         debug["Title Path"] = "html_title"
 
-    vendor_copy = extract_vendor_copy_from_nextjs(html_text)
+    vendor_copy = extract_vendor_copy_from_nextjs(
+        html_text,
+        target_rpc=target_rpc,
+        retail_url=retail_url,
+    )
 
     description = clean_cvs_text(vendor_copy.get("description", ""))
     features = [clean_cvs_text(x) for x in vendor_copy.get("features", [])]
@@ -805,18 +965,14 @@ def _extract_cvs_text_from_html(html_text, retail_url=""):
 
 
 @st.cache_data(show_spinner=False)
-def get_cvs_bundle(retail_url):
+def get_cvs_bundle(retail_url, target_rpc=""):
     html_text = get_html(retail_url)
     return {
-        "text": _extract_cvs_text_from_html(html_text, retail_url=retail_url),
-        "images": extract_cvs_images_from_html(html_text),
-    }
-    
-@st.cache_data(show_spinner=False)
-def get_cvs_bundle(retail_url):
-    html_text = get_html(retail_url)
-    return {
-        "text": _extract_cvs_text_from_html(html_text, retail_url=retail_url),
+        "text": _extract_cvs_text_from_html(
+            html_text,
+            retail_url=retail_url,
+            target_rpc=target_rpc,
+        ),
         "images": extract_cvs_images_from_html(html_text),
     }
 
@@ -961,12 +1117,13 @@ def process_row(row):
     try:
         retail_url = row.get("retail_url", "")
         salsify_url = row.get("salsify_url", "")
+        cvs_rpc = row.get("cvs_rpc") or row.get("CVS RPC") or ""
 
         s_bundle = get_salsify_bundle(salsify_url)
         s_text = s_bundle["text"]
         s_images = s_bundle["images"]
 
-        r_bundle = get_cvs_bundle(retail_url)
+        r_bundle = get_cvs_bundle(retail_url, target_rpc=cvs_rpc)
         r_text = r_bundle["text"] or {}
         r_images = r_bundle["images"]
 
@@ -1012,7 +1169,7 @@ def process_row(row):
         return {
             "summary": {
                 "SKU": row.get("sku", ""),
-                "CVS RPC": row.get("cvs_rpc") or row.get("CVS RPC") or "",
+                "CVS RPC": cvs_rpc,
                 "Brand": row.get("brand", ""),
                 "Salsify URL": salsify_url,
                 "Retail URL": retail_url,
@@ -1024,7 +1181,7 @@ def process_row(row):
             },
             "detail": {
                 "SKU": row.get("sku", ""),
-                "CVS RPC": row.get("cvs_rpc") or row.get("CVS RPC") or "",
+                "CVS RPC": cvs_rpc,
                 "Brand": row.get("brand", ""),
                 "Salsify URL": salsify_url,
                 "Retail URL": retail_url,
@@ -1054,10 +1211,16 @@ def process_row(row):
                 "descriptionKey": debug_data.get("descriptionKey", ""),
                 "directVendorContentFound": debug_data.get("directVendorContentFound", False),
                 "directVendorDetailsFound": debug_data.get("directVendorDetailsFound", False),
+                "variantWindowMatched": debug_data.get("variantWindowMatched", False),
+                "variantMatchScore": debug_data.get("variantMatchScore", 0),
+                "variantMatchReason": debug_data.get("variantMatchReason", ""),
+                "matchedDynamicMediaUrl": debug_data.get("matchedDynamicMediaUrl", ""),
+                "matchedVariantUrl": debug_data.get("matchedVariantUrl", ""),
+                "matchedNearbyImage": debug_data.get("matchedNearbyImage", ""),
             },
             "debug": {
                 "SKU": row.get("sku", ""),
-                "CVS RPC": row.get("cvs_rpc") or row.get("CVS RPC") or "",
+                "CVS RPC": cvs_rpc,
                 "Brand": row.get("brand", ""),
                 "Retail URL": retail_url,
                 "Salsify URL": salsify_url,
@@ -1079,6 +1242,12 @@ def process_row(row):
                 "descriptionBlockFound": debug_data.get("descriptionBlockFound", False),
                 "directVendorContentFound": debug_data.get("directVendorContentFound", False),
                 "directVendorDetailsFound": debug_data.get("directVendorDetailsFound", False),
+                "variantWindowMatched": debug_data.get("variantWindowMatched", False),
+                "variantMatchScore": debug_data.get("variantMatchScore", 0),
+                "variantMatchReason": debug_data.get("variantMatchReason", ""),
+                "matchedDynamicMediaUrl": debug_data.get("matchedDynamicMediaUrl", ""),
+                "matchedVariantUrl": debug_data.get("matchedVariantUrl", ""),
+                "matchedNearbyImage": debug_data.get("matchedNearbyImage", ""),
                 "Source Used": debug_data.get("Source Used", ""),
                 "vendorPatternExcerpt": debug_data.get("vendorPatternExcerpt", ""),
                 "featuresArrayExcerpt": debug_data.get("featuresArrayExcerpt", ""),
@@ -1099,7 +1268,6 @@ def process_row(row):
 
     except Exception:
         return None
-
 # =========================================
 # SESSION STATE
 # =========================================
@@ -1336,7 +1504,8 @@ if uploaded_file and st.session_state.processing_done and view_mode:
             s_text = s_bundle["text"]
             s_images = s_bundle["images"]
 
-            r_bundle = get_cvs_bundle(retail_url)
+            current_rpc = row.get("cvs_rpc") or row.get("CVS RPC") or ""
+            r_bundle = get_cvs_bundle(retail_url, target_rpc=current_rpc)
             r_text = r_bundle["text"] or {}
             r_images = r_bundle["images"]
 
