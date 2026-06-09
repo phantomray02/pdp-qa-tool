@@ -40,7 +40,7 @@ MAX_CACHE = 400
 # PERFORMANCE SETTINGS
 # =========================================
 BATCH_SIZE = 6
-MAX_WORKERS = 1
+MAX_WORKERS = 2
 UI_UPDATE_EVERY = 1
 
 # Faster image compare via tiny difference hash.
