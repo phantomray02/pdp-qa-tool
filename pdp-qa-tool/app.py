@@ -1273,17 +1273,24 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
         return {"features": [], "description": "", "debug": debug}
 
     working_source = html.unescape(source)
-    working_source = working_source.replace('\\"', '"')
     working_source = working_source.replace("\\u0026", "&")
 
     # ---------------------------------
     # 0) Direct sku-adjacent vendorDetails fast path
     # ---------------------------------
+    direct_fastpath_result = None
+
     direct_variant_block = find_direct_vendor_details_block_near_sku(
         working_source,
         target_rpc=target_rpc,
         search_after=30000,
     )
+
+    # Do NOT return the direct fast-path result immediately.
+    # On shared women’s Depend PDPs, the first nearby vendorDetails block
+    # can belong to the wrong variant (for example small/32ct instead of large/28ct).
+    # Keep it only as a fallback candidate if later exact windows fail.
+    direct_fastpath_result = None
 
     if direct_variant_block:
         direct_debug = debug.copy()
@@ -1302,11 +1309,8 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
         direct_description = parsed.get("description", "") or ""
         parsed_debug = parsed.get("debug", direct_debug)
 
-        # IMPORTANT:
-        # If we found ANY local item copy here, return it immediately.
-        # Do NOT merge in shared/global family copy.
         if direct_features or direct_description:
-            return {
+            direct_fastpath_result = {
                 "features": normalize_cvs_features(direct_features[:5]),
                 "description": clean_cvs_text(direct_description),
                 "debug": parsed_debug,
@@ -1380,6 +1384,10 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
                 "debug": parsed.get("debug", candidate_debug),
             }
 
+    # If exact SKU/image windows failed, use the direct fast-path result as a fallback.
+    if direct_fastpath_result:
+        return direct_fastpath_result
+        
     # ---------------------------------
     # 3) LAST RESORT ONLY:
     #    shared/global family copy if absolutely no local item copy was found
