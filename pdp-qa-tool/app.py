@@ -16,6 +16,7 @@ import requests
 import streamlit as st
 from bs4 import BeautifulSoup
 from PIL import Image
+from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
 from pandas.errors import EmptyDataError
 
@@ -33,13 +34,13 @@ HEADERS = {
 
 REQUEST_TIMEOUT = 6
 IMAGE_TIMEOUT = 2.5
+MAX_CACHE = 400
 
 # =========================================
 # PERFORMANCE SETTINGS
 # =========================================
-# Keep logic the same, but reduce rerun overhead and UI churn.
-BATCH_SIZE = 10
-MAX_WORKERS = 2
+BATCH_SIZE = 6
+MAX_WORKERS = 1
 UI_UPDATE_EVERY = 1
 
 # Faster image compare via tiny difference hash.
@@ -49,11 +50,9 @@ IMAGE_HASH_HEIGHT = 8
 # Keep caches smaller to prevent Streamlit Cloud memory pressure.
 HTML_CACHE_MAX = 80
 IMAGE_HASH_CACHE_MAX = 300
-IMAGE_COMPARE_CACHE_MAX = 500
 
 html_cache = {}
 image_hash_cache = {}
-image_compare_cache = {}
 
 # =========================================
 # GENERIC HELPERS
@@ -160,7 +159,6 @@ def prepare_input_df(df):
 def clear_in_memory_caches():
     html_cache.clear()
     image_hash_cache.clear()
-    image_compare_cache.clear()
 
 # =========================================
 # HTML FETCH
@@ -169,10 +167,9 @@ def get_html(url):
     if not url:
         return ""
 
-    cached = html_cache.get(url)
-    if cached is not None:
+    if url in html_cache:
         html_cache[url] = html_cache.pop(url)
-        return cached
+        return html_cache[url]
 
     try:
         r = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
@@ -187,10 +184,6 @@ def get_html(url):
         pass
 
     return ""
-
-# =========================================
-# SALSIFY PARSERS
-# =========================================
 # =========================================
 # SALSIFY PARSERS
 # =========================================
@@ -221,9 +214,6 @@ def _parse_salsify_page(html_text):
     except Exception:
         return empty
 
-    # -------------------------
-    # TEXT
-    # -------------------------
     text_map = {}
     try:
         props = data["props"]["pageProps"]["product"]["propertySets"][0]["properties"]
@@ -245,77 +235,37 @@ def _parse_salsify_page(html_text):
         "feature5": text_map.get("FEATURE_5", ""),
     }
 
-    # -------------------------
-    # IMAGES
-    # -------------------------
-    asset_items = []
+    asset_map = {}
     try:
         properties = data["props"]["pageProps"]["product"]["digitalAssets"]["properties"]
         for prop in properties:
-            name = str(prop.get("property", "")).strip()
-            name_l = name.lower()
+            name = prop.get("property", "").lower()
             values = prop.get("values", [])
             if values:
                 val = values[0].get("value", "")
                 if val:
-                    asset_items.append({
-                        "name": name,
-                        "name_l": name_l,
-                        "url": val.split("?")[0],
-                    })
+                    asset_map[name] = val.split("?")[0]
     except Exception:
         pass
 
-    used_urls = set()
-
-    def claim_first_match(keywords):
-        """
-        Claim the first unused asset whose lowercased property name
-        contains any keyword in the provided list.
-        Preserves source order and prevents duplicates.
-        """
-        for item in asset_items:
-            if item["url"] in used_urls:
-                continue
-            if any(k in item["name_l"] for k in keywords):
-                used_urls.add(item["url"])
-                return item["url"]
+    def find(keyword):
+        for k, v in asset_map.items():
+            if keyword in k:
+                return v
         return None
 
-    ordered_urls = []
+    ordered = [find("online"), find("back"), find("left")]
+    atf_io = find("atf io")
 
-    # Top 3 fixed priority, bumping up if missing.
-    for keywords in [
-        ["online"],
-        ["back"],
-        ["left"],
-    ]:
-        u = claim_first_match(keywords)
-        if u:
-            ordered_urls.append(u)
+    if atf_io:
+        ordered.append(atf_io)
+        for k in ["atf 2", "atf 3", "atf 4", "atf 5", "atf 6"]:
+            ordered.append(find(k))
+    else:
+        for k in ["atf 2", "atf 3", "atf 4", "atf 5", "atf 6"]:
+            ordered.append(find(k))
 
-    # Then ATF family in intended order.
-    for keywords in [
-        ["atf io", "atf i/o"],
-        ["atf 2"],
-        ["atf 3"],
-        ["atf 4"],
-        ["atf 5"],
-        ["atf 6"],
-    ]:
-        u = claim_first_match(keywords)
-        if u:
-            ordered_urls.append(u)
-
-    # Fill remaining slots with any unused assets in source order.
-    for item in asset_items:
-        if len(ordered_urls) >= 8:
-            break
-        if item["url"] not in used_urls:
-            used_urls.add(item["url"])
-            ordered_urls.append(item["url"])
-
-    images = [{"url": u} for u in ordered_urls[:8]]
+    images = [{"url": x} for x in ordered[:8] if x]
 
     return {
         "text": text,
@@ -329,77 +279,13 @@ def get_salsify_bundle(url):
     return _parse_salsify_page(html_text)
 
 
-def extract_cvs_images_from_html(html_text):
-    """
-    Grab all CVS product image URLs we can find, keep source/page order,
-    dedupe by basename, and prefer the better version when duplicates appear.
-    No cap on CVS image count.
-    """
-    if not html_text:
-        return []
+def get_salsify_text(url):
+    return get_salsify_bundle(url)["text"]
 
-    source = html.unescape(html_text)
 
-    patterns = [
-        # Absolute URLs
-        r'https://www\.cvs\.com/bizcontent/merchandising/productimages/(?:high_res|as)/[^\s"\']+\.jpg(?:\?[^"\']*)?',
-        # Relative URLs
-        r'/bizcontent/merchandising/productimages/(?:high_res|as)/[^\s"\']+\.jpg(?:\?[^"\']*)?',
-    ]
+def get_salsify_images(url):
+    return get_salsify_bundle(url)["images"]
 
-    matches = []
-    for pattern in patterns:
-        matches.extend(re.findall(pattern, source, flags=re.IGNORECASE))
-
-    if not matches:
-        return []
-
-    best_images = {}
-    order = []
-
-    def normalize_full_url(m):
-        if m.startswith("http"):
-            return m
-        return "https://www.cvs.com" + m
-
-    def score_variant(url):
-        """
-        Prefer higher-quality variants:
-        - high_res beats /as/
-        - larger Resize value beats smaller
-        """
-        base_score = 0
-        if "/high_res/" in url:
-            base_score += 1000
-        elif "/as/" in url:
-            base_score += 100
-
-        size_match = re.search(r"Resize=\((\d+)", url, flags=re.IGNORECASE)
-        resize_score = int(size_match.group(1)) if size_match else 0
-
-        return base_score + resize_score
-
-    for m in matches:
-        full = normalize_full_url(m)
-        base = full.split("?")[0]
-        name = base.split("/")[-1]
-        variant_score = score_variant(full)
-
-        if name not in best_images:
-            order.append(name)
-            best_images[name] = {
-                "url": base,
-                "score": variant_score,
-            }
-        else:
-            if variant_score > best_images[name]["score"]:
-                best_images[name] = {
-                    "url": base,
-                    "score": variant_score,
-                }
-
-    return [best_images[name]["url"] for name in order]
-    
 # =========================================
 # CVS PARSERS
 # =========================================
@@ -416,7 +302,7 @@ def clean_cvs_text(text):
     text = text.replace('\\"', '"')
     text = html.unescape(text)
 
-    # Remove split Next.js wrapper fragments if they leaked into extracted text.
+    # Remove split Next.js wrapper fragments if they leaked into the extracted text.
     wrapper_patterns = [
         r'"\]\)\s*</script>\s*<script>\s*self\.__next_f\.push\(\[1,\s*"',
         r'"\]\)&lt;/script&gt;&lt;script&gt;self\.__next_f\.push\(\[1,\s*"',
@@ -453,52 +339,12 @@ def clean_cvs_text(text):
 
     return text
 
-def build_reduced_search_source(html_text):
-    """
-    Build one reduced search source per CVS page.
-    This is faster than repeatedly scanning full raw HTML,
-    while preserving newline structure needed by keyed ref parsing.
-    """
-    if not html_text:
-        return "", ""
 
-    raw_text = get_nextjs_chunks(html_text)
-    raw_html = html.unescape(html_text or "")
+# Compatibility alias in case any old references still exist.
+def clean_cvs_text_refined(text):
+    return clean_cvs_text(text)
 
-    # Prefer the Next.js chunk text if it contains vendor markers.
-    if raw_text and (
-        "vendorDetailsBullets" in raw_text
-        or "vendorDetailsParagraph" in raw_text
-        or "vendorContent" in raw_text
-    ):
-        source = raw_text
-        source_name = "raw_text"
-    else:
-        source = raw_html
-        source_name = "raw_html"
 
-    # Normalize once.
-    source = html.unescape(source)
-    source = source.replace('\\"', '"')
-    source = source.replace("\\u0026", "&")
-    source = source.replace("\\/", "/")
-
-    # Remove obvious transport/script wrapper noise once.
-    source = re.sub(r'self\.__next_f\.push\(\[1,.*?$', "", source, flags=re.DOTALL)
-    source = re.sub(r'<script[^>]*>.*?</script>', " ", source, flags=re.DOTALL | re.IGNORECASE)
-    source = re.sub(r'</?script[^>]*>', " ", source, flags=re.IGNORECASE)
-
-    # Preserve newlines for keyed parsing.
-    source = source.replace("\r\n", "\n").replace("\r", "\n")
-
-    # Collapse only horizontal whitespace, not newlines.
-    source = re.sub(r"[ \t\f\v]+", " ", source)
-
-    # Collapse repeated blank lines.
-    source = re.sub(r"\n{2,}", "\n", source)
-
-    return source.strip(), source_name
-    
 def get_nextjs_chunks(html_text):
     if not html_text:
         return ""
@@ -552,6 +398,37 @@ def extract_balanced_bracket_block(source, start_index):
     return ""
 
 
+def parse_jsonish_array_text(array_text):
+    array_text = normalize_space(array_text)
+    if not array_text:
+        return []
+
+    candidates = [
+        array_text,
+        array_text.replace('\\"', '"'),
+        html.unescape(array_text).replace('\\"', '"'),
+    ]
+
+    for candidate in candidates:
+        try:
+            value = json.loads(candidate)
+            if isinstance(value, list):
+                return [clean_cvs_text(x) for x in value if isinstance(x, str)]
+        except Exception:
+            pass
+
+    inner = array_text[1:-1] if array_text.startswith("[") and array_text.endswith("]") else array_text
+    parts = re.split(r'"\s*,\s*"', inner)
+
+    cleaned = []
+    for part in parts:
+        val = clean_cvs_text(part.strip().strip('"'))
+        if val:
+            cleaned.append(val)
+
+    return cleaned
+
+
 def find_newline_anchored_key(source, key, for_array=False):
     key = str(key)
     if for_array:
@@ -568,7 +445,7 @@ def looks_like_next_newline_key(source, idx):
 
     return bool(
         re.match(
-            r'(?:\n)([0-9A-Za-z]{1,3}):(?=[\[{\"]|T[0-9A-Za-z]+,|null|true|false|\d)',
+            r'(?:\n)([0-9A-Za-z]{1,3}):(?=[\[{"]|T[0-9A-Za-z]+,|null|true|false|\d)',
             source[idx:],
         )
     )
@@ -640,136 +517,20 @@ def extract_newline_anchored_value_block(source, key):
         i += 1
 
     block = source[start:i].strip()
+
+    # Extra safety trimming.
     block = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:\{.*$', "", block, flags=re.DOTALL)
     block = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:\[.*$', "", block, flags=re.DOTALL)
     block = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:$', "", block, flags=re.DOTALL)
+
     return block.strip()
 
 
-def merge_feature_continuations(items):
-    merged = []
-
-    continuation_patterns = [
-        r'^packaging and product may vary\.?$',
-        r'^product may vary\.?$',
-        r'^packaging may vary\.?$',
-    ]
-
-    for raw_item in items:
-        item = clean_cvs_text(raw_item)
-        if not item:
-            continue
-
-        is_continuation = any(
-            re.match(pattern, item, flags=re.IGNORECASE)
-            for pattern in continuation_patterns
-        )
-
-        if not is_continuation:
-            if (
-                merged
-                and len(item) <= 60
-                and "—" not in item
-                and not re.match(r'^[A-Z0-9][A-Z0-9\s\'"&/\-\(\)\*]+(?:\s—|\s-)', item)
-                and item[:1].islower()
-            ):
-                is_continuation = True
-
-        if is_continuation and merged:
-            prev = merged.pop()
-            if prev.endswith(";"):
-                merged.append(f"{prev} {item}")
-            else:
-                merged.append(f"{prev}; {item}")
-        else:
-            merged.append(item)
-
-    return dedupe_preserve_order(merged)
-
-
-def normalize_cvs_features(items):
-    cleaned = [clean_cvs_text(x) for x in items if isinstance(x, str)]
-    cleaned = [x for x in cleaned if x]
-    cleaned = merge_feature_continuations(cleaned)
-    return dedupe_preserve_order(cleaned)
-
-
-def split_feature_blob_preserve_semicolons(text):
-    text = clean_cvs_text(text)
-    if not text:
-        return []
-
-    if " | " in text:
-        parts = [x.strip() for x in text.split(" | ")]
-    elif "•" in text:
-        parts = [x.strip() for x in text.split("•")]
-    else:
-        parts = [text.strip()]
-
-    return [p for p in parts if p]
-
-
-def parse_jsonish_array_text(array_text):
-    array_text = normalize_space(array_text)
-    if not array_text:
-        return []
-
-    candidates = [
-        array_text,
-        array_text.replace('\\"', '"'),
-        html.unescape(array_text).replace('\\"', '"'),
-    ]
-
-    for candidate in candidates:
-        try:
-            value = json.loads(candidate)
-            if isinstance(value, list):
-                return normalize_cvs_features(value)
-        except Exception:
-            pass
-
-    inner = array_text[1:-1] if array_text.startswith("[") and array_text.endswith("]") else array_text
-    inner = clean_cvs_text(inner)
-
-    parts = re.split(r'"\s*,\s*"', inner)
-
-    cleaned = []
-    for part in parts:
-        val = clean_cvs_text(part.strip().strip('"'))
-        if val:
-            cleaned.extend(split_feature_blob_preserve_semicolons(val))
-
-    return normalize_cvs_features(cleaned)
-
-
-def find_last_rpc_image_anchor_region(source, target_rpc="", before=600, after=5000):
-    if not source or not target_rpc:
-        return None
-
-    rpc = re.escape(str(target_rpc))
-    pattern = rf'[^"\s]*?/{rpc}(?:_[0-9]+)?\.jpg'
-
-    last_match = None
-    for m in re.finditer(pattern, source, flags=re.IGNORECASE):
-        last_match = m
-
-    if not last_match:
-        return None
-
-    start = max(0, last_match.start() - before)
-    end = min(len(source), last_match.end() + after)
-
-    return {
-        "anchor_start": last_match.start(),
-        "anchor_end": last_match.end(),
-        "anchor_text": source[last_match.start():last_match.end()],
-        "region_start": start,
-        "region_end": end,
-        "region": source[start:end],
-    }
-
-
 def extract_candidate_variant_windows(source, context_before=4500, context_after=22000):
+    """
+    Find every occurrence of vendorContent.vendorDetails and return a local window
+    around each one so we can match the correct variant.
+    """
     windows = []
 
     pattern = r'"vendorContent"\s*:\s*\{\s*"vendorDetails"\s*:\s*\{'
@@ -779,14 +540,23 @@ def extract_candidate_variant_windows(source, context_before=4500, context_after
         windows.append({
             "start": start,
             "end": end,
-            "vendor_start": m.start(),
             "window": source[start:end],
         })
 
     return windows
 
 
-def score_variant_window(window_text, vendor_start, window_start, target_rpc="", retail_url=""):
+def score_variant_window(window_text, target_rpc="", retail_url=""):
+    """
+    Score a candidate variant window against the current CVS RPC / skuId.
+
+    Strongest signals:
+    1) skuId=target_rpc in nearby URL
+    2) dynamicMediaUrl contains /target_rpc_#.jpg
+    3) nearby image URL contains target_rpc in file name
+
+    We also give small bonuses if the window appears to contain actual vendor details.
+    """
     score = 0
     reason = []
     matched_dynamic_media = ""
@@ -804,11 +574,13 @@ def score_variant_window(window_text, vendor_start, window_start, target_rpc="",
 
     rpc = re.escape(str(target_rpc))
 
+    # Strongest signal: exact skuId match in nearby URL context.
     sku_match = re.search(rf'skuId={rpc}\b', window_text)
     if sku_match:
         score += 100
         reason.append("skuId_match")
 
+    # Strong signal: dynamicMediaUrl with /841269_8.jpg pattern.
     dm_match = re.search(
         rf'"dynamicMediaUrl"\s*:\s*"([^"]*?/({rpc})(?:_[0-9]+)?\.jpg[^"]*)"',
         window_text,
@@ -819,6 +591,7 @@ def score_variant_window(window_text, vendor_start, window_start, target_rpc="",
         matched_dynamic_media = dm_match.group(1)
         reason.append("dynamicMediaUrl_rpc_match")
 
+    # Secondary signal: nearby image/file name with rpc.
     img_match = re.search(
         rf'"(?:imageUrl|image|src|url)"\s*:\s*"([^"]*?/({rpc})(?:_[0-9]+)?\.jpg[^"]*)"',
         window_text,
@@ -829,6 +602,7 @@ def score_variant_window(window_text, vendor_start, window_start, target_rpc="",
         matched_nearby_image = img_match.group(1)
         reason.append("nearby_image_rpc_match")
 
+    # Smaller signal: same shop path family as the retail URL.
     if retail_url:
         path_match = re.search(r'https?://www\.cvs\.com(/shop/[^?\s"]+)', retail_url)
         if path_match:
@@ -838,28 +612,7 @@ def score_variant_window(window_text, vendor_start, window_start, target_rpc="",
                 matched_variant_url = retail_path
                 reason.append("retail_path_match")
 
-    local_vendor_start = vendor_start - window_start
-    rpc_positions = []
-
-    for m in re.finditer(rf'(?:skuId=|/as/|/high_res/){rpc}\b', window_text):
-        rpc_positions.append(m.start())
-
-    prior_positions = [p for p in rpc_positions if p <= local_vendor_start]
-
-    if prior_positions:
-        nearest_prior = max(prior_positions)
-        distance = local_vendor_start - nearest_prior
-
-        if distance <= 1200:
-            score += 50
-            reason.append("rpc_near_vendorcontent_before_1200")
-        elif distance <= 2500:
-            score += 35
-            reason.append("rpc_near_vendorcontent_before_2500")
-        elif distance <= 4500:
-            score += 20
-            reason.append("rpc_near_vendorcontent_before_4500")
-
+    # Small bonuses if the candidate actually looks like it contains vendor details.
     if '"vendorDetailsBullets"' in window_text:
         score += 5
         reason.append("has_bullets_marker")
@@ -878,13 +631,14 @@ def score_variant_window(window_text, vendor_start, window_start, target_rpc="",
 
 
 def get_sorted_variant_windows(source, target_rpc="", retail_url=""):
+    """
+    Return candidate windows sorted best-to-worst by score, instead of only one winner.
+    """
     candidates = extract_candidate_variant_windows(source)
 
     for candidate in candidates:
         scored = score_variant_window(
             candidate["window"],
-            vendor_start=candidate["vendor_start"],
-            window_start=candidate["start"],
             target_rpc=target_rpc,
             retail_url=retail_url,
         )
@@ -899,14 +653,24 @@ def get_sorted_variant_windows(source, target_rpc="", retail_url=""):
 
 
 def parse_vendor_details_from_block(local_block, working_source, debug):
+    """
+    Parse vendor details from a chosen local block, but always resolve any $refs
+    against the full working_source.
+    """
     if not local_block:
         return {"features": [], "description": "", "debug": debug}
 
     local_debug = debug.copy()
+    local_debug["directVendorContentFound"] = True
+    local_debug["directVendorDetailsFound"] = True
+    local_debug["directVendorContentExcerpt"] = normalize_space(local_block[:2500])
 
     features = []
     description = ""
 
+    # -------------------------
+    # BULLETS
+    # -------------------------
     bullets_ref_match = re.search(
         r'"vendorDetailsBullets"\s*:\s*"(\$[0-9A-Za-z]{1,3})"',
         local_block,
@@ -927,6 +691,7 @@ def parse_vendor_details_from_block(local_block, working_source, debug):
         ref_token = bullets_ref_match.group(1)
         ref_key = ref_token.replace("$", "")
 
+        local_debug["vendorPatternFound"] = True
         local_debug["vendorDetailsBulletsRef"] = ref_token
         local_debug["featuresKey"] = ref_key
 
@@ -935,12 +700,17 @@ def parse_vendor_details_from_block(local_block, working_source, debug):
             array_start = features_marker.end() - 1
             array_text = extract_balanced_bracket_block(working_source, array_start)
             local_debug["featuresArrayFound"] = bool(array_text)
+            local_debug["featuresArrayExcerpt"] = normalize_space(array_text)[:2000]
             features = parse_jsonish_array_text(array_text)
 
     elif bullets_array_text:
         local_debug["featuresArrayFound"] = True
+        local_debug["featuresArrayExcerpt"] = normalize_space(bullets_array_text)[:2000]
         features = parse_jsonish_array_text(bullets_array_text)
 
+    # -------------------------
+    # DESCRIPTION
+    # -------------------------
     paragraph_ref_match = re.search(
         r'"vendorDetailsParagraph"\s*:\s*"(\$[0-9A-Za-z]{1,3})"',
         local_block,
@@ -956,6 +726,7 @@ def parse_vendor_details_from_block(local_block, working_source, debug):
         ref_token = paragraph_ref_match.group(1)
         ref_key = ref_token.replace("$", "")
 
+        local_debug["vendorPatternFound"] = True
         local_debug["vendorDetailsParagraphRef"] = ref_token
         local_debug["descriptionKey"] = ref_key
 
@@ -963,11 +734,13 @@ def parse_vendor_details_from_block(local_block, working_source, debug):
         desc_block = clean_cvs_text(desc_block)
 
         local_debug["descriptionBlockFound"] = bool(desc_block)
+        local_debug["descriptionBlockExcerpt"] = normalize_space(desc_block)[:2000]
         description = desc_block
 
     elif paragraph_direct_match:
         raw_para = paragraph_direct_match.group(1)
 
+        # Ignore direct match if it was actually only a ref string like "$25"
         if not re.fullmatch(r'\$[0-9A-Za-z]{1,3}', raw_para or ""):
             try:
                 description = json.loads(f'"{raw_para}"')
@@ -976,8 +749,9 @@ def parse_vendor_details_from_block(local_block, working_source, debug):
 
             description = clean_cvs_text(description)
             local_debug["descriptionBlockFound"] = bool(description)
+            local_debug["descriptionBlockExcerpt"] = normalize_space(description)[:2000]
 
-    cleaned_features = normalize_cvs_features(features)
+    cleaned_features = dedupe_preserve_order([clean_cvs_text(x) for x in features])
     cleaned_description = clean_cvs_text(description)
 
     return {
@@ -987,38 +761,17 @@ def parse_vendor_details_from_block(local_block, working_source, debug):
     }
 
 
-def extract_vendor_copy_from_anchor_region(working_source, anchor_region, source_name="", target_rpc=""):
-    debug = {
-        "vendorDetailsBulletsRef": "",
-        "vendorDetailsParagraphRef": "",
-        "featuresKey": "",
-        "descriptionKey": "",
-        "featuresArrayFound": False,
-        "descriptionBlockFound": False,
-        "variantWindowMatched": True,
-        "variantMatchScore": 999,
-        "variantMatchReason": "rpc_image_anchor_priority",
-        "matchedDynamicMediaUrl": anchor_region.get("anchor_text", ""),
-        "matchedVariantUrl": "",
-        "matchedNearbyImage": anchor_region.get("anchor_text", ""),
-        "Source Used": source_name,
-    }
-
-    parsed = parse_vendor_details_from_block(
-        anchor_region.get("region", ""),
-        working_source,
-        debug,
-    )
-
-    return parsed
 def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retail_url=""):
     debug = {
+        "vendorPatternFound": False,
         "vendorDetailsBulletsRef": "",
         "vendorDetailsParagraphRef": "",
         "featuresKey": "",
         "descriptionKey": "",
         "featuresArrayFound": False,
         "descriptionBlockFound": False,
+        "directVendorContentFound": False,
+        "directVendorDetailsFound": False,
         "variantWindowMatched": False,
         "variantMatchScore": 0,
         "variantMatchReason": "",
@@ -1026,48 +779,21 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
         "matchedVariantUrl": "",
         "matchedNearbyImage": "",
         "Source Used": source_name,
+        "vendorPatternExcerpt": "",
+        "featuresArrayExcerpt": "",
+        "descriptionBlockExcerpt": "",
+        "directVendorContentExcerpt": "",
     }
 
     if not source:
         return {"features": [], "description": "", "debug": debug}
 
-    # Build working_source FIRST before any checks.
     working_source = html.unescape(source)
     working_source = working_source.replace('\\"', '"')
     working_source = working_source.replace("\\u0026", "&")
-    working_source = working_source.replace("\\/", "/")
-
-    # Fast reject if the page doesn't contain likely vendor copy markers.
-    if (
-        "vendorDetailsBullets" not in working_source
-        and "vendorDetailsParagraph" not in working_source
-        and "vendorContent" not in working_source
-    ):
-        return {"features": [], "description": "", "debug": debug}
 
     # ---------------------------------
-    # 1) TOP REQUIREMENT:
-    #    Use only the LAST exact RPC image URL anchor first.
-    # ---------------------------------
-    anchor_region = find_last_rpc_image_anchor_region(
-        working_source,
-        target_rpc=target_rpc,
-        before=600,
-        after=5000,
-    )
-
-    if anchor_region:
-        anchored = extract_vendor_copy_from_anchor_region(
-            working_source,
-            anchor_region,
-            source_name=source_name,
-            target_rpc=target_rpc,
-        )
-        if anchored.get("description") or anchored.get("features"):
-            return anchored
-
-    # ---------------------------------
-    # 2) Fallback: try all candidate windows in score order
+    # 1) Try all candidate windows in score order
     # ---------------------------------
     sorted_candidates = get_sorted_variant_windows(
         working_source,
@@ -1095,7 +821,7 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
         if parsed.get("description") or parsed.get("features"):
             return parsed
 
-    # Keep best fallback candidate info if no content found.
+    # Keep best candidate context in debug even if it did not yield content.
     if fallback_top_candidate:
         debug["variantWindowMatched"] = fallback_top_candidate.get("match_score", 0) > 0
         debug["variantMatchScore"] = fallback_top_candidate.get("match_score", 0)
@@ -1103,9 +829,10 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
         debug["matchedDynamicMediaUrl"] = fallback_top_candidate.get("matched_dynamic_media", "")
         debug["matchedVariantUrl"] = fallback_top_candidate.get("matched_variant_url", "")
         debug["matchedNearbyImage"] = fallback_top_candidate.get("matched_nearby_image", "")
+        debug["directVendorContentExcerpt"] = normalize_space(fallback_top_candidate.get("window", "")[:2500])
 
     # ---------------------------------
-    # 3) Final loose whole-page fallback
+    # 2) Looser whole-page fallback
     # ---------------------------------
     features = []
     description = ""
@@ -1137,10 +864,12 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
         flags=re.DOTALL,
     )
 
+    # BULLETS fallback
     if global_bullets_ref_match:
         ref_token = global_bullets_ref_match.group(1)
         ref_key = ref_token.replace("$", "")
 
+        debug["vendorPatternFound"] = True
         debug["vendorDetailsBulletsRef"] = ref_token
         debug["featuresKey"] = ref_key
 
@@ -1149,16 +878,20 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
             array_start = features_marker.end() - 1
             array_text = extract_balanced_bracket_block(working_source, array_start)
             debug["featuresArrayFound"] = bool(array_text)
+            debug["featuresArrayExcerpt"] = normalize_space(array_text)[:2000]
             features = parse_jsonish_array_text(array_text)
 
     elif global_bullets_array_text:
         debug["featuresArrayFound"] = True
+        debug["featuresArrayExcerpt"] = normalize_space(global_bullets_array_text)[:2000]
         features = parse_jsonish_array_text(global_bullets_array_text)
 
+    # DESCRIPTION fallback
     if global_paragraph_ref_match:
         ref_token = global_paragraph_ref_match.group(1)
         ref_key = ref_token.replace("$", "")
 
+        debug["vendorPatternFound"] = True
         debug["vendorDetailsParagraphRef"] = ref_token
         debug["descriptionKey"] = ref_key
 
@@ -1166,6 +899,7 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
         desc_block = clean_cvs_text(desc_block)
 
         debug["descriptionBlockFound"] = bool(desc_block)
+        debug["descriptionBlockExcerpt"] = normalize_space(desc_block)[:2000]
         description = desc_block
 
     elif global_paragraph_direct_match:
@@ -1179,8 +913,9 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
 
             description = clean_cvs_text(description)
             debug["descriptionBlockFound"] = bool(description)
+            debug["descriptionBlockExcerpt"] = normalize_space(description)[:2000]
 
-    cleaned_features = normalize_cvs_features(features)
+    cleaned_features = dedupe_preserve_order([clean_cvs_text(x) for x in features])
     cleaned_description = clean_cvs_text(description)
 
     return {
@@ -1190,90 +925,92 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
     }
 
 def extract_vendor_copy_from_nextjs(html_text, target_rpc="", retail_url=""):
-    search_source, source_name = build_reduced_search_source(html_text)
+    raw_text = get_nextjs_chunks(html_text)
+    raw_html = html.unescape(html_text or "")
+
+    debug = {
+        "rawHtmlLength": len(raw_html or ""),
+        "rawTextLength": len(raw_text or ""),
+        "nextjsChunkFound": bool(raw_text),
+        "rawHtmlHasSelfNextF": "self.__next_f.push([1," in (raw_html or ""),
+        "rawHtmlHasVendorDetailsBullets": "vendorDetailsBullets" in (raw_html or ""),
+        "rawHtmlHasVendorDetailsParagraph": "vendorDetailsParagraph" in (raw_html or ""),
+        "rawTextHasVendorDetailsBullets": "vendorDetailsBullets" in (raw_text or ""),
+        "rawTextHasVendorDetailsParagraph": "vendorDetailsParagraph" in (raw_text or ""),
+        "vendorPatternFound": False,
+        "vendorDetailsBulletsRef": "",
+        "vendorDetailsParagraphRef": "",
+        "featuresKey": "",
+        "descriptionKey": "",
+        "featuresArrayFound": False,
+        "descriptionBlockFound": False,
+        "directVendorContentFound": False,
+        "directVendorDetailsFound": False,
+        "variantWindowMatched": False,
+        "variantMatchScore": 0,
+        "variantMatchReason": "",
+        "matchedDynamicMediaUrl": "",
+        "matchedVariantUrl": "",
+        "matchedNearbyImage": "",
+        "Source Used": "",
+        "vendorPatternExcerpt": "",
+        "featuresArrayExcerpt": "",
+        "descriptionBlockExcerpt": "",
+        "directVendorContentExcerpt": "",
+        "rawHtmlVendorExcerpt": "",
+        "rawTextVendorExcerpt": "",
+    }
+
+    if "vendorDetailsBullets" in raw_html:
+        idx = raw_html.find("vendorDetailsBullets")
+        debug["rawHtmlVendorExcerpt"] = normalize_space(raw_html[max(0, idx - 250): idx + 1500])[:2000]
+
+    if "vendorDetailsBullets" in raw_text:
+        idx = raw_text.find("vendorDetailsBullets")
+        debug["rawTextVendorExcerpt"] = normalize_space(raw_text[max(0, idx - 250): idx + 1500])[:2000]
 
     result = extract_vendor_copy_from_source(
-        search_source,
-        source_name=source_name,
+        raw_text,
+        source_name="raw_text",
         target_rpc=target_rpc,
         retail_url=retail_url,
     )
 
+    if not result.get("description") and not result.get("features"):
+        result = extract_vendor_copy_from_source(
+            raw_html,
+            source_name="raw_html",
+            target_rpc=target_rpc,
+            retail_url=retail_url,
+        )
+
+    debug.update(result.get("debug", {}))
+
     return {
         "features": result.get("features", []),
         "description": result.get("description", ""),
-        "debug": result.get("debug", {}),
+        "debug": debug,
     }
 
 
 def extract_cvs_images_from_html(html_text):
-    """
-    Grab all CVS product image URLs we can find, keep source/page order,
-    dedupe by basename, and prefer the better version when duplicates appear.
-    No cap on CVS image count.
-    """
-    if not html_text:
-        return []
-
-    source = html.unescape(html_text)
-
-    patterns = [
-        # Absolute URLs
-        r'https://www\.cvs\.com/bizcontent/merchandising/productimages/(?:high_res|as)/[^\s"\']+\.jpg(?:\?[^"\']*)?',
-        # Relative URLs
-        r'/bizcontent/merchandising/productimages/(?:high_res|as)/[^\s"\']+\.jpg(?:\?[^"\']*)?',
-    ]
-
-    matches = []
-    for pattern in patterns:
-        matches.extend(re.findall(pattern, source, flags=re.IGNORECASE))
-
-    if not matches:
-        return []
+    matches = re.findall(r'/bizcontent/merchandising/productimages/high_res/[^\s"]+\.jpg\?[^\"]*', html_text or "")
 
     best_images = {}
     order = []
 
-    def normalize_full_url(m):
-        if m.startswith("http"):
-            return m
-        return "https://www.cvs.com" + m
-
-    def score_variant(url):
-        """
-        Prefer higher-quality variants:
-        - high_res beats /as/
-        - larger Resize value beats smaller
-        """
-        base_score = 0
-        if "/high_res/" in url:
-            base_score += 1000
-        elif "/as/" in url:
-            base_score += 100
-
-        size_match = re.search(r"Resize=\((\d+)", url, flags=re.IGNORECASE)
-        resize_score = int(size_match.group(1)) if size_match else 0
-
-        return base_score + resize_score
-
     for m in matches:
-        full = normalize_full_url(m)
+        full = "https://www.cvs.com" + m
         base = full.split("?")[0]
         name = base.split("/")[-1]
-        variant_score = score_variant(full)
+        size_match = re.search(r"Resize=\((\d+)", m)
+        size = int(size_match.group(1)) if size_match else 0
 
         if name not in best_images:
             order.append(name)
-            best_images[name] = {
-                "url": base,
-                "score": variant_score,
-            }
-        else:
-            if variant_score > best_images[name]["score"]:
-                best_images[name] = {
-                    "url": base,
-                    "score": variant_score,
-                }
+            best_images[name] = {"url": base, "size": size}
+        elif size > best_images[name]["size"]:
+            best_images[name] = {"url": base, "size": size}
 
     return [best_images[name]["url"] for name in order]
 
@@ -1302,7 +1039,7 @@ def _extract_cvs_text_from_html(html_text, retail_url="", target_rpc=""):
     )
 
     description = clean_cvs_text(vendor_copy.get("description", ""))
-    features = normalize_cvs_features(vendor_copy.get("features", []))
+    features = [clean_cvs_text(x) for x in vendor_copy.get("features", [])]
 
     debug.update(vendor_copy.get("debug", {}))
     debug["Description Path"] = debug.get("Source Used", "") if description else "description_empty"
@@ -1388,81 +1125,49 @@ def debug_description(desc):
     }
 
 # =========================================
-# =========================================
 # IMAGE HASHING (FAST IMAGE COMPARE)
 # =========================================
-def get_compare_fetch_candidates(url):
-    # Return preferred compare-fetch URLs in order.
-    # Lower-res first when possible, then original as fallback.
-    # This keeps display/export URLs unchanged.
-    if not url:
-        return []
-
-    candidates = []
-
-    # CVS: prefer lighter /as/ version for hashing if original is /high_res/.
-    if "cvs.com" in url and "/high_res/" in url:
-        candidates.append(url.replace("/high_res/", "/as/"))
-
-    # Always keep original URL as fallback.
-    candidates.append(url)
-
-    # Preserve order but dedupe.
-    seen = set()
-    out = []
-    for u in candidates:
-        if u not in seen:
-            seen.add(u)
-            out.append(u)
-
-    return out
-
-
 def get_image_dhash(url):
+    """
+    Compute a tiny difference hash directly from the downloaded image,
+    then discard the bytes immediately to reduce memory usage.
+    """
     if not url:
         return None
 
-    candidates = get_compare_fetch_candidates(url)
+    if url in image_hash_cache:
+        return image_hash_cache[url]
 
-    # Return any cached candidate first.
-    for fetch_url in candidates:
-        cached = image_hash_cache.get(fetch_url)
-        if cached is not None:
-            return cached
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=IMAGE_TIMEOUT)
+        if r.status_code != 200:
+            return None
+        if "image" not in r.headers.get("Content-Type", ""):
+            return None
 
-    for fetch_url in candidates:
-        try:
-            r = requests.get(fetch_url, headers=HEADERS, timeout=IMAGE_TIMEOUT)
-            if r.status_code != 200:
-                continue
-            if "image" not in r.headers.get("Content-Type", ""):
-                continue
+        img = Image.open(BytesIO(r.content))
+        img = img.convert("L").resize((IMAGE_HASH_WIDTH, IMAGE_HASH_HEIGHT))
 
-            img = Image.open(BytesIO(r.content))
-            img = img.convert("L").resize((IMAGE_HASH_WIDTH, IMAGE_HASH_HEIGHT))
+        bits = []
+        for y in range(IMAGE_HASH_HEIGHT):
+            for x in range(IMAGE_HASH_WIDTH - 1):
+                left_pixel = img.getpixel((x, y))
+                right_pixel = img.getpixel((x + 1, y))
+                bits.append(1 if left_pixel > right_pixel else 0)
 
-            bits = []
-            for y in range(IMAGE_HASH_HEIGHT):
-                for x in range(IMAGE_HASH_WIDTH - 1):
-                    left_pixel = img.getpixel((x, y))
-                    right_pixel = img.getpixel((x + 1, y))
-                    bits.append(1 if left_pixel > right_pixel else 0)
+        h = 0
+        for bit in bits:
+            h = (h << 1) | bit
 
-            h = 0
-            for bit in bits:
-                h = (h << 1) | bit
+        image_hash_cache[url] = h
 
-            image_hash_cache[fetch_url] = h
+        while len(image_hash_cache) > IMAGE_HASH_CACHE_MAX:
+            image_hash_cache.pop(next(iter(image_hash_cache)))
 
-            while len(image_hash_cache) > IMAGE_HASH_CACHE_MAX:
-                image_hash_cache.pop(next(iter(image_hash_cache)))
+        return h
 
-            return h
-
-        except Exception:
-            continue
-
-    return None
+    except Exception:
+        return None
 
 
 def hamming_distance(a, b):
@@ -1473,11 +1178,6 @@ def compare_images_visually(s_url, r_url):
     if not s_url or not r_url:
         return 0
 
-    pair_key = (s_url, r_url)
-    cached = image_compare_cache.get(pair_key)
-    if cached is not None:
-        return cached
-
     s_hash = get_image_dhash(s_url)
     r_hash = get_image_dhash(r_url)
 
@@ -1487,25 +1187,18 @@ def compare_images_visually(s_url, r_url):
     dist = hamming_distance(s_hash, r_hash)
 
     if dist <= 2:
-        score = 100
+        return 100
     elif dist <= 6:
-        score = 90
+        return 90
     elif dist <= 10:
-        score = 75
+        return 75
     elif dist <= 16:
-        score = 60
+        return 60
     elif dist <= 22:
-        score = 45
+        return 45
     else:
-        score = 25
+        return 25
 
-    image_compare_cache[pair_key] = score
-
-    while len(image_compare_cache) > IMAGE_COMPARE_CACHE_MAX:
-        image_compare_cache.pop(next(iter(image_compare_cache)))
-
-    return score
-    
 # =========================================
 # PROCESS ROW
 # =========================================
@@ -1526,7 +1219,7 @@ def process_row(row):
         debug_data = r_text.get("debug", {})
 
         r_text["description"] = clean_cvs_text(r_text.get("description", ""))
-        r_text["features"] = r_text.get("features", []) or []
+        r_text["features"] = [clean_cvs_text(f) for f in r_text.get("features", [])]
 
         title_score = keyword_score(s_text.get("title", ""), r_text.get("title", ""))
 
@@ -1561,25 +1254,6 @@ def process_row(row):
 
         avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
         overall = int((title_score + desc_score + avg_feature_score + avg_img_score) / 4)
-
-        slim_debug = {
-            "Title Path": debug_data.get("Title Path", ""),
-            "Description Path": debug_data.get("Description Path", ""),
-            "Features Path": debug_data.get("Features Path", ""),
-            "vendorDetailsBulletsRef": debug_data.get("vendorDetailsBulletsRef", ""),
-            "vendorDetailsParagraphRef": debug_data.get("vendorDetailsParagraphRef", ""),
-            "featuresKey": debug_data.get("featuresKey", ""),
-            "descriptionKey": debug_data.get("descriptionKey", ""),
-            "featuresArrayFound": debug_data.get("featuresArrayFound", False),
-            "descriptionBlockFound": debug_data.get("descriptionBlockFound", False),
-            "variantWindowMatched": debug_data.get("variantWindowMatched", False),
-            "variantMatchScore": debug_data.get("variantMatchScore", 0),
-            "variantMatchReason": debug_data.get("variantMatchReason", ""),
-            "matchedDynamicMediaUrl": debug_data.get("matchedDynamicMediaUrl", ""),
-            "matchedVariantUrl": debug_data.get("matchedVariantUrl", ""),
-            "matchedNearbyImage": debug_data.get("matchedNearbyImage", ""),
-            "Source Used": debug_data.get("Source Used", ""),
-        }
 
         return {
             "summary": {
@@ -1617,7 +1291,21 @@ def process_row(row):
                 "CVS Features": " | ".join(r_text.get("features", [])),
                 "Salsify Images": " | ".join([img.get("url", "") for img in s_images if isinstance(img, dict)]),
                 "CVS Images": " | ".join(r_images),
-                **slim_debug,
+                "Title Path": debug_data.get("Title Path", ""),
+                "Description Path": debug_data.get("Description Path", ""),
+                "Features Path": debug_data.get("Features Path", ""),
+                "vendorDetailsBulletsRef": debug_data.get("vendorDetailsBulletsRef", ""),
+                "vendorDetailsParagraphRef": debug_data.get("vendorDetailsParagraphRef", ""),
+                "featuresKey": debug_data.get("featuresKey", ""),
+                "descriptionKey": debug_data.get("descriptionKey", ""),
+                "directVendorContentFound": debug_data.get("directVendorContentFound", False),
+                "directVendorDetailsFound": debug_data.get("directVendorDetailsFound", False),
+                "variantWindowMatched": debug_data.get("variantWindowMatched", False),
+                "variantMatchScore": debug_data.get("variantMatchScore", 0),
+                "variantMatchReason": debug_data.get("variantMatchReason", ""),
+                "matchedDynamicMediaUrl": debug_data.get("matchedDynamicMediaUrl", ""),
+                "matchedVariantUrl": debug_data.get("matchedVariantUrl", ""),
+                "matchedNearbyImage": debug_data.get("matchedNearbyImage", ""),
             },
             "debug": {
                 "SKU": row.get("sku", ""),
@@ -1631,13 +1319,44 @@ def process_row(row):
                 "Desc Issues": ", ".join(r_desc_debug["issues"]),
                 "Salsify Desc Quality Score": s_desc_debug["quality_score"],
                 "Final Features": " | ".join(r_text.get("features", [])),
-                **slim_debug,
+                "Title Path": debug_data.get("Title Path", ""),
+                "Description Path": debug_data.get("Description Path", ""),
+                "Features Path": debug_data.get("Features Path", ""),
+                "vendorPatternFound": debug_data.get("vendorPatternFound", False),
+                "vendorDetailsBulletsRef": debug_data.get("vendorDetailsBulletsRef", ""),
+                "vendorDetailsParagraphRef": debug_data.get("vendorDetailsParagraphRef", ""),
+                "featuresKey": debug_data.get("featuresKey", ""),
+                "descriptionKey": debug_data.get("descriptionKey", ""),
+                "featuresArrayFound": debug_data.get("featuresArrayFound", False),
+                "descriptionBlockFound": debug_data.get("descriptionBlockFound", False),
+                "directVendorContentFound": debug_data.get("directVendorContentFound", False),
+                "directVendorDetailsFound": debug_data.get("directVendorDetailsFound", False),
+                "variantWindowMatched": debug_data.get("variantWindowMatched", False),
+                "variantMatchScore": debug_data.get("variantMatchScore", 0),
+                "variantMatchReason": debug_data.get("variantMatchReason", ""),
+                "matchedDynamicMediaUrl": debug_data.get("matchedDynamicMediaUrl", ""),
+                "matchedVariantUrl": debug_data.get("matchedVariantUrl", ""),
+                "matchedNearbyImage": debug_data.get("matchedNearbyImage", ""),
+                "Source Used": debug_data.get("Source Used", ""),
+                "vendorPatternExcerpt": debug_data.get("vendorPatternExcerpt", ""),
+                "featuresArrayExcerpt": debug_data.get("featuresArrayExcerpt", ""),
+                "descriptionBlockExcerpt": debug_data.get("descriptionBlockExcerpt", ""),
+                "directVendorContentExcerpt": debug_data.get("directVendorContentExcerpt", ""),
+                "rawHtmlLength": debug_data.get("rawHtmlLength", 0),
+                "rawTextLength": debug_data.get("rawTextLength", 0),
+                "nextjsChunkFound": debug_data.get("nextjsChunkFound", False),
+                "rawHtmlHasSelfNextF": debug_data.get("rawHtmlHasSelfNextF", False),
+                "rawHtmlHasVendorDetailsBullets": debug_data.get("rawHtmlHasVendorDetailsBullets", False),
+                "rawHtmlHasVendorDetailsParagraph": debug_data.get("rawHtmlHasVendorDetailsParagraph", False),
+                "rawTextHasVendorDetailsBullets": debug_data.get("rawTextHasVendorDetailsBullets", False),
+                "rawTextHasVendorDetailsParagraph": debug_data.get("rawTextHasVendorDetailsParagraph", False),
+                "rawHtmlVendorExcerpt": debug_data.get("rawHtmlVendorExcerpt", ""),
+                "rawTextVendorExcerpt": debug_data.get("rawTextVendorExcerpt", ""),
             },
         }
 
     except Exception:
         return None
-
 # =========================================
 # SESSION STATE
 # =========================================
@@ -1780,6 +1499,7 @@ if uploaded_file:
 
             if start + BATCH_SIZE < len(df):
                 st.session_state.start_idx += BATCH_SIZE
+                time.sleep(0.05)
                 st.rerun()
             else:
                 st.session_state.processing_done = True
@@ -1881,7 +1601,7 @@ if uploaded_file and st.session_state.processing_done and view_mode:
             debug_data = r_text.get("debug", {})
 
             r_text["description"] = clean_cvs_text(r_text.get("description", ""))
-            r_text["features"] = r_text.get("features", []) or []
+            r_text["features"] = [clean_cvs_text(f) for f in r_text.get("features", [])]
 
             s_title = s_text.get("title") or ""
             r_title = r_text.get("title") or ""
