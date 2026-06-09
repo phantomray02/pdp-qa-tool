@@ -516,14 +516,10 @@ def extract_newline_anchored_value_block(source, key):
     return block.strip()
 
 
-def merge_feature_continuations(items):
+def merge_feature_continuations(items, max_features=5):
     """
-    Merge short continuation fragments back into the previous feature bullet.
-    Example:
-      "WHAT’S INCLUDED — ... light absorbency"
-      "packaging and product may vary"
-    becomes:
-      "WHAT’S INCLUDED — ... light absorbency; packaging and product may vary"
+    Merge short continuation fragments back into the previous feature bullet,
+    but do NOT let trailing junk get merged into bullet 5.
     """
     merged = []
 
@@ -543,7 +539,6 @@ def merge_feature_continuations(items):
             for pattern in continuation_patterns
         )
 
-        # Treat some short lowercase fragments as likely continuations.
         if not is_continuation:
             if (
                 merged
@@ -555,23 +550,27 @@ def merge_feature_continuations(items):
                 is_continuation = True
 
         if is_continuation and merged:
+            # Do NOT merge extra trailing junk into bullet 5.
+            if len(merged) >= max_features:
+                continue
+
             prev = merged.pop()
             if prev.endswith(";"):
                 merged.append(f"{prev} {item}")
             else:
                 merged.append(f"{prev}; {item}")
         else:
+            if len(merged) >= max_features:
+                break
             merged.append(item)
 
-    return dedupe_preserve_order(merged)
-
+    return dedupe_preserve_order(merged[:max_features])
 
 def normalize_cvs_features(items):
     cleaned = [clean_cvs_text(x) for x in items if isinstance(x, str)]
     cleaned = [x for x in cleaned if x]
-    cleaned = merge_feature_continuations(cleaned)
-    return dedupe_preserve_order(cleaned)
-
+    cleaned = merge_feature_continuations(cleaned, max_features=5)
+    return dedupe_preserve_order(cleaned[:5])
 
 def split_feature_blob_preserve_semicolons(text):
     """
@@ -1385,24 +1384,40 @@ def process_row(row):
         feature_fields = ["feature1", "feature2", "feature3", "feature4", "feature5"]
 
         feature_scores = []
-        for f_key in feature_fields:
+        feature_summary_fields = {}
+        cvs_feature_slots = []
+
+        for i, f_key in enumerate(feature_fields, start=1):
             s_val = s_text.get(f_key, "")
-            scores = [keyword_score(s_val, f) for f in cvs_features if isinstance(f, str)]
-            feature_scores.append(max(scores) if scores else 0)
+            r_val = cvs_features[i - 1] if i - 1 < len(cvs_features) else ""
+            cvs_feature_slots.append(r_val)
+
+            score = keyword_score(s_val, r_val) if r_val else 0
+            feature_scores.append(score)
+
+            feature_summary_fields[f"Salsify Feature {i}"] = s_val
+            feature_summary_fields[f"CVS Feature {i}"] = r_val
+            feature_summary_fields[f"Feature {i} %"] = score
 
         avg_feature_score = int(sum(feature_scores) / len(feature_scores)) if feature_scores else 0
 
         img_scores = []
+        image_position_scores = {}
         max_img_positions = max(len(s_images), len(r_images))
 
         for i in range(max_img_positions):
             s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else None
             r_url = r_images[i] if i < len(r_images) else None
 
+            sc = 0
             if s_url and r_url:
                 sc = compare_images_visually(s_url, r_url)
                 if sc > 0:
                     img_scores.append(sc)
+
+            image_position_scores[f"Image {i + 1} %"] = sc
+            image_position_scores[f"Salsify Image {i + 1}"] = s_url or ""
+            image_position_scores[f"CVS Image {i + 1}"] = r_url or ""
 
         avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
         overall = int((title_score + desc_score + avg_feature_score + avg_img_score) / 4)
@@ -1419,6 +1434,8 @@ def process_row(row):
                 "Feature %": avg_feature_score,
                 "Image Match %": avg_img_score,
                 "Overall %": overall,
+                **feature_summary_fields,
+                **image_position_scores,
             },
             "detail": {
                 "SKU": row.get("sku", ""),
