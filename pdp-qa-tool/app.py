@@ -1390,44 +1390,78 @@ def debug_description(desc):
 # =========================================
 # IMAGE HASHING (FAST IMAGE COMPARE)
 # =========================================
-def get_image_dhash(url):
+def get_compare_fetch_candidates(url):
+    """
+    Return preferred compare-fetch URLs in order.
+    Lower-res first when possible, then original as fallback.
+    This keeps display/export URLs unchanged.
+    """
     if not url:
-        return None
+        return []
 
-    cached = image_hash_cache.get(url)
-    if cached is not None:
-        return cached
+    candidates = []
 
-    try:
-        r = requests.get(url, headers=HEADERS, timeout=IMAGE_TIMEOUT)
-        if r.status_code != 200:
-            return None
-        if "image" not in r.headers.get("Content-Type", ""):
-            return None
+    # CVS: prefer lighter /as/ version for hashing if original is /high_res/.
+    if "cvs.com" in url and "/high_res/" in url:
+        candidates.append(url.replace("/high_res/", "/as/"))
 
-        img = Image.open(BytesIO(r.content))
-        img = img.convert("L").resize((IMAGE_HASH_WIDTH, IMAGE_HASH_HEIGHT))
+    # Always keep original URL as fallback.
+    candidates.append(url)
 
-        bits = []
-        for y in range(IMAGE_HASH_HEIGHT):
-            for x in range(IMAGE_HASH_WIDTH - 1):
-                left_pixel = img.getpixel((x, y))
-                right_pixel = img.getpixel((x + 1, y))
-                bits.append(1 if left_pixel > right_pixel else 0)
+    # Preserve order but dedupe.
+    seen = set()
+    out = []
+    for u in candidates:
+        if u not in seen:
+            seen.add(u)
+            out.append(u)
 
-        h = 0
-        for bit in bits:
-            h = (h << 1) | bit
+    return out
+    
+def get_image_dhash(url):def get_image_dhash(url        return None
 
-        image_hash_cache[url] = h
+    candidates = get_compare_fetch_candidates(url)
 
-        while len(image_hash_cache) > IMAGE_HASH_CACHE_MAX:
-            image_hash_cache.pop(next(iter(image_hash_cache)))
+    # Return any cached candidate first.
+    for fetch_url in candidates:
+        cached = image_hash_cache.get(fetch_url)
+        if cached is not None:
+            return cached
 
-        return h
+    for fetch_url in candidates:
+        try:
+            r = requests.get(fetch_url, headers=HEADERS, timeout=IMAGE_TIMEOUT)
+            if r.status_code != 200:
+                continue
+            if "image" not in r.headers.get("Content-Type", ""):
+                continue
 
-    except Exception:
-        return None
+            img = Image.open(BytesIO(r.content))
+            img = img.convert("L").resize((IMAGE_HASH_WIDTH, IMAGE_HASH_HEIGHT))
+
+            bits = []
+            for y in range(IMAGE_HASH_HEIGHT):
+                for x in range(IMAGE_HASH_WIDTH - 1):
+                    left_pixel = img.getpixel((x, y))
+                    right_pixel = img.getpixel((x + 1, y))
+                    bits.append(1 if left_pixel > right_pixel else 0)
+
+            h = 0
+            for bit in bits:
+                h = (h << 1) | bit
+
+            image_hash_cache[fetch_url] = h
+
+            while len(image_hash_cache) > IMAGE_HASH_CACHE_MAX:
+                image_hash_cache.pop(next(iter(image_hash_cache)))
+
+            return h
+
+        except Exception:
+            continue
+
+    return None
+    if not url:
 
 def hamming_distance(a, b):
     return bin(a ^ b).count("1")
