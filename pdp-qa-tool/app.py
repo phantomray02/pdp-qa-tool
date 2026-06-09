@@ -11,9 +11,11 @@ from io import BytesIO
 from difflib import SequenceMatcher
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+
 import pandas as pd
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 from bs4 import BeautifulSoup
 from PIL import Image
 from openpyxl import load_workbook
@@ -187,55 +189,19 @@ def image_tile_html(label, url, box_height=170):
     safe_label = html.escape(label)
     if url:
         safe_url = html.escape(url, quote=True)
-        return f"""
-        <div style="
-            border:1px solid #E0E0E0;
-            border-radius:8px;
-            background:#FFFFFF;
-            padding:8px;
-        ">
-            <div style="font-size:12px; font-weight:600; margin-bottom:6px;">{safe_label}</div>
-            <div style="
-                height:{box_height}px;
-                display:flex;
-                align-items:center;
-                justify-content:center;
-                background:#FAFAFA;
-                border-radius:6px;
-                overflow:hidden;
-            ">
-                <img src="{safe_url}" style="
-                    max-width:100%;
-                    max-height:{box_height}px;
-                    object-fit:contain;
-                ">
-            </div>
-        </div>
-        """
+        return f"""<div style="border:1px solid #E0E0E0;border-radius:8px;background:#FFFFFF;padding:8px;">
+<div style="font-size:12px;font-weight:600;margin-bottom:6px;">{safe_label}</div>
+<div style="height:{box_height}px;display:flex;align-items:center;justify-content:center;background:#FAFAFA;border-radius:6px;overflow:hidden;">
+<img src="{safe_url}" style="max-width:100%;max-height:{box_height}px;object-fit:contain;" />
+</div>
+</div>"""
     else:
-        return f"""
-        <div style="
-            border:1px solid #E0E0E0;
-            border-radius:8px;
-            background:#FFFFFF;
-            padding:8px;
-        ">
-            <div style="font-size:12px; font-weight:600; margin-bottom:6px;">{safe_label}</div>
-            <div style="
-                height:{box_height}px;
-                display:flex;
-                align-items:center;
-                justify-content:center;
-                background:#FAFAFA;
-                border-radius:6px;
-                color:#C62828;
-                font-size:14px;
-                font-weight:600;
-            ">
-                ❌ Missing
-            </div>
-        </div>
-        """
+        return f"""<div style="border:1px solid #E0E0E0;border-radius:8px;background:#FFFFFF;padding:8px;">
+<div style="font-size:12px;font-weight:600;margin-bottom:6px;">{safe_label}</div>
+<div style="height:{box_height}px;display:flex;align-items:center;justify-content:center;background:#FAFAFA;border-radius:6px;color:#C62828;font-size:14px;font-weight:600;">
+❌ Missing
+</div>
+</div>"""
 
 
 def image_slot_block_html(slot_num, s_url, r_url, score, box_height=170):
@@ -246,34 +212,16 @@ def image_slot_block_html(slot_num, s_url, r_url, score, box_height=170):
     else:
         score_color = "#C62828"
 
-    return f"""
-    <div style="
-        border:1px solid #DADADA;
-        border-radius:10px;
-        padding:10px;
-        margin-bottom:12px;
-        background:#FCFCFC;
-    ">
-        <div style="
-            font-weight:700;
-            margin-bottom:10px;
-            color:{score_color};
-        ">
-            Image Slot {slot_num} — {score}%
-        </div>
+    return f"""<div style="border:1px solid #DADADA;border-radius:10px;padding:10px;margin-bottom:12px;background:#FCFCFC;">
+<div style="font-weight:700;margin-bottom:10px;color:{score_color};">Image Slot {slot_num} — {score}%</div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+{image_tile_html("Salsify", s_url, box_height=box_height)}
+{image_tile_html("CVS", r_url, box_height=box_height)}
+</div>
+</div>"""
 
-        <div style="
-            display:grid;
-            grid-template-columns:1fr 1fr;
-            gap:10px;
-        ">
-            {image_tile_html("Salsify", s_url, box_height=box_height)}
-            {image_tile_html("CVS", r_url, box_height=box_height)}
-        </div>
-    </div>
-    """
-    
-def build_image_panel_html(s_images, r_images, max_images, box_height=170, panel_height=1200):
+
+def build_image_panel_html(s_images, r_images, max_images, box_height=170):
     blocks = []
 
     for i in range(max_images):
@@ -291,15 +239,7 @@ def build_image_panel_html(s_images, r_images, max_images, box_height=170, panel
             )
         )
 
-    return f"""
-    <div style="
-        height:{panel_height}px;
-        overflow-y:auto;
-        padding-right:4px;
-    ">
-        {''.join(blocks)}
-    </div>
-    """
+    return f"""<div style="padding-right:4px;">{''.join(blocks)}</div>
     
 def read_uploaded_csv_from_bytes(file_bytes):
     if not file_bytes:
@@ -2483,9 +2423,9 @@ if uploaded_file and st.session_state.processing_done and view_mode:
                     r_images=r_images,
                     max_images=max_images,
                     box_height=170,
-                    panel_height=1250,
                 )
-                st.markdown(image_panel_html, unsafe_allow_html=True)
+            
+                components.html(image_panel_html, height=1250, scrolling=True)
 
             st.caption(
                 f"Title: {title_score}% | "
