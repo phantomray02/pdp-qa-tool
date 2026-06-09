@@ -496,14 +496,37 @@ def extract_balanced_brace_block(source, start_index):
     return ""
 
 def find_newline_anchored_key(source, key, for_array=False):
+    """
+    Find a keyed ref block like:
+      \n37:[
+      \n36:{
+    but also support inline forms commonly seen in raw Next.js text such as:
+      37:[
+      36:{
+    after whitespace, commas, or braces.
+
+    We keep newline-first behavior, then fall back to a broader boundary-based search.
+    """
     key = str(key)
+
+    # First try the old strict newline-anchored form.
     if for_array:
-        pattern = rf'(?:^|\n){re.escape(key)}:\['
+        strict_pattern = rf'(?:^|\n){re.escape(key)}:\['
     else:
-        pattern = rf'(?:^|\n){re.escape(key)}:'
+        strict_pattern = rf'(?:^|\n){re.escape(key)}:'
 
-    return re.search(pattern, source)
+    m = re.search(strict_pattern, source)
+    if m:
+        return m
 
+    # Fallback: allow inline ref keys after whitespace/comma/brace.
+    # This is important for Depend women's rows where refs appear inline.
+    if for_array:
+        fallback_pattern = rf'(?:^|[\s,{{]){re.escape(key)}:\['
+    else:
+        fallback_pattern = rf'(?:^|[\s,{{]){re.escape(key)}:'
+
+    return re.search(fallback_pattern, source)
 
 def looks_like_next_newline_key(source, idx):
     if idx < 0 or idx >= len(source):
@@ -511,24 +534,26 @@ def looks_like_next_newline_key(source, idx):
 
     return bool(
         re.match(
-            r'(?:\n)([0-9A-Za-z]{1,3}):(?=[\[{"]|T[0-9A-Za-z]+,|null|true|false|\d)',
+            r'(?:\s|,)([0-9A-Za-z]{1,3}):(?=[\[{"]|T[0-9A-Za-z]+,|null|true|false|\d)',
             source[idx:],
         )
     )
 
 def extract_newline_anchored_value_block(source, key):
     """
-    Find:
-    \n34:
-    and keep going until the next newline-anchored key such as:
-    \n32:{
-    \n27:
-    \n15:[
+    Resolve a keyed value block like:
+      25:"some text..."
+      36:{...}
+      37:[...]
+    even when the key is inline rather than newline-anchored.
+
+    We stop at the next likely ref key boundary when not inside quotes/brackets/braces.
     """
     m = find_newline_anchored_key(source, key, for_array=False)
     if not m:
         return ""
 
+    # Start immediately after 'key:'
     start = m.end()
     i = start
 
@@ -583,15 +608,19 @@ def extract_newline_anchored_value_block(source, key):
             i += 1
             continue
 
+        # If we're not nested, stop at the next likely keyed ref boundary.
         if bracket_depth == 0 and brace_depth == 0 and paren_depth == 0:
-            if looks_like_next_newline_key(source, i):
+            if re.match(
+                r'(?:\s|,|^)([0-9A-Za-z]{1,3}):(?=[\[{"]|T[0-9A-Za-z]+,|null|true|false|\d)',
+                source[i:],
+            ):
                 break
 
         i += 1
 
     block = source[start:i].strip()
 
-    # Extra safety trimming.
+    # Trim obvious keyed bleed if present.
     block = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:\{.*$', "", block, flags=re.DOTALL)
     block = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:\[.*$', "", block, flags=re.DOTALL)
     block = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:$', "", block, flags=re.DOTALL)
@@ -602,6 +631,8 @@ def extract_object_block_for_key(source, key):
     """
     Resolve a ref key like 36:
     and return the full balanced object block if it starts with {.
+
+    Supports both newline-anchored and inline ref forms.
     """
     m = find_newline_anchored_key(source, key, for_array=False)
     if not m:
@@ -615,7 +646,7 @@ def extract_object_block_for_key(source, key):
         return extract_balanced_brace_block(source, start)
 
     return extract_newline_anchored_value_block(source, key)
-
+    
 def find_direct_vendor_details_block_near_sku(source, target_rpc="", search_after=30000):
     """
     Fast path:
