@@ -335,7 +335,45 @@ def clean_cvs_text(text):
 
     return text
 
+def build_reduced_search_source(html_text):
+    """
+    Build one reduced search source per CVS page.
+    This is much faster than repeatedly scanning full raw HTML.
+    """
+    if not html_text:
+        return "", ""
 
+    raw_text = get_nextjs_chunks(html_text)
+    raw_html = html.unescape(html_text or "")
+
+    # Prefer the Next.js chunk text if it contains vendor markers.
+    if raw_text and (
+        "vendorDetailsBullets" in raw_text
+        or "vendorDetailsParagraph" in raw_text
+        or "vendorContent" in raw_text
+    ):
+        source = raw_text
+        source_name = "raw_text"
+    else:
+        source = raw_html
+        source_name = "raw_html"
+
+    # Normalize once.
+    source = html.unescape(source)
+    source = source.replace('\\"', '"')
+    source = source.replace("\\u0026", "&")
+    source = source.replace("\\/", "/")
+
+    # Remove obvious transport/script wrapper noise once.
+    source = re.sub(r'self\.__next_f\.push\(\[1,.*?$', "", source, flags=re.DOTALL)
+    source = re.sub(r'<script[^>]*>.*?</script>', " ", source, flags=re.DOTALL | re.IGNORECASE)
+    source = re.sub(r'</?script[^>]*>', " ", source, flags=re.IGNORECASE)
+
+    # Collapse whitespace once.
+    source = re.sub(r"\s+", " ", source).strip()
+
+    return source, source_name
+    
 def get_nextjs_chunks(html_text):
     if not html_text:
         return ""
@@ -851,6 +889,13 @@ def extract_vendor_copy_from_anchor_region(working_source, anchor_region, source
 
 
 def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retail_url=""):
+    # Fast reject if the page doesn't even contain likely vendor copy markers.
+    if (
+        "vendorDetailsBullets" not in working_source
+        and "vendorDetailsParagraph" not in working_source
+        and "vendorContent" not in working_source
+    ):
+        return {"features": [], "description": "", "debug": debug}
     debug = {
         "vendorDetailsBulletsRef": "",
         "vendorDetailsParagraphRef": "",
@@ -1009,23 +1054,14 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
 
 
 def extract_vendor_copy_from_nextjs(html_text, target_rpc="", retail_url=""):
-    raw_text = get_nextjs_chunks(html_text)
-    raw_html = html.unescape(html_text or "")
+    search_source, source_name = build_reduced_search_source(html_text)
 
     result = extract_vendor_copy_from_source(
-        raw_text,
-        source_name="raw_text",
+        search_source,
+        source_name=source_name,
         target_rpc=target_rpc,
         retail_url=retail_url,
     )
-
-    if not result.get("description") and not result.get("features"):
-        result = extract_vendor_copy_from_source(
-            raw_html,
-            source_name="raw_html",
-            target_rpc=target_rpc,
-            retail_url=retail_url,
-        )
 
     return {
         "features": result.get("features", []),
