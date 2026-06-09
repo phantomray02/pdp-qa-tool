@@ -20,7 +20,7 @@ from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
 from pandas.errors import EmptyDataError
 import threading
-from requests.adapters import HTTPAdapt
+from requests.adapters import HTTPAdapter
 
 
 # =========================================
@@ -394,7 +394,7 @@ def clean_cvs_feature_text(text):
 
     return text
 
-def get_target_sku_from_inputs(retail_url="", cvs_rpc=""):
+get_target_sku_from_inputs(def get_target_sku_from_inputs(retail_url="", cvs_rpc=""):
     """
     Prefer the skuId in the retail URL.
     Fall back to cvs_rpc if skuId is missing.
@@ -1675,24 +1675,26 @@ def process_row(row):
         retail_url = row.get("retail_url", "")
         salsify_url = row.get("salsify_url", "")
         cvs_rpc = row.get("cvs_rpc") or row.get("CVS RPC") or ""
+
         target_sku = get_target_sku_from_inputs(
             retail_url=row.get("retail_url", ""),
             cvs_rpc=cvs_rpc,
         )
-        
+
+        # Fetch Salsify + CVS in parallel for this row.
         with ThreadPoolExecutor(max_workers=2) as row_executor:
-                    s_future = row_executor.submit(get_salsify_bundle, salsify_url)
-                    r_future = row_executor.submit(get_cvs_bundle, retail_url, target_sku)
-        
-                    s_bundle = s_future.result()
-                    r_bundle = r_future.result()
-        
-                s_text = s_bundle["text"]
-                s_images = s_bundle["images"]
-        
-                r_text = r_bundle["text"] or {}
-                r_images = r_bundle["images"]
-        
+            s_future = row_executor.submit(get_salsify_bundle, salsify_url)
+            r_future = row_executor.submit(get_cvs_bundle, retail_url, target_sku)
+
+            s_bundle = s_future.result()
+            r_bundle = r_future.result()
+
+        s_text = s_bundle["text"]
+        s_images = s_bundle["images"]
+
+        r_text = r_bundle["text"] or {}
+        r_images = r_bundle["images"]
+
         debug_data = r_text.get("debug", {})
 
         r_text["description"] = clean_cvs_text(r_text.get("description", ""))
@@ -1703,8 +1705,14 @@ def process_row(row):
         s_desc_debug = debug_description(s_text.get("description", ""))
         r_desc_debug = debug_description(r_text.get("description", ""))
 
-        text_similarity = keyword_score(s_text.get("description", ""), r_text.get("description", ""))
-        desc_score = max(0, text_similarity - int((100 - r_desc_debug["quality_score"]) * 0.5))
+        text_similarity = keyword_score(
+            s_text.get("description", ""),
+            r_text.get("description", ""),
+        )
+        desc_score = max(
+            0,
+            text_similarity - int((100 - r_desc_debug["quality_score"]) * 0.5),
+        )
 
         cvs_features = r_text.get("features", []) if isinstance(r_text, dict) else []
         feature_fields = ["feature1", "feature2", "feature3", "feature4", "feature5"]
@@ -1718,7 +1726,6 @@ def process_row(row):
 
             score = keyword_score(s_val, r_val) if r_val else 0
             feature_scores.append(score)
-
             feature_score_fields[f"Feature {i} %"] = score
 
         avg_feature_score = int(sum(feature_scores) / len(feature_scores)) if feature_scores else 0
