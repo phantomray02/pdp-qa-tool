@@ -102,7 +102,20 @@ def dedupe_preserve_order(items):
 
 def keyword_score(a, b):
     return int(SequenceMatcher(None, normalize_text(a), normalize_text(b)).ratio() * 100)
+    
+def description_similarity_score(a, b):
+    a_norm = normalize_text(a)
+    b_norm = normalize_text(b)
 
+    # If both are empty, treat as 100 to avoid weird false negatives.
+    if not a_norm and not b_norm:
+        return 100
+
+    # If normalized text matches exactly, force 100.
+    if a_norm == b_norm:
+        return 100
+
+    return int(SequenceMatcher(None, a_norm, b_norm).ratio() * 100)
 
 def equal_height_block(text):
     return f"<div style='min-height:180px; display:flex; align-items:flex-start;'>{text}</div>"
@@ -1831,13 +1844,9 @@ def process_row(row):
         s_desc_debug = debug_description(s_text.get("description", ""))
         r_desc_debug = debug_description(r_text.get("description", ""))
 
-        text_similarity = keyword_score(
+        desc_score = description_similarity_score(
             s_text.get("description", ""),
             r_text.get("description", ""),
-        )
-        desc_score = max(
-            0,
-            text_similarity - int((100 - r_desc_debug["quality_score"]) * 0.5),
         )
 
         cvs_features = r_text.get("features", []) if isinstance(r_text, dict) else []
@@ -2242,7 +2251,7 @@ if uploaded_file and st.session_state.processing_done and view_mode:
             title_score = keyword_score(s_title, r_title)
 
             r_desc_debug = debug_description(r_desc)
-            desc_score = max(0, keyword_score(s_desc, r_desc) - int((100 - r_desc_debug["quality_score"]) * 0.5))
+            desc_score = description_similarity_score(s_desc, r_desc)
 
             max_features = max(len(feature_fields), len(cvs_features))
             feature_scores = []
