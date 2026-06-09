@@ -102,27 +102,63 @@ def dedupe_preserve_order(items):
 
 def keyword_score(a, b):
     return int(SequenceMatcher(None, normalize_text(a), normalize_text(b)).ratio() * 100)
-    
+
+
 def description_similarity_score(a, b):
     a_norm = normalize_text(a)
     b_norm = normalize_text(b)
 
-    # If both are empty, treat as 100 to avoid weird false negatives.
     if not a_norm and not b_norm:
         return 100
 
-    # If normalized text matches exactly, force 100.
     if a_norm == b_norm:
         return 100
 
     return int(SequenceMatcher(None, a_norm, b_norm).ratio() * 100)
 
-def equal_height_block(text):
-    return f"<div style='min-height:180px; display:flex; align-items:flex-start;'>{text}</div>"
+
+def html_escape_text(text):
+    return html.escape(str(text or ""))
 
 
-def equal_feature_block(text):
-    return f"<div style='min-height:70px; display:flex; align-items:flex-start;'>{text}</div>"
+def equal_height_block(text, min_height=220):
+    safe_text = html_escape_text(text or "❌ Missing")
+    return f"""
+    <div style="
+        height:{min_height}px;
+        overflow-y:auto;
+        padding:10px 12px;
+        border:1px solid #E0E0E0;
+        border-radius:8px;
+        background:#FFFFFF;
+        white-space:pre-wrap;
+        line-height:1.45;
+        font-size:14px;
+        color:#111;
+    ">
+        {safe_text}
+    </div>
+    """
+
+
+def equal_feature_block(text, min_height=85):
+    safe_text = html_escape_text(text or "❌ Missing")
+    return f"""
+    <div style="
+        height:{min_height}px;
+        overflow-y:auto;
+        padding:8px 10px;
+        border:1px solid #E0E0E0;
+        border-radius:8px;
+        background:#FFFFFF;
+        white-space:pre-wrap;
+        line-height:1.4;
+        font-size:14px;
+        color:#111;
+    ">
+        {safe_text}
+    </div>
+    """
 
 
 def score_badge(score):
@@ -147,6 +183,202 @@ def score_bar(score):
     )
 
 
+def image_tile_html(label, url, box_height=170):
+    safe_label = html.escape(label)
+    if url:
+        safe_url = html.escape(url, quote=True)
+        return f"""
+        <div style="
+            border:1px solid #E0E0E0;
+            border-radius:8px;
+            background:#FFFFFF;
+            padding:8px;
+        ">
+            <div style="font-size:12px; font-weight:600; margin-bottom:6px;">{safe_label}</div>
+            <div style="
+                height:{box_height}px;
+                display:flex;
+                align-items:center;
+                justify-content:center;
+                background:#FAFAFA;
+                border-radius:6px;
+                overflow:hidden;
+            ">
+                <img src="{safe_url}" style="
+                    max-width:100%;
+                    max-height:{box_height}px;
+                    object-fit:contain;
+                ">
+            </div>
+        </div>
+        """
+    else:
+        return f"""
+        <div style="
+            border:1px solid #E0E0E0;
+            border-radius:8px;
+            background:#FFFFFF;
+            padding:8px;
+        ">
+            <div style="font-size:12px; font-weight:600; margin-bottom:6px;">{safe_label}</div>
+            <div style="
+                height:{box_height}px;
+                display:flex;
+                align-items:center;
+                justify-content:center;
+                background:#FAFAFA;
+                border-radius:6px;
+                color:#C62828;
+                font-size:14px;
+                font-weight:600;
+            ">
+                ❌ Missing
+            </div>
+        </div>
+        """
+
+
+def image_slot_block_html(slot_num, s_url, r_url, score, box_height=170):
+    if score >= 80:
+        score_color = "#2E7D32"
+    elif score >= 50:
+        score_color = "#F9A825"
+    else:
+        score_color = "#C62828"
+
+    return f"""
+    <div style="
+        border:1px solid #DADADA;
+        border-radius:10px;
+        padding:10px;
+        margin-bottom:12px;
+        background:#FCFCFC;
+    ">
+        <div style="
+            font-weight:700;
+            margin-bottom:10px;
+            color:{score_color};
+        ">
+            Image Slot {slot_num} — {score}%
+        </div>
+
+        <div style="
+            display:grid;
+            grid-template-columns:1fr 1fr;
+            gap:10px;
+        ">
+            {image_tile_html("Salsify", s_url, box_height=box_height)}
+            {image_tile_html("CVS", r_url, box_height=box_height)}
+        </div>
+    </div>
+    """
+
+
+def build_image_panel_html(s_images, r_images, max_images, box_height=170, panel_height=1200):
+    blocks = []
+
+    for i in range(max_images):
+        s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else ""
+        r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else ""
+        score = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
+
+        blocks.append(
+            image_slot_block_html(
+                slot_num=i + 1,
+                s_url=s_url,
+                r_url=r_url,
+                score=score,
+                box_height=box_height,
+            )
+        )
+
+    return f"""
+    <div style="
+        height:{panel_height}px;
+        overflow-y:auto;
+        padding-right:4px;
+    ">
+        {''.join(blocks)}
+    </div>
+    ""
+
+    for i in range(max_images):
+        s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else ""
+        r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else ""
+        score = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
+
+        blocks.append(
+            image_slot_block_html(
+                slot_num=i + 1,
+                s_url=s_url,
+                r_url=r_url,
+                score=score,
+                box_height=box_height,
+            )
+        )
+
+    return f"""
+    <div style="
+        height:{panel_height}px;
+        overflow-y:auto;
+        padding-right:4px;
+    ">
+        {''.join(blocks)}
+    </div>
+    """
+
+    for i in range(max_images):
+        s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else ""
+        r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else ""
+        score = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
+
+        blocks.append(
+            image_slot_block_html(
+                slot_num=i + 1,
+                s_url=s_url,
+                r_url=r_url,
+                score=score,
+                box_height=box_height,
+            )
+        )
+
+    return f"""
+    <div style="
+        height:{panel_height}px;
+        overflow-y:auto;
+        padding-right:4px;
+    ">
+        {''.join(blocks)}
+    </div>
+    """
+def build_image_panel_html(s_images, r_images, max_images, box_height=170, panel_height=1200):
+    blocks = []
+
+    for i in range(max_images):
+        s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else ""
+        r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else ""
+        score = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
+
+        blocks.append(
+            image_slot_block_html(
+                slot_num=i + 1,
+                s_url=s_url,
+                r_url=r_url,
+                score=score,
+                box_height=box_height,
+            )
+        )
+
+    return f"""
+    <div style="
+        height:{panel_height}px;
+        overflow-y:auto;
+        padding-right:4px;
+    ">
+        {''.join(blocks)}
+    </div>
+    """ 
+    
 def read_uploaded_csv_from_bytes(file_bytes):
     if not file_bytes:
         raise EmptyDataError("Uploaded file is empty.")
@@ -299,7 +531,7 @@ def _parse_salsify_page(html_text):
         for k in ["atf 2", "atf 3", "atf 4", "atf 5", "atf 6"]:
             ordered.append(find(k))
 
-    images = [{"url": x} for x in ordered[:8] if x]
+    images = [{"url": x or ""} for x in ordered[:8]]
 
     return {
         "text": text,
@@ -412,7 +644,7 @@ def get_target_sku_from_inputs(retail_url="", cvs_rpc=""):
     Prefer the skuId in the retail URL.
     Fall back to cvs_rpc if skuId is missing.
     """
-    retail_url = str(retail_url or "")
+    retail_url = html.unescape(str(retail_url or ""))
     cvs_rpc = str(cvs_rpc or "").strip()
 
     m = re.search(r'[?&]skuId=([0-9A-Za-z_-]+)', retail_url)
@@ -2290,13 +2522,16 @@ if uploaded_file and st.session_state.processing_done and view_mode:
             with left:
                 st.markdown(f"### 🏷️ Title {score_badge(title_score)}", unsafe_allow_html=True)
                 c1, c2 = st.columns(2)
-                c1.markdown(equal_height_block(s_title or "❌ Missing"), unsafe_allow_html=True)
-                c2.markdown(equal_height_block(r_title or "❌ Missing"), unsafe_allow_html=True)
+                
+                c1.markdown(equal_height_block(s_title or "❌ Missing", min_height=110), unsafe_allow_html=True)
+                c2.markdown(equal_height_block(r_title or "❌ Missing", min_height=110), unsafe_allow_html=True)
 
                 st.markdown(f"### 📄 Description {score_badge(desc_score)}", unsafe_allow_html=True)
                 c1, c2 = st.columns(2)
-                c1.markdown(equal_height_block(s_desc or "❌ Missing"), unsafe_allow_html=True)
-                c2.markdown(equal_height_block(r_desc or "❌ Missing"), unsafe_allow_html=True)
+                
+                c1.markdown(equal_height_block(s_desc or "❌ Missing", min_height=260), unsafe_allow_html=True)
+                c2.markdown(equal_height_block(r_desc or "❌ Missing", min_height=260), unsafe_allow_html=True)
+
 
                 st.caption(
                     f"CVS extraction paths → Title: {debug_data.get('Title Path', '')} | "
@@ -2312,33 +2547,23 @@ if uploaded_file and st.session_state.processing_done and view_mode:
                     score = keyword_score(s_val, r_val)
 
                     c1, c2 = st.columns(2)
-                    c1.markdown(equal_feature_block(s_val or "❌ Missing"), unsafe_allow_html=True)
-                    c2.markdown(equal_feature_block(r_val or "❌ Missing"), unsafe_allow_html=True)
+                    c1.markdown(equal_feature_block(s_val or "❌ Missing", min_height=95), unsafe_allow_html=True)
+                    c2.markdown(equal_feature_block(r_val or "❌ Missing", min_height=95), unsafe_allow_html=True)
                     st.markdown(score_badge(score), unsafe_allow_html=True)
                     st.divider()
 
             with right:
                 st.markdown(f"### 🖼️ Images — Avg {score_badge(avg_img_score)}", unsafe_allow_html=True)
                 st.markdown(score_bar(avg_img_score), unsafe_allow_html=True)
-
-                for i in range(max_images):
-                    col1, col2, col3 = st.columns([3, 3, 1])
-
-                    s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else None
-                    r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else None
-
-                    if s_url:
-                        col1.image(s_url)
-                    else:
-                        col1.write("❌ Missing")
-
-                    if r_url:
-                        col2.image(r_url)
-                    else:
-                        col2.write("❌ Missing")
-
-                    sc = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
-                    col3.markdown(score_badge(sc), unsafe_allow_html=True)
+            
+                image_panel_html = build_image_panel_html(
+                    s_images=s_images,
+                    r_images=r_images,
+                    max_images=max_images,
+                    box_height=170,
+                    panel_height=1250,
+                )
+                st.markdown(image_panel_html, unsafe_allow_html=True)
 
             st.caption(
                 f"Title: {title_score}% | "
