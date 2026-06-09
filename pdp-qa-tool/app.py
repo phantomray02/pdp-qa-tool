@@ -2289,7 +2289,7 @@ if uploaded_file and st.session_state.processing_done and view_mode:
             if hide_good and overall_score >= 80:
                 continue
 
-            zoom = st.session_state.get("viewer_zoom", 100)
+        zoom = st.session_state.get("viewer_zoom", 100)
 
             text_font_px = max(12, int(14 * (zoom / 100)))
             desc_min_height = int(180 * (zoom / 100))
