@@ -292,14 +292,6 @@ def get_salsify_bundle(url):
     html_text = get_html(url)
     return _parse_salsify_page(html_text)
 
-
-def get_salsify_text(url):
-    return get_salsify_bundle(url)["text"]
-
-
-def get_salsify_images(url):
-    return get_salsify_bundle(url)["images"]
-
 # =========================================
 # CVS PARSERS
 # =========================================
@@ -352,11 +344,6 @@ def clean_cvs_text(text):
     text = re.sub(r"\s+", " ", text).strip()
 
     return text
-
-
-# Compatibility alias in case any old references still exist.
-def clean_cvs_text_refined(text):
-    return clean_cvs_text(text)
 
 
 def get_nextjs_chunks(html_text):
@@ -428,21 +415,13 @@ def looks_like_next_newline_key(source, idx):
 
     return bool(
         re.match(
-            r'(?:\n)([0-9A-Za-z]{1,3}):(?=[\[{"]|T[0-9A-Za-z]+,|null|true|false|\d)',
+            r'(?:\n)([0-9A-Za-z]{1,3}):(?=[\[{\"]|T[0-9A-Za-z]+,|null|true|false|\d)',
             source[idx:],
         )
     )
 
 
 def extract_newline_anchored_value_block(source, key):
-    """
-    Find:
-    \n34:
-    and keep going until the next newline-anchored key such as:
-    \n32:{
-    \n27:
-    \n15:[
-    """
     m = find_newline_anchored_key(source, key, for_array=False)
     if not m:
         return ""
@@ -508,24 +487,13 @@ def extract_newline_anchored_value_block(source, key):
         i += 1
 
     block = source[start:i].strip()
-
-    # Extra trimming if a later key bled into the block.
     block = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:\{.*$', "", block, flags=re.DOTALL)
     block = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:\[.*$', "", block, flags=re.DOTALL)
     block = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:$', "", block, flags=re.DOTALL)
-
     return block.strip()
 
 
 def merge_feature_continuations(items):
-    """
-    Merge short continuation fragments back into the previous feature bullet.
-    Examples:
-      "WHAT’S INCLUDED — ... light absorbency"
-      "packaging and product may vary"
-    becomes:
-      "WHAT’S INCLUDED — ... light absorbency; packaging and product may vary"
-    """
     merged = []
 
     continuation_patterns = [
@@ -574,10 +542,6 @@ def normalize_cvs_features(items):
 
 
 def split_feature_blob_preserve_semicolons(text):
-    """
-    Split only on actual feature delimiters.
-    Never split on semicolons because semicolons appear inside valid bullets.
-    """
     text = clean_cvs_text(text)
     if not text:
         return []
@@ -614,7 +578,6 @@ def parse_jsonish_array_text(array_text):
     inner = array_text[1:-1] if array_text.startswith("[") and array_text.endswith("]") else array_text
     inner = clean_cvs_text(inner)
 
-    # Fallback: split quoted items, then split only on strong bullet delimiters.
     parts = re.split(r'"\s*,\s*"', inner)
 
     cleaned = []
@@ -627,22 +590,10 @@ def parse_jsonish_array_text(array_text):
 
 
 def find_last_rpc_image_anchor_region(source, target_rpc="", before=1600, after=12000):
-    """
-    Top requirement:
-    Find the LAST image URL in the source that contains the exact CVS RPC,
-    then use the copy immediately after that anchor as the first-choice region.
-
-    Return only the single last region, not all regions, to reduce work.
-    """
     if not source or not target_rpc:
         return None
 
     rpc = re.escape(str(target_rpc))
-
-    # Match exact RPC image references like:
-    # /as/330111_8.jpg
-    # /high_res/330111_8.jpg
-    # /330111_8.jpg
     pattern = rf'[^"\s]*?/{rpc}(?:_[0-9]+)?\.jpg'
 
     last_match = None
@@ -666,9 +617,6 @@ def find_last_rpc_image_anchor_region(source, target_rpc="", before=1600, after=
 
 
 def extract_candidate_variant_windows(source, context_before=4500, context_after=22000):
-    """
-    Fallback candidate windows around vendorContent.vendorDetails.
-    """
     windows = []
 
     pattern = r'"vendorContent"\s*:\s*\{\s*"vendorDetails"\s*:\s*\{'
@@ -798,24 +746,14 @@ def get_sorted_variant_windows(source, target_rpc="", retail_url=""):
 
 
 def parse_vendor_details_from_block(local_block, working_source, debug):
-    """
-    Parse vendor details from a chosen local block, but always resolve any $refs
-    against the full working_source.
-    """
     if not local_block:
         return {"features": [], "description": "", "debug": debug}
 
     local_debug = debug.copy()
-    local_debug["directVendorContentFound"] = True
-    local_debug["directVendorDetailsFound"] = True
-    local_debug["directVendorContentExcerpt"] = normalize_space(local_block[:2500])
 
     features = []
     description = ""
 
-    # -------------------------
-    # BULLETS
-    # -------------------------
     bullets_ref_match = re.search(
         r'"vendorDetailsBullets"\s*:\s*"(\$[0-9A-Za-z]{1,3})"',
         local_block,
@@ -836,7 +774,6 @@ def parse_vendor_details_from_block(local_block, working_source, debug):
         ref_token = bullets_ref_match.group(1)
         ref_key = ref_token.replace("$", "")
 
-        local_debug["vendorPatternFound"] = True
         local_debug["vendorDetailsBulletsRef"] = ref_token
         local_debug["featuresKey"] = ref_key
 
@@ -845,17 +782,12 @@ def parse_vendor_details_from_block(local_block, working_source, debug):
             array_start = features_marker.end() - 1
             array_text = extract_balanced_bracket_block(working_source, array_start)
             local_debug["featuresArrayFound"] = bool(array_text)
-            local_debug["featuresArrayExcerpt"] = normalize_space(array_text)[:2000]
             features = parse_jsonish_array_text(array_text)
 
     elif bullets_array_text:
         local_debug["featuresArrayFound"] = True
-        local_debug["featuresArrayExcerpt"] = normalize_space(bullets_array_text)[:2000]
         features = parse_jsonish_array_text(bullets_array_text)
 
-    # -------------------------
-    # DESCRIPTION
-    # -------------------------
     paragraph_ref_match = re.search(
         r'"vendorDetailsParagraph"\s*:\s*"(\$[0-9A-Za-z]{1,3})"',
         local_block,
@@ -871,7 +803,6 @@ def parse_vendor_details_from_block(local_block, working_source, debug):
         ref_token = paragraph_ref_match.group(1)
         ref_key = ref_token.replace("$", "")
 
-        local_debug["vendorPatternFound"] = True
         local_debug["vendorDetailsParagraphRef"] = ref_token
         local_debug["descriptionKey"] = ref_key
 
@@ -879,7 +810,6 @@ def parse_vendor_details_from_block(local_block, working_source, debug):
         desc_block = clean_cvs_text(desc_block)
 
         local_debug["descriptionBlockFound"] = bool(desc_block)
-        local_debug["descriptionBlockExcerpt"] = normalize_space(desc_block)[:2000]
         description = desc_block
 
     elif paragraph_direct_match:
@@ -893,7 +823,6 @@ def parse_vendor_details_from_block(local_block, working_source, debug):
 
             description = clean_cvs_text(description)
             local_debug["descriptionBlockFound"] = bool(description)
-            local_debug["descriptionBlockExcerpt"] = normalize_space(description)[:2000]
 
     cleaned_features = normalize_cvs_features(features)
     cleaned_description = clean_cvs_text(description)
@@ -906,20 +835,13 @@ def parse_vendor_details_from_block(local_block, working_source, debug):
 
 
 def extract_vendor_copy_from_anchor_region(working_source, anchor_region, source_name="", target_rpc=""):
-    """
-    First-choice parse:
-    Use the region immediately after the LAST exact RPC image URL.
-    """
     debug = {
-        "vendorPatternFound": False,
         "vendorDetailsBulletsRef": "",
         "vendorDetailsParagraphRef": "",
         "featuresKey": "",
         "descriptionKey": "",
         "featuresArrayFound": False,
         "descriptionBlockFound": False,
-        "directVendorContentFound": False,
-        "directVendorDetailsFound": False,
         "variantWindowMatched": True,
         "variantMatchScore": 999,
         "variantMatchReason": "rpc_image_anchor_priority",
@@ -927,10 +849,6 @@ def extract_vendor_copy_from_anchor_region(working_source, anchor_region, source
         "matchedVariantUrl": "",
         "matchedNearbyImage": anchor_region.get("anchor_text", ""),
         "Source Used": source_name,
-        "vendorPatternExcerpt": "",
-        "featuresArrayExcerpt": "",
-        "descriptionBlockExcerpt": "",
-        "directVendorContentExcerpt": normalize_space(anchor_region.get("region", "")[:2500]),
     }
 
     parsed = parse_vendor_details_from_block(
@@ -944,15 +862,12 @@ def extract_vendor_copy_from_anchor_region(working_source, anchor_region, source
 
 def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retail_url=""):
     debug = {
-        "vendorPatternFound": False,
         "vendorDetailsBulletsRef": "",
         "vendorDetailsParagraphRef": "",
         "featuresKey": "",
         "descriptionKey": "",
         "featuresArrayFound": False,
         "descriptionBlockFound": False,
-        "directVendorContentFound": False,
-        "directVendorDetailsFound": False,
         "variantWindowMatched": False,
         "variantMatchScore": 0,
         "variantMatchReason": "",
@@ -960,10 +875,6 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
         "matchedVariantUrl": "",
         "matchedNearbyImage": "",
         "Source Used": source_name,
-        "vendorPatternExcerpt": "",
-        "featuresArrayExcerpt": "",
-        "descriptionBlockExcerpt": "",
-        "directVendorContentExcerpt": "",
     }
 
     if not source:
@@ -973,10 +884,6 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
     working_source = working_source.replace('\\"', '"')
     working_source = working_source.replace("\\u0026", "&")
 
-    # ---------------------------------
-    # 1) TOP REQUIREMENT:
-    #    Use only the LAST exact RPC image URL anchor first.
-    # ---------------------------------
     anchor_region = find_last_rpc_image_anchor_region(
         working_source,
         target_rpc=target_rpc,
@@ -994,9 +901,6 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
         if anchored.get("description") or anchored.get("features"):
             return anchored
 
-    # ---------------------------------
-    # 2) Fallback: try all candidate windows in score order
-    # ---------------------------------
     sorted_candidates = get_sorted_variant_windows(
         working_source,
         target_rpc=target_rpc,
@@ -1023,7 +927,6 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
         if parsed.get("description") or parsed.get("features"):
             return parsed
 
-    # Keep best candidate context in debug even if it did not yield content.
     if fallback_top_candidate:
         debug["variantWindowMatched"] = fallback_top_candidate.get("match_score", 0) > 0
         debug["variantMatchScore"] = fallback_top_candidate.get("match_score", 0)
@@ -1031,11 +934,7 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
         debug["matchedDynamicMediaUrl"] = fallback_top_candidate.get("matched_dynamic_media", "")
         debug["matchedVariantUrl"] = fallback_top_candidate.get("matched_variant_url", "")
         debug["matchedNearbyImage"] = fallback_top_candidate.get("matched_nearby_image", "")
-        debug["directVendorContentExcerpt"] = normalize_space(fallback_top_candidate.get("window", "")[:2500])
 
-    # ---------------------------------
-    # 3) Final loose whole-page fallback
-    # ---------------------------------
     features = []
     description = ""
 
@@ -1070,7 +969,6 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
         ref_token = global_bullets_ref_match.group(1)
         ref_key = ref_token.replace("$", "")
 
-        debug["vendorPatternFound"] = True
         debug["vendorDetailsBulletsRef"] = ref_token
         debug["featuresKey"] = ref_key
 
@@ -1079,19 +977,16 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
             array_start = features_marker.end() - 1
             array_text = extract_balanced_bracket_block(working_source, array_start)
             debug["featuresArrayFound"] = bool(array_text)
-            debug["featuresArrayExcerpt"] = normalize_space(array_text)[:2000]
             features = parse_jsonish_array_text(array_text)
 
     elif global_bullets_array_text:
         debug["featuresArrayFound"] = True
-        debug["featuresArrayExcerpt"] = normalize_space(global_bullets_array_text)[:2000]
         features = parse_jsonish_array_text(global_bullets_array_text)
 
     if global_paragraph_ref_match:
         ref_token = global_paragraph_ref_match.group(1)
         ref_key = ref_token.replace("$", "")
 
-        debug["vendorPatternFound"] = True
         debug["vendorDetailsParagraphRef"] = ref_token
         debug["descriptionKey"] = ref_key
 
@@ -1099,7 +994,6 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
         desc_block = clean_cvs_text(desc_block)
 
         debug["descriptionBlockFound"] = bool(desc_block)
-        debug["descriptionBlockExcerpt"] = normalize_space(desc_block)[:2000]
         description = desc_block
 
     elif global_paragraph_direct_match:
@@ -1113,7 +1007,6 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
 
             description = clean_cvs_text(description)
             debug["descriptionBlockFound"] = bool(description)
-            debug["descriptionBlockExcerpt"] = normalize_space(description)[:2000]
 
     cleaned_features = normalize_cvs_features(features)
     cleaned_description = clean_cvs_text(description)
@@ -1128,47 +1021,6 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
 def extract_vendor_copy_from_nextjs(html_text, target_rpc="", retail_url=""):
     raw_text = get_nextjs_chunks(html_text)
     raw_html = html.unescape(html_text or "")
-
-    debug = {
-        "rawHtmlLength": len(raw_html or ""),
-        "rawTextLength": len(raw_text or ""),
-        "nextjsChunkFound": bool(raw_text),
-        "rawHtmlHasSelfNextF": "self.__next_f.push([1," in (raw_html or ""),
-        "rawHtmlHasVendorDetailsBullets": "vendorDetailsBullets" in (raw_html or ""),
-        "rawHtmlHasVendorDetailsParagraph": "vendorDetailsParagraph" in (raw_html or ""),
-        "rawTextHasVendorDetailsBullets": "vendorDetailsBullets" in (raw_text or ""),
-        "rawTextHasVendorDetailsParagraph": "vendorDetailsParagraph" in (raw_text or ""),
-        "vendorPatternFound": False,
-        "vendorDetailsBulletsRef": "",
-        "vendorDetailsParagraphRef": "",
-        "featuresKey": "",
-        "descriptionKey": "",
-        "featuresArrayFound": False,
-        "descriptionBlockFound": False,
-        "directVendorContentFound": False,
-        "directVendorDetailsFound": False,
-        "variantWindowMatched": False,
-        "variantMatchScore": 0,
-        "variantMatchReason": "",
-        "matchedDynamicMediaUrl": "",
-        "matchedVariantUrl": "",
-        "matchedNearbyImage": "",
-        "Source Used": "",
-        "vendorPatternExcerpt": "",
-        "featuresArrayExcerpt": "",
-        "descriptionBlockExcerpt": "",
-        "directVendorContentExcerpt": "",
-        "rawHtmlVendorExcerpt": "",
-        "rawTextVendorExcerpt": "",
-    }
-
-    if "vendorDetailsBullets" in raw_html:
-        idx = raw_html.find("vendorDetailsBullets")
-        debug["rawHtmlVendorExcerpt"] = normalize_space(raw_html[max(0, idx - 250): idx + 1500])[:2000]
-
-    if "vendorDetailsBullets" in raw_text:
-        idx = raw_text.find("vendorDetailsBullets")
-        debug["rawTextVendorExcerpt"] = normalize_space(raw_text[max(0, idx - 250): idx + 1500])[:2000]
 
     result = extract_vendor_copy_from_source(
         raw_text,
@@ -1185,12 +1037,10 @@ def extract_vendor_copy_from_nextjs(html_text, target_rpc="", retail_url=""):
             retail_url=retail_url,
         )
 
-    debug.update(result.get("debug", {}))
-
     return {
         "features": result.get("features", []),
         "description": result.get("description", ""),
-        "debug": debug,
+        "debug": result.get("debug", {}),
     }
 
 
@@ -1329,10 +1179,6 @@ def debug_description(desc):
 # IMAGE HASHING (FAST IMAGE COMPARE)
 # =========================================
 def get_image_dhash(url):
-    """
-    Compute a tiny difference hash directly from the downloaded image,
-    then discard the bytes immediately to reduce memory usage.
-    """
     if not url:
         return None
 
@@ -1468,6 +1314,25 @@ def process_row(row):
         avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
         overall = int((title_score + desc_score + avg_feature_score + avg_img_score) / 4)
 
+        slim_debug = {
+            "Title Path": debug_data.get("Title Path", ""),
+            "Description Path": debug_data.get("Description Path", ""),
+            "Features Path": debug_data.get("Features Path", ""),
+            "vendorDetailsBulletsRef": debug_data.get("vendorDetailsBulletsRef", ""),
+            "vendorDetailsParagraphRef": debug_data.get("vendorDetailsParagraphRef", ""),
+            "featuresKey": debug_data.get("featuresKey", ""),
+            "descriptionKey": debug_data.get("descriptionKey", ""),
+            "featuresArrayFound": debug_data.get("featuresArrayFound", False),
+            "descriptionBlockFound": debug_data.get("descriptionBlockFound", False),
+            "variantWindowMatched": debug_data.get("variantWindowMatched", False),
+            "variantMatchScore": debug_data.get("variantMatchScore", 0),
+            "variantMatchReason": debug_data.get("variantMatchReason", ""),
+            "matchedDynamicMediaUrl": debug_data.get("matchedDynamicMediaUrl", ""),
+            "matchedVariantUrl": debug_data.get("matchedVariantUrl", ""),
+            "matchedNearbyImage": debug_data.get("matchedNearbyImage", ""),
+            "Source Used": debug_data.get("Source Used", ""),
+        }
+
         return {
             "summary": {
                 "SKU": row.get("sku", ""),
@@ -1504,21 +1369,7 @@ def process_row(row):
                 "CVS Features": " | ".join(r_text.get("features", [])),
                 "Salsify Images": " | ".join([img.get("url", "") for img in s_images if isinstance(img, dict)]),
                 "CVS Images": " | ".join(r_images),
-                "Title Path": debug_data.get("Title Path", ""),
-                "Description Path": debug_data.get("Description Path", ""),
-                "Features Path": debug_data.get("Features Path", ""),
-                "vendorDetailsBulletsRef": debug_data.get("vendorDetailsBulletsRef", ""),
-                "vendorDetailsParagraphRef": debug_data.get("vendorDetailsParagraphRef", ""),
-                "featuresKey": debug_data.get("featuresKey", ""),
-                "descriptionKey": debug_data.get("descriptionKey", ""),
-                "directVendorContentFound": debug_data.get("directVendorContentFound", False),
-                "directVendorDetailsFound": debug_data.get("directVendorDetailsFound", False),
-                "variantWindowMatched": debug_data.get("variantWindowMatched", False),
-                "variantMatchScore": debug_data.get("variantMatchScore", 0),
-                "variantMatchReason": debug_data.get("variantMatchReason", ""),
-                "matchedDynamicMediaUrl": debug_data.get("matchedDynamicMediaUrl", ""),
-                "matchedVariantUrl": debug_data.get("matchedVariantUrl", ""),
-                "matchedNearbyImage": debug_data.get("matchedNearbyImage", ""),
+                **slim_debug,
             },
             "debug": {
                 "SKU": row.get("sku", ""),
@@ -1532,39 +1383,7 @@ def process_row(row):
                 "Desc Issues": ", ".join(r_desc_debug["issues"]),
                 "Salsify Desc Quality Score": s_desc_debug["quality_score"],
                 "Final Features": " | ".join(r_text.get("features", [])),
-                "Title Path": debug_data.get("Title Path", ""),
-                "Description Path": debug_data.get("Description Path", ""),
-                "Features Path": debug_data.get("Features Path", ""),
-                "vendorPatternFound": debug_data.get("vendorPatternFound", False),
-                "vendorDetailsBulletsRef": debug_data.get("vendorDetailsBulletsRef", ""),
-                "vendorDetailsParagraphRef": debug_data.get("vendorDetailsParagraphRef", ""),
-                "featuresKey": debug_data.get("featuresKey", ""),
-                "descriptionKey": debug_data.get("descriptionKey", ""),
-                "featuresArrayFound": debug_data.get("featuresArrayFound", False),
-                "descriptionBlockFound": debug_data.get("descriptionBlockFound", False),
-                "directVendorContentFound": debug_data.get("directVendorContentFound", False),
-                "directVendorDetailsFound": debug_data.get("directVendorDetailsFound", False),
-                "variantWindowMatched": debug_data.get("variantWindowMatched", False),
-                "variantMatchScore": debug_data.get("variantMatchScore", 0),
-                "variantMatchReason": debug_data.get("variantMatchReason", ""),
-                "matchedDynamicMediaUrl": debug_data.get("matchedDynamicMediaUrl", ""),
-                "matchedVariantUrl": debug_data.get("matchedVariantUrl", ""),
-                "matchedNearbyImage": debug_data.get("matchedNearbyImage", ""),
-                "Source Used": debug_data.get("Source Used", ""),
-                "vendorPatternExcerpt": debug_data.get("vendorPatternExcerpt", ""),
-                "featuresArrayExcerpt": debug_data.get("featuresArrayExcerpt", ""),
-                "descriptionBlockExcerpt": debug_data.get("descriptionBlockExcerpt", ""),
-                "directVendorContentExcerpt": debug_data.get("directVendorContentExcerpt", ""),
-                "rawHtmlLength": debug_data.get("rawHtmlLength", 0),
-                "rawTextLength": debug_data.get("rawTextLength", 0),
-                "nextjsChunkFound": debug_data.get("nextjsChunkFound", False),
-                "rawHtmlHasSelfNextF": debug_data.get("rawHtmlHasSelfNextF", False),
-                "rawHtmlHasVendorDetailsBullets": debug_data.get("rawHtmlHasVendorDetailsBullets", False),
-                "rawHtmlHasVendorDetailsParagraph": debug_data.get("rawHtmlHasVendorDetailsParagraph", False),
-                "rawTextHasVendorDetailsBullets": debug_data.get("rawTextHasVendorDetailsBullets", False),
-                "rawTextHasVendorDetailsParagraph": debug_data.get("rawTextHasVendorDetailsParagraph", False),
-                "rawHtmlVendorExcerpt": debug_data.get("rawHtmlVendorExcerpt", ""),
-                "rawTextVendorExcerpt": debug_data.get("rawTextVendorExcerpt", ""),
+                **slim_debug,
             },
         }
 
