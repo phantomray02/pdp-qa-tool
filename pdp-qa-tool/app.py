@@ -1430,32 +1430,73 @@ def extract_vendor_copy_from_nextjs(html_text, target_rpc="", retail_url=""):
 
     if "vendorDetailsBullets" in raw_html:
         idx = raw_html.find("vendorDetailsBullets")
-        debug["rawHtmlVendorExcerpt"] = normalize_space(raw_html[max(0, idx - 250): idx + 1500])[:2000]
+        debug["rawHtmlVendorExcerpt"] = normalize_space(
+            raw_html[max(0, idx - 250): idx + 1500]
+        )[:2000]
 
     if "vendorDetailsBullets" in raw_text:
         idx = raw_text.find("vendorDetailsBullets")
-        debug["rawTextVendorExcerpt"] = normalize_space(raw_text[max(0, idx - 250): idx + 1500])[:2000]
+        debug["rawTextVendorExcerpt"] = normalize_space(
+            raw_text[max(0, idx - 250): idx + 1500]
+        )[:2000]
 
-    result = extract_vendor_copy_from_source(
+    # ---------------------------------
+    # 1) Parse raw_text first
+    # ---------------------------------
+    text_result = extract_vendor_copy_from_source(
         raw_text,
         source_name="raw_text",
         target_rpc=target_rpc,
         retail_url=retail_url,
     )
 
-    if not result.get("description") and not result.get("features"):
-        result = extract_vendor_copy_from_source(
+    text_features = text_result.get("features", []) or []
+    text_description = text_result.get("description", "") or ""
+
+    # ---------------------------------
+    # 2) Only parse raw_html if raw_text is missing something important
+    # ---------------------------------
+    html_result = {"features": [], "description": "", "debug": {}}
+
+    if not text_features or not text_description:
+        html_result = extract_vendor_copy_from_source(
             raw_html,
             source_name="raw_html",
             target_rpc=target_rpc,
             retail_url=retail_url,
         )
 
-    debug.update(result.get("debug", {}))
+    html_features = html_result.get("features", []) or []
+    html_description = html_result.get("description", "") or ""
+
+    # ---------------------------------
+    # 3) Merge best available outputs
+    #    Prefer raw_text when present, but backfill from raw_html.
+    # ---------------------------------
+    final_features = text_features or html_features
+    final_description = text_description or html_description
+
+    chosen_debug = text_result.get("debug", {}) if (text_features or text_description) else {}
+    fallback_debug = html_result.get("debug", {}) if (html_features or html_description) else {}
+
+    # If raw_text had description but no features, use raw_html debug when it provided features.
+    if not text_features and html_features:
+        chosen_debug = fallback_debug.copy()
+        chosen_debug["variantMatchReason"] = (
+            str(chosen_debug.get("variantMatchReason", "")) + " | raw_html_features_fallback"
+        ).strip(" |")
+    else:
+        merged_debug = chosen_debug.copy()
+        for k, v in fallback_debug.items():
+            if not merged_debug.get(k) and v:
+                merged_debug[k] = v
+        chosen_debug = merged_debug
+
+    debug.update(chosen_debug)
 
     return {
-        "features": result.get("features", []),
-        "description": result.get("description", ""),
+        "features": final_features,
+        "description": final_description,
         "debug": debug,
     }
 
