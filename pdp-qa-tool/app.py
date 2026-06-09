@@ -394,7 +394,7 @@ def clean_cvs_feature_text(text):
 
     return text
 
-get_target_sku_from_inputs(def get_target_sku_from_inputs(retail_url="", cvs_rpc=""):
+def get_target_sku_from_inputs(retail_url="", cvs_rpc=""):
     """
     Prefer the skuId in the retail URL.
     Fall back to cvs_rpc if skuId is missing.
