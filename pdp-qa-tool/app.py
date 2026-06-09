@@ -40,7 +40,7 @@ IMAGE_TIMEOUT = 2.5
 # Keep logic the same, but reduce rerun overhead and UI churn.
 BATCH_SIZE = 10
 MAX_WORKERS = 2
-UI_UPDATE_EVERY = 2
+UI_UPDATE_EVERY = 5
 
 # Faster image compare via tiny difference hash.
 IMAGE_HASH_WIDTH = 9
@@ -54,16 +54,6 @@ IMAGE_COMPARE_CACHE_MAX = 500
 html_cache = {}
 image_hash_cache = {}
 image_compare_cache = {}
-
-# Shared HTTP session for connection reuse.
-HTTP_SESSION = requests.Session()
-HTTP_ADAPTER = requests.adapters.HTTPAdapter(
-    pool_connections=20,
-    pool_maxsize=20,
-    max_retries=0,
-)
-HTTP_SESSION.mount("http://", HTTP_ADAPTER)
-HTTP_SESSION.mount("https://", HTTP_ADAPTER)
 
 # =========================================
 # GENERIC HELPERS
@@ -185,7 +175,7 @@ def get_html(url):
         return cached
 
     try:
-        r = HTTP_SESSION.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+        r = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
         if r.status_code == 200 and r.text:
             html_cache[url] = r.text
 
@@ -589,7 +579,7 @@ def parse_jsonish_array_text(array_text):
     return normalize_cvs_features(cleaned)
 
 
-def find_last_rpc_image_anchor_region(source, target_rpc="", before=1600, after=12000):
+def find_last_rpc_image_anchor_region(source, target_rpc="", before=600, after=5000):
     if not source or not target_rpc:
         return None
 
@@ -1187,7 +1177,7 @@ def get_image_dhash(url):
         return cached
 
     try:
-        r = HTTP_SESSION.get(url, headers=HEADERS, timeout=IMAGE_TIMEOUT)
+        r = requests.get(url, headers=HEADERS, timeout=IMAGE_TIMEOUT)
         if r.status_code != 200:
             return None
         if "image" not in r.headers.get("Content-Type", ""):
@@ -1216,48 +1206,6 @@ def get_image_dhash(url):
 
     except Exception:
         return None
-
-
-def hamming_distance(a, b):
-    return bin(a ^ b).count("1")
-
-
-def compare_images_visually(s_url, r_url):
-    if not s_url or not r_url:
-        return 0
-
-    pair_key = (s_url, r_url)
-    cached = image_compare_cache.get(pair_key)
-    if cached is not None:
-        return cached
-
-    s_hash = get_image_dhash(s_url)
-    r_hash = get_image_dhash(r_url)
-
-    if s_hash is None or r_hash is None:
-        return 0
-
-    dist = hamming_distance(s_hash, r_hash)
-
-    if dist <= 2:
-        score = 100
-    elif dist <= 6:
-        score = 90
-    elif dist <= 10:
-        score = 75
-    elif dist <= 16:
-        score = 60
-    elif dist <= 22:
-        score = 45
-    else:
-        score = 25
-
-    image_compare_cache[pair_key] = score
-    while len(image_compare_cache) > IMAGE_COMPARE_CACHE_MAX:
-        image_compare_cache.pop(next(iter(image_compare_cache)))
-
-    return score
-
 # =========================================
 # PROCESS ROW
 # =========================================
@@ -1532,7 +1480,6 @@ if uploaded_file:
 
             if start + BATCH_SIZE < len(df):
                 st.session_state.start_idx += BATCH_SIZE
-                time.sleep(0.05)
                 st.rerun()
             else:
                 st.session_state.processing_done = True
