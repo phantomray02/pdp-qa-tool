@@ -19,6 +19,9 @@ from PIL import Image
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
 from pandas.errors import EmptyDataError
+import threading
+from requests.adapters import HTTPAdapt
+
 
 # =========================================
 # APP SETUP
@@ -39,8 +42,8 @@ MAX_CACHE = 400
 # =========================================
 # PERFORMANCE SETTINGS
 # =========================================
-BATCH_SIZE = 6
-MAX_WORKERS = 1
+BATCH_SIZE = 12
+MAX_WORKERS = 4
 UI_UPDATE_EVERY = 1
 
 # Faster image compare via tiny difference hash.
@@ -54,6 +57,22 @@ IMAGE_HASH_CACHE_MAX = 300
 html_cache = {}
 image_hash_cache = {}
 
+thread_local = threading.local()
+
+def get_session():
+    if not hasattr(thread_local, "session"):
+        session = requests.Session()
+        adapter = HTTPAdapter(
+            pool_connections=20,
+            pool_maxsize=20,
+            max_retries=0,
+        )
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        session.headers.update(HEADERS)
+        thread_local.session = session
+    return thread_local.session
+    
 # =========================================
 # GENERIC HELPERS
 # =========================================
@@ -172,7 +191,8 @@ def get_html(url):
         return html_cache[url]
 
     try:
-        r = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+        session = get_session()
+        r = session.get(url, timeout=REQUEST_TIMEOUT)
         if r.status_code == 200 and r.text:
             html_cache[url] = r.text
 
@@ -184,6 +204,7 @@ def get_html(url):
         pass
 
     return ""
+    
 # =========================================
 # SALSIFY PARSERS
 # =========================================
@@ -1585,7 +1606,8 @@ def get_image_dhash(url):
         return image_hash_cache[url]
 
     try:
-        r = requests.get(url, headers=HEADERS, timeout=IMAGE_TIMEOUT)
+        session = get_session()
+        r = session.get(url, timeout=IMAGE_TIMEOUT)
         if r.status_code != 200:
             return None
         if "image" not in r.headers.get("Content-Type", ""):
@@ -1658,14 +1680,19 @@ def process_row(row):
             cvs_rpc=cvs_rpc,
         )
         
-        s_bundle = get_salsify_bundle(salsify_url)
-        s_text = s_bundle["text"]
-        s_images = s_bundle["images"]
-
-        r_bundle = get_cvs_bundle(retail_url, target_rpc=target_sku)
-        r_text = r_bundle["text"] or {}
-        r_images = r_bundle["images"]
-
+        with ThreadPoolExecutor(max_workers=2) as row_executor:
+                    s_future = row_executor.submit(get_salsify_bundle, salsify_url)
+                    r_future = row_executor.submit(get_cvs_bundle, retail_url, target_sku)
+        
+                    s_bundle = s_future.result()
+                    r_bundle = r_future.result()
+        
+                s_text = s_bundle["text"]
+                s_images = s_bundle["images"]
+        
+                r_text = r_bundle["text"] or {}
+                r_images = r_bundle["images"]
+        
         debug_data = r_text.get("debug", {})
 
         r_text["description"] = clean_cvs_text(r_text.get("description", ""))
