@@ -220,6 +220,26 @@ def image_slot_block_html(slot_num, s_url, r_url, score, box_height=170):
 </div>
 </div>"""
 
+def build_image_panel_html(s_images, r_images, max_images, box_height=170):
+    blocks = []
+
+    for i in range(max_images):
+        s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else ""
+        r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else ""
+        score = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
+
+        blocks.append(
+            image_slot_block_html(
+                slot_num=i + 1,
+                s_url=s_url,
+                r_url=r_url,
+                score=score,
+                box_height=box_height,
+            )
+        )
+
+    return f"""<div style="padding-right:4px;">{''.join(blocks)}</div>"""
+    
 
 def build_image_panel_html(s_images, r_images, max_images, box_height=170):
     blocks = []
@@ -240,22 +260,6 @@ def build_image_panel_html(s_images, r_images, max_images, box_height=170):
         )
 
     return f"""<div style="padding-right:4px;">{''.join(blocks)}</div>
-    
-def read_uploaded_csv_from_bytes(file_bytes):
-    if not file_bytes:
-        raise EmptyDataError("Uploaded file is empty.")
-    if len(file_bytes.strip()) == 0:
-        raise EmptyDataError("Uploaded file is empty.")
-
-    last_error = None
-    for encoding in ["utf-8-sig", "utf-8", "latin1"]:
-        try:
-            return pd.read_csv(BytesIO(file_bytes), encoding=encoding)
-        except Exception as e:
-            last_error = e
-
-    raise last_error if last_error else EmptyDataError("Could not parse uploaded CSV.")
-
 
 def prepare_input_df(df):
     df = df.copy()
