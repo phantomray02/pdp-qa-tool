@@ -287,7 +287,6 @@ def get_salsify_images(url):
     return get_salsify_bundle(url)["images"]
 
 # =========================================
-# =========================================
 # CVS PARSERS
 # =========================================
 def clean_cvs_text(text):
@@ -340,7 +339,20 @@ def clean_cvs_text(text):
 
     return text
 
+def get_target_sku_from_inputs(retail_url="", cvs_rpc=""):
+    """
+    Prefer the skuId in the retail URL.
+    Fall back to cvs_rpc if skuId is missing.
+    """
+    retail_url = str(retail_url or "")
+    cvs_rpc = str(cvs_rpc or "").strip()
 
+    m = re.search(r'[?&]skuId=([0-9A-Za-z_-]+)', retail_url)
+    if m:
+        return m.group(1).strip()
+
+    return cvs_rpc
+    
 # Compatibility alias in case any old references still exist.
 def clean_cvs_text_refined(text):
     return clean_cvs_text(text)
@@ -907,8 +919,11 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
     working_source = working_source.replace("\\u0026", "&")
 
     # ---------------------------------
-    # 1) Try all candidate windows in score order
+    # 1) Parse best matched variant window
     # ---------------------------------
+    variant_features = []
+    variant_description = ""
+
     sorted_candidates = get_sorted_variant_windows(
         working_source,
         target_rpc=target_rpc,
@@ -933,10 +948,12 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
         )
 
         if parsed.get("description") or parsed.get("features"):
-            return parsed
+            debug = parsed.get("debug", candidate_debug)
+            variant_features = parsed.get("features", []) or []
+            variant_description = parsed.get("description", "") or ""
+            break
 
-    # Keep best candidate context in debug even if it did not yield content.
-    if fallback_top_candidate:
+    if fallback_top_candidate and not debug.get("variantWindowMatched"):
         debug["variantWindowMatched"] = fallback_top_candidate.get("match_score", 0) > 0
         debug["variantMatchScore"] = fallback_top_candidate.get("match_score", 0)
         debug["variantMatchReason"] = " | ".join(fallback_top_candidate.get("match_reason", []))
@@ -946,10 +963,10 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
         debug["directVendorContentExcerpt"] = normalize_space(fallback_top_candidate.get("window", "")[:2500])
 
     # ---------------------------------
-    # 2) Looser whole-page fallback
+    # 2) Parse shared/global family copy
     # ---------------------------------
-    features = []
-    description = ""
+    shared_features = []
+    shared_description = ""
 
     global_bullets_ref_match = re.search(
         r'"vendorDetailsBullets"\s*:\s*"(\$[0-9A-Za-z]{1,3})"',
@@ -992,12 +1009,12 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
             array_text = extract_balanced_bracket_block(working_source, array_start)
             debug["featuresArrayFound"] = bool(array_text)
             debug["featuresArrayExcerpt"] = normalize_space(array_text)[:2000]
-            features = parse_jsonish_array_text(array_text)
+            shared_features = parse_jsonish_array_text(array_text)
 
     elif global_bullets_array_text:
         debug["featuresArrayFound"] = True
         debug["featuresArrayExcerpt"] = normalize_space(global_bullets_array_text)[:2000]
-        features = parse_jsonish_array_text(global_bullets_array_text)
+        shared_features = parse_jsonish_array_text(global_bullets_array_text)
 
     if global_paragraph_ref_match:
         ref_token = global_paragraph_ref_match.group(1)
@@ -1012,30 +1029,48 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
 
         debug["descriptionBlockFound"] = bool(desc_block)
         debug["descriptionBlockExcerpt"] = normalize_space(desc_block)[:2000]
-        description = desc_block
+        shared_description = desc_block
 
     elif global_paragraph_direct_match:
         raw_para = global_paragraph_direct_match.group(1)
 
         if not re.fullmatch(r'\$[0-9A-Za-z]{1,3}', raw_para or ""):
             try:
-                description = json.loads(f'"{raw_para}"')
+                shared_description = json.loads(f'"{raw_para}"')
             except Exception:
-                description = raw_para
+                shared_description = raw_para
 
-            description = clean_cvs_text(description)
-            debug["descriptionBlockFound"] = bool(description)
-            debug["descriptionBlockExcerpt"] = normalize_space(description)[:2000]
+            shared_description = clean_cvs_text(shared_description)
+            debug["descriptionBlockFound"] = bool(shared_description)
+            debug["descriptionBlockExcerpt"] = normalize_space(shared_description)[:2000]
 
-    cleaned_features = normalize_cvs_features(features)
-    cleaned_description = clean_cvs_text(description)
+    # ---------------------------------
+    # 3) Merge rule:
+    #    bullet 1 from variant
+    #    bullets 2-5 from shared
+    #    description from shared
+    # ---------------------------------
+    final_description = shared_description or variant_description
+
+    final_features = []
+
+    # Bullet 1
+    if variant_features and len(variant_features) >= 1:
+        final_features.append(variant_features[0])
+    elif shared_features and len(shared_features) >= 1:
+        final_features.append(shared_features[0])
+
+    # Bullets 2-5 from shared
+    if shared_features:
+        final_features.extend(shared_features[1:5])
+
+    final_features = normalize_cvs_features(final_features)
 
     return {
-        "features": cleaned_features,
-        "description": cleaned_description,
+        "features": final_features,
+        "description": clean_cvs_text(final_description),
         "debug": debug,
     }
-
 
 def extract_vendor_copy_from_nextjs(html_text, target_rpc="", retail_url=""):
     raw_text = get_nextjs_chunks(html_text)
@@ -1320,12 +1355,16 @@ def process_row(row):
         retail_url = row.get("retail_url", "")
         salsify_url = row.get("salsify_url", "")
         cvs_rpc = row.get("cvs_rpc") or row.get("CVS RPC") or ""
-
+        target_sku = get_target_sku_from_inputs(
+            retail_url=row.get("retail_url", ""),
+            cvs_rpc=cvs_rpc,
+        )
+        
         s_bundle = get_salsify_bundle(salsify_url)
         s_text = s_bundle["text"]
         s_images = s_bundle["images"]
 
-        r_bundle = get_cvs_bundle(retail_url, target_rpc=cvs_rpc)
+        r_bundle = get_cvs_bundle(retail_url, target_rpc=target_sku)
         r_text = r_bundle["text"] or {}
         r_images = r_bundle["images"]
 
@@ -1707,7 +1746,12 @@ if uploaded_file and st.session_state.processing_done and view_mode:
             s_images = s_bundle["images"]
 
             current_rpc = row.get("cvs_rpc") or row.get("CVS RPC") or ""
-            r_bundle = get_cvs_bundle(retail_url, target_rpc=current_rpc)
+            current_target_sku = get_target_sku_from_inputs(
+                retail_url=retail_url,
+                cvs_rpc=current_rpc,
+            )
+            r_bundle = get_cvs_bundle(retail_url, target_rpc=current_target_sku)
+
             r_text = r_bundle["text"] or {}
             r_images = r_bundle["images"]
 
