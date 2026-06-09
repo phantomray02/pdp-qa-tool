@@ -103,22 +103,13 @@ def dedupe_preserve_order(items):
 def keyword_score(a, b):
     return int(SequenceMatcher(None, normalize_text(a), normalize_text(b)).ratio() * 100)
 
-
-def equal_height_block(text):
-    return f"<div style='min-height:180px; display:flex; align-items:flex-start;'>{text}</div>"
-
-
-def equal_feature_block(text):
-    return f"<div style='min-height:70px; display:flex; align-items:flex-start;'>{text}</div>"
-
-
+equal_height_block
 def score_badge(score):
     if score >= 80:
         return f"✅ <span style='color:#4CAF50; font-weight:700'>{score}% (Strong)</span>"
     if score >= 50:
         return f"🟡 <span style='color:#FFC107; font-weight:700'>{score}% (Review)</span>"
     return f"🔴 <span style='color:#F44336; font-weight:700'>{score}% (Poor)</span>"
-
 
 def score_bar(score):
     if score >= 80:
@@ -132,7 +123,6 @@ def score_bar(score):
         f"<div style='background-color:{color}; padding:6px 10px; border-radius:6px; "
         f"color:white; font-weight:600; margin-top:6px; margin-bottom:6px;'>Score: {score}%</div>"
     )
-
 
 def read_uploaded_csv_from_bytes(file_bytes):
     if not file_bytes:
@@ -219,7 +209,7 @@ def _parse_salsify_page(html_text):
             "feature4": "",
             "feature5": "",
         },
-        "images": [],
+        "images": [{"url": ""} for _ in range(8)],
     }
 
     if not html_text:
@@ -273,26 +263,41 @@ def _parse_salsify_page(html_text):
         for k, v in asset_map.items():
             if keyword in k:
                 return v
-        return None
+        return ""
 
-    ordered = [find("online"), find("back"), find("left")]
+    # IMPORTANT:
+    # Keep the first 3 image slots fixed.
+    # If online/back/left are missing, do NOT collapse later images upward.
+    slot_1 = find("online")
+    slot_2 = find("back")
+    slot_3 = find("left")
+
     atf_io = find("atf io")
+    atf_2 = find("atf 2")
+    atf_3 = find("atf 3")
+    atf_4 = find("atf 4")
+    atf_5 = find("atf 5")
+    atf_6 = find("atf 6")
 
-    if atf_io:
-        ordered.append(atf_io)
-        for k in ["atf 2", "atf 3", "atf 4", "atf 5", "atf 6"]:
-            ordered.append(find(k))
-    else:
-        for k in ["atf 2", "atf 3", "atf 4", "atf 5", "atf 6"]:
-            ordered.append(find(k))
+    ordered = [
+        slot_1,   # slot 1
+        slot_2,   # slot 2
+        slot_3,   # slot 3
+        atf_io,   # slot 4
+        atf_2,    # slot 5
+        atf_3,    # slot 6
+        atf_4,    # slot 7
+        atf_5,    # slot 8
+    ]
 
-    images = [{"url": x} for x in ordered[:8] if x]
+    # If you want atf_6 later, you can extend max slot count, but keep 8 for now.
+    # Most important: DO NOT FILTER OUT BLANKS.
+    images = [{"url": x or ""} for x in ordered[:8]]
 
     return {
         "text": text,
         "images": images,
     }
-
 
 @st.cache_data(show_spinner=False)
 def get_salsify_bundle(url):
@@ -2023,6 +2028,16 @@ view_mode = st.checkbox(
 show_only_issues = st.checkbox("❌ Show ONLY Issues", key="show_issues")
 hide_good = st.checkbox("✅ Hide Strong Matches (80%+)", key="hide_good")
 
+# Easy viewer zoom:
+viewer_zoom = st.slider(
+    "🔍 Viewer Zoom",
+    min_value=70,
+    max_value=140,
+    value=100,
+    step=5,
+    key="viewer_zoom",
+    help="Zoom copy blocks and image display size together for each item.",
+)
 # =========================================
 # FILE + PROCESSING
 # =========================================
@@ -2274,71 +2289,108 @@ if uploaded_file and st.session_state.processing_done and view_mode:
             if hide_good and overall_score >= 80:
                 continue
 
-            st.subheader(f"SKU: {sku} | CVS RPC: {cvs_rpc}")
+zoom = st.session_state.get("viewer_zoom", 100)
 
-            left, right = st.columns([2, 1])
+            text_font_px = max(12, int(14 * (zoom / 100)))
+            desc_min_height = int(180 * (zoom / 100))
+            feature_min_height = int(70 * (zoom / 100))
+            image_width = int(170 * (zoom / 100))
 
-            with left:
-                st.markdown(f"### 🏷️ Title {score_badge(title_score)}", unsafe_allow_html=True)
-                c1, c2 = st.columns(2)
-                c1.markdown(equal_height_block(s_title or "❌ Missing"), unsafe_allow_html=True)
-                c2.markdown(equal_height_block(r_title or "❌ Missing"), unsafe_allow_html=True)
-
-                st.markdown(f"### 📄 Description {score_badge(desc_score)}", unsafe_allow_html=True)
-                c1, c2 = st.columns(2)
-                c1.markdown(equal_height_block(s_desc or "❌ Missing"), unsafe_allow_html=True)
-                c2.markdown(equal_height_block(r_desc or "❌ Missing"), unsafe_allow_html=True)
-
+            with st.container(border=True):
+                st.subheader(f"SKU: {sku} | CVS RPC: {cvs_rpc}")
                 st.caption(
-                    f"CVS extraction paths → Title: {debug_data.get('Title Path', '')} | "
-                    f"Description: {debug_data.get('Description Path', '')} | "
-                    f"Features: {debug_data.get('Features Path', '')}"
+                    f"Title: {title_score}% | "
+                    f"Desc: {desc_score}% | "
+                    f"Feat: {avg_feature_score}% | "
+                    f"Img: {avg_img_score}% | "
+                    f"Overall: {overall_score}%"
                 )
 
-                st.markdown(f"### 📌 Features {score_badge(avg_feature_score)}", unsafe_allow_html=True)
+                main_left, main_right = st.columns([1.8, 1.2], gap="large")
 
-                for i in range(max_features):
-                    s_val = s_text.get(feature_fields[i], "") if i < len(feature_fields) else ""
-                    r_val = cvs_features[i] if i < len(cvs_features) else ""
-                    score = keyword_score(s_val, r_val)
+                with main_left:
+                    st.markdown(f"### 🏷️ Title {score_badge(title_score)}", unsafe_allow_html=True)
+                    t1, t2 = st.columns(2)
+                    t1.markdown(
+                        equal_height_block(s_title, min_height=int(90 * (zoom / 100)), font_px=text_font_px),
+                        unsafe_allow_html=True,
+                    )
+                    t2.markdown(
+                        equal_height_block(r_title, min_height=int(90 * (zoom / 100)), font_px=text_font_px),
+                        unsafe_allow_html=True,
+                    )
 
-                    c1, c2 = st.columns(2)
-                    c1.markdown(equal_feature_block(s_val or "❌ Missing"), unsafe_allow_html=True)
-                    c2.markdown(equal_feature_block(r_val or "❌ Missing"), unsafe_allow_html=True)
-                    st.markdown(score_badge(score), unsafe_allow_html=True)
-                    st.divider()
+                    st.markdown(f"### 📄 Description {score_badge(desc_score)}", unsafe_allow_html=True)
+                    d1, d2 = st.columns(2)
+                    d1.markdown(
+                        equal_height_block(s_desc, min_height=desc_min_height, font_px=text_font_px),
+                        unsafe_allow_html=True,
+                    )
+                    d2.markdown(
+                        equal_height_block(r_desc, min_height=desc_min_height, font_px=text_font_px),
+                        unsafe_allow_html=True,
+                    )
 
-            with right:
-                st.markdown(f"### 🖼️ Images — Avg {score_badge(avg_img_score)}", unsafe_allow_html=True)
-                st.markdown(score_bar(avg_img_score), unsafe_allow_html=True)
+                    st.caption(
+                        f"CVS extraction paths → Title: {debug_data.get('Title Path', '')} | "
+                        f"Description: {debug_data.get('Description Path', '')} | "
+                        f"Features: {debug_data.get('Features Path', '')}"
+                    )
 
-                for i in range(max_images):
-                    col1, col2, col3 = st.columns([3, 3, 1])
+                    st.markdown(f"### 📌 Features {score_badge(avg_feature_score)}", unsafe_allow_html=True)
 
-                    s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else None
-                    r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else None
+                    for i in range(max_features):
+                        s_val = s_text.get(feature_fields[i], "") if i < len(feature_fields) else ""
+                        r_val = cvs_features[i] if i < len(cvs_features) else ""
+                        score = keyword_score(s_val, r_val)
 
-                    if s_url:
-                        col1.image(s_url)
-                    else:
-                        col1.write("❌ Missing")
+                        f1, f2 = st.columns(2)
+                        f1.markdown(
+                            equal_feature_block(s_val, min_height=feature_min_height, font_px=text_font_px),
+                            unsafe_allow_html=True,
+                        )
+                        f2.markdown(
+                            equal_feature_block(r_val, min_height=feature_min_height, font_px=text_font_px),
+                            unsafe_allow_html=True,
+                        )
+                        st.markdown(score_badge(score), unsafe_allow_html=True)
+                        st.divider()
 
-                    if r_url:
-                        col2.image(r_url)
-                    else:
-                        col2.write("❌ Missing")
+                with main_right:
+                    st.markdown(f"### 🖼️ Images — Avg {score_badge(avg_img_score)}", unsafe_allow_html=True)
+                    st.markdown(score_bar(avg_img_score), unsafe_allow_html=True)
 
-                    sc = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
-                    col3.markdown(score_badge(sc), unsafe_allow_html=True)
+                    # Lock image review with the item by showing all item images in a grid.
+                    image_rows = max_images
+                    for i in range(image_rows):
+                        slot_s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else ""
+                        slot_r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else ""
+                        slot_score = compare_images_visually(slot_s_url, slot_r_url) if (slot_s_url and slot_r_url) else 0
 
-            st.caption(
-                f"Title: {title_score}% | "
-                f"Desc: {desc_score}% | "
-                f"Feat: {avg_feature_score}% | "
-                f"Img: {avg_img_score}% | "
-                f"Overall: {overall_score}%"
-            )
-            st.divider()
+                        st.markdown(f"**Image Slot {i + 1}** — {score_badge(slot_score)}", unsafe_allow_html=True)
+                        img_left, img_right = st.columns(2)
+
+                        with img_left:
+                            st.caption("Salsify")
+                            if slot_s_url:
+                                st.image(slot_s_url, width=image_width)
+                            else:
+                                st.markdown(
+                                    equal_feature_block("❌ Missing", min_height=int(90 * (zoom / 100)), font_px=text_font_px),
+                                    unsafe_allow_html=True,
+                                )
+
+                        with img_right:
+                            st.caption("CVS")
+                            if slot_r_url:
+                                st.image(slot_r_url, width=image_width)
+                            else:
+                                st.markdown(
+                                    equal_feature_block("❌ Missing", min_height=int(90 * (zoom / 100)), font_px=text_font_px),
+                                    unsafe_allow_html=True,
+                                )
+
+                        st.divider()
 
     except Exception as e:
         st.error("🔥 CRITICAL APP ERROR")
