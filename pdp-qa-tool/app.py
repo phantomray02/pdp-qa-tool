@@ -75,6 +75,7 @@ def get_session():
         thread_local.session = session
     return thread_local.session
     
+
 # =========================================
 # GENERIC HELPERS
 # =========================================
@@ -125,8 +126,7 @@ def html_escape_text(text):
 
 def equal_height_block(text, min_height=220):
     safe_text = html_escape_text(text or "❌ Missing")
-    return f"""
-    <div style="
+    return f'''    <div style="
         height:{min_height}px;
         overflow-y:auto;
         padding:10px 12px;
@@ -140,13 +140,12 @@ def equal_height_block(text, min_height=220):
     ">
         {safe_text}
     </div>
-    """
+    '''
 
 
 def equal_feature_block(text, min_height=85):
     safe_text = html_escape_text(text or "❌ Missing")
-    return f"""
-    <div style="
+    return f'''    <div style="
         height:{min_height}px;
         overflow-y:auto;
         padding:8px 10px;
@@ -160,7 +159,7 @@ def equal_feature_block(text, min_height=85):
     ">
         {safe_text}
     </div>
-    """
+    '''
 
 
 def score_badge(score):
@@ -187,21 +186,22 @@ def score_bar(score):
 
 def image_tile_html(label, url, box_height=170):
     safe_label = html.escape(label)
+
     if url:
         safe_url = html.escape(url, quote=True)
-        return f"""<div style="border:1px solid #E0E0E0;border-radius:8px;background:#FFFFFF;padding:8px;">
+        return f'''<div style="border:1px solid #E0E0E0;border-radius:8px;background:#FFFFFF;padding:8px;">
 <div style="font-size:12px;font-weight:600;margin-bottom:6px;">{safe_label}</div>
 <div style="height:{box_height}px;display:flex;align-items:center;justify-content:center;background:#FAFAFA;border-radius:6px;overflow:hidden;">
 <img src="{safe_url}" style="max-width:100%;max-height:{box_height}px;object-fit:contain;" />
 </div>
-</div>"""
+</div>'''
     else:
-        return f"""<div style="border:1px solid #E0E0E0;border-radius:8px;background:#FFFFFF;padding:8px;">
+        return f'''<div style="border:1px solid #E0E0E0;border-radius:8px;background:#FFFFFF;padding:8px;">
 <div style="font-size:12px;font-weight:600;margin-bottom:6px;">{safe_label}</div>
 <div style="height:{box_height}px;display:flex;align-items:center;justify-content:center;background:#FAFAFA;border-radius:6px;color:#C62828;font-size:14px;font-weight:600;">
 ❌ Missing
 </div>
-</div>"""
+</div>'''
 
 
 def image_slot_block_html(slot_num, s_url, r_url, score, box_height=170):
@@ -212,13 +212,14 @@ def image_slot_block_html(slot_num, s_url, r_url, score, box_height=170):
     else:
         score_color = "#C62828"
 
-    return f"""<div style="border:1px solid #DADADA;border-radius:10px;padding:10px;margin-bottom:12px;background:#FCFCFC;">
+    return f'''<div style="border:1px solid #DADADA;border-radius:10px;padding:10px;margin-bottom:12px;background:#FCFCFC;">
 <div style="font-weight:700;margin-bottom:10px;color:{score_color};">Image Slot {slot_num} — {score}%</div>
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
 {image_tile_html("Salsify", s_url, box_height=box_height)}
 {image_tile_html("CVS", r_url, box_height=box_height)}
 </div>
-</div>"""
+</div>'''
+
 
 def build_image_panel_html(s_images, r_images, max_images, box_height=170):
     blocks = []
@@ -238,28 +239,24 @@ def build_image_panel_html(s_images, r_images, max_images, box_height=170):
             )
         )
 
-    return f"""<div style="padding-right:4px;">{''.join(blocks)}</div>"""
-    
+    return f'''<div style="padding-right:4px;">{"".join(blocks)}</div>'''
 
-def build_image_panel_html(s_images, r_images, max_images, box_height=170):
-    blocks = []
 
-    for i in range(max_images):
-        s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else ""
-        r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else ""
-        score = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
+def read_uploaded_csv_from_bytes(file_bytes):
+    if not file_bytes:
+        raise EmptyDataError("Uploaded file is empty.")
+    if len(file_bytes.strip()) == 0:
+        raise EmptyDataError("Uploaded file is empty.")
 
-        blocks.append(
-            image_slot_block_html(
-                slot_num=i + 1,
-                s_url=s_url,
-                r_url=r_url,
-                score=score,
-                box_height=box_height,
-            )
-        )
+    last_error = None
+    for encoding in ["utf-8-sig", "utf-8", "latin1"]:
+        try:
+            return pd.read_csv(BytesIO(file_bytes), encoding=encoding)
+        except Exception as e:
+            last_error = e
 
-    return f"""<div style="padding-right:4px;">{''.join(blocks)}</div>
+    raise last_error if last_error else EmptyDataError("Could not parse uploaded CSV.")
+
 
 def prepare_input_df(df):
     df = df.copy()
@@ -289,7 +286,6 @@ def prepare_input_df(df):
 def clear_in_memory_caches():
     html_cache.clear()
     image_hash_cache.clear()
-
 # =========================================
 # HTML FETCH
 # =========================================
