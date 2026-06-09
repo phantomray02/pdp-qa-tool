@@ -595,7 +595,41 @@ def extract_object_block_for_key(source, key):
 
     return extract_newline_anchored_value_block(source, key)
 
+def find_direct_vendor_details_block_near_sku(source, target_rpc="", search_after=25000):
+    """
+    Fast path:
+    find a skuId anchor, then look shortly after it for a direct
+    vendorContent -> vendorDetails block and return that object.
 
+    This is specifically useful for rows like 841289 where the direct
+    nested vendorDetails block already contains the correct bullets.
+    """
+    if not source or not target_rpc:
+        return ""
+
+    source = str(source)
+    rpc = re.escape(str(target_rpc))
+
+    sku_match = re.search(rf'skuId={rpc}\b', source)
+    if not sku_match:
+        return ""
+
+    segment_start = sku_match.start()
+    segment_end = min(len(source), sku_match.start() + search_after)
+    segment = source[segment_start:segment_end]
+
+    # Look for direct nested vendorDetails after the skuId anchor.
+    m = re.search(
+        r'"vendorContent"\s*:\s*\{\s*"vendorDetails"\s*:\s*\{',
+        segment,
+        flags=re.DOTALL,
+    )
+    if not m:
+        return ""
+
+    brace_start = segment_start + m.end() - 1
+    return extract_balanced_brace_block(source, brace_start)
+    
 def extract_rpc_anchor_windows(source, target_rpc="", context_before=3500, context_after=12000):
     """
     Build candidate windows around exact SKU/image anchors.
@@ -1105,7 +1139,41 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
     working_source = html.unescape(source)
     working_source = working_source.replace('\\"', '"')
     working_source = working_source.replace("\\u0026", "&")
+    
+    # ---------------------------------
+    # 0) Direct sku-adjacent vendorDetails fast path
+    # ---------------------------------
+    direct_variant_block = find_direct_vendor_details_block_near_sku(
+        working_source,
+        target_rpc=target_rpc,
+        search_after=25000,
+    )
 
+    if direct_variant_block:
+        direct_debug = debug.copy()
+        direct_debug["variantWindowMatched"] = True
+        direct_debug["variantMatchScore"] = 1000
+        direct_debug["variantMatchReason"] = "direct_sku_vendorDetails_fastpath"
+        direct_debug["directVendorContentExcerpt"] = normalize_space(direct_variant_block[:2500])
+
+        parsed = parse_vendor_details_from_block(
+            direct_variant_block,
+            working_source,
+            direct_debug,
+        )
+
+        direct_features = parsed.get("features", []) or []
+        direct_description = parsed.get("description", "") or ""
+
+        # If we got a real bullet set here, trust it and return immediately.
+        # This is the best fit for rows like 841289.
+        if len(direct_features) >= 3:
+            parsed_debug = parsed.get("debug", direct_debug)
+            return {
+                "features": normalize_cvs_features(direct_features[:5]),
+                "description": clean_cvs_text(direct_description),
+                "debug": parsed_debug,
+            }
     # ---------------------------------
     # 1) First try RPC/image-anchor windows
     # ---------------------------------
