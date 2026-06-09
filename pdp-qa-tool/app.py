@@ -351,6 +351,7 @@ def build_image_panel_html(s_images, r_images, max_images, box_height=170, panel
         {''.join(blocks)}
     </div>
     """
+    
 def build_image_panel_html(s_images, r_images, max_images, box_height=170, panel_height=1200):
     blocks = []
 
@@ -377,8 +378,8 @@ def build_image_panel_html(s_images, r_images, max_images, box_height=170, panel
     ">
         {''.join(blocks)}
     </div>
-    """ 
-    
+    """
+
 def read_uploaded_csv_from_bytes(file_bytes):
     if not file_bytes:
         raise EmptyDataError("Uploaded file is empty.")
