@@ -915,10 +915,11 @@ def parse_vendor_details_from_block(local_block, working_source, debug):
     against the full working_source.
 
     Important:
-    - handles direct vendorDetailsBullets / vendorDetailsParagraph
-    - also handles a parent ref chain like:
+    - Handles direct vendorDetailsBullets / vendorDetailsParagraph.
+    - Handles parent ref chains like:
       "vendorDetails":"$36"
       36:{"vendorDetailsBullets":"$37","vendorDetailsParagraph":"..."}
+    - Uses iterative resolution with loop protection to avoid recursion errors.
     """
     if not local_block:
         return {"features": [], "description": "", "debug": debug}
@@ -928,24 +929,57 @@ def parse_vendor_details_from_block(local_block, working_source, debug):
     local_debug["directVendorDetailsFound"] = True
     local_debug["directVendorContentExcerpt"] = normalize_space(local_block[:2500])
 
-    # ---------------------------------
-    # 0) Resolve vendorDetails parent ref first if present
-    # ---------------------------------
-    vendor_details_ref_match = re.search(
-        r'"vendorDetails"\s*:\s*"(\$[0-9A-Za-z]{1,3})"',
-        local_block,
-        flags=re.DOTALL,
-    )
+    working_block = local_block
+    seen_vendor_detail_refs = set()
+    max_ref_hops = 6
 
-    if vendor_details_ref_match:
+    # ---------------------------------
+    # 0) Resolve vendorDetails parent ref iteratively
+    # ---------------------------------
+    for _ in range(max_ref_hops):
+        # If the current block already has bullets/paragraph, stop resolving.
+        if (
+            '"vendorDetailsBullets"' in working_block
+            or '"vendorDetailsParagraph"' in working_block
+        ):
+            break
+
+        vendor_details_ref_match = re.search(
+            r'"vendorDetails"\s*:\s*"(\$[0-9A-Za-z]{1,3})"',
+            working_block,
+            flags=re.DOTALL,
+        )
+
+        if not vendor_details_ref_match:
+            break
+
         ref_token = vendor_details_ref_match.group(1)
         ref_key = ref_token.replace("$", "")
+
+        # Loop protection.
+        if ref_key in seen_vendor_detail_refs:
+            local_debug["vendorDetailsRefLoopDetected"] = True
+            local_debug["vendorDetailsResolvedKey"] = ref_key
+            break
+
+        seen_vendor_detail_refs.add(ref_key)
+
         resolved_block = extract_object_block_for_key(working_source, ref_key)
 
-        if resolved_block:
-            local_debug["vendorDetailsRef"] = ref_token
+        # Stop if we couldn't resolve, or resolved to effectively the same block.
+        if not resolved_block:
             local_debug["vendorDetailsResolvedKey"] = ref_key
-            return parse_vendor_details_from_block(resolved_block, working_source, local_debug)
+            local_debug["vendorDetailsResolveFailed"] = True
+            break
+
+        if normalize_space(resolved_block) == normalize_space(working_block):
+            local_debug["vendorDetailsResolvedKey"] = ref_key
+            local_debug["vendorDetailsResolveSameBlock"] = True
+            break
+
+        local_debug["vendorDetailsRef"] = ref_token
+        local_debug["vendorDetailsResolvedKey"] = ref_key
+        working_block = resolved_block
 
     features = []
     description = ""
@@ -955,19 +989,19 @@ def parse_vendor_details_from_block(local_block, working_source, debug):
     # -------------------------
     bullets_ref_match = re.search(
         r'"vendorDetailsBullets"\s*:\s*"(\$[0-9A-Za-z]{1,3})"',
-        local_block,
+        working_block,
         flags=re.DOTALL,
     )
 
     bullets_array_text = ""
     bullets_array_marker = re.search(
         r'"vendorDetailsBullets"\s*:\s*\[',
-        local_block,
+        working_block,
         flags=re.DOTALL,
     )
     if bullets_array_marker:
         array_start = bullets_array_marker.end() - 1
-        bullets_array_text = extract_balanced_bracket_block(local_block, array_start)
+        bullets_array_text = extract_balanced_bracket_block(working_block, array_start)
 
     if bullets_ref_match:
         ref_token = bullets_ref_match.group(1)
@@ -995,12 +1029,12 @@ def parse_vendor_details_from_block(local_block, working_source, debug):
     # -------------------------
     paragraph_ref_match = re.search(
         r'"vendorDetailsParagraph"\s*:\s*"(\$[0-9A-Za-z]{1,3})"',
-        local_block,
+        working_block,
         flags=re.DOTALL,
     )
     paragraph_direct_match = re.search(
         r'"vendorDetailsParagraph"\s*:\s*"((?:\\.|[^"\\])*)"',
-        local_block,
+        working_block,
         flags=re.DOTALL,
     )
 
@@ -1149,106 +1183,30 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
                 fallback_top_candidate.get("window", "")[:2500]
             )
 
-    # ---------------------------------
-    # 3) Parse shared/global family copy
-    # ---------------------------------
-    shared_features = []
-    shared_description = ""
-
-    global_bullets_ref_match = re.search(
-        r'"vendorDetailsBullets"\s*:\s*"(\$[0-9A-Za-z]{1,3})"',
-        working_source,
-        flags=re.DOTALL,
-    )
-    global_paragraph_ref_match = re.search(
-        r'"vendorDetailsParagraph"\s*:\s*"(\$[0-9A-Za-z]{1,3})"',
-        working_source,
-        flags=re.DOTALL,
-    )
-
-    global_bullets_array_text = ""
-    global_bullets_array_marker = re.search(
-        r'"vendorDetailsBullets"\s*:\s*\[',
-        working_source,
-        flags=re.DOTALL,
-    )
-    if global_bullets_array_marker:
-        array_start = global_bullets_array_marker.end() - 1
-        global_bullets_array_text = extract_balanced_bracket_block(working_source, array_start)
-
-    global_paragraph_direct_match = re.search(
-        r'"vendorDetailsParagraph"\s*:\s*"((?:\\.|[^"\\])*)"',
-        working_source,
-        flags=re.DOTALL,
-    )
-
-    if global_bullets_ref_match:
-        ref_token = global_bullets_ref_match.group(1)
-        ref_key = ref_token.replace("$", "")
-
-        debug["vendorPatternFound"] = True
-        debug["vendorDetailsBulletsRef"] = ref_token
-        debug["featuresKey"] = ref_key
-
-        features_marker = find_newline_anchored_key(working_source, ref_key, for_array=True)
-        if features_marker:
-            array_start = features_marker.end() - 1
-            array_text = extract_balanced_bracket_block(working_source, array_start)
-            debug["featuresArrayFound"] = bool(array_text)
-            debug["featuresArrayExcerpt"] = normalize_space(array_text)[:2000]
-            shared_features = parse_jsonish_array_text(array_text)
-
-    elif global_bullets_array_text:
-        debug["featuresArrayFound"] = True
-        debug["featuresArrayExcerpt"] = normalize_space(global_bullets_array_text)[:2000]
-        shared_features = parse_jsonish_array_text(global_bullets_array_text)
-
-    if global_paragraph_ref_match:
-        ref_token = global_paragraph_ref_match.group(1)
-        ref_key = ref_token.replace("$", "")
-
-        debug["vendorPatternFound"] = True
-        debug["vendorDetailsParagraphRef"] = ref_token
-        debug["descriptionKey"] = ref_key
-
-        desc_block = extract_newline_anchored_value_block(working_source, ref_key)
-        desc_block = clean_cvs_text(desc_block)
-
-        debug["descriptionBlockFound"] = bool(desc_block)
-        debug["descriptionBlockExcerpt"] = normalize_space(desc_block)[:2000]
-        shared_description = desc_block
-
-    elif global_paragraph_direct_match:
-        raw_para = global_paragraph_direct_match.group(1)
-
-        if not re.fullmatch(r'\$[0-9A-Za-z]{1,3}', raw_para or ""):
-            try:
-                shared_description = json.loads(f'"{raw_para}"')
-            except Exception:
-                shared_description = raw_para
-
-            shared_description = clean_cvs_text(shared_description)
-            debug["descriptionBlockFound"] = bool(shared_description)
-            debug["descriptionBlockExcerpt"] = normalize_space(shared_description)[:2000]
-
-    # ---------------------------------
-    # 4) Merge rule with safe fallback
+# ---------------------------------
+    # 3) Merge rule with safe fallback
+    #    Preferred:
+    #      bullet 1 from variant
+    #      bullets 2-5 from shared
+    #      description from shared
+    #
+    #    But if shared bullets are missing, keep the full variant bullet set.
     # ---------------------------------
     final_description = shared_description or variant_description
 
     final_features = []
 
-    # Bullet 1 = variant first, else shared first
+    # Preferred bullet 1
     if variant_features:
         final_features.append(variant_features[0])
     elif shared_features:
         final_features.append(shared_features[0])
 
-    # Bullets 2-5 from shared if available
+    # Preferred bullets 2-5 from shared
     if shared_features:
         final_features.extend(shared_features[1:5])
 
-    # Fallback: if shared parse missed anything, fill from variant bullets
+    # Backfill missing slots from variant bullets
     if len(final_features) < 5 and variant_features:
         start_idx = 1 if final_features else 0
         for item in variant_features[start_idx:5]:
@@ -1256,7 +1214,7 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
                 break
             final_features.append(item)
 
-    # Last fallback if shared was completely empty
+    # Final fallback if shared was empty and variant had all 5
     if not final_features:
         final_features = (variant_features or shared_features)[:5]
 
