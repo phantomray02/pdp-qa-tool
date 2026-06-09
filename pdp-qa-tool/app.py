@@ -398,6 +398,27 @@ def extract_balanced_bracket_block(source, start_index):
     return ""
 
 
+def split_feature_blob_preserve_semicolons(text):
+    """
+    Split only on actual feature delimiters.
+    Never split on semicolons because semicolons appear inside valid bullets.
+    """
+    text = clean_cvs_text(text)
+    if not text:
+        return []
+
+    # Only split on strong delimiters that are used as separators.
+    # Keep semicolons inside the bullet.
+    if " | " in text:
+        parts = [x.strip() for x in text.split(" | ")]
+    elif "•" in text:
+        parts = [x.strip() for x in text.split("•")]
+    else:
+        parts = [text.strip()]
+
+    return [p for p in parts if p]
+
+
 def parse_jsonish_array_text(array_text):
     array_text = normalize_space(array_text)
     if not array_text:
@@ -413,117 +434,25 @@ def parse_jsonish_array_text(array_text):
         try:
             value = json.loads(candidate)
             if isinstance(value, list):
+                # Preserve semicolons inside each bullet.
                 return [clean_cvs_text(x) for x in value if isinstance(x, str)]
         except Exception:
             pass
 
+    # Fallback: if this was not valid JSON, do NOT split on semicolons.
     inner = array_text[1:-1] if array_text.startswith("[") and array_text.endswith("]") else array_text
+    inner = clean_cvs_text(inner)
+
+    # Try quoted item split first.
     parts = re.split(r'"\s*,\s*"', inner)
 
     cleaned = []
     for part in parts:
         val = clean_cvs_text(part.strip().strip('"'))
         if val:
-            cleaned.append(val)
+            cleaned.extend(split_feature_blob_preserve_semicolons(val))
 
-    return cleaned
-
-
-def find_newline_anchored_key(source, key, for_array=False):
-    key = str(key)
-    if for_array:
-        pattern = rf'(?:^|\n){re.escape(key)}:\['
-    else:
-        pattern = rf'(?:^|\n){re.escape(key)}:'
-
-    return re.search(pattern, source)
-
-
-def looks_like_next_newline_key(source, idx):
-    if idx < 0 or idx >= len(source):
-        return False
-
-    return bool(
-        re.match(
-            r'(?:\n)([0-9A-Za-z]{1,3}):(?=[\[{"]|T[0-9A-Za-z]+,|null|true|false|\d)',
-            source[idx:],
-        )
-    )
-
-
-def extract_newline_anchored_value_block(source, key):
-    m = find_newline_anchored_key(source, key, for_array=False)
-    if not m:
-        return ""
-
-    start = m.end()
-    i = start
-
-    in_str = False
-    escape = False
-    bracket_depth = 0
-    brace_depth = 0
-    paren_depth = 0
-
-    while i < len(source):
-        ch = source[i]
-
-        if in_str:
-            if escape:
-                escape = False
-            elif ch == "\\":
-                escape = True
-            elif ch == '"':
-                in_str = False
-            i += 1
-            continue
-
-        if ch == '"':
-            in_str = True
-            i += 1
-            continue
-
-        if ch == "[":
-            bracket_depth += 1
-            i += 1
-            continue
-        if ch == "]":
-            bracket_depth = max(0, bracket_depth - 1)
-            i += 1
-            continue
-
-        if ch == "{":
-            brace_depth += 1
-            i += 1
-            continue
-        if ch == "}":
-            brace_depth = max(0, brace_depth - 1)
-            i += 1
-            continue
-
-        if ch == "(":
-            paren_depth += 1
-            i += 1
-            continue
-        if ch == ")":
-            paren_depth = max(0, paren_depth - 1)
-            i += 1
-            continue
-
-        if bracket_depth == 0 and brace_depth == 0 and paren_depth == 0:
-            if looks_like_next_newline_key(source, i):
-                break
-
-        i += 1
-
-    block = source[start:i].strip()
-
-    # Extra safety trimming.
-    block = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:\{.*$', "", block, flags=re.DOTALL)
-    block = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:\[.*$', "", block, flags=re.DOTALL)
-    block = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:$', "", block, flags=re.DOTALL)
-
-    return block.strip()
+    return dedupe_preserve_order(cleaned)
 
 
 def extract_candidate_variant_windows(source, context_before=4500, context_after=22000):
@@ -540,13 +469,14 @@ def extract_candidate_variant_windows(source, context_before=4500, context_after
         windows.append({
             "start": start,
             "end": end,
+            "vendor_start": m.start(),
             "window": source[start:end],
         })
 
     return windows
 
 
-def score_variant_window(window_text, target_rpc="", retail_url=""):
+def score_variant_window(window_text, vendor_start, window_start, target_rpc="", retail_url=""):
     """
     Score a candidate variant window against the current CVS RPC / skuId.
 
@@ -555,7 +485,9 @@ def score_variant_window(window_text, target_rpc="", retail_url=""):
     2) dynamicMediaUrl contains /target_rpc_#.jpg
     3) nearby image URL contains target_rpc in file name
 
-    We also give small bonuses if the window appears to contain actual vendor details.
+    Extra bonus:
+    - target RPC appears close BEFORE vendorContent, which tends to indicate
+      the correct local variant block on shared parent PDPs.
     """
     score = 0
     reason = []
@@ -580,7 +512,7 @@ def score_variant_window(window_text, target_rpc="", retail_url=""):
         score += 100
         reason.append("skuId_match")
 
-    # Strong signal: dynamicMediaUrl with /841269_8.jpg pattern.
+    # Strong signal: dynamicMediaUrl with /841269_1.jpg pattern.
     dm_match = re.search(
         rf'"dynamicMediaUrl"\s*:\s*"([^"]*?/({rpc})(?:_[0-9]+)?\.jpg[^"]*)"',
         window_text,
@@ -612,6 +544,30 @@ def score_variant_window(window_text, target_rpc="", retail_url=""):
                 matched_variant_url = retail_path
                 reason.append("retail_path_match")
 
+    # Strong local proximity bonus:
+    # find the nearest RPC occurrence BEFORE the vendor block inside this local window.
+    local_vendor_start = vendor_start - window_start
+    rpc_positions = []
+
+    for m in re.finditer(rf'(?:skuId=|/as/|/high_res/){rpc}\b', window_text):
+        rpc_positions.append(m.start())
+
+    prior_positions = [p for p in rpc_positions if p <= local_vendor_start]
+
+    if prior_positions:
+        nearest_prior = max(prior_positions)
+        distance = local_vendor_start - nearest_prior
+
+        if distance <= 1200:
+            score += 50
+            reason.append("rpc_near_vendorcontent_before_1200")
+        elif distance <= 2500:
+            score += 35
+            reason.append("rpc_near_vendorcontent_before_2500")
+        elif distance <= 4500:
+            score += 20
+            reason.append("rpc_near_vendorcontent_before_4500")
+
     # Small bonuses if the candidate actually looks like it contains vendor details.
     if '"vendorDetailsBullets"' in window_text:
         score += 5
@@ -632,13 +588,15 @@ def score_variant_window(window_text, target_rpc="", retail_url=""):
 
 def get_sorted_variant_windows(source, target_rpc="", retail_url=""):
     """
-    Return candidate windows sorted best-to-worst by score, instead of only one winner.
+    Return candidate windows sorted best-to-worst by score.
     """
     candidates = extract_candidate_variant_windows(source)
 
     for candidate in candidates:
         scored = score_variant_window(
             candidate["window"],
+            vendor_start=candidate["vendor_start"],
+            window_start=candidate["start"],
             target_rpc=target_rpc,
             retail_url=retail_url,
         )
@@ -740,7 +698,6 @@ def parse_vendor_details_from_block(local_block, working_source, debug):
     elif paragraph_direct_match:
         raw_para = paragraph_direct_match.group(1)
 
-        # Ignore direct match if it was actually only a ref string like "$25"
         if not re.fullmatch(r'\$[0-9A-Za-z]{1,3}', raw_para or ""):
             try:
                 description = json.loads(f'"{raw_para}"')
@@ -760,6 +717,167 @@ def parse_vendor_details_from_block(local_block, working_source, debug):
         "debug": local_debug,
     }
 
+
+def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retail_url=""):
+    debug = {
+        "vendorPatternFound": False,
+        "vendorDetailsBulletsRef": "",
+        "vendorDetailsParagraphRef": "",
+        "featuresKey": "",
+        "descriptionKey": "",
+        "featuresArrayFound": False,
+        "descriptionBlockFound": False,
+        "directVendorContentFound": False,
+        "directVendorDetailsFound": False,
+        "variantWindowMatched": False,
+        "variantMatchScore": 0,
+        "variantMatchReason": "",
+        "matchedDynamicMediaUrl": "",
+        "matchedVariantUrl": "",
+        "matchedNearbyImage": "",
+        "Source Used": source_name,
+        "vendorPatternExcerpt": "",
+        "featuresArrayExcerpt": "",
+        "descriptionBlockExcerpt": "",
+        "directVendorContentExcerpt": "",
+    }
+
+    if not source:
+        return {"features": [], "description": "", "debug": debug}
+
+    working_source = html.unescape(source)
+    working_source = working_source.replace('\\"', '"')
+    working_source = working_source.replace("\\u0026", "&")
+
+    # ---------------------------------
+    # 1) Try all candidate windows in score order
+    # ---------------------------------
+    sorted_candidates = get_sorted_variant_windows(
+        working_source,
+        target_rpc=target_rpc,
+        retail_url=retail_url,
+    )
+
+    fallback_top_candidate = sorted_candidates[0] if sorted_candidates else None
+
+    for candidate in sorted_candidates:
+        candidate_debug = debug.copy()
+        candidate_debug["variantWindowMatched"] = candidate.get("match_score", 0) > 0
+        candidate_debug["variantMatchScore"] = candidate.get("match_score", 0)
+        candidate_debug["variantMatchReason"] = " | ".join(candidate.get("match_reason", []))
+        candidate_debug["matchedDynamicMediaUrl"] = candidate.get("matched_dynamic_media", "")
+        candidate_debug["matchedVariantUrl"] = candidate.get("matched_variant_url", "")
+        candidate_debug["matchedNearbyImage"] = candidate.get("matched_nearby_image", "")
+
+        parsed = parse_vendor_details_from_block(
+            candidate.get("window", ""),
+            working_source,
+            candidate_debug,
+        )
+
+        if parsed.get("description") or parsed.get("features"):
+            return parsed
+
+    # Keep best candidate context in debug even if it did not yield content.
+    if fallback_top_candidate:
+        debug["variantWindowMatched"] = fallback_top_candidate.get("match_score", 0) > 0
+        debug["variantMatchScore"] = fallback_top_candidate.get("match_score", 0)
+        debug["variantMatchReason"] = " | ".join(fallback_top_candidate.get("match_reason", []))
+        debug["matchedDynamicMediaUrl"] = fallback_top_candidate.get("matched_dynamic_media", "")
+        debug["matchedVariantUrl"] = fallback_top_candidate.get("matched_variant_url", "")
+        debug["matchedNearbyImage"] = fallback_top_candidate.get("matched_nearby_image", "")
+        debug["directVendorContentExcerpt"] = normalize_space(fallback_top_candidate.get("window", "")[:2500])
+
+    # ---------------------------------
+    # 2) Looser whole-page fallback
+    # ---------------------------------
+    features = []
+    description = ""
+
+    global_bullets_ref_match = re.search(
+        r'"vendorDetailsBullets"\s*:\s*"(\$[0-9A-Za-z]{1,3})"',
+        working_source,
+        flags=re.DOTALL,
+    )
+    global_paragraph_ref_match = re.search(
+        r'"vendorDetailsParagraph"\s*:\s*"(\$[0-9A-Za-z]{1,3})"',
+        working_source,
+        flags=re.DOTALL,
+    )
+
+    global_bullets_array_text = ""
+    global_bullets_array_marker = re.search(
+        r'"vendorDetailsBullets"\s*:\s*\[',
+        working_source,
+        flags=re.DOTALL,
+    )
+    if global_bullets_array_marker:
+        array_start = global_bullets_array_marker.end() - 1
+        global_bullets_array_text = extract_balanced_bracket_block(working_source, array_start)
+
+    global_paragraph_direct_match = re.search(
+        r'"vendorDetailsParagraph"\s*:\s*"((?:\\.|[^"\\])*)"',
+        working_source,
+        flags=re.DOTALL,
+    )
+
+    if global_bullets_ref_match:
+        ref_token = global_bullets_ref_match.group(1)
+        ref_key = ref_token.replace("$", "")
+
+        debug["vendorPatternFound"] = True
+        debug["vendorDetailsBulletsRef"] = ref_token
+        debug["featuresKey"] = ref_key
+
+        features_marker = find_newline_anchored_key(working_source, ref_key, for_array=True)
+        if features_marker:
+            array_start = features_marker.end() - 1
+            array_text = extract_balanced_bracket_block(working_source, array_start)
+            debug["featuresArrayFound"] = bool(array_text)
+            debug["featuresArrayExcerpt"] = normalize_space(array_text)[:2000]
+            features = parse_jsonish_array_text(array_text)
+
+    elif global_bullets_array_text:
+        debug["featuresArrayFound"] = True
+        debug["featuresArrayExcerpt"] = normalize_space(global_bullets_array_text)[:2000]
+        features = parse_jsonish_array_text(global_bullets_array_text)
+
+    if global_paragraph_ref_match:
+        ref_token = global_paragraph_ref_match.group(1)
+        ref_key = ref_token.replace("$", "")
+
+        debug["vendorPatternFound"] = True
+        debug["vendorDetailsParagraphRef"] = ref_token
+        debug["descriptionKey"] = ref_key
+
+        desc_block = extract_newline_anchored_value_block(working_source, ref_key)
+        desc_block = clean_cvs_text(desc_block)
+
+        debug["descriptionBlockFound"] = bool(desc_block)
+        debug["descriptionBlockExcerpt"] = normalize_space(desc_block)[:2000]
+        description = desc_block
+
+    elif global_paragraph_direct_match:
+        raw_para = global_paragraph_direct_match.group(1)
+
+        if not re.fullmatch(r'\$[0-9A-Za-z]{1,3}', raw_para or ""):
+            try:
+                description = json.loads(f'"{raw_para}"')
+            except Exception:
+                description = raw_para
+
+            description = clean_cvs_text(description)
+            debug["descriptionBlockFound"] = bool(description)
+            debug["descriptionBlockExcerpt"] = normalize_space(description)[:2000]
+
+    cleaned_features = dedupe_preserve_order([clean_cvs_text(x) for x in features])
+    cleaned_description = clean_cvs_text(description)
+
+    return {
+        "features": cleaned_features,
+        "description": cleaned_description,
+        "debug": debug,
+    }
 
 def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retail_url=""):
     debug = {
