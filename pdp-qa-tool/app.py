@@ -287,7 +287,6 @@ def get_salsify_images(url):
     return get_salsify_bundle(url)["images"]
 
 # =========================================
-# =========================================
 # CVS PARSERS
 # =========================================
 def clean_cvs_text(text):
@@ -303,7 +302,7 @@ def clean_cvs_text(text):
     text = text.replace('\\"', '"')
     text = html.unescape(text)
 
-    # Remove split Next.js wrapper fragments if they leaked into the extracted text.
+    # Remove split Next.js wrapper fragments if they leaked into extracted text.
     wrapper_patterns = [
         r'"\]\)\s*</script>\s*<script>\s*self\.__next_f\.push\(\[1,\s*"',
         r'"\]\)&lt;/script&gt;&lt;script&gt;self\.__next_f\.push\(\[1,\s*"',
@@ -496,7 +495,7 @@ def extract_newline_anchored_value_block(source, key):
 
     block = source[start:i].strip()
 
-    # Extra safety trimming.
+    # Extra trimming if a later key bled into the block.
     block = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:\{.*$', "", block, flags=re.DOTALL)
     block = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:\[.*$', "", block, flags=re.DOTALL)
     block = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:$', "", block, flags=re.DOTALL)
@@ -507,7 +506,7 @@ def extract_newline_anchored_value_block(source, key):
 def merge_feature_continuations(items):
     """
     Merge short continuation fragments back into the previous feature bullet.
-    Example:
+    Examples:
       "WHAT’S INCLUDED — ... light absorbency"
       "packaging and product may vary"
     becomes:
@@ -531,7 +530,6 @@ def merge_feature_continuations(items):
             for pattern in continuation_patterns
         )
 
-        # Treat some short lowercase fragments as likely continuations.
         if not is_continuation:
             if (
                 merged
@@ -602,7 +600,7 @@ def parse_jsonish_array_text(array_text):
     inner = array_text[1:-1] if array_text.startswith("[") and array_text.endswith("]") else array_text
     inner = clean_cvs_text(inner)
 
-    # Try quoted item split first.
+    # Fallback: split quoted items, then split only on strong bullet delimiters.
     parts = re.split(r'"\s*,\s*"', inner)
 
     cleaned = []
@@ -614,10 +612,48 @@ def parse_jsonish_array_text(array_text):
     return normalize_cvs_features(cleaned)
 
 
+def find_rpc_image_anchor_regions(source, target_rpc="", before=2500, after=26000):
+    """
+    Top requirement:
+    Find the LAST image URL in the source that contains the exact CVS RPC,
+    then use the copy immediately after that anchor as the first-choice region.
+    """
+    if not source or not target_rpc:
+        return []
+
+    rpc = re.escape(str(target_rpc))
+
+    # Match exact RPC image references like:
+    # /as/330111_8.jpg
+    # /high_res/330111_8.jpg
+    # /330111_8.jpg
+    pattern = rf'[^"\s]*?/{rpc}(?:_[0-9]+)?\.jpg'
+
+    matches = list(re.finditer(pattern, source, flags=re.IGNORECASE))
+    if not matches:
+        return []
+
+    regions = []
+    for m in matches:
+        start = max(0, m.start() - before)
+        end = min(len(source), m.end() + after)
+        regions.append({
+            "anchor_start": m.start(),
+            "anchor_end": m.end(),
+            "anchor_text": source[m.start():m.end()],
+            "region_start": start,
+            "region_end": end,
+            "region": source[start:end],
+        })
+
+    # Highest priority = last occurrence in source order.
+    regions.sort(key=lambda x: x["anchor_start"], reverse=True)
+    return regions
+
+
 def extract_candidate_variant_windows(source, context_before=4500, context_after=22000):
     """
-    Find every occurrence of vendorContent.vendorDetails and return a local window
-    around each one so we can match the correct variant.
+    Fallback candidate windows around vendorContent.vendorDetails.
     """
     windows = []
 
@@ -636,18 +672,6 @@ def extract_candidate_variant_windows(source, context_before=4500, context_after
 
 
 def score_variant_window(window_text, vendor_start, window_start, target_rpc="", retail_url=""):
-    """
-    Score a candidate variant window against the current CVS RPC / skuId.
-
-    Strongest signals:
-    1) skuId=target_rpc in nearby URL
-    2) dynamicMediaUrl contains /target_rpc_#.jpg
-    3) nearby image URL contains target_rpc in file name
-
-    Extra bonus:
-    - target RPC appears close BEFORE vendorContent, which tends to indicate
-      the correct local variant block on shared parent PDPs.
-    """
     score = 0
     reason = []
     matched_dynamic_media = ""
@@ -665,13 +689,11 @@ def score_variant_window(window_text, vendor_start, window_start, target_rpc="",
 
     rpc = re.escape(str(target_rpc))
 
-    # Strongest signal: exact skuId match in nearby URL context.
     sku_match = re.search(rf'skuId={rpc}\b', window_text)
     if sku_match:
         score += 100
         reason.append("skuId_match")
 
-    # Strong signal: dynamicMediaUrl with /841269_1.jpg pattern.
     dm_match = re.search(
         rf'"dynamicMediaUrl"\s*:\s*"([^"]*?/({rpc})(?:_[0-9]+)?\.jpg[^"]*)"',
         window_text,
@@ -682,7 +704,6 @@ def score_variant_window(window_text, vendor_start, window_start, target_rpc="",
         matched_dynamic_media = dm_match.group(1)
         reason.append("dynamicMediaUrl_rpc_match")
 
-    # Secondary signal: nearby image/file name with rpc.
     img_match = re.search(
         rf'"(?:imageUrl|image|src|url)"\s*:\s*"([^"]*?/({rpc})(?:_[0-9]+)?\.jpg[^"]*)"',
         window_text,
@@ -693,7 +714,6 @@ def score_variant_window(window_text, vendor_start, window_start, target_rpc="",
         matched_nearby_image = img_match.group(1)
         reason.append("nearby_image_rpc_match")
 
-    # Smaller signal: same shop path family as the retail URL.
     if retail_url:
         path_match = re.search(r'https?://www\.cvs\.com(/shop/[^?\s"]+)', retail_url)
         if path_match:
@@ -703,7 +723,6 @@ def score_variant_window(window_text, vendor_start, window_start, target_rpc="",
                 matched_variant_url = retail_path
                 reason.append("retail_path_match")
 
-    # Strong local proximity bonus:
     local_vendor_start = vendor_start - window_start
     rpc_positions = []
 
@@ -744,9 +763,6 @@ def score_variant_window(window_text, vendor_start, window_start, target_rpc="",
 
 
 def get_sorted_variant_windows(source, target_rpc="", retail_url=""):
-    """
-    Return candidate windows sorted best-to-worst by score.
-    """
     candidates = extract_candidate_variant_windows(source)
 
     for candidate in candidates:
@@ -875,6 +891,43 @@ def parse_vendor_details_from_block(local_block, working_source, debug):
     }
 
 
+def extract_vendor_copy_from_anchor_region(working_source, anchor_region, source_name="", target_rpc=""):
+    """
+    First-choice parse:
+    Use the region immediately after the LAST exact RPC image URL.
+    """
+    debug = {
+        "vendorPatternFound": False,
+        "vendorDetailsBulletsRef": "",
+        "vendorDetailsParagraphRef": "",
+        "featuresKey": "",
+        "descriptionKey": "",
+        "featuresArrayFound": False,
+        "descriptionBlockFound": False,
+        "directVendorContentFound": False,
+        "directVendorDetailsFound": False,
+        "variantWindowMatched": True,
+        "variantMatchScore": 999,
+        "variantMatchReason": "rpc_image_anchor_priority",
+        "matchedDynamicMediaUrl": anchor_region.get("anchor_text", ""),
+        "matchedVariantUrl": "",
+        "matchedNearbyImage": anchor_region.get("anchor_text", ""),
+        "Source Used": source_name,
+        "vendorPatternExcerpt": "",
+        "featuresArrayExcerpt": "",
+        "descriptionBlockExcerpt": "",
+        "directVendorContentExcerpt": normalize_space(anchor_region.get("region", "")[:2500]),
+    }
+
+    parsed = parse_vendor_details_from_block(
+        anchor_region.get("region", ""),
+        working_source,
+        debug,
+    )
+
+    return parsed
+
+
 def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retail_url=""):
     debug = {
         "vendorPatternFound": False,
@@ -907,7 +960,28 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
     working_source = working_source.replace("\\u0026", "&")
 
     # ---------------------------------
-    # 1) Try all candidate windows in score order
+    # 1) TOP REQUIREMENT:
+    #    Try the region immediately after the LAST exact RPC image URL.
+    # ---------------------------------
+    anchor_regions = find_rpc_image_anchor_regions(
+        working_source,
+        target_rpc=target_rpc,
+        before=2500,
+        after=26000,
+    )
+
+    for anchor_region in anchor_regions:
+        anchored = extract_vendor_copy_from_anchor_region(
+            working_source,
+            anchor_region,
+            source_name=source_name,
+            target_rpc=target_rpc,
+        )
+        if anchored.get("description") or anchored.get("features"):
+            return anchored
+
+    # ---------------------------------
+    # 2) Fallback: try all candidate windows in score order
     # ---------------------------------
     sorted_candidates = get_sorted_variant_windows(
         working_source,
@@ -946,7 +1020,7 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
         debug["directVendorContentExcerpt"] = normalize_space(fallback_top_candidate.get("window", "")[:2500])
 
     # ---------------------------------
-    # 2) Looser whole-page fallback
+    # 3) Final loose whole-page fallback
     # ---------------------------------
     features = []
     description = ""
@@ -1177,7 +1251,7 @@ def get_cvs_bundle(retail_url, target_rpc=""):
         ),
         "images": extract_cvs_images_from_html(html_text),
     }
-
+    
 # =========================================
 # QUALITY HELPERS
 # =========================================
