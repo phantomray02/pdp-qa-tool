@@ -2486,7 +2486,7 @@ if st.session_state.processing_done and st.session_state.summary_rows:
                             f"Overall: {overall_score}%"
                         )
                         st.divider()
-
+            
     except Exception as e:
         st.error("🔥 CRITICAL APP ERROR")
         st.text(str(e))
