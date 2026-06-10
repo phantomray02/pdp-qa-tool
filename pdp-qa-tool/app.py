@@ -124,7 +124,27 @@ def html_escape_text(text):
     return html.escape(str(text or ""))
 
 
-def equal_height_block(text, min_height=180):
+def equal_height_block(text, min_height=210):
+    safe_text = html_escape_text(text or "Missing")
+    return f"""
+    <div style="
+        min-height:{min_height}px;
+        padding:14px 16px;
+        border:1px solid #1E1E1E;
+        border-radius:4px;
+        background:#000000;
+        color:#FFFFFF;
+        white-space:pre-wrap;
+        line-height:1.7;
+        font-size:18px;
+        font-weight:500;
+    ">
+        {safe_text}
+    </div>
+    """
+
+
+def equal_feature_block(text, min_height=90):
     safe_text = html_escape_text(text or "Missing")
     return f"""
     <div style="
@@ -135,27 +155,9 @@ def equal_height_block(text, min_height=180):
         background:#000000;
         color:#FFFFFF;
         white-space:pre-wrap;
-        line-height:1.55;
-        font-size:16px;
-    ">
-        {safe_text}
-    </div>
-    """
-
-
-def equal_feature_block(text, min_height=72):
-    safe_text = html_escape_text(text or "Missing")
-    return f"""
-    <div style="
-        min-height:{min_height}px;
-        padding:10px 12px;
-        border:1px solid #1E1E1E;
-        border-radius:4px;
-        background:#000000;
-        color:#FFFFFF;
-        white-space:pre-wrap;
-        line-height:1.5;
-        font-size:16px;
+        line-height:1.65;
+        font-size:17px;
+        font-weight:500;
     ">
         {safe_text}
     </div>
@@ -2383,11 +2385,11 @@ if uploaded_file and st.session_state.processing_done and view_mode:
                 c1, c2 = st.columns(2)
 
                 c1.markdown(
-                    equal_height_block(s_title or "Missing", min_height=105),
+                    equal_height_block(s_title or "Missing", min_height=120),
                     unsafe_allow_html=True,
                 )
                 c2.markdown(
-                    equal_height_block(r_title or "Missing", min_height=105),
+                    equal_height_block(r_title or "Missing", min_height=120),
                     unsafe_allow_html=True,
                 )
 
@@ -2395,11 +2397,11 @@ if uploaded_file and st.session_state.processing_done and view_mode:
                 c1, c2 = st.columns(2)
 
                 c1.markdown(
-                    equal_height_block(s_desc or "Missing", min_height=290),
+                    equal_height_block(s_desc or "Missing", min_height=340),
                     unsafe_allow_html=True,
                 )
                 c2.markdown(
-                    equal_height_block(r_desc or "Missing", min_height=290),
+                    equal_height_block(r_desc or "Missing", min_height=340),
                     unsafe_allow_html=True,
                 )
 
@@ -2418,11 +2420,11 @@ if uploaded_file and st.session_state.processing_done and view_mode:
 
                     c1, c2 = st.columns(2)
                     c1.markdown(
-                        equal_feature_block(s_val or "Missing", min_height=82),
+                        equal_feature_block(s_val or "Missing", min_height=100),
                         unsafe_allow_html=True,
                     )
                     c2.markdown(
-                        equal_feature_block(r_val or "Missing", min_height=82),
+                        equal_feature_block(r_val or "Missing", min_height=100),
                         unsafe_allow_html=True,
                     )
 
