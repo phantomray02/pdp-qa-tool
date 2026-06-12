@@ -94,13 +94,14 @@ COPY_LINE_HEIGHT = 1.20
 SECTION_VERTICAL_GAP = 10
 
 # Use one shared spacing value so the image area feels mathematically even.
-IMG_SPACE_PX = 4
+IMG_SPACE_PX = 2
 IMG_BOX_HEIGHT = 132
 IMG_SCORE_WIDTH_PX = 118
 
 FEATURE_ROW_GAP_PX = 12
 FEATURE_MIN_HEIGHT = 92
 FEATURE_SCORE_WIDTH_RATIO = 0.32
+
 
 
 def get_session():
@@ -349,7 +350,7 @@ def image_compare_cell_html(url, box_height=IMG_BOX_HEIGHT):
         f"Missing"
         f"</div>"
     )
-
+    
 def image_compare_row_html(s_url, r_url, score):
     return (
         f"<div style=\""
@@ -2619,7 +2620,6 @@ if uploaded_file and st.session_state.processing_done:
                         unsafe_allow_html=True,
                     )
 
-
             with right:
                 head_i1, head_i2 = st.columns(2, gap="small")
                 head_i1.markdown(image_header_html("Salsify"), unsafe_allow_html=True)
@@ -2637,26 +2637,6 @@ if uploaded_file and st.session_state.processing_done:
 
                     st.markdown(
                         image_compare_row_html(s_url, r_url, slot_score),
-                        unsafe_allow_html=True,
-                    )
-
-                    with row2:
-                        if r_url:
-                            st.image(r_url, use_container_width=True)
-                        else:
-                            st.markdown(
-                                f"<div style='height:{IMG_BOX_HEIGHT}px; display:flex; align-items:center; justify-content:center; color:#C62828; font-size:16px; font-weight:700;'>Missing</div>",
-                                unsafe_allow_html=True,
-                            )
-
-                    with row3:
-                        st.markdown(
-                            f"<div style='min-height:{IMG_BOX_HEIGHT}px; display:flex; align-items:center; justify-content:flex-start; text-align:left; margin:0; padding:0;'>{score_text_html(slot_score)}</div>",
-                            unsafe_allow_html=True,
-                        )
-
-                    st.markdown(
-                        f"<div style='height:{IMG_SPACE_PX}px;'></div>",
                         unsafe_allow_html=True,
                     )
                     
