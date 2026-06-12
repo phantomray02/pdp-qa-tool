@@ -219,6 +219,7 @@ def score_text_html(score):
 
     return f"<span style='color:{color}; font-weight:900; font-size:22px;'>{score}% ({label})</span>"
 
+
 def section_header_html(label, score):
     safe_label = html_escape_text(label or "")
     return f"""
@@ -351,6 +352,7 @@ def image_compare_cell_html(url, box_height=IMG_BOX_HEIGHT):
     </div>
     """
 
+
 def image_compare_row_html(s_url, r_url, score):
     return f"""
     <div style="
@@ -380,7 +382,6 @@ def image_compare_row_html(s_url, r_url, score):
         </div>
     </div>
     """
-
 def image_tile_html(label, url, box_height=170):
     safe_label = html.escape(label)
 
@@ -2494,7 +2495,6 @@ if uploaded_file and st.session_state.processing_done:
 
             s_title = s_text.get("title") or ""
             r_title = r_text.get("title") or ""
-
             s_desc = s_text.get("description") or ""
             r_desc = r_text.get("description") or ""
 
@@ -2524,7 +2524,6 @@ if uploaded_file and st.session_state.processing_done:
             for i in range(max_images):
                 s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else None
                 r_url = r_images[i] if i < len(r_images) else None
-
                 if s_url and r_url:
                     sc = compare_images_visually(s_url, r_url)
                     if sc > 0:
@@ -2541,7 +2540,6 @@ if uploaded_file and st.session_state.processing_done:
             left, right = st.columns([2.72, 0.78], gap="small")
 
             with left:
-                # Locked compare columns so one side does not push the other.
                 top_l, top_r = st.columns(2, gap="small")
                 top_l.markdown(
                     column_header_link_html("Salsify", sku, salsify_url),
@@ -2554,10 +2552,8 @@ if uploaded_file and st.session_state.processing_done:
 
                 st.markdown(avg_score_bar_html("Copy — Avg", copy_avg_score), unsafe_allow_html=True)
 
-                # TITLE.
                 st.markdown(section_header_html("Title", title_score), unsafe_allow_html=True)
                 t1, t2 = st.columns(2, gap="small")
-
 
                 with t1:
                     st.markdown(
@@ -2566,7 +2562,7 @@ if uploaded_file and st.session_state.processing_done:
                         + "</div>",
                         unsafe_allow_html=True,
                     )
-                
+
                 with t2:
                     st.markdown(
                         "<div style='width:100%; overflow:hidden; padding-left:0; margin-left:0;'>"
@@ -2575,7 +2571,6 @@ if uploaded_file and st.session_state.processing_done:
                         unsafe_allow_html=True,
                     )
 
-                # DESCRIPTION.
                 st.markdown(section_header_html("Description", desc_score), unsafe_allow_html=True)
                 d1, d2 = st.columns(2, gap="small")
 
@@ -2586,7 +2581,7 @@ if uploaded_file and st.session_state.processing_done:
                         + "</div>",
                         unsafe_allow_html=True,
                     )
-                
+
                 with d2:
                     st.markdown(
                         "<div style='width:100%; overflow:hidden; padding-left:0; margin-left:0;'>"
@@ -2594,13 +2589,12 @@ if uploaded_file and st.session_state.processing_done:
                         + "</div>",
                         unsafe_allow_html=True,
                     )
-                    
-                # FEATURES.
+
                 st.markdown(section_header_html("Features", avg_feature_score), unsafe_allow_html=True)
-                
+
                 for s_val, r_val, row_score in feature_rows:
                     f1, f2 = st.columns(2, gap="small")
-                
+
                     with f1:
                         st.markdown(
                             "<div style='width:100%; overflow:hidden; padding-left:0; margin-left:0;'>"
@@ -2608,7 +2602,7 @@ if uploaded_file and st.session_state.processing_done:
                             + "</div>",
                             unsafe_allow_html=True,
                         )
-                
+
                     with f2:
                         st.markdown(
                             "<div style='width:100%; overflow:hidden; padding-left:0; margin-left:0;'>"
@@ -2616,7 +2610,7 @@ if uploaded_file and st.session_state.processing_done:
                             + "</div>",
                             unsafe_allow_html=True,
                         )
-                
+
                     st.markdown(
                         f"""
                         <div style="
@@ -2629,25 +2623,25 @@ if uploaded_file and st.session_state.processing_done:
                         """,
                         unsafe_allow_html=True,
                     )
-                
+
                     st.markdown("<div style='height:2px;'></div>", unsafe_allow_html=True)
-                    
-                with right:
-                    head_i1, head_i2 = st.columns(2, gap="small")
-                    head_i1.markdown(image_header_html("Salsify"), unsafe_allow_html=True)
-                    head_i2.markdown(image_header_html(retailer_name), unsafe_allow_html=True)
-                
-                    st.markdown(avg_score_bar_html("Images — Avg", avg_img_score), unsafe_allow_html=True)
-                
-                    for i in range(max_images):
-                        s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else ""
-                        r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else ""
-                        slot_score = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
-                
-                        st.markdown(
-                            image_compare_row_html(s_url, r_url, slot_score),
-                            unsafe_allow_html=True,
-                        )
+
+            with right:
+                head_i1, head_i2 = st.columns(2, gap="small")
+                head_i1.markdown(image_header_html("Salsify"), unsafe_allow_html=True)
+                head_i2.markdown(image_header_html(retailer_name), unsafe_allow_html=True)
+
+                st.markdown(avg_score_bar_html("Images — Avg", avg_img_score), unsafe_allow_html=True)
+
+                for i in range(max_images):
+                    s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else ""
+                    r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else ""
+                    slot_score = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
+
+                    st.markdown(
+                        image_compare_row_html(s_url, r_url, slot_score),
+                        unsafe_allow_html=True,
+                    )
 
             st.divider()
 
