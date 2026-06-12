@@ -127,16 +127,19 @@ def equal_height_block(text, min_height=210):
     safe_text = html_escape_text(text or "Missing")
     return f"""
     <div style="
+        width:100%;
         min-height:{min_height}px;
         padding:0;
         margin:0;
         background:transparent;
         color:#FFFFFF;
         white-space:pre-wrap;
-        line-height:1.18;
-        font-size:21px;
+        line-height:1.16;
+        font-size:22px;
         font-weight:500;
         text-indent:0;
+        overflow-wrap:anywhere;
+        word-break:break-word;
     ">
         {safe_text}
     </div>
@@ -147,28 +150,37 @@ def equal_feature_block(text, min_height=90):
     safe_text = html_escape_text(text or "Missing")
     return f"""
     <div style="
+        width:100%;
         min-height:{min_height}px;
         padding:0;
         margin:0;
         background:transparent;
         color:#FFFFFF;
         white-space:pre-wrap;
-        line-height:1.18;
-        font-size:21px;
+        line-height:1.16;
+        font-size:22px;
         font-weight:500;
         text-indent:0;
+        overflow-wrap:anywhere;
+        word-break:break-word;
     ">
         {safe_text}
     </div>
     """
 
 
-def score_badge(score):
+def score_text_html(score):
     if score >= 80:
-        return f"<span style='color:#4CAF50; font-weight:800'>{score}% (Strong)</span>"
-    if score >= 50:
-        return f"<span style='color:#FFC107; font-weight:800'>{score}% (Review)</span>"
-    return f"<span style='color:#F44336; font-weight:800'>{score}% (Poor)</span>"
+        color = "#4CAF50"
+        label = "Strong"
+    elif score >= 50:
+        color = "#FFC107"
+        label = "Review"
+    else:
+        color = "#F44336"
+        label = "Poor"
+
+    return f"<span style='color:{color}; font-weight:900; font-size:22px;'>{score}% ({label})</span>"
 
 
 def section_header_html(label, score):
@@ -179,25 +191,19 @@ def section_header_html(label, score):
         justify-content:space-between;
         align-items:flex-end;
         gap:10px;
-        margin-top:6px;
-        margin-bottom:6px;
+        margin-top:10px;
+        margin-bottom:10px;
     ">
         <div style="
-            font-size:25px;
+            font-size:26px;
             font-weight:900;
             color:#FFFFFF;
             line-height:1.0;
         ">
             {safe_label}
         </div>
-        <div style="
-            text-align:right;
-            color:#FFFFFF;
-            font-size:25px;
-            font-weight:900;
-            line-height:1.0;
-        ">
-            {score_badge(score)}
+        <div style="line-height:1.0;">
+            {score_text_html(score)}
         </div>
     </div>
     """
@@ -228,7 +234,7 @@ def avg_score_bar_html(label, score):
         gap:10px;
     ">
         <span>{safe_label}</span>
-        <span style="color:#FFFFFF; font-weight:900;">{score}%</span>
+        <span style="color:#FFFFFF; font-weight:900; font-size:20px;">{score}%</span>
     </div>
     """
 
@@ -2367,7 +2373,7 @@ if uploaded_file and st.session_state.processing_done and view_mode:
             left, right = st.columns([2.72, 0.78], gap="small")
 
             with left:
-                # Top headers above Copy Avg.
+                # Locked compare columns so text does not push the other side around.
                 top_l, top_r = st.columns(2, gap="small")
                 top_l.markdown(
                     column_header_link_html("Salsify", sku, salsify_url),
@@ -2378,75 +2384,87 @@ if uploaded_file and st.session_state.processing_done and view_mode:
                     unsafe_allow_html=True,
                 )
 
-                # Copy Avg inside the green/yellow/red bar with white score.
                 st.markdown(avg_score_bar_html("Copy — Avg", copy_avg_score), unsafe_allow_html=True)
 
                 # TITLE.
                 st.markdown(section_header_html("Title", title_score), unsafe_allow_html=True)
                 t1, t2 = st.columns(2, gap="small")
-                t1.markdown(
-                    equal_height_block(s_title or "Missing", min_height=72),
-                    unsafe_allow_html=True,
-                )
-                t2.markdown(
-                    equal_height_block(r_title or "Missing", min_height=72),
-                    unsafe_allow_html=True,
-                )
+                with t1:
+                    st.markdown(
+                        "<div style='width:100%; overflow:hidden;'>"
+                        + equal_height_block(s_title or "Missing", min_height=76)
+                        + "</div>",
+                        unsafe_allow_html=True,
+                    )
+                with t2:
+                    st.markdown(
+                        "<div style='width:100%; overflow:hidden;'>"
+                        + equal_height_block(r_title or "Missing", min_height=76)
+                        + "</div>",
+                        unsafe_allow_html=True,
+                    )
 
                 # DESCRIPTION.
                 st.markdown(section_header_html("Description", desc_score), unsafe_allow_html=True)
                 d1, d2 = st.columns(2, gap="small")
-                d1.markdown(
-                    equal_height_block(s_desc or "Missing", min_height=210),
-                    unsafe_allow_html=True,
-                )
-                d2.markdown(
-                    equal_height_block(r_desc or "Missing", min_height=210),
-                    unsafe_allow_html=True,
-                )
+                with d1:
+                    st.markdown(
+                        "<div style='width:100%; overflow:hidden;'>"
+                        + equal_height_block(s_desc or "Missing", min_height=220)
+                        + "</div>",
+                        unsafe_allow_html=True,
+                    )
+                with d2:
+                    st.markdown(
+                        "<div style='width:100%; overflow:hidden;'>"
+                        + equal_height_block(r_desc or "Missing", min_height=220)
+                        + "</div>",
+                        unsafe_allow_html=True,
+                    )
 
                 # FEATURES.
                 st.markdown(section_header_html("Features", avg_feature_score), unsafe_allow_html=True)
 
                 for s_val, r_val, row_score in feature_rows:
-                    f1, f2, fs = st.columns([1, 1, 0.18], gap="small")
+                    f1, f2 = st.columns(2, gap="small")
 
-                    f1.markdown(
-                        equal_feature_block(s_val or "Missing", min_height=40),
-                        unsafe_allow_html=True,
-                    )
-                    f2.markdown(
-                        equal_feature_block(r_val or "Missing", min_height=40),
-                        unsafe_allow_html=True,
-                    )
+                    with f1:
+                        st.markdown(
+                            "<div style='width:100%; overflow:hidden;'>"
+                            + equal_feature_block(s_val or "Missing", min_height=46)
+                            + "</div>",
+                            unsafe_allow_html=True,
+                        )
 
-                    fs.markdown(
+                    with f2:
+                        st.markdown(
+                            "<div style='width:100%; overflow:hidden;'>"
+                            + equal_feature_block(r_val or "Missing", min_height=46)
+                            + "</div>",
+                            unsafe_allow_html=True,
+                        )
+
+                    # Bigger color-coded score text with words, no icon.
+                    st.markdown(
                         f"""
                         <div style="
-                            min-height:40px;
-                            display:flex;
-                            align-items:flex-start;
-                            justify-content:flex-end;
-                            color:#FFFFFF;
-                            font-size:13px;
-                            font-weight:800;
-                            line-height:1.0;
+                            text-align:right;
+                            margin-top:0;
+                            margin-bottom:2px;
                         ">
-                            {row_score}%
+                            {score_text_html(row_score)}
                         </div>
                         """,
                         unsafe_allow_html=True,
                     )
 
-                    st.markdown("<div style='height:1px;'></div>", unsafe_allow_html=True)
+                    st.markdown("<div style='height:2px;'></div>", unsafe_allow_html=True)
 
             with right:
-                # Top headers above Images Avg.
                 head_i1, head_i2 = st.columns(2, gap="small")
                 head_i1.markdown(image_header_html("Salsify"), unsafe_allow_html=True)
                 head_i2.markdown(image_header_html(retailer_name), unsafe_allow_html=True)
 
-                # Images Avg inside the yellow/green/red bar with white score.
                 st.markdown(avg_score_bar_html("Images — Avg", avg_img_score), unsafe_allow_html=True)
 
                 for i in range(max_images):
@@ -2454,7 +2472,8 @@ if uploaded_file and st.session_state.processing_done and view_mode:
                     r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else ""
                     slot_score = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
 
-                    img1, img2, score_col = st.columns([1, 1, 0.24], gap="small")
+                    # Keep side-to-side gap. Tighten vertical gap. Remove icon/check mark.
+                    img1, img2, score_col = st.columns([1, 1, 0.34], gap="small")
 
                     with img1:
                         if s_url:
@@ -2483,18 +2502,15 @@ if uploaded_file and st.session_state.processing_done and view_mode:
                                 align-items:center;
                                 justify-content:flex-end;
                                 text-align:right;
-                                color:#FFFFFF;
-                                font-size:13px;
-                                font-weight:800;
-                                line-height:1.0;
                             ">
-                                {slot_score}%
+                                {score_text_html(slot_score)}
                             </div>
                             """,
                             unsafe_allow_html=True,
                         )
 
-                    st.markdown("<div style='height:0px;'></div>", unsafe_allow_html=True)
+                    # Vertical gap now matches the tighter layout.
+                    st.markdown("<div style='height:2px;'></div>", unsafe_allow_html=True)
 
             st.divider()
 
@@ -2502,3 +2518,5 @@ if uploaded_file and st.session_state.processing_done and view_mode:
         st.error("🔥 CRITICAL APP ERROR")
         st.text(str(e))
         st.text(traceback.format_exc())
+
+
