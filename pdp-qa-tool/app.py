@@ -2422,18 +2422,16 @@ if st.session_state.processing_done and st.session_state.summary_rows:
         and st.session_state.report_filename
     ):
         b64 = base64.b64encode(st.session_state.report_bytes).decode()
-
+        
         components.html(
-            f""
-            <script>
-            const link = document.createElement("a");
-            link.href = "data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}";
-            link.download = "{st.session_state.report_filename}";
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-            </script>
-            "",
+            "<script>"
+            "const link = document.createElement('a');"
+            f"link.href = 'data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}';"
+            f"link.download = '{st.session_state.report_filename}';"
+            "document.body.appendChild(link);"
+            "link.click();"
+            "document.body.removeChild(link);"
+            "</script>",
             height=0,
             width=0,
         )
