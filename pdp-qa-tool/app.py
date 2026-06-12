@@ -94,7 +94,7 @@ COPY_LINE_HEIGHT = 1.20
 SECTION_VERTICAL_GAP = 10
 
 # Use one shared spacing value so the image area feels mathematically even.
-IMG_SPACE_PX = 8
+IMG_SPACE_PX = 4
 IMG_BOX_HEIGHT = 132
 IMG_SCORE_WIDTH_PX = 118
 
@@ -2609,7 +2609,7 @@ if uploaded_file and st.session_state.processing_done:
 
                     with f3:
                         st.markdown(
-                            f"<div style='min-height:{FEATURE_MIN_HEIGHT}px; display:flex; align-items:center; justify-content:flex-start; text-align:left; padding-top:2px;'>{score_text_html(row_score)}</div>",
+                            f"<div style='min-height:{FEATURE_MIN_HEIGHT}px; display:flex; align-items:flex-start; justify-content:flex-start; text-align:left; padding-top:2px;'>{score_text_html(row_score)}</div>",
                             unsafe_allow_html=True,
                         )
 
