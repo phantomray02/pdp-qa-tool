@@ -2076,27 +2076,9 @@ def process_row(row):
     except Exception:
         return None
 
-
 # =========================================
 # SESSION STATE
 # =========================================
-top_upload_col, top_download_col = st.columns([2.4, 1.1], gap="small")
-
-with top_upload_col:
-    uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
-
-with top_download_col:
-    st.markdown("<div style='height: 30px;'></div>", unsafe_allow_html=True)
-
-    if st.session_state.report_bytes and st.session_state.report_filename:
-        st.download_button(
-            label="📥 Download Excel Report",
-            data=st.session_state.report_bytes,
-            file_name=st.session_state.report_filename,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="download_excel_report_top_inline",
-        )
-
 if "start_idx" not in st.session_state:
     st.session_state.start_idx = 0
 if "summary_rows" not in st.session_state:
@@ -2130,6 +2112,25 @@ if "report_bytes" not in st.session_state:
 if "report_filename" not in st.session_state:
     st.session_state.report_filename = None
 
+# =========================================
+# TOP UPLOAD + DOWNLOAD UI
+# =========================================
+top_upload_col, top_download_col = st.columns([2.4, 1.1], gap="small")
+
+with top_upload_col:
+    uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
+
+with top_download_col:
+    st.markdown("<div style='height: 30px;'></div>", unsafe_allow_html=True)
+
+    if st.session_state.report_bytes is not None and st.session_state.report_filename:
+        st.download_button(
+            label="📥 Download Excel Report",
+            data=st.session_state.report_bytes,
+            file_name=st.session_state.report_filename,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_excel_report_top_inline",
+        )
 
 # =========================================
 # VIEW + FILTER CONTROLS
@@ -2147,7 +2148,7 @@ if uploaded_file:
         file_bytes = uploaded_file.getvalue()
         st.session_state.uploaded_file_bytes = file_bytes
         file_hash = hashlib.md5(file_bytes).hexdigest()
-
+        
         if st.session_state.last_file_hash != file_hash:
             st.session_state.summary_rows = []
             st.session_state.export_rows = []
@@ -2161,8 +2162,11 @@ if uploaded_file:
             st.session_state.last_file_hash = file_hash
             st.session_state.selected_brand = "All"
             st.session_state.selected_retailer = "All"
+            st.session_state.auto_download_done = False
+            st.session_state.report_bytes = None
+            st.session_state.report_filename = None
             clear_in_memory_caches()
-
+            
         df = read_uploaded_csv_from_bytes(file_bytes)
         df = prepare_input_df(df)
         
