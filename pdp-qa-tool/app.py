@@ -31,7 +31,7 @@ st.set_page_config(layout="wide")
 st.title("PDP QA Tool ✅")
 
 st.markdown(
-    ""
+    """
     <style>
     div[data-testid="stFileUploader"] > section {
         background: #232733;
@@ -55,7 +55,7 @@ st.markdown(
         color: white;
     }
     </style>
-    "",
+    """,
     unsafe_allow_html=True,
 )
 
