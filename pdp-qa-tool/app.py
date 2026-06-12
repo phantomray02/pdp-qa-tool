@@ -223,7 +223,7 @@ def score_text_html(score):
 def section_header_html(label, score):
     safe_label = html_escape_text(label or "")
     return f""
-    <div style="
+    <div style=""
         display:flex;
         justify-content:space-between;
         align-items:flex-end;
