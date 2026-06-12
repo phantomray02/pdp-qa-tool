@@ -2620,12 +2620,6 @@ if uploaded_file and st.session_state.processing_done:
                         "<div style='height:2px;'></div>",
                         unsafe_allow_html=True,
                     )
-                    st.markdown(
-                        f"<div style='text-align:right; margin-top:0; margin-bottom:2px;'>{score_text_html(row_score)}</div>",
-                        unsafe_allow_html=True,
-                    )
-
-                    st.markdown("<div style='height:2px;'></div>", unsafe_allow_html=True)
 
             with right:
                 head_i1, head_i2 = st.columns(2, gap="small")
