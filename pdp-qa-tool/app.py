@@ -7,6 +7,7 @@ import json
 import time
 import hashlib
 import traceback
+import base64
 from io import BytesIO
 from difflib import SequenceMatcher
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -28,6 +29,35 @@ from requests.adapters import HTTPAdapter
 # =========================================
 st.set_page_config(layout="wide")
 st.title("PDP QA Tool ✅")
+
+st.markdown(
+    """
+    <style>
+    div[data-testid="stFileUploader"] > section {
+        background: #232733;
+        border: 1px solid #2f3442;
+        border-radius: 10px;
+        padding: 10px;
+    }
+
+    div[data-testid="stDownloadButton"] > button {
+        width: 100%;
+        min-height: 56px;
+        border-radius: 10px;
+        border: 1px solid #2f3442;
+        background: #232733;
+        color: white;
+        font-weight: 700;
+    }
+
+    div[data-testid="stDownloadButton"] > button:hover {
+        border-color: #4EA1FF;
+        color: white;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
@@ -2050,7 +2080,22 @@ def process_row(row):
 # =========================================
 # SESSION STATE
 # =========================================
-uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
+top_upload_col, top_download_col = st.columns([2.4, 1.1], gap="small")
+
+with top_upload_col:
+    uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
+
+with top_download_col:
+    st.markdown("<div style='height: 30px;'></div>", unsafe_allow_html=True)
+
+    if st.session_state.report_bytes and st.session_state.report_filename:
+        st.download_button(
+            label="📥 Download Excel Report",
+            data=st.session_state.report_bytes,
+            file_name=st.session_state.report_filename,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_excel_report_top_inline",
+        )
 
 if "start_idx" not in st.session_state:
     st.session_state.start_idx = 0
@@ -2078,17 +2123,18 @@ if "selected_brand" not in st.session_state:
     st.session_state.selected_brand = "All"
 if "selected_retailer" not in st.session_state:
     st.session_state.selected_retailer = "All"
+if "auto_download_done" not in st.session_state:
+    st.session_state.auto_download_done = False
+if "report_bytes" not in st.session_state:
+    st.session_state.report_bytes = None
+if "report_filename" not in st.session_state:
+    st.session_state.report_filename = None
+
 
 # =========================================
 # VIEW + FILTER CONTROLS
 # =========================================
 st.markdown("## 🔎 QA Viewer Controls")
-
-view_mode = st.checkbox(
-    "👁️ View Full QA (after processing)",
-    key="view_mode",
-    disabled=not st.session_state.processing_done,
-)
 
 show_only_issues = st.checkbox("❌ Show ONLY Issues", key="show_issues")
 hide_good = st.checkbox("✅ Hide Strong Matches (80%+)", key="hide_good")
@@ -2119,22 +2165,41 @@ if uploaded_file:
 
         df = read_uploaded_csv_from_bytes(file_bytes)
         df = prepare_input_df(df)
-
+        
         all_retailers = sorted(df["retailer"].dropna().astype(str).unique().tolist()) if "retailer" in df.columns else ["CVS"]
         if not all_retailers:
             all_retailers = ["CVS"]
-
-        retailer_options = ["All"] + all_retailers
-
-        if len(all_retailers) == 1:
+        
+        multi_retailer = len(all_retailers) > 1
+        
+        # Retailer must be selected before batch if multiple retailers exist.
+        if multi_retailer:
+            retailer_options = ["-- Select Retailer --"] + all_retailers
+        
+            if st.session_state.selected_retailer not in all_retailers:
+                st.session_state.selected_retailer = "-- Select Retailer --"
+        
+            selected_retailer = st.selectbox(
+                "🏪 Select Retailer",
+                retailer_options,
+                key="selected_retailer",
+            )
+        
+            if selected_retailer == "-- Select Retailer --":
+                st.info("Select a retailer to run the batch.")
+                st.stop()
+        else:
+            # Auto-select the only retailer and show it directly under upload.
             st.session_state.selected_retailer = all_retailers[0]
-        elif st.session_state.selected_retailer not in retailer_options:
-            st.session_state.selected_retailer = "All"
-
-        selected_retailer = st.selectbox("🏪 Select Retailer", retailer_options, key="selected_retailer")
-
-        if selected_retailer != "All":
-            df = df[df["retailer"].astype(str) == selected_retailer]
+            selected_retailer = st.selectbox(
+                "🏪 Select Retailer",
+                all_retailers,
+                index=0,
+                key="selected_retailer_single",
+                disabled=True,
+            )
+        
+        df = df[df["retailer"].astype(str) == selected_retailer]
 
         brands = sorted(df["brand"].dropna().astype(str).unique().tolist()) if "brand" in df.columns else []
         brand_options = ["All"] + brands
@@ -2159,7 +2224,7 @@ if uploaded_file:
 
         batch_df = df.iloc[start:end]
 
-        if not view_mode and not st.session_state.processing_done:
+        if not st.session_state.processing_done:
             st.write(f"Processing SKUs {start + 1} to {min(end, len(df))} of {len(df)}")
             st.caption(f"Batch Size: {BATCH_SIZE} | Workers: {MAX_WORKERS}")
 
@@ -2259,27 +2324,41 @@ if st.session_state.processing_done and st.session_state.summary_rows:
                     else:
                         cell.fill = red
 
-    output.seek(0)
-
-    current_retailer_for_file = st.session_state.selected_retailer if st.session_state.selected_retailer != "All" else "retailer"
+    current_retailer_for_file = st.session_state.selected_retailer if st.session_state.selected_retailer not in ["All", "-- Select Retailer --"] else "retailer"
     current_brand_for_file = st.session_state.selected_brand if st.session_state.selected_brand != "All" else "all_brands"
     safe_retailer = re.sub(r"[^A-Za-z0-9_-]+", "_", str(current_retailer_for_file))
     safe_brand = re.sub(r"[^A-Za-z0-9_-]+", "_", str(current_brand_for_file))
+    
+    report_filename = f"pdp_qa_results_{safe_retailer}_{safe_brand}.xlsx"
+    report_bytes = output.getvalue()
+    
+    st.session_state.report_bytes = report_bytes
+    st.session_state.report_filename = report_filename
 
-    st.markdown("## 📊 Export Results")
-    st.download_button(
-        label="📥 Download Excel Report",
-        data=output.getvalue(),
-        file_name=f"pdp_qa_results_{safe_retailer}_{safe_brand}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key="download_excel_report_top",
+    if not st.session_state.auto_download_done and st.session_state.report_bytes and st.session_state.report_filename:
+    b64 = base64.b64encode(st.session_state.report_bytes).decode()
+
+    components.html(
+        f"""
+        <script>
+        const link = document.createElement("a");
+        link.href = "data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}";
+        link.download = "{st.session_state.report_filename}";
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        </script>
+        """,
+        height=0,
+        width=0,
     )
 
-# =========================================
+    st.session_state.auto_download_done = True
+
 # =========================================
 # FULL VISUAL MODE
 # =========================================
-if uploaded_file and st.session_state.processing_done and view_mode:
+if uploaded_file and st.session_state.processing_done:
     try:
         if not st.session_state.uploaded_file_bytes:
             st.error("Uploaded CSV data is missing from session state.")
