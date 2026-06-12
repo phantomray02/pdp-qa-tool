@@ -31,7 +31,7 @@ st.set_page_config(layout="wide")
 st.title("PDP QA Tool ✅")
 
 st.markdown(
-    """
+    ""
     <style>
     div[data-testid="stFileUploader"] > section {
         background: #232733;
@@ -55,7 +55,7 @@ st.markdown(
         color: white;
     }
     </style>
-    """,
+    "",
     unsafe_allow_html=True,
 )
 
@@ -222,7 +222,7 @@ def score_text_html(score):
 
 def section_header_html(label, score):
     safe_label = html_escape_text(label or "")
-    return f"""
+    return f""
     <div style="
         display:flex;
         justify-content:space-between;
@@ -243,7 +243,7 @@ def section_header_html(label, score):
             {score_text_html(score)}
         </div>
     </div>
-    """
+    ""
 
 
 def avg_score_bar_html(label, score):
@@ -255,7 +255,7 @@ def avg_score_bar_html(label, score):
         color = "#C62828"
 
     safe_label = html_escape_text(label or "")
-    return f"""
+    return f""
     <div style="
         background-color:{color};
         padding:6px 10px;
@@ -273,7 +273,7 @@ def avg_score_bar_html(label, score):
         <span>{safe_label}</span>
         <span style="color:#FFFFFF; font-weight:900; font-size:20px;">{score}%</span>
     </div>
-    """
+    ""
 
 
 def column_header_link_html(label, item_number, href):
@@ -286,7 +286,7 @@ def column_header_link_html(label, item_number, href):
     else:
         item_html = f'<span style="color:#3EA6FF; font-weight:900;">{safe_item or "Missing"}</span>'
 
-    return f"""
+    return f""
     <div style="
         text-align:left;
         margin-top:0;
@@ -298,12 +298,12 @@ def column_header_link_html(label, item_number, href):
     ">
         {safe_label}: {item_html}
     </div>
-    """
+    ""
 
 
 def image_header_html(label):
     safe_label = html_escape_text(label or "")
-    return f"""
+    return f""
     <div style="
         text-align:left;
         margin-top:0;
@@ -315,13 +315,13 @@ def image_header_html(label):
     ">
         {safe_label}
     </div>
-    """
+    ""
 
 
 def image_compare_cell_html(url, box_height=IMG_BOX_HEIGHT):
     if url:
         safe_url = html.escape(str(url), quote=True)
-        return f"""
+        return f""
         <div style="
             height:{box_height}px;
             width:100%;
@@ -334,8 +334,8 @@ def image_compare_cell_html(url, box_height=IMG_BOX_HEIGHT):
         ">
             <img src="{safe_url}" style="max-width:100%; max-height:{box_height}px; object-fit:contain;" />
         </div>
-        """
-    return f"""
+        ""
+    return f""
     <div style="
         height:{box_height}px;
         width:100%;
@@ -350,6 +350,8 @@ def image_compare_cell_html(url, box_height=IMG_BOX_HEIGHT):
     ">
         Missing
     </div>
+    ""
+
 
 def image_compare_row_html(s_url, r_url, score):
     return f""
@@ -2428,7 +2430,7 @@ if st.session_state.processing_done and st.session_state.summary_rows:
         b64 = base64.b64encode(st.session_state.report_bytes).decode()
 
         components.html(
-            f"""
+            f""
             <script>
             const link = document.createElement("a");
             link.href = "data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}";
@@ -2437,7 +2439,7 @@ if st.session_state.processing_done and st.session_state.summary_rows:
             link.click();
             document.body.removeChild(link);
             </script>
-            ,
+            "",
             height=0,
             width=0,
         )
@@ -2533,80 +2535,37 @@ if uploaded_file and st.session_state.processing_done:
             if hide_good and overall_score >= 80:
                 continue
 
-            left, right = st.columns([2.72, 0.78], gap="small")
+            left, right = st.columns([2.72, 0.95], gap="small")
 
             with left:
                 top_l, top_r = st.columns(2, gap="small")
-                top_l.markdown(
-                    column_header_link_html("Salsify", sku, salsify_url),
-                    unsafe_allow_html=True,
-                )
-                top_r.markdown(
-                    column_header_link_html(retailer_name, current_target_sku or current_rpc, retail_url),
-                    unsafe_allow_html=True,
-                )
+                top_l.markdown(column_header_link_html("Salsify", sku, salsify_url), unsafe_allow_html=True)
+                top_r.markdown(column_header_link_html(retailer_name, current_target_sku or current_rpc, retail_url), unsafe_allow_html=True)
 
                 st.markdown(avg_score_bar_html("Copy — Avg", copy_avg_score), unsafe_allow_html=True)
 
                 st.markdown(section_header_html("Title", title_score), unsafe_allow_html=True)
                 t1, t2 = st.columns(2, gap="small")
                 with t1:
-                    st.markdown(
-                        "<div style='width:100%; overflow:hidden; padding-left:0; margin-left:0;'>"
-                        + equal_height_block(s_title or "Missing", min_height=88)
-                        + "</div>",
-                        unsafe_allow_html=True,
-                    )
+                    st.markdown("<div style='width:100%; overflow:hidden; padding-left:0; margin-left:0;'>" + equal_height_block(s_title or "Missing", min_height=88) + "</div>", unsafe_allow_html=True)
                 with t2:
-                    st.markdown(
-                        "<div style='width:100%; overflow:hidden; padding-left:0; margin-left:0;'>"
-                        + equal_height_block(r_title or "Missing", min_height=88)
-                        + "</div>",
-                        unsafe_allow_html=True,
-                    )
+                    st.markdown("<div style='width:100%; overflow:hidden; padding-left:0; margin-left:0;'>" + equal_height_block(r_title or "Missing", min_height=88) + "</div>", unsafe_allow_html=True)
 
                 st.markdown(section_header_html("Description", desc_score), unsafe_allow_html=True)
                 d1, d2 = st.columns(2, gap="small")
                 with d1:
-                    st.markdown(
-                        "<div style='width:100%; overflow:hidden; padding-left:0; margin-left:0;'>"
-                        + equal_height_block(s_desc or "Missing", min_height=250)
-                        + "</div>",
-                        unsafe_allow_html=True,
-                    )
+                    st.markdown("<div style='width:100%; overflow:hidden; padding-left:0; margin-left:0;'>" + equal_height_block(s_desc or "Missing", min_height=250) + "</div>", unsafe_allow_html=True)
                 with d2:
-                    st.markdown(
-                        "<div style='width:100%; overflow:hidden; padding-left:0; margin-left:0;'>"
-                        + equal_height_block(r_desc or "Missing", min_height=250)
-                        + "</div>",
-                        unsafe_allow_html=True,
-                    )
+                    st.markdown("<div style='width:100%; overflow:hidden; padding-left:0; margin-left:0;'>" + equal_height_block(r_desc or "Missing", min_height=250) + "</div>", unsafe_allow_html=True)
 
                 st.markdown(section_header_html("Features", avg_feature_score), unsafe_allow_html=True)
                 for s_val, r_val, row_score in feature_rows:
                     f1, f2 = st.columns(2, gap="small")
                     with f1:
-                        st.markdown(
-                            "<div style='width:100%; overflow:hidden; padding-left:0; margin-left:0;'>"
-                            + equal_feature_block(s_val or "Missing", min_height=54)
-                            + "</div>",
-                            unsafe_allow_html=True,
-                        )
+                        st.markdown("<div style='width:100%; overflow:hidden; padding-left:0; margin-left:0;'>" + equal_feature_block(s_val or "Missing", min_height=54) + "</div>", unsafe_allow_html=True)
                     with f2:
-                        st.markdown(
-                            "<div style='width:100%; overflow:hidden; padding-left:0; margin-left:0;'>"
-                            + equal_feature_block(r_val or "Missing", min_height=54)
-                            + "</div>",
-                            unsafe_allow_html=True,
-                        )
-                    st.markdown(
-                        f"""
-                        <div style="text-align:right; margin-top:0; margin-bottom:2px;">
-                            {score_text_html(row_score)}
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
+                        st.markdown("<div style='width:100%; overflow:hidden; padding-left:0; margin-left:0;'>" + equal_feature_block(r_val or "Missing", min_height=54) + "</div>", unsafe_allow_html=True)
+                    st.markdown(f"<div style='text-align:right; margin-top:0; margin-bottom:2px;'>{score_text_html(row_score)}</div>", unsafe_allow_html=True)
                     st.markdown("<div style='height:2px;'></div>", unsafe_allow_html=True)
 
             with right:
@@ -2619,10 +2578,24 @@ if uploaded_file and st.session_state.processing_done:
                     s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else ""
                     r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else ""
                     slot_score = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
-                    st.markdown(
-                        image_compare_row_html(s_url, r_url, slot_score),
-                        unsafe_allow_html=True,
-                    )
+
+                    img1, img2, score_col = st.columns([1, 1, 0.65], gap="small")
+                    with img1:
+                        if s_url:
+                            st.image(s_url, use_container_width=True)
+                        else:
+                            st.markdown(equal_feature_block("Missing", min_height=IMG_BOX_HEIGHT), unsafe_allow_html=True)
+                    with img2:
+                        if r_url:
+                            st.image(r_url, use_container_width=True)
+                        else:
+                            st.markdown(equal_feature_block("Missing", min_height=IMG_BOX_HEIGHT), unsafe_allow_html=True)
+                    with score_col:
+                        st.markdown(
+                            f"<div style='min-height:{IMG_BOX_HEIGHT}px; display:flex; align-items:center; justify-content:flex-start; text-align:left; margin:0; padding:0;'>{score_text_html(slot_score)}</div>",
+                            unsafe_allow_html=True,
+                        )
+                    st.markdown(f"<div style='height:{IMG_SPACE_PX}px;'></div>", unsafe_allow_html=True)
 
             st.divider()
 
