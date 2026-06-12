@@ -3,10 +3,10 @@
 # =========================================
 import re
 import html
-import json
-import time
+import json timeimport json
 import hashlib
 import traceback
+import base64
 from io import BytesIO
 from difflib import SequenceMatcher
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -17,12 +17,10 @@ import streamlit as st
 import streamlit.components.v1 as components
 from bs4 import BeautifulSoup
 from PIL import Image
-from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
 from pandas.errors import EmptyDataError
 import threading
 from requests.adapters import HTTPAdapter
-import base64
 
 # =========================================
 # APP SETUP
@@ -84,6 +82,19 @@ IMAGE_HASH_HEIGHT = 8
 HTML_CACHE_MAX = 80
 IMAGE_HASH_CACHE_MAX = 300
 
+# =========================================
+# VISUAL LAYOUT SETTINGS
+# =========================================
+SECTION_HEADER_SIZE = 30
+COPY_TEXT_SIZE = 24
+COPY_LINE_HEIGHT = 1.18
+SECTION_VERTICAL_GAP = 8
+
+IMG_GAP = "small"
+IMG_ROW_SPACER_PX = 6
+IMG_BOX_HEIGHT = 125
+IMG_SCORE_COL_RATIO = 0.34
+
 html_cache = {}
 image_hash_cache = {}
 
@@ -103,6 +114,7 @@ def get_session():
         session.headers.update(HEADERS)
         thread_local.session = session
     return thread_local.session
+
 
 # =========================================
 # GENERIC HELPERS
@@ -163,8 +175,8 @@ def equal_height_block(text, min_height=210):
         background:transparent;
         color:#FFFFFF;
         white-space:pre-wrap;
-        line-height:1.16;
-        font-size:22px;
+        line-height:{COPY_LINE_HEIGHT};
+        font-size:{COPY_TEXT_SIZE}px;
         font-weight:500;
         text-indent:0;
         overflow-wrap:anywhere;
@@ -186,8 +198,8 @@ def equal_feature_block(text, min_height=90):
         background:transparent;
         color:#FFFFFF;
         white-space:pre-wrap;
-        line-height:1.16;
-        font-size:22px;
+        line-height:{COPY_LINE_HEIGHT};
+        font-size:{COPY_TEXT_SIZE}px;
         font-weight:500;
         text-indent:0;
         overflow-wrap:anywhere;
@@ -219,12 +231,12 @@ def section_header_html(label, score):
         display:flex;
         justify-content:space-between;
         align-items:flex-end;
-        gap:10px;
-        margin-top:10px;
-        margin-bottom:10px;
+        gap:12px;
+        margin-top:{SECTION_VERTICAL_GAP}px;
+        margin-bottom:{SECTION_VERTICAL_GAP}px;
     ">
         <div style="
-            font-size:26px;
+            font-size:{SECTION_HEADER_SIZE}px;
             font-weight:900;
             color:#FFFFFF;
             line-height:1.0;
@@ -256,7 +268,7 @@ def avg_score_bar_html(label, score):
         font-weight:900;
         font-size:19px;
         margin-top:2px;
-        margin-bottom:8px;
+        margin-bottom:{IMG_ROW_SPACER_PX}px;
         display:flex;
         justify-content:space-between;
         align-items:center;
@@ -308,64 +320,42 @@ def image_header_html(label):
         {safe_label}
     </div>
     """
-    
-def image_tile_html(label, url, box_height=170):
-    safe_label = html.escape(label)
 
+
+def image_compare_box_html(url, box_height=IMG_BOX_HEIGHT):
     if url:
-        safe_url = html.escape(url, quote=True)
-        return f'''<div style="border:1px solid #E0E0E0;border-radius:8px;background:#FFFFFF;padding:8px;">
-<div style="font-size:12px;font-weight:600;margin-bottom:6px;">{safe_label}</div>
-<div style="height:{box_height}px;display:flex;align-items:center;justify-content:center;background:#FAFAFA;border-radius:6px;overflow:hidden;">
-<img src="{safe_url}" style="max-width:100%;max-height:{box_height}px;object-fit:contain;" />
-</div>
-</div>'''
+        safe_url = html.escape(str(url), quote=True)
+        return f"""
+        <div style="
+            height:{box_height}px;
+            width:100%;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            margin:0;
+            padding:0;
+            overflow:hidden;
+        ">
+            <img src="{safe_url}" style="max-width:100%; max-height:{box_height}px; object-fit:contain;" />
+        </div>
+        """
     else:
-        return f'''<div style="border:1px solid #E0E0E0;border-radius:8px;background:#FFFFFF;padding:8px;">
-<div style="font-size:12px;font-weight:600;margin-bottom:6px;">{safe_label}</div>
-<div style="height:{box_height}px;display:flex;align-items:center;justify-content:center;background:#FAFAFA;border-radius:6px;color:#C62828;font-size:14px;font-weight:600;">
-❌ Missing
-</div>
-</div>'''
-
-
-def image_slot_block_html(slot_num, s_url, r_url, score, retailer_name="CVS", box_height=170):
-    if score >= 80:
-        score_color = "#2E7D32"
-    elif score >= 50:
-        score_color = "#F9A825"
-    else:
-        score_color = "#C62828"
-
-    return f'''<div style="border:1px solid #DADADA;border-radius:10px;padding:10px;margin-bottom:12px;background:#FCFCFC;">
-<div style="font-weight:700;margin-bottom:10px;color:{score_color};">Image Slot {slot_num} — {score}%</div>
-<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
-{image_tile_html("Salsify", s_url, box_height=box_height)}
-{image_tile_html(retailer_name, r_url, box_height=box_height)}
-</div>
-</div>'''
-
-
-def build_image_panel_html(s_images, r_images, max_images, retailer_name="CVS", box_height=170):
-    blocks = []
-
-    for i in range(max_images):
-        s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else ""
-        r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else ""
-        score = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
-
-        blocks.append(
-            image_slot_block_html(
-                slot_num=i + 1,
-                s_url=s_url,
-                r_url=r_url,
-                score=score,
-                retailer_name=retailer_name,
-                box_height=box_height,
-            )
-        )
-
-    return f'''<div style="padding-right:4px;">{"".join(blocks)}</div>'''
+        return f"""
+        <div style="
+            height:{box_height}px;
+            width:100%;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            margin:0;
+            padding:0;
+            color:#C62828;
+            font-size:16px;
+            font-weight:700;
+        ">
+            Missing
+        </div>
+        """
 
 
 def read_uploaded_csv_from_bytes(file_bytes):
@@ -1905,8 +1895,7 @@ def process_row(row):
         )
 
         # IMPORTANT:
-        # Do NOT create a nested thread pool here.
-        # The outer batch executor already parallelizes rows.
+        # No nested threadpool here. The outer batch executor already parallelizes rows.
         s_bundle = get_salsify_bundle(salsify_url)
         r_bundle = get_cvs_bundle(retail_url, target_sku)
 
@@ -2074,6 +2063,7 @@ def process_row(row):
     except Exception:
         return None
 
+
 # =========================================
 # SESSION STATE
 # =========================================
@@ -2099,8 +2089,6 @@ if "last_file_hash" not in st.session_state:
     st.session_state.last_file_hash = None
 if "uploaded_file_bytes" not in st.session_state:
     st.session_state.uploaded_file_bytes = None
-if "selected_brand" not in st.session_state:
-    st.session_state.selected_brand = "All"
 if "selected_retailer" not in st.session_state:
     st.session_state.selected_retailer = "All"
 if "auto_download_done" not in st.session_state:
@@ -2109,6 +2097,8 @@ if "report_bytes" not in st.session_state:
     st.session_state.report_bytes = None
 if "report_filename" not in st.session_state:
     st.session_state.report_filename = None
+if "run_context_key" not in st.session_state:
+    st.session_state.run_context_key = None
 
 # =========================================
 # TOP UPLOAD + DOWNLOAD UI
@@ -2146,7 +2136,8 @@ if uploaded_file:
         file_bytes = uploaded_file.getvalue()
         st.session_state.uploaded_file_bytes = file_bytes
         file_hash = hashlib.md5(file_bytes).hexdigest()
-        
+
+        # Full reset when file changes.
         if st.session_state.last_file_hash != file_hash:
             st.session_state.summary_rows = []
             st.session_state.export_rows = []
@@ -2158,40 +2149,39 @@ if uploaded_file:
             st.session_state.processing_done = False
             st.session_state.progress_bar = None
             st.session_state.last_file_hash = file_hash
-            st.session_state.selected_brand = "All"
             st.session_state.selected_retailer = "All"
             st.session_state.auto_download_done = False
             st.session_state.report_bytes = None
             st.session_state.report_filename = None
+            st.session_state.run_context_key = None
             clear_in_memory_caches()
-            
+
         df = read_uploaded_csv_from_bytes(file_bytes)
         df = prepare_input_df(df)
-        
+
         all_retailers = sorted(df["retailer"].dropna().astype(str).unique().tolist()) if "retailer" in df.columns else ["CVS"]
         if not all_retailers:
             all_retailers = ["CVS"]
-        
+
         multi_retailer = len(all_retailers) > 1
-        
-        # Retailer must be selected before batch if multiple retailers exist.
+
+        # Force retailer selection only if multiple retailers exist.
         if multi_retailer:
             retailer_options = ["-- Select Retailer --"] + all_retailers
-        
+
             if st.session_state.selected_retailer not in all_retailers:
                 st.session_state.selected_retailer = "-- Select Retailer --"
-        
+
             selected_retailer = st.selectbox(
                 "🏪 Select Retailer",
                 retailer_options,
                 key="selected_retailer",
             )
-        
+
             if selected_retailer == "-- Select Retailer --":
                 st.info("Select a retailer to run the batch.")
                 st.stop()
         else:
-            # Auto-select the only retailer and show it directly under upload.
             st.session_state.selected_retailer = all_retailers[0]
             selected_retailer = st.selectbox(
                 "🏪 Select Retailer",
@@ -2200,22 +2190,33 @@ if uploaded_file:
                 key="selected_retailer_single",
                 disabled=True,
             )
-        
+
+        # Fresh batch only when retailer changes.
+        current_run_context_key = (
+            file_hash,
+            selected_retailer,
+        )
+
+        if st.session_state.run_context_key != current_run_context_key:
+            st.session_state.summary_rows = []
+            st.session_state.export_rows = []
+            st.session_state.debug_rows = []
+            st.session_state.summary_skus = set()
+            st.session_state.detail_skus = set()
+            st.session_state.debug_skus = set()
+            st.session_state.start_idx = 0
+            st.session_state.processing_done = False
+            st.session_state.progress_bar = None
+            st.session_state.auto_download_done = False
+            st.session_state.report_bytes = None
+            st.session_state.report_filename = None
+            st.session_state.run_context_key = current_run_context_key
+
+        # ALL brands for the retailer run together.
         df = df[df["retailer"].astype(str) == selected_retailer]
 
-        brands = sorted(df["brand"].dropna().astype(str).unique().tolist()) if "brand" in df.columns else []
-        brand_options = ["All"] + brands
-
-        if st.session_state.selected_brand not in brand_options:
-            st.session_state.selected_brand = "All"
-
-        selected_brand = st.selectbox("🏷️ Select Brand", brand_options, key="selected_brand")
-
-        if selected_brand != "All" and "brand" in df.columns:
-            df = df[df["brand"].astype(str) == selected_brand]
-
         if df.empty:
-            st.warning("No rows found for the selected retailer / brand.")
+            st.warning("No rows found for the selected retailer.")
             st.stop()
 
         start = st.session_state.start_idx
@@ -2242,31 +2243,31 @@ if uploaded_file:
             completed = 0
 
             batch_records = batch_df.to_dict("records")
-            
+
             with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                 futures = [executor.submit(process_row, row_dict) for row_dict in batch_records]
-            
+
                 for future in as_completed(futures):
                     completed += 1
                     result = future.result()
-            
+
                     if result:
                         summary = result.get("summary")
                         detail = result.get("detail")
                         debug = result.get("debug")
-            
+
                         if summary and summary["SKU"] not in st.session_state.summary_skus:
                             st.session_state.summary_rows.append(summary)
                             st.session_state.summary_skus.add(summary["SKU"])
-            
+
                         if detail and detail["SKU"] not in st.session_state.detail_skus:
                             st.session_state.export_rows.append(detail)
                             st.session_state.detail_skus.add(detail["SKU"])
-            
+
                         if debug and debug["SKU"] not in st.session_state.debug_skus:
                             st.session_state.debug_rows.append(debug)
                             st.session_state.debug_skus.add(debug["SKU"])
-            
+
                     if completed % UI_UPDATE_EVERY == 0 or completed == total:
                         progress_bar.progress(completed / max(total, 1))
                         status_text.markdown(
@@ -2333,16 +2334,10 @@ if st.session_state.processing_done and st.session_state.summary_rows:
         if st.session_state.selected_retailer not in ["All", "-- Select Retailer --"]
         else "retailer"
     )
-    current_brand_for_file = (
-        st.session_state.selected_brand
-        if st.session_state.selected_brand != "All"
-        else "all_brands"
-    )
 
     safe_retailer = re.sub(r"[^A-Za-z0-9_-]+", "_", str(current_retailer_for_file))
-    safe_brand = re.sub(r"[^A-Za-z0-9_-]+", "_", str(current_brand_for_file))
 
-    report_filename = f"pdp_qa_results_{safe_retailer}_{safe_brand}.xlsx"
+    report_filename = f"pdp_qa_results_{safe_retailer}.xlsx"
     report_bytes = output.getvalue()
 
     st.session_state.report_bytes = report_bytes
@@ -2387,11 +2382,8 @@ if uploaded_file and st.session_state.processing_done:
         if st.session_state.selected_retailer not in ["All", "-- Select Retailer --"] and "retailer" in df.columns:
             df = df[df["retailer"].astype(str) == st.session_state.selected_retailer]
 
-        if st.session_state.selected_brand != "All" and "brand" in df.columns:
-            df = df[df["brand"].astype(str) == st.session_state.selected_brand]
-
         if df.empty:
-            st.warning("No rows found for the selected retailer / brand.")
+            st.warning("No rows found for the selected retailer.")
             st.stop()
 
         st.markdown("## 👁️ Full Visual QA Review")
@@ -2488,7 +2480,7 @@ if uploaded_file and st.session_state.processing_done:
 
                 with t1:
                     st.markdown(
-                        "<div style='width:100%; overflow:hidden;'>"
+                        "<div style='width:100%; overflow:hidden; padding-left:0; margin-left:0;'>"
                         + equal_height_block(s_title or "Missing", min_height=76)
                         + "</div>",
                         unsafe_allow_html=True,
@@ -2496,7 +2488,7 @@ if uploaded_file and st.session_state.processing_done:
 
                 with t2:
                     st.markdown(
-                        "<div style='width:100%; overflow:hidden;'>"
+                        "<div style='width:100%; overflow:hidden; padding-left:0; margin-left:0;'>"
                         + equal_height_block(r_title or "Missing", min_height=76)
                         + "</div>",
                         unsafe_allow_html=True,
@@ -2508,7 +2500,7 @@ if uploaded_file and st.session_state.processing_done:
 
                 with d1:
                     st.markdown(
-                        "<div style='width:100%; overflow:hidden;'>"
+                        "<div style='width:100%; overflow:hidden; padding-left:0; margin-left:0;'>"
                         + equal_height_block(s_desc or "Missing", min_height=220)
                         + "</div>",
                         unsafe_allow_html=True,
@@ -2516,7 +2508,7 @@ if uploaded_file and st.session_state.processing_done:
 
                 with d2:
                     st.markdown(
-                        "<div style='width:100%; overflow:hidden;'>"
+                        "<div style='width:100%; overflow:hidden; padding-left:0; margin-left:0;'>"
                         + equal_height_block(r_desc or "Missing", min_height=220)
                         + "</div>",
                         unsafe_allow_html=True,
@@ -2530,7 +2522,7 @@ if uploaded_file and st.session_state.processing_done:
 
                     with f1:
                         st.markdown(
-                            "<div style='width:100%; overflow:hidden;'>"
+                            "<div style='width:100%; overflow:hidden; padding-left:0; margin-left:0;'>"
                             + equal_feature_block(s_val or "Missing", min_height=46)
                             + "</div>",
                             unsafe_allow_html=True,
@@ -2538,7 +2530,7 @@ if uploaded_file and st.session_state.processing_done:
 
                     with f2:
                         st.markdown(
-                            "<div style='width:100%; overflow:hidden;'>"
+                            "<div style='width:100%; overflow:hidden; padding-left:0; margin-left:0;'>"
                             + equal_feature_block(r_val or "Missing", min_height=46)
                             + "</div>",
                             unsafe_allow_html=True,
@@ -2571,35 +2563,32 @@ if uploaded_file and st.session_state.processing_done:
                     r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else ""
                     slot_score = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
 
-                    img1, img2, score_col = st.columns([1, 1, 0.34], gap="small")
+                    # Equal spacing system: same row height, same gaps, same centered score.
+                    img1, img2, score_col = st.columns([1, 1, IMG_SCORE_COL_RATIO], gap=IMG_GAP)
 
                     with img1:
-                        if s_url:
-                            st.image(s_url, use_container_width=True)
-                        else:
-                            st.markdown(
-                                equal_feature_block("Missing", min_height=125),
-                                unsafe_allow_html=True,
-                            )
+                        st.markdown(
+                            image_compare_box_html(s_url, box_height=IMG_BOX_HEIGHT),
+                            unsafe_allow_html=True,
+                        )
 
                     with img2:
-                        if r_url:
-                            st.image(r_url, use_container_width=True)
-                        else:
-                            st.markdown(
-                                equal_feature_block("Missing", min_height=125),
-                                unsafe_allow_html=True,
-                            )
+                        st.markdown(
+                            image_compare_box_html(r_url, box_height=IMG_BOX_HEIGHT),
+                            unsafe_allow_html=True,
+                        )
 
                     with score_col:
                         st.markdown(
                             f"""
                             <div style="
-                                min-height:125px;
+                                height:{IMG_BOX_HEIGHT}px;
                                 display:flex;
                                 align-items:center;
                                 justify-content:flex-end;
                                 text-align:right;
+                                margin:0;
+                                padding:0;
                             ">
                                 {score_text_html(slot_score)}
                             </div>
@@ -2607,7 +2596,10 @@ if uploaded_file and st.session_state.processing_done:
                             unsafe_allow_html=True,
                         )
 
-                    st.markdown("<div style='height:2px;'></div>", unsafe_allow_html=True)
+                    st.markdown(
+                        f"<div style='height:{IMG_ROW_SPACER_PX}px;'></div>",
+                        unsafe_allow_html=True,
+                    )
 
             st.divider()
 
@@ -2615,4 +2607,3 @@ if uploaded_file and st.session_state.processing_done:
         st.error("🔥 CRITICAL APP ERROR")
         st.text(str(e))
         st.text(traceback.format_exc())
-
