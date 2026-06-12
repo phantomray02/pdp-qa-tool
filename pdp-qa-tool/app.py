@@ -128,15 +128,14 @@ def equal_height_block(text, min_height=210):
     return f"""
     <div style="
         min-height:{min_height}px;
-        padding:14px 16px;
-        border:1px solid #1E1E1E;
-        border-radius:4px;
-        background:#000000;
+        padding:4px 6px 4px 0;
+        background:transparent;
         color:#FFFFFF;
         white-space:pre-wrap;
-        line-height:1.7;
-        font-size:18px;
+        line-height:1.65;
+        font-size:19px;
         font-weight:500;
+        margin:0;
     ">
         {safe_text}
     </div>
@@ -148,15 +147,14 @@ def equal_feature_block(text, min_height=90):
     return f"""
     <div style="
         min-height:{min_height}px;
-        padding:12px 14px;
-        border:1px solid #1E1E1E;
-        border-radius:4px;
-        background:#000000;
+        padding:4px 6px 4px 0;
+        background:transparent;
         color:#FFFFFF;
         white-space:pre-wrap;
-        line-height:1.65;
-        font-size:17px;
+        line-height:1.6;
+        font-size:18px;
         font-weight:500;
+        margin:0;
     ">
         {safe_text}
     </div>
@@ -171,6 +169,14 @@ def score_badge(score):
     return f"🔴 <span style='color:#F44336; font-weight:700'>{score}% (Poor)</span>"
 
 
+def score_badge_large(score):
+    if score >= 80:
+        return f"<span style='color:#4CAF50; font-weight:800; font-size:28px;'>{score}% (Strong)</span>"
+    if score >= 50:
+        return f"<span style='color:#FFC107; font-weight:800; font-size:28px;'>{score}% (Review)</span>"
+    return f"<span style='color:#F44336; font-weight:800; font-size:28px;'>{score}% (Poor)</span>"
+
+
 def score_bar(score):
     if score >= 80:
         color = "#2E7D32"
@@ -180,9 +186,36 @@ def score_bar(score):
         color = "#C62828"
 
     return (
-        f"<div style='background-color:{color}; padding:6px 10px; border-radius:6px; "
-        f"color:white; font-weight:600; margin-top:6px; margin-bottom:6px;'>Score: {score}%</div>"
+        f"<div style='background-color:{color}; padding:7px 12px; border-radius:6px; "
+        f"color:white; font-weight:700; font-size:18px; margin-top:6px; margin-bottom:10px;'>"
+        f"Score: {score}%</div>"
     )
+
+
+def section_header_html(label, score):
+    safe_label = html_escape_text(label or "")
+    return f"""
+    <div style="
+        display:flex;
+        justify-content:space-between;
+        align-items:flex-end;
+        gap:12px;
+        margin-top:4px;
+        margin-bottom:6px;
+    ">
+        <div style="
+            font-size:32px;
+            font-weight:900;
+            color:#FFFFFF;
+            line-height:1.1;
+        ">
+            {safe_label}
+        </div>
+        <div style="text-align:right; line-height:1.1;">
+            {score_badge_large(score)}
+        </div>
+    </div>
+    """
 
 
 def image_tile_html(label, url, box_height=170):
@@ -336,9 +369,9 @@ def column_header_link_html(label, item_number, href):
 
     return f"""
     <div style="
-        text-align:center;
-        margin-top:2px;
-        margin-bottom:10px;
+        text-align:left;
+        margin-top:0;
+        margin-bottom:6px;
         font-size:24px;
         font-weight:800;
         color:#FFFFFF;
@@ -353,10 +386,10 @@ def image_header_html(label):
     safe_label = html_escape_text(label or "")
     return f"""
     <div style="
-        text-align:center;
-        margin-top:4px;
-        margin-bottom:8px;
-        font-size:18px;
+        text-align:left;
+        margin-top:0;
+        margin-bottom:6px;
+        font-size:24px;
         font-weight:800;
         color:#FFFFFF;
         line-height:1.2;
@@ -1188,7 +1221,7 @@ def score_variant_window(window_text, vendor_start, window_start, target_rpc="",
         score += 100
         reason.append("skuId_match")
 
-    # Strong signal: dynamicMediaUrl with /841269_1.jpg pattern.
+    # Strong signal: dynamicMediaUrl with /target_rpc_#.jpg pattern.
     dm_match = re.search(
         rf'"dynamicMediaUrl"\s*:\s*"([^"]*?/({rpc})(?:_[0-9]+)?\.jpg[^"]*)"',
         window_text,
@@ -2473,6 +2506,7 @@ if uploaded_file and st.session_state.processing_done and view_mode:
                 feature_scores.append(keyword_score(s_val, r_val))
 
             avg_feature_score = int(sum(feature_scores) / len(feature_scores)) if feature_scores else 0
+            copy_avg_score = int((title_score + desc_score + avg_feature_score) / 3)
 
             img_scores = []
             max_images = max(len(s_images), len(r_images))
@@ -2494,11 +2528,15 @@ if uploaded_file and st.session_state.processing_done and view_mode:
             if hide_good and overall_score >= 80:
                 continue
 
-            left, right = st.columns([2.05, 1.15], gap="medium")
+            left, right = st.columns([2.2, 1.0], gap="small")
 
             with left:
-                # Copy-column headers: centered, bigger, bold, blue hyperlink item numbers.
-                c1, c2 = st.columns(2)
+                # Copy overall score across the top like images.
+                st.markdown(section_header_html("Copy — Avg", copy_avg_score), unsafe_allow_html=True)
+                st.markdown(score_bar(copy_avg_score), unsafe_allow_html=True)
+
+                # Copy-column headers moved LEFT.
+                c1, c2 = st.columns(2, gap="small")
                 c1.markdown(
                     column_header_link_html("Salsify", sku, salsify_url),
                     unsafe_allow_html=True,
@@ -2508,27 +2546,27 @@ if uploaded_file and st.session_state.processing_done and view_mode:
                     unsafe_allow_html=True,
                 )
 
-                st.markdown(f"### 🏷️ Title {score_badge(title_score)}", unsafe_allow_html=True)
-                c1, c2 = st.columns(2)
+                st.markdown(section_header_html("Title", title_score), unsafe_allow_html=True)
+                c1, c2 = st.columns(2, gap="small")
 
                 c1.markdown(
-                    equal_height_block(s_title or "Missing", min_height=120),
+                    equal_height_block(s_title or "Missing", min_height=110),
                     unsafe_allow_html=True,
                 )
                 c2.markdown(
-                    equal_height_block(r_title or "Missing", min_height=120),
+                    equal_height_block(r_title or "Missing", min_height=110),
                     unsafe_allow_html=True,
                 )
 
-                st.markdown(f"### 📄 Description {score_badge(desc_score)}", unsafe_allow_html=True)
-                c1, c2 = st.columns(2)
+                st.markdown(section_header_html("Description", desc_score), unsafe_allow_html=True)
+                c1, c2 = st.columns(2, gap="small")
 
                 c1.markdown(
-                    equal_height_block(s_desc or "Missing", min_height=340),
+                    equal_height_block(s_desc or "Missing", min_height=360),
                     unsafe_allow_html=True,
                 )
                 c2.markdown(
-                    equal_height_block(r_desc or "Missing", min_height=340),
+                    equal_height_block(r_desc or "Missing", min_height=360),
                     unsafe_allow_html=True,
                 )
 
@@ -2538,35 +2576,35 @@ if uploaded_file and st.session_state.processing_done and view_mode:
                     f"Features: {debug_data.get('Features Path', '')}"
                 )
 
-                st.markdown(f"### 📌 Features {score_badge(avg_feature_score)}", unsafe_allow_html=True)
+                st.markdown(section_header_html("Features", avg_feature_score), unsafe_allow_html=True)
 
                 for i in range(max_features):
                     s_val = s_text.get(feature_fields[i], "") if i < len(feature_fields) else ""
                     r_val = retailer_features[i] if i < len(retailer_features) else ""
                     score = keyword_score(s_val, r_val)
 
-                    c1, c2 = st.columns(2)
+                    c1, c2 = st.columns(2, gap="small")
                     c1.markdown(
-                        equal_feature_block(s_val or "Missing", min_height=100),
+                        equal_feature_block(s_val or "Missing", min_height=72),
                         unsafe_allow_html=True,
                     )
                     c2.markdown(
-                        equal_feature_block(r_val or "Missing", min_height=100),
+                        equal_feature_block(r_val or "Missing", min_height=72),
                         unsafe_allow_html=True,
                     )
 
                     st.markdown(
-                        f"<div style='margin-top:4px; margin-bottom:10px;'>{score_badge(score)}</div>",
+                        f"<div style='margin-top:2px; margin-bottom:6px; text-align:right;'>{score_badge(score)}</div>",
                         unsafe_allow_html=True,
                     )
-                    st.divider()
+                    st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
 
             with right:
-                st.markdown(f"### 🖼️ Images — Avg {score_badge(avg_img_score)}", unsafe_allow_html=True)
+                st.markdown(section_header_html("Images — Avg", avg_img_score), unsafe_allow_html=True)
                 st.markdown(score_bar(avg_img_score), unsafe_allow_html=True)
 
-                # Show the top image headers ONCE only.
-                img_head_left, img_head_right = st.columns(2, gap="medium")
+                # Show the top image headers ONCE only, moved LEFT.
+                img_head_left, img_head_right = st.columns(2, gap="small")
                 img_head_left.markdown(image_header_html("Salsify"), unsafe_allow_html=True)
                 img_head_right.markdown(image_header_html(retailer_name), unsafe_allow_html=True)
 
@@ -2575,41 +2613,35 @@ if uploaded_file and st.session_state.processing_done and view_mode:
                     r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else ""
                     slot_score = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
 
-                    label_col, score_col = st.columns([3, 1])
-
-                    with label_col:
+                    # Remove Image Slot label, keep score only.
+                    score_left, score_right = st.columns([1, 1], gap="small")
+                    with score_right:
                         st.markdown(
-                            f"<div style='font-size:13px; font-weight:700; margin-top:8px;'>Image Slot {i + 1}</div>",
+                            f"<div style='text-align:right; margin-top:2px; margin-bottom:4px;'>{score_badge(slot_score)}</div>",
                             unsafe_allow_html=True,
                         )
 
-                    with score_col:
-                        st.markdown(
-                            f"<div style='text-align:right; margin-top:8px;'>{score_badge(slot_score)}</div>",
-                            unsafe_allow_html=True,
-                        )
-
-                    img1, img2 = st.columns(2, gap="medium")
+                    img1, img2 = st.columns(2, gap="small")
 
                     with img1:
                         if s_url:
-                            st.image(s_url, width=190)
+                            st.image(s_url, width=240)
                         else:
                             st.markdown(
-                                equal_feature_block("Missing", min_height=150),
+                                equal_feature_block("Missing", min_height=170),
                                 unsafe_allow_html=True,
                             )
 
                     with img2:
                         if r_url:
-                            st.image(r_url, width=190)
+                            st.image(r_url, width=240)
                         else:
                             st.markdown(
-                                equal_feature_block("Missing", min_height=150),
+                                equal_feature_block("Missing", min_height=170),
                                 unsafe_allow_html=True,
                             )
 
-                    st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
+                    st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
 
             st.caption(
                 f"Title: {title_score}% | "
