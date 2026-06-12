@@ -2624,7 +2624,6 @@ if uploaded_file and st.session_state.processing_done:
                     st.markdown("<div style='height:2px;'></div>", unsafe_allow_html=True)
 
             with right:
-with right:
                 head_i1, head_i2 = st.columns(2, gap="small")
                 head_i1.markdown(image_header_html("Salsify"), unsafe_allow_html=True)
                 head_i2.markdown(image_header_html(retailer_name), unsafe_allow_html=True)
