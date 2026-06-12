@@ -219,7 +219,6 @@ def score_text_html(score):
 
     return f"<span style='color:{color}; font-weight:900; font-size:22px;'>{score}% ({label})</span>"
 
-
 def section_header_html(label, score):
     safe_label = html_escape_text(label or "")
     return f"""
@@ -316,6 +315,7 @@ def image_header_html(label):
         {safe_label}
     </div>
     """
+
 
 def image_compare_cell_html(url, box_height=IMG_BOX_HEIGHT):
     if url:
