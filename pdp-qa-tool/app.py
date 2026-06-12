@@ -72,9 +72,9 @@ MAX_CACHE = 400
 # =========================================
 # PERFORMANCE SETTINGS
 # =========================================
-BATCH_SIZE = 12
-MAX_WORKERS = 4
-UI_UPDATE_EVERY = 1
+BATCH_SIZE = 16
+MAX_WORKERS = 6
+UI_UPDATE_EVERY = 4
 
 # Faster image compare via tiny difference hash.
 IMAGE_HASH_WIDTH = 9
@@ -94,8 +94,8 @@ def get_session():
     if not hasattr(thread_local, "session"):
         session = requests.Session()
         adapter = HTTPAdapter(
-            pool_connections=20,
-            pool_maxsize=20,
+            pool_connections=40,
+            pool_maxsize=40,
             max_retries=0,
         )
         session.mount("http://", adapter)
@@ -103,7 +103,6 @@ def get_session():
         session.headers.update(HEADERS)
         thread_local.session = session
     return thread_local.session
-
 
 # =========================================
 # GENERIC HELPERS
@@ -1905,12 +1904,11 @@ def process_row(row):
             cvs_rpc=cvs_rpc,
         )
 
-        with ThreadPoolExecutor(max_workers=2) as row_executor:
-            s_future = row_executor.submit(get_salsify_bundle, salsify_url)
-            r_future = row_executor.submit(get_cvs_bundle, retail_url, target_sku)
-
-            s_bundle = s_future.result()
-            r_bundle = r_future.result()
+        # IMPORTANT:
+        # Do NOT create a nested thread pool here.
+        # The outer batch executor already parallelizes rows.
+        s_bundle = get_salsify_bundle(salsify_url)
+        r_bundle = get_cvs_bundle(retail_url, target_sku)
 
         s_text = s_bundle["text"]
         s_images = s_bundle["images"]
@@ -2243,30 +2241,32 @@ if uploaded_file:
             total = len(batch_df)
             completed = 0
 
+            batch_records = batch_df.to_dict("records")
+            
             with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-                futures = [executor.submit(process_row, row.to_dict()) for _, row in batch_df.iterrows()]
-
+                futures = [executor.submit(process_row, row_dict) for row_dict in batch_records]
+            
                 for future in as_completed(futures):
                     completed += 1
                     result = future.result()
-
+            
                     if result:
                         summary = result.get("summary")
                         detail = result.get("detail")
                         debug = result.get("debug")
-
+            
                         if summary and summary["SKU"] not in st.session_state.summary_skus:
                             st.session_state.summary_rows.append(summary)
                             st.session_state.summary_skus.add(summary["SKU"])
-
+            
                         if detail and detail["SKU"] not in st.session_state.detail_skus:
                             st.session_state.export_rows.append(detail)
                             st.session_state.detail_skus.add(detail["SKU"])
-
+            
                         if debug and debug["SKU"] not in st.session_state.debug_skus:
                             st.session_state.debug_rows.append(debug)
                             st.session_state.debug_skus.add(debug["SKU"])
-
+            
                     if completed % UI_UPDATE_EVERY == 0 or completed == total:
                         progress_bar.progress(completed / max(total, 1))
                         status_text.markdown(
