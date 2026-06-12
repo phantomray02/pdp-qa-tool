@@ -11,7 +11,6 @@ from io import BytesIO
 from difflib import SequenceMatcher
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-
 import pandas as pd
 import requests
 import streamlit as st
@@ -23,7 +22,6 @@ from openpyxl.styles import PatternFill
 from pandas.errors import EmptyDataError
 import threading
 from requests.adapters import HTTPAdapter
-
 
 # =========================================
 # APP SETUP
@@ -61,6 +59,7 @@ image_hash_cache = {}
 
 thread_local = threading.local()
 
+
 def get_session():
     if not hasattr(thread_local, "session"):
         session = requests.Session()
@@ -74,7 +73,7 @@ def get_session():
         session.headers.update(HEADERS)
         thread_local.session = session
     return thread_local.session
-    
+
 
 # =========================================
 # GENERIC HELPERS
@@ -162,7 +161,8 @@ def equal_feature_block(text, min_height=90):
         {safe_text}
     </div>
     """
-    
+
+
 def score_badge(score):
     if score >= 80:
         return f"✅ <span style='color:#4CAF50; font-weight:700'>{score}% (Strong)</span>"
@@ -205,7 +205,7 @@ def image_tile_html(label, url, box_height=170):
 </div>'''
 
 
-def image_slot_block_html(slot_num, s_url, r_url, score, box_height=170):
+def image_slot_block_html(slot_num, s_url, r_url, score, retailer_name="CVS", box_height=170):
     if score >= 80:
         score_color = "#2E7D32"
     elif score >= 50:
@@ -217,12 +217,12 @@ def image_slot_block_html(slot_num, s_url, r_url, score, box_height=170):
 <div style="font-weight:700;margin-bottom:10px;color:{score_color};">Image Slot {slot_num} — {score}%</div>
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
 {image_tile_html("Salsify", s_url, box_height=box_height)}
-{image_tile_html("CVS", r_url, box_height=box_height)}
+{image_tile_html(retailer_name, r_url, box_height=box_height)}
 </div>
 </div>'''
 
 
-def build_image_panel_html(s_images, r_images, max_images, box_height=170):
+def build_image_panel_html(s_images, r_images, max_images, retailer_name="CVS", box_height=170):
     blocks = []
 
     for i in range(max_images):
@@ -236,6 +236,7 @@ def build_image_panel_html(s_images, r_images, max_images, box_height=170):
                 s_url=s_url,
                 r_url=r_url,
                 score=score,
+                retailer_name=retailer_name,
                 box_height=box_height,
             )
         )
@@ -259,9 +260,31 @@ def read_uploaded_csv_from_bytes(file_bytes):
     raise last_error if last_error else EmptyDataError("Could not parse uploaded CSV.")
 
 
+def infer_retailer_name_from_url(url):
+    url = (url or "").lower()
+
+    if "cvs.com" in url:
+        return "CVS"
+    if "walmart.com" in url:
+        return "Walmart"
+    if "target.com" in url:
+        return "Target"
+    if "kroger.com" in url:
+        return "Kroger"
+    if "samsclub.com" in url or "sam's club" in url:
+        return "Sam's Club"
+    if "walgreens.com" in url:
+        return "Walgreens"
+    if "amazon.com" in url:
+        return "Amazon"
+
+    return "Retailer"
+
+
 def prepare_input_df(df):
     df = df.copy()
     df.columns = [c.strip().lower() for c in df.columns]
+
     df.rename(
         columns={
             "salsify url": "salsify_url",
@@ -269,6 +292,8 @@ def prepare_input_df(df):
             "sku id": "sku",
             "product sku": "sku",
             "cvs rpc": "cvs_rpc",
+            "retailer name": "retailer",
+            "retailer_name": "retailer",
         },
         inplace=True,
     )
@@ -281,12 +306,66 @@ def prepare_input_df(df):
     if missing:
         raise ValueError(f"Missing required columns: {missing}")
 
+    if "retailer" not in df.columns:
+        df["retailer"] = df["retail_url"].apply(infer_retailer_name_from_url)
+    else:
+        df["retailer"] = df["retailer"].fillna("").astype(str).str.strip()
+        inferred = df["retail_url"].apply(infer_retailer_name_from_url)
+        df["retailer"] = df["retailer"].where(df["retailer"] != "", inferred)
+
+    if "cvs_rpc" not in df.columns:
+        df["cvs_rpc"] = ""
+
     return df
 
 
 def clear_in_memory_caches():
     html_cache.clear()
     image_hash_cache.clear()
+
+
+def column_header_link_html(label, item_number, href):
+    safe_label = html_escape_text(label or "")
+    safe_item = html_escape_text(item_number or "")
+    safe_href = html.escape(str(href or ""), quote=True)
+
+    if safe_href and safe_item:
+        item_html = f'<a href="{safe_href}" target="_blank" style="color:#3EA6FF; text-decoration:none; font-weight:700;">{safe_item}</a>'
+    else:
+        item_html = f'<span style="color:#3EA6FF; font-weight:700;">{safe_item or "Missing"}</span>'
+
+    return f"""
+    <div style="
+        text-align:center;
+        margin-top:2px;
+        margin-bottom:10px;
+        font-size:24px;
+        font-weight:800;
+        color:#FFFFFF;
+        line-height:1.2;
+    ">
+        {safe_label}: {item_html}
+    </div>
+    """
+
+
+def image_header_html(label):
+    safe_label = html_escape_text(label or "")
+    return f"""
+    <div style="
+        text-align:center;
+        margin-top:4px;
+        margin-bottom:8px;
+        font-size:18px;
+        font-weight:800;
+        color:#FFFFFF;
+        line-height:1.2;
+    ">
+        {safe_label}
+    </div>
+    """
+
+
 # =========================================
 # HTML FETCH
 # =========================================
@@ -312,7 +391,8 @@ def get_html(url):
         pass
 
     return ""
-    
+
+
 # =========================================
 # SALSIFY PARSERS
 # =========================================
@@ -415,8 +495,9 @@ def get_salsify_text(url):
 def get_salsify_images(url):
     return get_salsify_bundle(url)["images"]
 
+
 # =========================================
-# CVS PARSERS
+# CVS / RETAILER PARSERS
 # =========================================
 def clean_cvs_text(text):
     if not text:
@@ -425,7 +506,7 @@ def clean_cvs_text(text):
     text = str(text)
 
     # Basic escape normalization.
-    text = text.replace("\\u0026", "&")
+    text = text.replace("\\u0026", "&amp;")
     text = text.replace("\\n", " ")
     text = text.replace("\\/", "/")
     text = text.replace('\\"', '"')
@@ -443,14 +524,12 @@ def clean_cvs_text(text):
     # Remove transport tokens at the start, e.g. T4b2,
     text = re.sub(r'^(?:T[0-9A-Za-z]+,)+', "", text)
 
-    # Strip trailing keyed bleed like:
-    # ... Packaging may vary.27:{"locationAvailabilityStatus":"In Stock"}
+    # Strip trailing keyed bleed.
     text = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:\{.*$', "", text, flags=re.DOTALL)
     text = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:\[.*$', "", text, flags=re.DOTALL)
     text = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:$', "", text, flags=re.DOTALL)
 
-    # NEW: strip transport tails like:
-    # ... more comfortable than ever before"] 38:T421,Experience underwear-like comfort...
+    # Strip transport tails.
     text = re.sub(r'"\]\s*[0-9A-Za-z]{1,3}:T[0-9A-Za-z]+,.*$', "", text, flags=re.DOTALL)
     text = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:T[0-9A-Za-z]+,.*$', "", text, flags=re.DOTALL)
 
@@ -462,13 +541,15 @@ def clean_cvs_text(text):
     # Remove escaped markdown-style asterisks.
     text = text.replace("\\*", "*")
 
-    # Optional: clean common split-word artifact seen in output.
+    # Optional cleanup.
     text = re.sub(r"\binconti\s+nence\b", "incontinence", text, flags=re.IGNORECASE)
 
     # Normalize whitespace.
     text = re.sub(r"\s+", " ", text).strip()
 
     return text
+
+
 def clean_cvs_feature_text(text):
     """
     Lighter cleaner for individual feature bullets.
@@ -480,7 +561,7 @@ def clean_cvs_feature_text(text):
 
     text = str(text)
 
-    text = text.replace("\\u0026", "&")
+    text = text.replace("\\u0026", "&amp;")
     text = text.replace("\\n", " ")
     text = text.replace("\\/", "/")
     text = text.replace('\\"', '"')
@@ -502,6 +583,7 @@ def clean_cvs_feature_text(text):
 
     return text
 
+
 def get_target_sku_from_inputs(retail_url="", cvs_rpc=""):
     """
     Prefer the skuId in the retail URL.
@@ -515,7 +597,8 @@ def get_target_sku_from_inputs(retail_url="", cvs_rpc=""):
         return m.group(1).strip()
 
     return cvs_rpc
-    
+
+
 # Compatibility alias in case any old references still exist.
 def clean_cvs_text_refined(text):
     return clean_cvs_text(text)
@@ -541,6 +624,7 @@ def get_nextjs_chunks(html_text):
         chunks.append(decoded)
 
     return "\n".join(chunks)
+
 
 def extract_balanced_bracket_block(source, start_index):
     """
@@ -577,7 +661,8 @@ def extract_balanced_bracket_block(source, start_index):
                     return source[start_index:i + 1]
 
     return ""
-    
+
+
 def extract_array_block_for_key(source, key):
     """
     Resolve a keyed array like:
@@ -611,7 +696,8 @@ def extract_array_block_for_key(source, key):
             return block
 
     return ""
-    
+
+
 def extract_balanced_brace_block(source, start_index):
     if start_index < 0 or start_index >= len(source) or source[start_index] != "{":
         return ""
@@ -642,6 +728,7 @@ def extract_balanced_brace_block(source, start_index):
 
     return ""
 
+
 def find_newline_anchored_key(source, key, for_array=False):
     """
     Find a keyed ref block like:
@@ -667,13 +754,13 @@ def find_newline_anchored_key(source, key, for_array=False):
         return m
 
     # Fallback: allow inline ref keys after whitespace/comma/brace.
-    # This is important for Depend women's rows where refs appear inline.
     if for_array:
         fallback_pattern = rf'(?:^|[\s,{{]){re.escape(key)}:\['
     else:
         fallback_pattern = rf'(?:^|[\s,{{]){re.escape(key)}:'
 
     return re.search(fallback_pattern, source)
+
 
 def looks_like_next_newline_key(source, idx):
     if idx < 0 or idx >= len(source):
@@ -685,6 +772,7 @@ def looks_like_next_newline_key(source, idx):
             source[idx:],
         )
     )
+
 
 def extract_newline_anchored_value_block(source, key):
     """
@@ -774,6 +862,7 @@ def extract_newline_anchored_value_block(source, key):
 
     return block.strip()
 
+
 def extract_object_block_for_key(source, key):
     """
     Resolve a ref key like 36:
@@ -793,7 +882,8 @@ def extract_object_block_for_key(source, key):
         return extract_balanced_brace_block(source, start)
 
     return extract_newline_anchored_value_block(source, key)
-    
+
+
 def find_direct_vendor_details_block_near_sku(source, target_rpc="", search_after=30000):
     """
     Fast path:
@@ -806,8 +896,8 @@ def find_direct_vendor_details_block_near_sku(source, target_rpc="", search_afte
        "vendorContent":{"vendorDetails":"$36"}
        then resolve 36:{...}
 
-    This is especially important for Depend women FIT-FLEX rows, which often
-    appear to use the ref-style vendorDetails representation.
+    This is especially important for Depend women FIT-FLEX rows,
+    which often appear to use the ref-style vendorDetails representation.
     """
     if not source or not target_rpc:
         return ""
@@ -833,9 +923,7 @@ def find_direct_vendor_details_block_near_sku(source, target_rpc="", search_afte
         segment_end = min(len(source), anchor.start() + search_after)
         segment = source[segment_start:segment_end]
 
-        # ---------------------------------
         # A) direct object form
-        # ---------------------------------
         direct_match = re.search(
             r'"vendorContent"\s*:\s*\{\s*"vendorDetails"\s*:\s*\{',
             segment,
@@ -847,10 +935,7 @@ def find_direct_vendor_details_block_near_sku(source, target_rpc="", search_afte
             if block:
                 return block
 
-        # ---------------------------------
-        # B) ref-style form:
-        #    "vendorContent":{"vendorDetails":"$36"}
-        # ---------------------------------
+        # B) ref-style form
         ref_match = re.search(
             r'"vendorContent"\s*:\s*\{\s*"vendorDetails"\s*:\s*"(\$[0-9A-Za-z]{1,3})"',
             segment,
@@ -863,7 +948,8 @@ def find_direct_vendor_details_block_near_sku(source, target_rpc="", search_afte
                 return resolved
 
     return ""
-    
+
+
 def extract_rpc_anchor_windows(source, target_rpc="", context_before=3500, context_after=12000):
     """
     Build candidate windows around exact SKU/image anchors.
@@ -902,7 +988,8 @@ def extract_rpc_anchor_windows(source, target_rpc="", context_before=3500, conte
 
     hits.sort(key=lambda x: x["start"])
     return hits
-    
+
+
 def merge_feature_continuations(items, max_features=5):
     """
     Merge true continuation fragments back into the previous feature bullet,
@@ -966,11 +1053,13 @@ def merge_feature_continuations(items, max_features=5):
 
     return dedupe_preserve_order(merged[:max_features])
 
+
 def normalize_cvs_features(items):
     cleaned = [clean_cvs_feature_text(x) for x in items if isinstance(x, str)]
     cleaned = [x for x in cleaned if x]
     cleaned = merge_feature_continuations(cleaned, max_features=5)
     return dedupe_preserve_order(cleaned[:5])
+
 
 def split_feature_blob_preserve_semicolons(text):
     """
@@ -1023,6 +1112,7 @@ def parse_jsonish_array_text(array_text):
 
     return normalize_cvs_features(cleaned)
 
+
 def extract_candidate_variant_windows(source, context_before=4500, context_after=22000):
     """
     Find every occurrence of vendorContent.vendorDetails and return a local window
@@ -1060,6 +1150,7 @@ def extract_candidate_variant_windows(source, context_before=4500, context_after
             })
 
     return windows
+
 
 def score_variant_window(window_text, vendor_start, window_start, target_rpc="", retail_url=""):
     """
@@ -1353,6 +1444,7 @@ def parse_vendor_details_from_block(local_block, working_source, debug):
         "debug": local_debug,
     }
 
+
 def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retail_url=""):
     debug = {
         "vendorPatternFound": False,
@@ -1381,7 +1473,7 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
         return {"features": [], "description": "", "debug": debug}
 
     working_source = html.unescape(source)
-    working_source = working_source.replace("\\u0026", "&")
+    working_source = working_source.replace("\\u0026", "&amp;")
 
     # ---------------------------------
     # 0) Direct sku-adjacent vendorDetails fast path
@@ -1395,9 +1487,6 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
     )
 
     # Do NOT return the direct fast-path result immediately.
-    # On shared women’s Depend PDPs, the first nearby vendorDetails block
-    # can belong to the wrong variant (for example small/32ct instead of large/28ct).
-    # Keep it only as a fallback candidate if later exact windows fail.
     direct_fastpath_result = None
 
     if direct_variant_block:
@@ -1495,10 +1584,9 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
     # If exact SKU/image windows failed, use the direct fast-path result as a fallback.
     if direct_fastpath_result:
         return direct_fastpath_result
-        
+
     # ---------------------------------
-    # 3) LAST RESORT ONLY:
-    #    shared/global family copy if absolutely no local item copy was found
+    # 3) LAST RESORT ONLY
     # ---------------------------------
     shared_features = []
     shared_description = ""
@@ -1584,6 +1672,7 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
         "debug": debug,
     }
 
+
 def extract_vendor_copy_from_nextjs(html_text, target_rpc="", retail_url=""):
     raw_text = get_nextjs_chunks(html_text)
     raw_html = html.unescape(html_text or "")
@@ -1633,9 +1722,7 @@ def extract_vendor_copy_from_nextjs(html_text, target_rpc="", retail_url=""):
             raw_text[max(0, idx - 250): idx + 1500]
         )[:2000]
 
-    # ---------------------------------
     # 1) Parse raw_text first
-    # ---------------------------------
     text_result = extract_vendor_copy_from_source(
         raw_text,
         source_name="raw_text",
@@ -1646,9 +1733,7 @@ def extract_vendor_copy_from_nextjs(html_text, target_rpc="", retail_url=""):
     text_features = text_result.get("features", []) or []
     text_description = text_result.get("description", "") or ""
 
-    # ---------------------------------
     # 2) Only parse raw_html if raw_text is missing something important
-    # ---------------------------------
     html_result = {"features": [], "description": "", "debug": {}}
 
     if not text_features or not text_description:
@@ -1662,17 +1747,13 @@ def extract_vendor_copy_from_nextjs(html_text, target_rpc="", retail_url=""):
     html_features = html_result.get("features", []) or []
     html_description = html_result.get("description", "") or ""
 
-    # ---------------------------------
     # 3) Merge best available outputs
-    #    Prefer raw_text when present, but backfill from raw_html.
-    # ---------------------------------
     final_features = text_features or html_features
     final_description = text_description or html_description
 
     chosen_debug = text_result.get("debug", {}) if (text_features or text_description) else {}
     fallback_debug = html_result.get("debug", {}) if (html_features or html_description) else {}
 
-    # If raw_text had description but no features, use raw_html debug when it provided features.
     if not text_features and html_features:
         chosen_debug = fallback_debug.copy()
         chosen_debug["variantMatchReason"] = (
@@ -1766,6 +1847,7 @@ def get_cvs_bundle(retail_url, target_rpc=""):
         "images": extract_cvs_images_from_html(html_text),
     }
 
+
 # =========================================
 # QUALITY HELPERS
 # =========================================
@@ -1824,6 +1906,7 @@ def debug_description(desc):
         "quality_score": quality_score,
         "issues": issues,
     }
+
 
 # =========================================
 # IMAGE HASHING (FAST IMAGE COMPARE)
@@ -1901,6 +1984,7 @@ def compare_images_visually(s_url, r_url):
     else:
         return 25
 
+
 # =========================================
 # PROCESS ROW
 # =========================================
@@ -1909,13 +1993,14 @@ def process_row(row):
         retail_url = row.get("retail_url", "")
         salsify_url = row.get("salsify_url", "")
         cvs_rpc = row.get("cvs_rpc") or row.get("CVS RPC") or ""
+        retailer_name = row.get("retailer", "") or infer_retailer_name_from_url(retail_url)
 
         target_sku = get_target_sku_from_inputs(
             retail_url=row.get("retail_url", ""),
             cvs_rpc=cvs_rpc,
         )
 
-        # Fetch Salsify + CVS in parallel for this row.
+        # Fetch Salsify + retailer in parallel for this row.
         with ThreadPoolExecutor(max_workers=2) as row_executor:
             s_future = row_executor.submit(get_salsify_bundle, salsify_url)
             r_future = row_executor.submit(get_cvs_bundle, retail_url, target_sku)
@@ -1944,7 +2029,7 @@ def process_row(row):
             r_text.get("description", ""),
         )
 
-        cvs_features = r_text.get("features", []) if isinstance(r_text, dict) else []
+        retailer_features = r_text.get("features", []) if isinstance(r_text, dict) else []
         feature_fields = ["feature1", "feature2", "feature3", "feature4", "feature5"]
 
         feature_scores = []
@@ -1952,7 +2037,7 @@ def process_row(row):
 
         for i, f_key in enumerate(feature_fields, start=1):
             s_val = s_text.get(f_key, "")
-            r_val = cvs_features[i - 1] if i - 1 < len(cvs_features) else ""
+            r_val = retailer_features[i - 1] if i - 1 < len(retailer_features) else ""
 
             score = keyword_score(s_val, r_val) if r_val else 0
             feature_scores.append(score)
@@ -1982,6 +2067,7 @@ def process_row(row):
         return {
             "summary": {
                 "SKU": row.get("sku", ""),
+                "Retailer": retailer_name,
                 "CVS RPC": cvs_rpc,
                 "Brand": row.get("brand", ""),
                 "Salsify URL": salsify_url,
@@ -1996,6 +2082,7 @@ def process_row(row):
             },
             "detail": {
                 "SKU": row.get("sku", ""),
+                "Retailer": retailer_name,
                 "CVS RPC": cvs_rpc,
                 "Brand": row.get("brand", ""),
                 "Salsify URL": salsify_url,
@@ -2035,6 +2122,7 @@ def process_row(row):
             },
             "debug": {
                 "SKU": row.get("sku", ""),
+                "Retailer": retailer_name,
                 "CVS RPC": cvs_rpc,
                 "Brand": row.get("brand", ""),
                 "Retail URL": retail_url,
@@ -2083,6 +2171,8 @@ def process_row(row):
 
     except Exception:
         return None
+
+
 # =========================================
 # SESSION STATE
 # =========================================
@@ -2112,6 +2202,8 @@ if "uploaded_file_bytes" not in st.session_state:
     st.session_state.uploaded_file_bytes = None
 if "selected_brand" not in st.session_state:
     st.session_state.selected_brand = "All"
+if "selected_retailer" not in st.session_state:
+    st.session_state.selected_retailer = "All"
 
 # =========================================
 # VIEW + FILTER CONTROLS
@@ -2148,10 +2240,28 @@ if uploaded_file:
             st.session_state.progress_bar = None
             st.session_state.last_file_hash = file_hash
             st.session_state.selected_brand = "All"
+            st.session_state.selected_retailer = "All"
             clear_in_memory_caches()
 
         df = read_uploaded_csv_from_bytes(file_bytes)
         df = prepare_input_df(df)
+
+        all_retailers = sorted(df["retailer"].dropna().astype(str).unique().tolist()) if "retailer" in df.columns else ["CVS"]
+        if not all_retailers:
+            all_retailers = ["CVS"]
+
+        # Retailer selector ABOVE brand selector.
+        retailer_options = ["All"] + all_retailers
+
+        if len(all_retailers) == 1:
+            st.session_state.selected_retailer = all_retailers[0]
+        elif st.session_state.selected_retailer not in retailer_options:
+            st.session_state.selected_retailer = "All"
+
+        selected_retailer = st.selectbox("🏪 Select Retailer", retailer_options, key="selected_retailer")
+
+        if selected_retailer != "All":
+            df = df[df["retailer"].astype(str) == selected_retailer]
 
         brands = sorted(df["brand"].dropna().astype(str).unique().tolist()) if "brand" in df.columns else []
         brand_options = ["All"] + brands
@@ -2165,7 +2275,7 @@ if uploaded_file:
             df = df[df["brand"].astype(str) == selected_brand]
 
         if df.empty:
-            st.warning("No rows found for the selected brand.")
+            st.warning("No rows found for the selected retailer / brand.")
             st.stop()
 
         start = st.session_state.start_idx
@@ -2278,11 +2388,16 @@ if st.session_state.processing_done and st.session_state.summary_rows:
 
     output.seek(0)
 
+    current_retailer_for_file = st.session_state.selected_retailer if st.session_state.selected_retailer != "All" else "retailer"
+    current_brand_for_file = st.session_state.selected_brand if st.session_state.selected_brand != "All" else "all_brands"
+    safe_retailer = re.sub(r"[^A-Za-z0-9_-]+", "_", str(current_retailer_for_file))
+    safe_brand = re.sub(r"[^A-Za-z0-9_-]+", "_", str(current_brand_for_file))
+
     st.markdown("## 📊 Export Results")
     st.download_button(
         label="📥 Download Excel Report",
         data=output.getvalue(),
-        file_name="pdp_qa_results.xlsx",
+        file_name=f"pdp_qa_results_{safe_retailer}_{safe_brand}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key="download_excel_report_top",
     )
@@ -2299,21 +2414,23 @@ if uploaded_file and st.session_state.processing_done and view_mode:
         df = read_uploaded_csv_from_bytes(st.session_state.uploaded_file_bytes)
         df = prepare_input_df(df)
 
+        if st.session_state.selected_retailer != "All" and "retailer" in df.columns:
+            df = df[df["retailer"].astype(str) == st.session_state.selected_retailer]
+
         if st.session_state.selected_brand != "All" and "brand" in df.columns:
             df = df[df["brand"].astype(str) == st.session_state.selected_brand]
 
         if df.empty:
-            st.warning("No rows found for the selected brand.")
+            st.warning("No rows found for the selected retailer / brand.")
             st.stop()
 
         st.markdown("## 👁️ Full Visual QA Review")
 
         for _, row in df.iterrows():
             sku = row.get("sku", "Missing SKU")
-            cvs_rpc = row.get("cvs_rpc") or row.get("CVS RPC") or "N/A"
-
             retail_url = row.get("retail_url", "")
             salsify_url = row.get("salsify_url", "")
+            retailer_name = row.get("retailer", "") or infer_retailer_name_from_url(retail_url)
 
             s_bundle = get_salsify_bundle(salsify_url)
             s_text = s_bundle["text"]
@@ -2324,6 +2441,7 @@ if uploaded_file and st.session_state.processing_done and view_mode:
                 retail_url=retail_url,
                 cvs_rpc=current_rpc,
             )
+
             r_bundle = get_cvs_bundle(retail_url, target_rpc=current_target_sku)
 
             r_text = r_bundle["text"] or {}
@@ -2340,18 +2458,18 @@ if uploaded_file and st.session_state.processing_done and view_mode:
             s_desc = s_text.get("description") or ""
             r_desc = r_text.get("description") or ""
 
-            cvs_features = r_text.get("features") or []
+            retailer_features = r_text.get("features") or []
             feature_fields = ["feature1", "feature2", "feature3", "feature4", "feature5"]
 
             title_score = keyword_score(s_title, r_title)
             desc_score = description_similarity_score(s_desc, r_desc)
 
-            max_features = max(len(feature_fields), len(cvs_features))
+            max_features = max(len(feature_fields), len(retailer_features))
             feature_scores = []
 
             for i in range(max_features):
                 s_val = s_text.get(feature_fields[i], "") if i < len(feature_fields) else ""
-                r_val = cvs_features[i] if i < len(cvs_features) else ""
+                r_val = retailer_features[i] if i < len(retailer_features) else ""
                 feature_scores.append(keyword_score(s_val, r_val))
 
             avg_feature_score = int(sum(feature_scores) / len(feature_scores)) if feature_scores else 0
@@ -2376,11 +2494,20 @@ if uploaded_file and st.session_state.processing_done and view_mode:
             if hide_good and overall_score >= 80:
                 continue
 
-            st.subheader(f"SKU: {sku} | CVS RPC: {cvs_rpc}")
-
             left, right = st.columns([2.05, 1.15], gap="medium")
 
             with left:
+                # Copy-column headers: centered, bigger, bold, blue hyperlink item numbers.
+                c1, c2 = st.columns(2)
+                c1.markdown(
+                    column_header_link_html("Salsify", sku, salsify_url),
+                    unsafe_allow_html=True,
+                )
+                c2.markdown(
+                    column_header_link_html(retailer_name, current_target_sku or current_rpc, retail_url),
+                    unsafe_allow_html=True,
+                )
+
                 st.markdown(f"### 🏷️ Title {score_badge(title_score)}", unsafe_allow_html=True)
                 c1, c2 = st.columns(2)
 
@@ -2406,7 +2533,7 @@ if uploaded_file and st.session_state.processing_done and view_mode:
                 )
 
                 st.caption(
-                    f"CVS extraction paths → Title: {debug_data.get('Title Path', '')} | "
+                    f"{retailer_name} extraction paths → Title: {debug_data.get('Title Path', '')} | "
                     f"Description: {debug_data.get('Description Path', '')} | "
                     f"Features: {debug_data.get('Features Path', '')}"
                 )
@@ -2415,7 +2542,7 @@ if uploaded_file and st.session_state.processing_done and view_mode:
 
                 for i in range(max_features):
                     s_val = s_text.get(feature_fields[i], "") if i < len(feature_fields) else ""
-                    r_val = cvs_features[i] if i < len(cvs_features) else ""
+                    r_val = retailer_features[i] if i < len(retailer_features) else ""
                     score = keyword_score(s_val, r_val)
 
                     c1, c2 = st.columns(2)
@@ -2437,6 +2564,11 @@ if uploaded_file and st.session_state.processing_done and view_mode:
             with right:
                 st.markdown(f"### 🖼️ Images — Avg {score_badge(avg_img_score)}", unsafe_allow_html=True)
                 st.markdown(score_bar(avg_img_score), unsafe_allow_html=True)
+
+                # Show the top image headers ONCE only.
+                img_head_left, img_head_right = st.columns(2, gap="medium")
+                img_head_left.markdown(image_header_html("Salsify"), unsafe_allow_html=True)
+                img_head_right.markdown(image_header_html(retailer_name), unsafe_allow_html=True)
 
                 for i in range(max_images):
                     s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else ""
@@ -2460,7 +2592,6 @@ if uploaded_file and st.session_state.processing_done and view_mode:
                     img1, img2 = st.columns(2, gap="medium")
 
                     with img1:
-                        st.caption("Salsify")
                         if s_url:
                             st.image(s_url, width=190)
                         else:
@@ -2470,7 +2601,6 @@ if uploaded_file and st.session_state.processing_done and view_mode:
                             )
 
                     with img2:
-                        st.caption("CVS")
                         if r_url:
                             st.image(r_url, width=190)
                         else:
@@ -2494,4 +2624,3 @@ if uploaded_file and st.session_state.processing_done and view_mode:
         st.error("🔥 CRITICAL APP ERROR")
         st.text(str(e))
         st.text(traceback.format_exc())
-
