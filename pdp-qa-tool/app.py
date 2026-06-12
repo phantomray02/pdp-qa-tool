@@ -2583,6 +2583,11 @@ if uploaded_file and st.session_state.processing_done:
                         unsafe_allow_html=True,
                     )
 
+                st.markdown(
+                    f"<div style='height:{DESCRIPTION_TO_FEATURES_GAP_PX}px;'></div>",
+                    unsafe_allow_html=True,
+                )
+
                 # FEATURES.
                 st.markdown(section_header_html("Features", avg_feature_score), unsafe_allow_html=True)
 
