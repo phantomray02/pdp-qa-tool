@@ -350,8 +350,6 @@ def image_compare_cell_html(url, box_height=IMG_BOX_HEIGHT):
     ">
         Missing
     </div>
-    """
-
 
 def image_compare_row_html(s_url, r_url, score):
     return f"""
@@ -382,6 +380,7 @@ def image_compare_row_html(s_url, r_url, score):
         </div>
     </div>
     """
+
 def image_tile_html(label, url, box_height=170):
     safe_label = html.escape(label)
 
@@ -2438,7 +2437,7 @@ if st.session_state.processing_done and st.session_state.summary_rows:
             link.click();
             document.body.removeChild(link);
             </script>
-            """,
+            ,
             height=0,
             width=0,
         )
@@ -2486,7 +2485,6 @@ if uploaded_file and st.session_state.processing_done:
             )
 
             r_bundle = get_cvs_bundle(retail_url, target_rpc=current_target_sku)
-
             r_text = r_bundle["text"] or {}
             r_images = r_bundle["images"]
 
@@ -2507,7 +2505,6 @@ if uploaded_file and st.session_state.processing_done:
             max_features = max(len(feature_fields), len(retailer_features))
             feature_scores = []
             feature_rows = []
-
             for i in range(max_features):
                 s_val = s_text.get(feature_fields[i], "") if i < len(feature_fields) else ""
                 r_val = retailer_features[i] if i < len(retailer_features) else ""
@@ -2520,7 +2517,6 @@ if uploaded_file and st.session_state.processing_done:
 
             img_scores = []
             max_images = max(len(s_images), len(r_images))
-
             for i in range(max_images):
                 s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else None
                 r_url = r_images[i] if i < len(r_images) else None
@@ -2554,7 +2550,6 @@ if uploaded_file and st.session_state.processing_done:
 
                 st.markdown(section_header_html("Title", title_score), unsafe_allow_html=True)
                 t1, t2 = st.columns(2, gap="small")
-
                 with t1:
                     st.markdown(
                         "<div style='width:100%; overflow:hidden; padding-left:0; margin-left:0;'>"
@@ -2562,7 +2557,6 @@ if uploaded_file and st.session_state.processing_done:
                         + "</div>",
                         unsafe_allow_html=True,
                     )
-
                 with t2:
                     st.markdown(
                         "<div style='width:100%; overflow:hidden; padding-left:0; margin-left:0;'>"
@@ -2573,7 +2567,6 @@ if uploaded_file and st.session_state.processing_done:
 
                 st.markdown(section_header_html("Description", desc_score), unsafe_allow_html=True)
                 d1, d2 = st.columns(2, gap="small")
-
                 with d1:
                     st.markdown(
                         "<div style='width:100%; overflow:hidden; padding-left:0; margin-left:0;'>"
@@ -2581,7 +2574,6 @@ if uploaded_file and st.session_state.processing_done:
                         + "</div>",
                         unsafe_allow_html=True,
                     )
-
                 with d2:
                     st.markdown(
                         "<div style='width:100%; overflow:hidden; padding-left:0; margin-left:0;'>"
@@ -2591,10 +2583,8 @@ if uploaded_file and st.session_state.processing_done:
                     )
 
                 st.markdown(section_header_html("Features", avg_feature_score), unsafe_allow_html=True)
-
                 for s_val, r_val, row_score in feature_rows:
                     f1, f2 = st.columns(2, gap="small")
-
                     with f1:
                         st.markdown(
                             "<div style='width:100%; overflow:hidden; padding-left:0; margin-left:0;'>"
@@ -2602,7 +2592,6 @@ if uploaded_file and st.session_state.processing_done:
                             + "</div>",
                             unsafe_allow_html=True,
                         )
-
                     with f2:
                         st.markdown(
                             "<div style='width:100%; overflow:hidden; padding-left:0; margin-left:0;'>"
@@ -2610,34 +2599,26 @@ if uploaded_file and st.session_state.processing_done:
                             + "</div>",
                             unsafe_allow_html=True,
                         )
-
                     st.markdown(
                         f"""
-                        <div style="
-                            text-align:right;
-                            margin-top:0;
-                            margin-bottom:2px;
-                        ">
+                        <div style="text-align:right; margin-top:0; margin-bottom:2px;">
                             {score_text_html(row_score)}
                         </div>
                         """,
                         unsafe_allow_html=True,
                     )
-
                     st.markdown("<div style='height:2px;'></div>", unsafe_allow_html=True)
 
             with right:
                 head_i1, head_i2 = st.columns(2, gap="small")
                 head_i1.markdown(image_header_html("Salsify"), unsafe_allow_html=True)
                 head_i2.markdown(image_header_html(retailer_name), unsafe_allow_html=True)
-
                 st.markdown(avg_score_bar_html("Images — Avg", avg_img_score), unsafe_allow_html=True)
 
                 for i in range(max_images):
                     s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else ""
                     r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else ""
                     slot_score = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
-
                     st.markdown(
                         image_compare_row_html(s_url, r_url, slot_score),
                         unsafe_allow_html=True,
