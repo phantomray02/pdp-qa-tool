@@ -98,6 +98,7 @@ IMG_SPACE_PX = 8
 IMG_BOX_HEIGHT = 132
 IMG_SCORE_WIDTH_PX = 118
 
+DESCRIPTION_TO_FEATURES_GAP_PX = 20
 
 def get_session():
     if not hasattr(thread_local, "session"):
