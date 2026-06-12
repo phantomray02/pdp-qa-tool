@@ -163,6 +163,7 @@ def description_similarity_score(a, b):
 def html_escape_text(text):
     return html.escape(str(text or ""))
 
+
 def equal_height_block(text, min_height=210):
     safe_text = html_escape_text(text or "Missing")
     return (
@@ -182,6 +183,7 @@ def equal_height_block(text, min_height=210):
         f'word-break:break-word;'
         f'">{safe_text}</div>'
     )
+
 
 def equal_feature_block(text, min_height=90):
     safe_text = html_escape_text(text or "Missing")
@@ -203,8 +205,10 @@ def equal_feature_block(text, min_height=90):
         f'">{safe_text}</div>'
     )
 
+
 def score_text_html(score):
-    "#4CAF50"    if score >= 80:
+    if score >= 80:
+        color = "#4CAF50"
         label = "Strong"
     elif score >= 50:
         color = "#FFC107"
@@ -214,6 +218,7 @@ def score_text_html(score):
         label = "Poor"
 
     return f"<span style='color:{color}; font-weight:900; font-size:22px;'>{score}% ({label})</span>"
+
 
 def section_header_html(label, score):
     safe_label = html_escape_text(label or "")
@@ -239,6 +244,7 @@ def section_header_html(label, score):
         </div>
     </div>
     """
+
 
 def avg_score_bar_html(label, score):
     if score >= 80:
@@ -310,7 +316,7 @@ def image_header_html(label):
         {safe_label}
     </div>
     """
-    
+
 def image_compare_cell_html(url, box_height=IMG_BOX_HEIGHT):
     if url:
         safe_url = html.escape(str(url), quote=True)
@@ -344,7 +350,7 @@ def image_compare_cell_html(url, box_height=IMG_BOX_HEIGHT):
         Missing
     </div>
     """
-    
+
 def image_compare_row_html(s_url, r_url, score):
     return f"""
     <div style="
@@ -2625,23 +2631,23 @@ if uploaded_file and st.session_state.processing_done:
                     )
                 
                     st.markdown("<div style='height:2px;'></div>", unsafe_allow_html=True)
-
-            with right:
-                head_i1, head_i2 = st.columns(2, gap="small")
-                head_i1.markdown(image_header_html("Salsify"), unsafe_allow_html=True)
-                head_i2.markdown(image_header_html(retailer_name), unsafe_allow_html=True)
-            
-                st.markdown(avg_score_bar_html("Images — Avg", avg_img_score), unsafe_allow_html=True)
-            
-                for i in range(max_images):
-                    s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else ""
-                    r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else ""
-                    slot_score = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
-            
-                    st.markdown(
-                        image_compare_row_html(s_url, r_url, slot_score),
-                        unsafe_allow_html=True,
-                    )
+                    
+                with right:
+                    head_i1, head_i2 = st.columns(2, gap="small")
+                    head_i1.markdown(image_header_html("Salsify"), unsafe_allow_html=True)
+                    head_i2.markdown(image_header_html(retailer_name), unsafe_allow_html=True)
+                
+                    st.markdown(avg_score_bar_html("Images — Avg", avg_img_score), unsafe_allow_html=True)
+                
+                    for i in range(max_images):
+                        s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else ""
+                        r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else ""
+                        slot_score = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
+                
+                        st.markdown(
+                            image_compare_row_html(s_url, r_url, slot_score),
+                            unsafe_allow_html=True,
+                        )
 
             st.divider()
 
