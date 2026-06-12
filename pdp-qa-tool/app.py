@@ -7,7 +7,6 @@ import json
 import time
 import hashlib
 import traceback
-import base64
 from io import BytesIO
 from difflib import SequenceMatcher
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -23,6 +22,7 @@ from openpyxl.styles import PatternFill
 from pandas.errors import EmptyDataError
 import threading
 from requests.adapters import HTTPAdapter
+import base64
 
 # =========================================
 # APP SETUP
@@ -2294,8 +2294,6 @@ if uploaded_file:
 # TOP EXPORT SECTION
 # =========================================
 if st.session_state.processing_done and st.session_state.summary_rows:
-    st.success("✅ Processing complete.")
-
     summary_df = pd.DataFrame(st.session_state.summary_rows)
     detail_df = pd.DataFrame(st.session_state.export_rows)
     debug_df = pd.DataFrame(st.session_state.debug_rows)
@@ -2324,36 +2322,51 @@ if st.session_state.processing_done and st.session_state.summary_rows:
                     else:
                         cell.fill = red
 
-    current_retailer_for_file = st.session_state.selected_retailer if st.session_state.selected_retailer not in ["All", "-- Select Retailer --"] else "retailer"
-    current_brand_for_file = st.session_state.selected_brand if st.session_state.selected_brand != "All" else "all_brands"
+    output.seek(0)
+
+    current_retailer_for_file = (
+        st.session_state.selected_retailer
+        if st.session_state.selected_retailer not in ["All", "-- Select Retailer --"]
+        else "retailer"
+    )
+    current_brand_for_file = (
+        st.session_state.selected_brand
+        if st.session_state.selected_brand != "All"
+        else "all_brands"
+    )
+
     safe_retailer = re.sub(r"[^A-Za-z0-9_-]+", "_", str(current_retailer_for_file))
     safe_brand = re.sub(r"[^A-Za-z0-9_-]+", "_", str(current_brand_for_file))
-    
+
     report_filename = f"pdp_qa_results_{safe_retailer}_{safe_brand}.xlsx"
     report_bytes = output.getvalue()
-    
+
     st.session_state.report_bytes = report_bytes
     st.session_state.report_filename = report_filename
 
-    if not st.session_state.auto_download_done and st.session_state.report_bytes and st.session_state.report_filename:
-    b64 = base64.b64encode(st.session_state.report_bytes).decode()
+    if (
+        not st.session_state.auto_download_done
+        and st.session_state.report_bytes
+        and st.session_state.report_filename
+    ):
+        b64 = base64.b64encode(st.session_state.report_bytes).decode()
 
-    components.html(
-        f"""
-        <script>
-        const link = document.createElement("a");
-        link.href = "data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}";
-        link.download = "{st.session_state.report_filename}";
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        </script>
-        """,
-        height=0,
-        width=0,
-    )
+        components.html(
+            f"""
+            <script>
+            const link = document.createElement("a");
+            link.href = "data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}";
+            link.download = "{st.session_state.report_filename}";
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            </script>
+            """,
+            height=0,
+            width=0,
+        )
 
-    st.session_state.auto_download_done = True
+        st.session_state.auto_download_done = True
 
 # =========================================
 # FULL VISUAL MODE
@@ -2367,7 +2380,7 @@ if uploaded_file and st.session_state.processing_done:
         df = read_uploaded_csv_from_bytes(st.session_state.uploaded_file_bytes)
         df = prepare_input_df(df)
 
-        if st.session_state.selected_retailer != "All" and "retailer" in df.columns:
+        if st.session_state.selected_retailer not in ["All", "-- Select Retailer --"] and "retailer" in df.columns:
             df = df[df["retailer"].astype(str) == st.session_state.selected_retailer]
 
         if st.session_state.selected_brand != "All" and "brand" in df.columns:
@@ -2452,7 +2465,7 @@ if uploaded_file and st.session_state.processing_done:
             left, right = st.columns([2.72, 0.78], gap="small")
 
             with left:
-                # Locked compare columns so text does not push the other side around.
+                # Locked compare columns so one side does not push the other.
                 top_l, top_r = st.columns(2, gap="small")
                 top_l.markdown(
                     column_header_link_html("Salsify", sku, salsify_url),
@@ -2468,6 +2481,7 @@ if uploaded_file and st.session_state.processing_done:
                 # TITLE.
                 st.markdown(section_header_html("Title", title_score), unsafe_allow_html=True)
                 t1, t2 = st.columns(2, gap="small")
+
                 with t1:
                     st.markdown(
                         "<div style='width:100%; overflow:hidden;'>"
@@ -2475,6 +2489,7 @@ if uploaded_file and st.session_state.processing_done:
                         + "</div>",
                         unsafe_allow_html=True,
                     )
+
                 with t2:
                     st.markdown(
                         "<div style='width:100%; overflow:hidden;'>"
@@ -2486,6 +2501,7 @@ if uploaded_file and st.session_state.processing_done:
                 # DESCRIPTION.
                 st.markdown(section_header_html("Description", desc_score), unsafe_allow_html=True)
                 d1, d2 = st.columns(2, gap="small")
+
                 with d1:
                     st.markdown(
                         "<div style='width:100%; overflow:hidden;'>"
@@ -2493,6 +2509,7 @@ if uploaded_file and st.session_state.processing_done:
                         + "</div>",
                         unsafe_allow_html=True,
                     )
+
                 with d2:
                     st.markdown(
                         "<div style='width:100%; overflow:hidden;'>"
@@ -2523,7 +2540,6 @@ if uploaded_file and st.session_state.processing_done:
                             unsafe_allow_html=True,
                         )
 
-                    # Bigger color-coded score text with words, no icon.
                     st.markdown(
                         f"""
                         <div style="
@@ -2551,7 +2567,6 @@ if uploaded_file and st.session_state.processing_done:
                     r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else ""
                     slot_score = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
 
-                    # Keep side-to-side gap. Tighten vertical gap. Remove icon/check mark.
                     img1, img2, score_col = st.columns([1, 1, 0.34], gap="small")
 
                     with img1:
@@ -2588,7 +2603,6 @@ if uploaded_file and st.session_state.processing_done:
                             unsafe_allow_html=True,
                         )
 
-                    # Vertical gap now matches the tighter layout.
                     st.markdown("<div style='height:2px;'></div>", unsafe_allow_html=True)
 
             st.divider()
@@ -2597,5 +2611,4 @@ if uploaded_file and st.session_state.processing_done:
         st.error("🔥 CRITICAL APP ERROR")
         st.text(str(e))
         st.text(traceback.format_exc())
-
 
