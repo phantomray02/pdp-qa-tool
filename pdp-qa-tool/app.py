@@ -94,15 +94,12 @@ COPY_LINE_HEIGHT = 1.20
 SECTION_VERTICAL_GAP = 10
 
 # Use one shared spacing value so the image area feels mathematically even.
-IMG_SPACE_PX = 2
+IMG_SPACE_PX = 8
 IMG_BOX_HEIGHT = 132
 IMG_SCORE_WIDTH_PX = 118
 
-FEATURE_ROW_GAP_PX = 12
-FEATURE_MIN_HEIGHT = 92
-FEATURE_SCORE_WIDTH_RATIO = 0.32
-
-
+FEATURE_ROW_GAP_PX = 10
+FEATURE_MIN_HEIGHT = 90
 
 def get_session():
     if not hasattr(thread_local, "session"):
@@ -350,7 +347,8 @@ def image_compare_cell_html(url, box_height=IMG_BOX_HEIGHT):
         f"Missing"
         f"</div>"
     )
-    
+
+
 def image_compare_row_html(s_url, r_url, score):
     return (
         f"<div style=\""
@@ -380,7 +378,7 @@ def image_compare_row_html(s_url, r_url, score):
         f"</div>"
         f"</div>"
     )
-    
+
 def image_tile_html(label, url, box_height=170):
     safe_label = html.escape(label)
 
@@ -2591,7 +2589,7 @@ if uploaded_file and st.session_state.processing_done:
                 st.markdown(section_header_html("Features", avg_feature_score), unsafe_allow_html=True)
 
                 for s_val, r_val, row_score in feature_rows:
-                    f1, f2, f3 = st.columns([1, 1, FEATURE_SCORE_WIDTH_RATIO], gap="small")
+                    f1, f2, f3 = st.columns([1, 1, 0.32], gap="small")
 
                     with f1:
                         st.markdown(
@@ -2611,7 +2609,7 @@ if uploaded_file and st.session_state.processing_done:
 
                     with f3:
                         st.markdown(
-                            f"<div style='min-height:{FEATURE_MIN_HEIGHT}px; display:flex; align-items:flex-start; justify-content:flex-start; text-align:left; padding-top:2px;'>{score_text_html(row_score)}</div>",
+                            f"<div style='min-height:{FEATURE_MIN_HEIGHT}px; display:flex; align-items:center; justify-content:flex-start; text-align:left; padding-top:2px;'>{score_text_html(row_score)}</div>",
                             unsafe_allow_html=True,
                         )
 
@@ -2619,6 +2617,7 @@ if uploaded_file and st.session_state.processing_done:
                         f"<div style='height:{FEATURE_ROW_GAP_PX}px;'></div>",
                         unsafe_allow_html=True,
                     )
+                    st.markdown("<div style='height:2px;'></div>", unsafe_allow_html=True)
 
             with right:
                 head_i1, head_i2 = st.columns(2, gap="small")
@@ -2635,8 +2634,34 @@ if uploaded_file and st.session_state.processing_done:
                     r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else ""
                     slot_score = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
 
+                    row1, row2, row3 = st.columns([1, 1, 0.65], gap="small")
+
+                    with row1:
+                        if s_url:
+                            st.image(s_url, use_container_width=True)
+                        else:
+                            st.markdown(
+                                f"<div style='height:{IMG_BOX_HEIGHT}px; display:flex; align-items:center; justify-content:center; color:#C62828; font-size:16px; font-weight:700;'>Missing</div>",
+                                unsafe_allow_html=True,
+                            )
+
+                    with row2:
+                        if r_url:
+                            st.image(r_url, use_container_width=True)
+                        else:
+                            st.markdown(
+                                f"<div style='height:{IMG_BOX_HEIGHT}px; display:flex; align-items:center; justify-content:center; color:#C62828; font-size:16px; font-weight:700;'>Missing</div>",
+                                unsafe_allow_html=True,
+                            )
+
+                    with row3:
+                        st.markdown(
+                            f"<div style='min-height:{IMG_BOX_HEIGHT}px; display:flex; align-items:center; justify-content:flex-start; text-align:left; margin:0; padding:0;'>{score_text_html(slot_score)}</div>",
+                            unsafe_allow_html=True,
+                        )
+
                     st.markdown(
-                        image_compare_row_html(s_url, r_url, slot_score),
+                        f"<div style='height:{IMG_SPACE_PX}px;'></div>",
                         unsafe_allow_html=True,
                     )
                     
