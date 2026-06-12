@@ -352,7 +352,7 @@ def image_compare_cell_html(url, box_height=IMG_BOX_HEIGHT):
     </div>
 
 def image_compare_row_html(s_url, r_url, score):
-    return f"""
+    return f""
     <div style="
         display:grid;
         grid-template-columns:minmax(0,1fr) minmax(0,1fr) {IMG_SCORE_WIDTH_PX}px;
@@ -379,7 +379,7 @@ def image_compare_row_html(s_url, r_url, score):
             {score_text_html(score)}
         </div>
     </div>
-    """
+    ""
 
 def image_tile_html(label, url, box_height=170):
     safe_label = html.escape(label)
