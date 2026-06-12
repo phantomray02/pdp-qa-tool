@@ -3,8 +3,8 @@
 # =========================================
 import re
 import html
-import time
 import json
+import time
 import hashlib
 import traceback
 from io import BytesIO
@@ -133,9 +133,10 @@ def equal_height_block(text, min_height=210):
         background:transparent;
         color:#FFFFFF;
         white-space:pre-wrap;
-        line-height:1.45;
-        font-size:24px;
+        line-height:1.28;
+        font-size:18px;
         font-weight:500;
+        text-indent:0;
     ">
         {safe_text}
     </div>
@@ -152,9 +153,10 @@ def equal_feature_block(text, min_height=90):
         background:transparent;
         color:#FFFFFF;
         white-space:pre-wrap;
-        line-height:1.4;
-        font-size:23px;
+        line-height:1.26;
+        font-size:17px;
         font-weight:500;
+        text-indent:0;
     ">
         {safe_text}
     </div>
@@ -171,25 +173,10 @@ def score_badge(score):
 
 def score_badge_large(score):
     if score >= 80:
-        return f"<span style='color:#4CAF50; font-weight:800; font-size:26px;'>{score}% (Strong)</span>"
+        return f"<span style='color:#4CAF50; font-weight:800; font-size:20px;'>{score}% (Strong)</span>"
     if score >= 50:
-        return f"<span style='color:#FFC107; font-weight:800; font-size:26px;'>{score}% (Review)</span>"
-    return f"<span style='color:#F44336; font-weight:800; font-size:26px;'>{score}% (Poor)</span>"
-
-
-def score_bar(score):
-    if score >= 80:
-        color = "#2E7D32"
-    elif score >= 50:
-        color = "#F9A825"
-    else:
-        color = "#C62828"
-
-    return (
-        f"<div style='background-color:{color}; padding:7px 12px; border-radius:6px; "
-        f"color:white; font-weight:700; font-size:17px; margin-top:4px; margin-bottom:8px;'>"
-        f"Score: {score}%</div>"
-    )
+        return f"<span style='color:#FFC107; font-weight:800; font-size:20px;'>{score}% (Review)</span>"
+    return f"<span style='color:#F44336; font-weight:800; font-size:20px;'>{score}% (Poor)</span>"
 
 
 def section_header_html(label, score):
@@ -199,21 +186,51 @@ def section_header_html(label, score):
         display:flex;
         justify-content:space-between;
         align-items:flex-end;
-        gap:12px;
-        margin-top:2px;
-        margin-bottom:4px;
+        gap:10px;
+        margin-top:3px;
+        margin-bottom:2px;
     ">
         <div style="
-            font-size:26px;
+            font-size:24px;
             font-weight:900;
             color:#FFFFFF;
-            line-height:1.1;
+            line-height:1.05;
         ">
             {safe_label}
         </div>
-        <div style="text-align:right; line-height:1.1;">
+        <div style="text-align:right; line-height:1.05;">
             {score_badge_large(score)}
         </div>
+    </div>
+    """
+
+
+def avg_score_bar_html(label, score):
+    if score >= 80:
+        color = "#2E7D32"
+    elif score >= 50:
+        color = "#F9A825"
+    else:
+        color = "#C62828"
+
+    safe_label = html_escape_text(label or "")
+    return f"""
+    <div style="
+        background-color:{color};
+        padding:6px 12px;
+        border-radius:6px;
+        color:white;
+        font-weight:800;
+        font-size:20px;
+        margin-top:4px;
+        margin-bottom:6px;
+        display:flex;
+        justify-content:space-between;
+        align-items:center;
+        gap:12px;
+    ">
+        <span>{safe_label}</span>
+        <span style="color:#FFFFFF; font-weight:900;">{score}%</span>
     </div>
     """
 
@@ -224,19 +241,22 @@ def column_header_link_html(label, item_number, href):
     safe_href = html.escape(str(href or ""), quote=True)
 
     if safe_href and safe_item:
-        item_html = f'<a href="{safe_href}" target="_blank" style="color:#3EA6FF; text-decoration:none; font-weight:800;">{safe_item}</a>'
+        item_html = (
+            f'<a href="{safe_href}" target="_blank" '
+            f'style="color:#3EA6FF; text-decoration:none; font-weight:900;">{safe_item}</a>'
+        )
     else:
-        item_html = f'<span style="color:#3EA6FF; font-weight:800;">{safe_item or "Missing"}</span>'
+        item_html = f'<span style="color:#3EA6FF; font-weight:900;">{safe_item or "Missing"}</span>'
 
     return f"""
     <div style="
         text-align:left;
         margin-top:0;
-        margin-bottom:6px;
+        margin-bottom:2px;
         font-size:30px;
         font-weight:900;
         color:#FFFFFF;
-        line-height:1.15;
+        line-height:1.1;
     ">
         {safe_label}: {item_html}
     </div>
@@ -249,11 +269,11 @@ def image_header_html(label):
     <div style="
         text-align:left;
         margin-top:0;
-        margin-bottom:6px;
+        margin-bottom:2px;
         font-size:30px;
         font-weight:900;
         color:#FFFFFF;
-        line-height:1.15;
+        line-height:1.1;
     ">
         {safe_label}
     </div>
@@ -538,14 +558,12 @@ def clean_cvs_text(text):
 
     text = str(text)
 
-    # Basic escape normalization.
     text = text.replace("\\u0026", "&amp;")
     text = text.replace("\\n", " ")
     text = text.replace("\\/", "/")
     text = text.replace('\\"', '"')
     text = html.unescape(text)
 
-    # Remove split Next.js wrapper fragments if they leaked into the extracted text.
     wrapper_patterns = [
         r'"\]\)\s*</script>\s*<script>\s*self\.__next_f\.push\(\[1,\s*"',
         r'"\]\)\s*self\.__next_f\.push\(\[1,\s*"',
@@ -554,41 +572,23 @@ def clean_cvs_text(text):
     for pattern in wrapper_patterns:
         text = re.sub(pattern, "", text, flags=re.DOTALL)
 
-    # Remove transport tokens at the start, e.g. T4b2,
     text = re.sub(r'^(?:T[0-9A-Za-z]+,)+', "", text)
-
-    # Strip trailing keyed bleed.
     text = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:\{.*$', "", text, flags=re.DOTALL)
     text = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:\[.*$', "", text, flags=re.DOTALL)
     text = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:$', "", text, flags=re.DOTALL)
-
-    # Strip transport tails.
     text = re.sub(r'"\]\s*[0-9A-Za-z]{1,3}:T[0-9A-Za-z]+,.*$', "", text, flags=re.DOTALL)
     text = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:T[0-9A-Za-z]+,.*$', "", text, flags=re.DOTALL)
-
-    # Remove leftover script fragments.
     text = re.sub(r'self\.__next_f\.push\(\[1,.*$', "", text, flags=re.DOTALL)
     text = re.sub(r'<script[^>]*>.*?</script>', " ", text, flags=re.DOTALL | re.IGNORECASE)
     text = re.sub(r'</?script[^>]*>', " ", text, flags=re.IGNORECASE)
-
-    # Remove escaped markdown-style asterisks.
     text = text.replace("\\*", "*")
-
-    # Optional cleanup.
     text = re.sub(r"\binconti\s+nence\b", "incontinence", text, flags=re.IGNORECASE)
-
-    # Normalize whitespace.
     text = re.sub(r"\s+", " ", text).strip()
 
     return text
 
 
 def clean_cvs_feature_text(text):
-    """
-    Lighter cleaner for individual feature bullets.
-    Do NOT over-strip valid feature text just because nearby description/script
-    transport junk exists elsewhere in the page.
-    """
     if not text:
         return ""
 
@@ -600,17 +600,13 @@ def clean_cvs_feature_text(text):
     text = text.replace('\\"', '"')
     text = html.unescape(text)
 
-    # Remove only obvious transport/script tails if they leaked into a bullet.
     text = re.sub(r'"\]\s*[0-9A-Za-z]{1,3}:T[0-9A-Za-z]+,.*$', "", text, flags=re.DOTALL)
     text = re.sub(r'\]\)\s*</script>\s*<script>\s*self\.__next_f\.push\(\[1,\s*".*$', "", text, flags=re.DOTALL)
     text = re.sub(r'</script>\s*<script>\s*self\.__next_f\.push\(\[1,\s*".*$', "", text, flags=re.DOTALL)
     text = re.sub(r'self\.__next_f\.push\(\[1,.*$', "", text, flags=re.DOTALL)
-
-    # Remove dangling ref/key tails only if they clearly start after a closed item.
     text = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:\{.*$', "", text, flags=re.DOTALL)
     text = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:\[.*$', "", text, flags=re.DOTALL)
     text = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:$', "", text, flags=re.DOTALL)
-
     text = text.replace("\\*", "*")
     text = re.sub(r"\s+", " ", text).strip()
 
@@ -618,10 +614,6 @@ def clean_cvs_feature_text(text):
 
 
 def get_target_sku_from_inputs(retail_url="", cvs_rpc=""):
-    """
-    Prefer the skuId in the retail URL.
-    Fall back to cvs_rpc if skuId is missing.
-    """
     retail_url = html.unescape(str(retail_url or ""))
     cvs_rpc = str(cvs_rpc or "").strip()
 
@@ -632,7 +624,6 @@ def get_target_sku_from_inputs(retail_url="", cvs_rpc=""):
     return cvs_rpc
 
 
-# Compatibility alias in case any old references still exist.
 def clean_cvs_text_refined(text):
     return clean_cvs_text(text)
 
@@ -660,12 +651,6 @@ def get_nextjs_chunks(html_text):
 
 
 def extract_balanced_bracket_block(source, start_index):
-    """
-    Return the full balanced [...] block starting at start_index.
-
-    Works even when strings inside the array contain commas, brackets,
-    escaped quotes, or escaped characters.
-    """
     if start_index < 0 or start_index >= len(source) or source[start_index] != "[":
         return ""
 
@@ -697,13 +682,6 @@ def extract_balanced_bracket_block(source, start_index):
 
 
 def extract_array_block_for_key(source, key):
-    """
-    Resolve a keyed array like:
-      37:[...]
-    whether it appears on a new line or inline.
-
-    This returns only the balanced bracket block for that exact key.
-    """
     if not source:
         return ""
 
@@ -763,20 +741,8 @@ def extract_balanced_brace_block(source, start_index):
 
 
 def find_newline_anchored_key(source, key, for_array=False):
-    """
-    Find a keyed ref block like:
-      \n37:[
-      \n36:{
-    but also support inline forms commonly seen in raw Next.js text such as:
-      37:[
-      36:{
-    after whitespace, commas, or braces.
-
-    We keep newline-first behavior, then fall back to a broader boundary-based search.
-    """
     key = str(key)
 
-    # First try the old strict newline-anchored form.
     if for_array:
         strict_pattern = rf'(?:^|\n){re.escape(key)}:\['
     else:
@@ -786,7 +752,6 @@ def find_newline_anchored_key(source, key, for_array=False):
     if m:
         return m
 
-    # Fallback: allow inline ref keys after whitespace/comma/brace.
     if for_array:
         fallback_pattern = rf'(?:^|[\s,{{]){re.escape(key)}:\['
     else:
@@ -808,20 +773,10 @@ def looks_like_next_newline_key(source, idx):
 
 
 def extract_newline_anchored_value_block(source, key):
-    """
-    Resolve a keyed value block like:
-      25:"some text..."
-      36:{...}
-      37:[...]
-    even when the key is inline rather than newline-anchored.
-
-    We stop at the next likely ref key boundary when not inside quotes/brackets/braces.
-    """
     m = find_newline_anchored_key(source, key, for_array=False)
     if not m:
         return ""
 
-    # Start immediately after 'key:'
     start = m.end()
     i = start
 
@@ -876,7 +831,6 @@ def extract_newline_anchored_value_block(source, key):
             i += 1
             continue
 
-        # If we're not nested, stop at the next likely keyed ref boundary.
         if bracket_depth == 0 and brace_depth == 0 and paren_depth == 0:
             if re.match(
                 r'(?:\s|,|^)([0-9A-Za-z]{1,3}):(?=[\[{"]|T[0-9A-Za-z]+,|null|true|false|\d)',
@@ -887,8 +841,6 @@ def extract_newline_anchored_value_block(source, key):
         i += 1
 
     block = source[start:i].strip()
-
-    # Trim obvious keyed bleed if present.
     block = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:\{.*$', "", block, flags=re.DOTALL)
     block = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:\[.*$', "", block, flags=re.DOTALL)
     block = re.sub(r'(?<=[\.\)\]"\'])\s*[0-9A-Za-z]{1,3}:$', "", block, flags=re.DOTALL)
@@ -897,12 +849,6 @@ def extract_newline_anchored_value_block(source, key):
 
 
 def extract_object_block_for_key(source, key):
-    """
-    Resolve a ref key like 36:
-    and return the full balanced object block if it starts with {.
-
-    Supports both newline-anchored and inline ref forms.
-    """
     m = find_newline_anchored_key(source, key, for_array=False)
     if not m:
         return ""
@@ -918,27 +864,12 @@ def extract_object_block_for_key(source, key):
 
 
 def find_direct_vendor_details_block_near_sku(source, target_rpc="", search_after=30000):
-    """
-    Fast path:
-    find a sku/image anchor, then look shortly after it for either:
-
-    1) direct nested vendorDetails object:
-       "vendorContent":{"vendorDetails":{...}}
-
-    2) ref-style vendorDetails:
-       "vendorContent":{"vendorDetails":"$36"}
-       then resolve 36:{...}
-
-    This is especially important for Depend women FIT-FLEX rows,
-    which often appear to use the ref-style vendorDetails representation.
-    """
     if not source or not target_rpc:
         return ""
 
     source = str(source)
     rpc = re.escape(str(target_rpc))
 
-    # Allow either skuId anchor or image filename anchor.
     anchor_patterns = [
         rf'skuId={rpc}\b',
         rf'/{rpc}(?:_[0-9]+)?\.jpg',
@@ -956,7 +887,6 @@ def find_direct_vendor_details_block_near_sku(source, target_rpc="", search_afte
         segment_end = min(len(source), anchor.start() + search_after)
         segment = source[segment_start:segment_end]
 
-        # A) direct object form
         direct_match = re.search(
             r'"vendorContent"\s*:\s*\{\s*"vendorDetails"\s*:\s*\{',
             segment,
@@ -968,7 +898,6 @@ def find_direct_vendor_details_block_near_sku(source, target_rpc="", search_afte
             if block:
                 return block
 
-        # B) ref-style form
         ref_match = re.search(
             r'"vendorContent"\s*:\s*\{\s*"vendorDetails"\s*:\s*"(\$[0-9A-Za-z]{1,3})"',
             segment,
@@ -984,11 +913,6 @@ def find_direct_vendor_details_block_near_sku(source, target_rpc="", search_afte
 
 
 def extract_rpc_anchor_windows(source, target_rpc="", context_before=3500, context_after=12000):
-    """
-    Build candidate windows around exact SKU/image anchors.
-    This catches cases like 841289 where vendorDetails is referenced
-    through numeric ref objects instead of direct vendorContent blocks.
-    """
     if not source or not target_rpc:
         return []
 
@@ -1024,10 +948,6 @@ def extract_rpc_anchor_windows(source, target_rpc="", context_before=3500, conte
 
 
 def merge_feature_continuations(items, max_features=5):
-    """
-    Merge true continuation fragments back into the previous feature bullet,
-    but never let bullet 5 absorb transport/description bleed.
-    """
     merged = []
 
     continuation_patterns = [
@@ -1050,7 +970,6 @@ def merge_feature_continuations(items, max_features=5):
         if not item:
             continue
 
-        # If the item looks like transport junk, stop entirely.
         if any(re.search(p, item, flags=re.IGNORECASE) for p in hard_stop_patterns):
             break
 
@@ -1070,7 +989,6 @@ def merge_feature_continuations(items, max_features=5):
                 is_continuation = True
 
         if is_continuation and merged:
-            # Never append continuation into an already-full 5th bullet set.
             if len(merged) >= max_features:
                 continue
 
@@ -1095,10 +1013,6 @@ def normalize_cvs_features(items):
 
 
 def split_feature_blob_preserve_semicolons(text):
-    """
-    Split only on actual feature delimiters.
-    Never split on semicolons because semicolons appear inside valid bullets.
-    """
     text = clean_cvs_feature_text(text)
     if not text:
         return []
@@ -1147,16 +1061,6 @@ def parse_jsonish_array_text(array_text):
 
 
 def extract_candidate_variant_windows(source, context_before=4500, context_after=22000):
-    """
-    Find every occurrence of vendorContent.vendorDetails and return a local window
-    around each one so we can match the correct variant.
-
-    Supports both:
-    - direct object form:
-      "vendorContent":{"vendorDetails":{...}}
-    - ref-style form:
-      "vendorContent":{"vendorDetails":"$36"}
-    """
     windows = []
 
     patterns = [
@@ -1186,18 +1090,6 @@ def extract_candidate_variant_windows(source, context_before=4500, context_after
 
 
 def score_variant_window(window_text, vendor_start, window_start, target_rpc="", retail_url=""):
-    """
-    Score a candidate variant window against the current CVS RPC / skuId.
-
-    Strongest signals:
-    1) skuId=target_rpc in nearby URL
-    2) dynamicMediaUrl contains /target_rpc_#.jpg
-    3) nearby image URL contains target_rpc in file name
-
-    Extra bonus:
-    - target RPC appears close BEFORE vendorContent, which tends to indicate
-      the correct local variant block on shared parent PDPs.
-    """
     score = 0
     reason = []
     matched_dynamic_media = ""
@@ -1215,13 +1107,11 @@ def score_variant_window(window_text, vendor_start, window_start, target_rpc="",
 
     rpc = re.escape(str(target_rpc))
 
-    # Strongest signal: exact skuId match in nearby URL context.
     sku_match = re.search(rf'skuId={rpc}\b', window_text)
     if sku_match:
         score += 100
         reason.append("skuId_match")
 
-    # Strong signal: dynamicMediaUrl with /target_rpc_#.jpg pattern.
     dm_match = re.search(
         rf'"dynamicMediaUrl"\s*:\s*"([^"]*?/({rpc})(?:_[0-9]+)?\.jpg[^"]*)"',
         window_text,
@@ -1232,7 +1122,6 @@ def score_variant_window(window_text, vendor_start, window_start, target_rpc="",
         matched_dynamic_media = dm_match.group(1)
         reason.append("dynamicMediaUrl_rpc_match")
 
-    # Secondary signal: nearby image/file name with rpc.
     img_match = re.search(
         rf'"(?:imageUrl|image|src|url)"\s*:\s*"([^"]*?/({rpc})(?:_[0-9]+)?\.jpg[^"]*)"',
         window_text,
@@ -1243,7 +1132,6 @@ def score_variant_window(window_text, vendor_start, window_start, target_rpc="",
         matched_nearby_image = img_match.group(1)
         reason.append("nearby_image_rpc_match")
 
-    # Smaller signal: same shop path family as the retail URL.
     if retail_url:
         path_match = re.search(r'https?://www\.cvs\.com(/shop/[^?\s"]+)', retail_url)
         if path_match:
@@ -1253,7 +1141,6 @@ def score_variant_window(window_text, vendor_start, window_start, target_rpc="",
                 matched_variant_url = retail_path
                 reason.append("retail_path_match")
 
-    # Strong local proximity bonus:
     local_vendor_start = vendor_start - window_start
     rpc_positions = []
 
@@ -1294,9 +1181,6 @@ def score_variant_window(window_text, vendor_start, window_start, target_rpc="",
 
 
 def get_sorted_variant_windows(source, target_rpc="", retail_url=""):
-    """
-    Return candidate windows sorted best-to-worst by score.
-    """
     candidates = extract_candidate_variant_windows(source)
 
     for candidate in candidates:
@@ -1318,16 +1202,6 @@ def get_sorted_variant_windows(source, target_rpc="", retail_url=""):
 
 
 def parse_vendor_details_from_block(local_block, working_source, debug):
-    """
-    Parse vendor details from one chosen LOCAL block only.
-
-    Important:
-    - Handles direct vendorDetailsBullets / vendorDetailsParagraph.
-    - Handles parent ref chains like:
-      "vendorDetails":"$36"
-      36:{"vendorDetailsBullets":"$37","vendorDetailsParagraph":"..."}
-    - Resolves only the exact keyed bullet array / paragraph tied to this local block.
-    """
     if not local_block:
         return {"features": [], "description": "", "debug": debug}
 
@@ -1340,9 +1214,6 @@ def parse_vendor_details_from_block(local_block, working_source, debug):
     seen_vendor_detail_refs = set()
     max_ref_hops = 6
 
-    # ---------------------------------
-    # 0) Resolve vendorDetails parent ref iteratively
-    # ---------------------------------
     for _ in range(max_ref_hops):
         if (
             '"vendorDetailsBullets"' in working_block
@@ -1387,9 +1258,6 @@ def parse_vendor_details_from_block(local_block, working_source, debug):
     features = []
     description = ""
 
-    # -------------------------
-    # BULLETS
-    # -------------------------
     bullets_ref_match = re.search(
         r'"vendorDetailsBullets"\s*:\s*"(\$[0-9A-Za-z]{1,3})"',
         working_block,
@@ -1426,9 +1294,6 @@ def parse_vendor_details_from_block(local_block, working_source, debug):
         local_debug["featuresArrayExcerpt"] = normalize_space(bullets_array_text)[:2000]
         features = parse_jsonish_array_text(bullets_array_text)
 
-    # -------------------------
-    # DESCRIPTION
-    # -------------------------
     paragraph_ref_match = re.search(
         r'"vendorDetailsParagraph"\s*:\s*"(\$[0-9A-Za-z]{1,3})"',
         working_block,
@@ -1508,29 +1373,23 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
     working_source = html.unescape(source)
     working_source = working_source.replace("\\u0026", "&amp;")
 
-    # ---------------------------------
-    # 0) Direct sku-adjacent vendorDetails fast path
-    # ---------------------------------
     direct_fastpath_result = None
 
-    direct_variant_block = find_direct_vendor_details_block_near_sku(
+    direct_variant_block_parts = find_direct_vendor_details_block_near_sku(
         working_source,
         target_rpc=target_rpc,
         search_after=30000,
     )
 
-    # Do NOT return the direct fast-path result immediately.
-    direct_fastpath_result = None
-
-    if direct_variant_block:
+    if direct_variant_block_parts:
         direct_debug = debug.copy()
         direct_debug["variantWindowMatched"] = True
         direct_debug["variantMatchScore"] = 1000
         direct_debug["variantMatchReason"] = "direct_sku_vendorDetails_fastpath"
-        direct_debug["directVendorContentExcerpt"] = normalize_space(direct_variant_block[:2500])
+        direct_debug["directVendorContentExcerpt"] = normalize_space(direct_variant_block_parts[:2500])
 
         parsed = parse_vendor_details_from_block(
-            direct_variant_block,
+            direct_variant_block_parts,
             working_source,
             direct_debug,
         )
@@ -1546,9 +1405,6 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
                 "debug": parsed_debug,
             }
 
-    # ---------------------------------
-    # 1) Try RPC/image-anchor windows
-    # ---------------------------------
     anchor_windows = extract_rpc_anchor_windows(
         working_source,
         target_rpc=target_rpc,
@@ -1580,9 +1436,6 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
                 "debug": parsed.get("debug", candidate_debug),
             }
 
-    # ---------------------------------
-    # 2) Fallback to scored vendorContent windows
-    # ---------------------------------
     sorted_candidates = get_sorted_variant_windows(
         working_source,
         target_rpc=target_rpc,
@@ -1614,13 +1467,9 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
                 "debug": parsed.get("debug", candidate_debug),
             }
 
-    # If exact SKU/image windows failed, use the direct fast-path result as a fallback.
     if direct_fastpath_result:
         return direct_fastpath_result
 
-    # ---------------------------------
-    # 3) LAST RESORT ONLY
-    # ---------------------------------
     shared_features = []
     shared_description = ""
 
@@ -1755,7 +1604,6 @@ def extract_vendor_copy_from_nextjs(html_text, target_rpc="", retail_url=""):
             raw_text[max(0, idx - 250): idx + 1500]
         )[:2000]
 
-    # 1) Parse raw_text first
     text_result = extract_vendor_copy_from_source(
         raw_text,
         source_name="raw_text",
@@ -1766,7 +1614,6 @@ def extract_vendor_copy_from_nextjs(html_text, target_rpc="", retail_url=""):
     text_features = text_result.get("features", []) or []
     text_description = text_result.get("description", "") or ""
 
-    # 2) Only parse raw_html if raw_text is missing something important
     html_result = {"features": [], "description": "", "debug": {}}
 
     if not text_features or not text_description:
@@ -1780,7 +1627,6 @@ def extract_vendor_copy_from_nextjs(html_text, target_rpc="", retail_url=""):
     html_features = html_result.get("features", []) or []
     html_description = html_result.get("description", "") or ""
 
-    # 3) Merge best available outputs
     final_features = text_features or html_features
     final_description = text_description or html_description
 
@@ -1945,10 +1791,6 @@ def debug_description(desc):
 # IMAGE HASHING (FAST IMAGE COMPARE)
 # =========================================
 def get_image_dhash(url):
-    """
-    Compute a tiny difference hash directly from the downloaded image,
-    then discard the bytes immediately to reduce memory usage.
-    """
     if not url:
         return None
 
@@ -2033,7 +1875,6 @@ def process_row(row):
             cvs_rpc=cvs_rpc,
         )
 
-        # Fetch Salsify + retailer in parallel for this row.
         with ThreadPoolExecutor(max_workers=2) as row_executor:
             s_future = row_executor.submit(get_salsify_bundle, salsify_url)
             r_future = row_executor.submit(get_cvs_bundle, retail_url, target_sku)
@@ -2283,7 +2124,6 @@ if uploaded_file:
         if not all_retailers:
             all_retailers = ["CVS"]
 
-        # Retailer selector ABOVE brand selector.
         retailer_options = ["All"] + all_retailers
 
         if len(all_retailers) == 1:
@@ -2480,8 +2320,6 @@ if uploaded_file and st.session_state.processing_done and view_mode:
             r_text = r_bundle["text"] or {}
             r_images = r_bundle["images"]
 
-            debug_data = r_text.get("debug", {})
-
             r_text["description"] = clean_cvs_text(r_text.get("description", ""))
             r_text["features"] = normalize_cvs_features(r_text.get("features", []))
 
@@ -2528,10 +2366,10 @@ if uploaded_file and st.session_state.processing_done and view_mode:
             if hide_good and overall_score >= 80:
                 continue
 
-            left, right = st.columns([2.55, 0.85], gap="small")
+            left, right = st.columns([2.62, 0.82], gap="small")
 
             with left:
-                # Column headers ABOVE Copy Avg.
+                # Top headers above Copy Avg.
                 c1, c2 = st.columns(2, gap="small")
                 c1.markdown(
                     column_header_link_html("Salsify", sku, salsify_url),
@@ -2542,31 +2380,27 @@ if uploaded_file and st.session_state.processing_done and view_mode:
                     unsafe_allow_html=True,
                 )
 
-                # Copy Avg score under headers.
-                st.markdown(section_header_html("Copy — Avg", copy_avg_score), unsafe_allow_html=True)
-                st.markdown(score_bar(copy_avg_score), unsafe_allow_html=True)
+                st.markdown(avg_score_bar_html("Copy — Avg", copy_avg_score), unsafe_allow_html=True)
 
                 st.markdown(section_header_html("Title", title_score), unsafe_allow_html=True)
                 c1, c2 = st.columns(2, gap="small")
-
                 c1.markdown(
-                    equal_height_block(s_title or "Missing", min_height=96),
+                    equal_height_block(s_title or "Missing", min_height=72),
                     unsafe_allow_html=True,
                 )
                 c2.markdown(
-                    equal_height_block(r_title or "Missing", min_height=96),
+                    equal_height_block(r_title or "Missing", min_height=72),
                     unsafe_allow_html=True,
                 )
 
                 st.markdown(section_header_html("Description", desc_score), unsafe_allow_html=True)
                 c1, c2 = st.columns(2, gap="small")
-
                 c1.markdown(
-                    equal_height_block(s_desc or "Missing", min_height=300),
+                    equal_height_block(s_desc or "Missing", min_height=195),
                     unsafe_allow_html=True,
                 )
                 c2.markdown(
-                    equal_height_block(r_desc or "Missing", min_height=300),
+                    equal_height_block(r_desc or "Missing", min_height=195),
                     unsafe_allow_html=True,
                 )
 
@@ -2577,55 +2411,52 @@ if uploaded_file and st.session_state.processing_done and view_mode:
                     r_val = retailer_features[i] if i < len(retailer_features) else ""
                     score = keyword_score(s_val, r_val)
 
-                    # Keep feature score next to feature section title system, not as oversized separate row.
                     c1, c2 = st.columns(2, gap="small")
                     c1.markdown(
-                        equal_feature_block(s_val or "Missing", min_height=58),
+                        equal_feature_block(s_val or "Missing", min_height=38),
                         unsafe_allow_html=True,
                     )
                     c2.markdown(
-                        equal_feature_block(r_val or "Missing", min_height=58),
+                        equal_feature_block(r_val or "Missing", min_height=38),
                         unsafe_allow_html=True,
                     )
 
                     st.markdown(
-                        f"<div style='margin-top:1px; margin-bottom:3px; text-align:right; font-size:15px;'>{score_badge(score)}</div>",
+                        f"<div style='margin-top:0; margin-bottom:1px; text-align:right; font-size:13px;'>{score_badge(score)}</div>",
                         unsafe_allow_html=True,
                     )
-                    st.markdown("<div style='height:3px;'></div>", unsafe_allow_html=True)
+                    st.markdown("<div style='height:1px;'></div>", unsafe_allow_html=True)
 
             with right:
-                # Image headers ABOVE Images Avg.
+                # Top headers above Images Avg.
                 img_head_left, img_head_right = st.columns(2, gap="small")
                 img_head_left.markdown(image_header_html("Salsify"), unsafe_allow_html=True)
                 img_head_right.markdown(image_header_html(retailer_name), unsafe_allow_html=True)
 
-                st.markdown(section_header_html("Images — Avg", avg_img_score), unsafe_allow_html=True)
-                st.markdown(score_bar(avg_img_score), unsafe_allow_html=True)
+                st.markdown(avg_score_bar_html("Images — Avg", avg_img_score), unsafe_allow_html=True)
 
                 for i in range(max_images):
                     s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else ""
                     r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else ""
                     slot_score = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
 
-                    # Three columns: Salsify image, retailer image, vertically-centered score.
-                    img1, img2, score_col = st.columns([1, 1, 0.5], gap="small")
+                    img1, img2, score_col = st.columns([1, 1, 0.4], gap="small")
 
                     with img1:
                         if s_url:
-                            st.image(s_url, width=210)
+                            st.image(s_url, use_container_width=True)
                         else:
                             st.markdown(
-                                equal_feature_block("Missing", min_height=170),
+                                equal_feature_block("Missing", min_height=135),
                                 unsafe_allow_html=True,
                             )
 
                     with img2:
                         if r_url:
-                            st.image(r_url, width=210)
+                            st.image(r_url, use_container_width=True)
                         else:
                             st.markdown(
-                                equal_feature_block("Missing", min_height=170),
+                                equal_feature_block("Missing", min_height=135),
                                 unsafe_allow_html=True,
                             )
 
@@ -2633,7 +2464,7 @@ if uploaded_file and st.session_state.processing_done and view_mode:
                         st.markdown(
                             f"""
                             <div style="
-                                min-height:210px;
+                                min-height:135px;
                                 display:flex;
                                 align-items:center;
                                 justify-content:flex-end;
@@ -2645,7 +2476,7 @@ if uploaded_file and st.session_state.processing_done and view_mode:
                             unsafe_allow_html=True,
                         )
 
-                    st.markdown("<div style='height:4px;'></div>", unsafe_allow_html=True)
+                    st.markdown("<div style='height:1px;'></div>", unsafe_allow_html=True)
 
             st.divider()
 
