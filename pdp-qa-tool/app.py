@@ -94,8 +94,8 @@ COPY_LINE_HEIGHT = 1.20
 SECTION_VERTICAL_GAP = 10
 
 # Use one shared spacing value so the image area feels mathematically even.
-IMG_SPACE_PX = 8
-IMG_BOX_HEIGHT = 132
+IMG_SPACE_PX = 2
+IMG_BOX_HEIGHT = 118
 IMG_SCORE_WIDTH_PX = 118
 
 DESCRIPTION_TO_FEATURES_GAP_PX = 100
@@ -325,8 +325,9 @@ def image_compare_cell_html(url, box_height=IMG_BOX_HEIGHT):
             f"margin:0;"
             f"padding:0;"
             f"overflow:hidden;"
+            f"background:#FFFFFF;"
             f"\">"
-            f"<img src=\"{safe_url}\" style=\"max-width:100%; max-height:{box_height}px; object-fit:contain;\" />"
+            f"<img src=\"{safe_url}\" style=\"max-width:100%; max-height:{box_height}px; object-fit:contain; display:block;\" />"
             f"</div>"
         )
 
@@ -342,6 +343,7 @@ def image_compare_cell_html(url, box_height=IMG_BOX_HEIGHT):
         f"color:#C62828;"
         f"font-size:16px;"
         f"font-weight:700;"
+        f"background:#FFFFFF;"
         f"\">"
         f"Missing"
         f"</div>"
@@ -2636,17 +2638,10 @@ if uploaded_file and st.session_state.processing_done:
                     r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else ""
                     slot_score = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
 
-                    img1, img2, score_col = st.columns([1, 1, 0.65], gap="small")
-
-                    with img1:
-                        if s_url:
-                            st.image(s_url, use_container_width=True)
-                        else:
-                            st.markdown(
-                                equal_feature_block("Missing", min_height=IMG_BOX_HEIGHT),
-                                unsafe_allow_html=True,
-                            )
-
+                    st.markdown(
+                        image_compare_row_html(s_url, r_url, slot_score),
+                        unsafe_allow_html=True,
+                    )
                     with img2:
                         if r_url:
                             st.image(r_url, use_container_width=True)
