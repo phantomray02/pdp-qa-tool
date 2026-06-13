@@ -636,21 +636,28 @@ def get_walgreens_html(url):
     return fetch_html_with_timeout(url, WALGREENS_REQUEST_TIMEOUT)
 
 def get_walgreens_product_id_from_url(retail_url):
+    """
+    Supports Walgreens product URLs like:
+    - /ID=300432791-product
+    - /ID=prod6153586-product
+    - ?productId=300432791
+    - ?productId=prod6153586
+    """
     if not retail_url:
         return ""
 
     retail_url = str(retail_url or "").strip()
 
-    # Typical Walgreens PDP format:
-    # /store/c/.../ID=300432791-product
-    m = re.search(r'/ID=(\d+)-product', retail_url, flags=re.IGNORECASE)
-    if m:
-        return m.group(1)
+    patterns = [
+        r"/ID=([A-Za-z0-9]+)-product",
+        r"[?&]productId=([A-Za-z0-9]+)",
+        r'"productId"\s*:\s*"([A-Za-z0-9]+)"',
+    ]
 
-    # Fallback if productId appears in query or elsewhere.
-    m = re.search(r'[?&]productId=(\d+)', retail_url, flags=re.IGNORECASE)
-    if m:
-        return m.group(1)
+    for pattern in patterns:
+        m = re.search(pattern, retail_url, flags=re.IGNORECASE)
+        if m:
+            return m.group(1)
 
     return ""
 
