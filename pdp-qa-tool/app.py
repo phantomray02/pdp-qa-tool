@@ -682,6 +682,76 @@ def preview_between_markers(text, start_marker="", end_marker=""):
     return result
 
 
+def fetch_url_debug(url):
+    """
+    Fresh non-cached fetch debugger so we can see exactly what the app receives.
+    """
+    result = {
+        "requested_url": str(url or ""),
+        "final_url": "",
+        "status_code": None,
+        "reason": "",
+        "content_type": "",
+        "content_length_header": "",
+        "text_length": 0,
+        "history": [],
+        "error": "",
+        "raw_html": "",
+        "dom_text": "",
+        "prettified_dom": "",
+        "response_headers": {},
+    }
+
+    url = str(url or "").strip()
+    if not url:
+        result["error"] = "No URL provided."
+        return result
+
+    try:
+        session = get_session()
+        r = session.get(url, timeout=REQUEST_TIMEOUT, allow_redirects=True)
+
+        result["final_url"] = str(r.url or "")
+        result["status_code"] = int(r.status_code)
+        result["reason"] = str(getattr(r, "reason", "") or "")
+        result["content_type"] = str(r.headers.get("Content-Type", "") or "")
+        result["content_length_header"] = str(r.headers.get("Content-Length", "") or "")
+        result["history"] = [
+            {
+                "status_code": int(h.status_code),
+                "url": str(h.url or ""),
+            }
+            for h in r.history
+        ]
+
+        # Keep a smaller header set for easy reading.
+        interesting_headers = [
+            "Content-Type",
+            "Content-Length",
+            "Server",
+            "Cache-Control",
+            "Set-Cookie",
+            "Location",
+            "X-Cache",
+            "X-Served-By",
+            "CF-Cache-Status",
+            "CF-Ray",
+        ]
+        result["response_headers"] = {
+            k: v for k, v in r.headers.items() if k in interesting_headers
+        }
+
+        raw_html = r.text or ""
+        result["raw_html"] = raw_html
+        result["text_length"] = len(raw_html)
+        result["dom_text"] = html_to_debug_textblob(raw_html)
+        result["prettified_dom"] = html_to_prettified_dom(raw_html)
+
+    except Exception as e:
+        result["error"] = repr(e)
+
+    return result
+    
 @st.cache_data(show_spinner=False)
 def get_debug_views_for_url(url):
     html_text = get_html(url)
@@ -3498,9 +3568,29 @@ if uploaded_file and st.session_state.processing_done:
                     if not debug_url or str(debug_url).strip().lower() in {"", "n/a", "#n/a", "na", "nan", "none"}:
                         st.warning("No usable URL available for this debugger view.")
                     else:
-                        debug_views = get_debug_views_for_url(debug_url)
+                        debug_fetch = fetch_url_debug(debug_url)
 
-                        st.caption(f"Source URL: {debug_url}")
+                        st.caption(f"Requested URL: {debug_fetch['requested_url']}")
+                        if debug_fetch["final_url"]:
+                            st.caption(f"Final URL: {debug_fetch['final_url']}")
+
+                        meta_cols = st.columns(5)
+                        meta_cols[0].metric("Status", str(debug_fetch["status_code"]) if debug_fetch["status_code"] is not None else "None")
+                        meta_cols[1].metric("Reason", debug_fetch["reason"] or "None")
+                        meta_cols[2].metric("Content-Type", debug_fetch["content_type"] or "None")
+                        meta_cols[3].metric("Text Length", str(debug_fetch["text_length"]))
+                        meta_cols[4].metric("Redirects", str(len(debug_fetch["history"])))
+
+                        if debug_fetch["error"]:
+                            st.error(f"Fetch error: {debug_fetch['error']}")
+
+                        if debug_fetch["history"]:
+                            st.write("### Redirect History")
+                            st.json(debug_fetch["history"])
+
+                        if debug_fetch["response_headers"]:
+                            st.write("### Response Headers")
+                            st.json(debug_fetch["response_headers"])
 
                         tab_raw, tab_dom_text, tab_dom_pretty, tab_marker = st.tabs(
                             ["Raw HTML", "DOM Text", "Prettified DOM", "Marker Test"]
@@ -3509,21 +3599,21 @@ if uploaded_file and st.session_state.processing_done:
                         with tab_raw:
                             st.text_area(
                                 f"raw_html_{sku}_{debugger_source}",
-                                debug_views["raw_html"],
+                                debug_fetch["raw_html"],
                                 height=500,
                             )
 
                         with tab_dom_text:
                             st.text_area(
                                 f"dom_text_{sku}_{debugger_source}",
-                                debug_views["dom_text"],
+                                debug_fetch["dom_text"],
                                 height=500,
                             )
 
                         with tab_dom_pretty:
                             st.text_area(
                                 f"pretty_dom_{sku}_{debugger_source}",
-                                debug_views["prettified_dom"],
+                                debug_fetch["prettified_dom"],
                                 height=500,
                             )
 
@@ -3546,9 +3636,9 @@ if uploaded_file and st.session_state.processing_done:
                             )
 
                             source_text = (
-                                debug_views["dom_text"]
+                                debug_fetch["dom_text"]
                                 if marker_source == "DOM Text"
-                                else debug_views["raw_html"]
+                                else debug_fetch["raw_html"]
                             )
 
                             marker_preview = preview_between_markers(
