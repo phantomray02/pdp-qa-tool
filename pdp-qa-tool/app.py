@@ -96,7 +96,6 @@ SECTION_VERTICAL_GAP = 10
 # Use one shared spacing value so the image area feels mathematically even.
 IMG_SPACE_PX = 0
 IMG_BOX_HEIGHT = 132
-IMG_SCORE_WIDTH_PX = 118
 
 
 DESCRIPTION_TO_FEATURES_GAP_PX = 100
