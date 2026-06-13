@@ -3143,8 +3143,6 @@ if uploaded_file and st.session_state.processing_done:
             st.stop()
 
         for _, row in visual_df.iterrows():
-
-        for _, row in visual_df.iterrows():
             sku = row.get("sku", "Missing SKU")
             retail_url = row.get("retail_url", "")
             salsify_url = row.get("salsify_url", "")
