@@ -3493,14 +3493,40 @@ if uploaded_file:
                     if result:
                         summary = result.get("summary")
                         detail = result.get("detail")
-                        debug = result.get("
-        raise EmptyDataError("Uploaded file is empty.")
+                        debug = result.get("debug")
 
-    if isinstance(file_bytes, bytes) and len(file_bytes) == 0:
-        raise EmptyDataError("Uploaded file is empty.")
+                        if summary and summary["SKU"] not in st.session_state.summary_skus:
+                            st.session_state.summary_rows.append(summary)
+                            st.session_state.summary_skus.add(summary["SKU"])
 
-    file_name = str(file_name or "").lower().strip()
+                        if detail and detail["SKU"] not in st.session_state.detail_skus:
+                            st.session_state.export_rows.append(detail)
+                            st.session_state.detail_skus.add(detail["SKU"])
 
+                        if debug and debug["SKU"] not in st.session_state.debug_skus:
+                            st.session_state.debug_rows.append(debug)
+                            st.session_state.debug_skus.add(debug["SKU"])
+
+                    if completed % UI_UPDATE_EVERY == 0 or completed == total:
+                        progress_bar.progress(completed / max(total, 1))
+                        status_text.markdown(
+                            f"**Processed:** {completed}/{total}  \n"
+                            f"**Overall:** {start + completed}/{len(df)}"
+                        )
+                        overall_progress_bar.progress((start + completed) / max(len(df), 1))
+
+            if start + BATCH_SIZE < len(df):
+                st.session_state.start_idx += BATCH_SIZE
+                time.sleep(0.05)
+                st.rerun()
+            else:
+                st.session_state.processing_done = True
+                st.rerun()
+
+    except EmptyDataError:
+        st.error("🔥 CRITICAL APP ERROR")
+        st.text
+        
 # =========================================
 # TOP EXPORT SECTION
 # =========================================
