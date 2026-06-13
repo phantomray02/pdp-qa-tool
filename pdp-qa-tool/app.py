@@ -479,8 +479,7 @@ def infer_retailer_name_from_url(url):
     return "Retailer"
 
 
-def prepare_input_df(df):
-    df = df.copy()
+def prepare_input_df(df):def prepare_input.copy()
     df.columns = [str(c).strip().lower() for c in df.columns]
 
     df.rename(
@@ -512,6 +511,9 @@ def prepare_input_df(df):
 
     if "retailer" not in df.columns:
         df["retailer"] = df["retail_url"].apply(infer_retailer_name_from_url)
+
+        # If the row has a Walgreens RPC but no live retail URL yet,
+        # keep the retailer classified as Walgreens.
         df.loc[
             (df["retailer"] == "Retailer") & (df["cvs_rpc"] != ""),
             "retailer"
@@ -524,8 +526,10 @@ def prepare_input_df(df):
             .astype(str)
             .str.strip()
         )
+
         inferred = df["retail_url"].apply(infer_retailer_name_from_url)
         df["retailer"] = df["retailer"].where(df["retailer"] != "", inferred)
+
         df.loc[
             (df["retailer"] == "Retailer") & (df["cvs_rpc"] != ""),
             "retailer"
@@ -533,74 +537,9 @@ def prepare_input_df(df):
 
     return df
     
-    retail_url = row.get("retail_url", "")
-    salsify_url = row.get("salsify_url", "")
-    cvs_rpc = row.get("cvs_rpc") or row.get("CVS RPC") or ""
-    retailer_name = row.get("retailer", "") or infer_retailer_name_from_url(retail_url)
-        salsify_url = str(salsify_url or "").strip()
-        retail_url = str(retail_url or "").strip()
-
-        status_notes = []
-
-        if not salsify_url:
-            status_notes.append("Missing Salsify URL")
-        if not retail_url:
-            status_notes.append("Missing Retail URL")
-
-        if status_notes:
-            note = " | ".join(status_notes)
-
-            return {
-                "summary": {
-                    "SKU": row.get("sku", ""),
-                    "Retailer": retailer_name,
-                    "CVS RPC": cvs_rpc,
-                    "Brand": row.get("brand", ""),
-                    "Salsify URL": salsify_url,
-                    "Retail URL": retail_url,
-                    "Title %": 0,
-                    "Description %": 0,
-                    "Feature %": 0,
-                    "Image Match %": 0,
-                    "Overall %": 0,
-                    "Status": note,
-                },
-                "detail": {
-                    "SKU": row.get("sku", ""),
-                    "Retailer": retailer_name,
-                    "CVS RPC": cvs_rpc,
-                    "Brand": row.get("brand", ""),
-                    "Salsify URL": salsify_url,
-                    "Retail URL": retail_url,
-                    "Title %": 0,
-                    "Description %": 0,
-                    "Feature %": 0,
-                    "Image Match %": 0,
-                    "Overall %": 0,
-                    "Status": note,
-                    "Salsify Title": "",
-                    "CVS Title": "",
-                    "Salsify Description": "",
-                    "CVS Description": "",
-                    "CVS Features": "",
-                    "Salsify Images": "",
-                    "CVS Images": "",
-                },
-                "debug": {
-                    "SKU": row.get("sku", ""),
-                    "Retailer": retailer_name,
-                    "CVS RPC": cvs_rpc,
-                    "Brand": row.get("brand", ""),
-                    "Retail URL": retail_url,
-                    "Salsify URL": salsify_url,
-                    "Status": note,
-                },
-            }    
-            
 def clear_in_memory_caches():
     html_cache.clear()
     image_hash_cache.clear()
-
 
 # =========================================
 # HTML FETCH
@@ -2053,8 +1992,73 @@ def process_row(row):
         cvs_rpc = row.get("cvs_rpc") or row.get("CVS RPC") or ""
         retailer_name = row.get("retailer", "") or infer_retailer_name_from_url(retail_url)
 
+        salsify_url = str(salsify_url or "").strip()
+        retail_url = str(retail_url or "").strip()
+
+        status_notes = []
+
+        if not salsify_url:
+            status_notes.append("Missing Salsify URL")
+        if not retail_url:
+            status_notes.append("Missing Retail URL")
+
+        if status_notes:
+            note = " | ".join(status_notes)
+
+            return {
+                "summary": {
+                    "SKU": row.get("sku", ""),
+                    "Retailer": retailer_name,
+                    "CVS RPC": cvs_rpc,
+                    "Brand": row.get("brand", ""),
+                    "Salsify URL": salsify_url,
+                    "Retail URL": retail_url,
+                    "Title %": 0,
+                    "Description %": 0,
+                    "Feature %": 0,
+                    "Image Match %": 0,
+                    "Overall %": 0,
+                    "Status": note,
+                },
+                "detail": {
+                    "SKU": row.get("sku", ""),
+                    "Retailer": retailer_name,
+                    "CVS RPC": cvs_rpc,
+                    "Brand": row.get("brand", ""),
+                    "Salsify URL": salsify_url,
+                    "Retail URL": retail_url,
+                    "Title %": 0,
+                    "Description %": 0,
+                    "Feature %": 0,
+                    "Image Match %": 0,
+                    "Overall %": 0,
+                    "Status": note,
+                    "Salsify Title": "",
+                    "CVS Title": "",
+                    "Salsify Description": "",
+                    "CVS Description": "",
+                    "Salsify Feature 1": "",
+                    "Salsify Feature 2": "",
+                    "Salsify Feature 3": "",
+                    "Salsify Feature 4": "",
+                    "Salsify Feature 5": "",
+                    "CVS Features": "",
+                    "Salsify Images": "",
+                    "CVS Images": "",
+                },
+                "debug": {
+                    "SKU": row.get("sku", ""),
+                    "Retailer": retailer_name,
+                    "CVS RPC": cvs_rpc,
+                    "Brand": row.get("brand", ""),
+                    "Retail URL": retail_url,
+                    "Salsify URL": salsify_url,
+                    "Status": note,
+                },
+            }
+
         target_sku = get_target_sku_from_inputs(
-            retail_url=row.get("retail_url", ""),
+            retail_url=retail_url,
             cvs_rpc=cvs_rpc,
         )
 
@@ -2133,6 +2137,7 @@ def process_row(row):
                 "Feature %": avg_feature_score,
                 "Image Match %": avg_img_score,
                 "Overall %": overall,
+                "Status": "",
                 **feature_score_fields,
                 **image_position_scores,
             },
@@ -2148,6 +2153,7 @@ def process_row(row):
                 "Feature %": avg_feature_score,
                 "Image Match %": avg_img_score,
                 "Overall %": overall,
+                "Status": "",
                 "Salsify Title": s_text.get("title", ""),
                 "CVS Title": r_text.get("title", ""),
                 "Salsify Description": s_text.get("description", ""),
@@ -2227,7 +2233,6 @@ def process_row(row):
 
     except Exception:
         return None
-
 # =========================================
 # SESSION STATE
 # =========================================
