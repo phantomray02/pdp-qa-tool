@@ -2395,78 +2395,118 @@ def _extract_walgreens_product_desc_block(html_text):
     desc_html = _decode_walgreens_json_string(raw_desc)
     return desc_html, "walgreens_productDesc_found"
 
+        def _extract_walgreens_feature_items_from_raw_product_desc(desc_html):
+    """
+    Parse Walgreens feature bullets from the raw productDesc HTML string.
+
+    IMPORTANT:
+    Walgreens source often has malformed LI markup like:
+        <LI>Feature 1
+        <LI>Feature 2
+        <LI>Feature 3
+    with only the final LI explicitly closed.
+    So we split on raw <LI> markers instead of relying on BeautifulSoup nesting.
+    """
+    if not desc_html:
+        return []
+
+    working = str(desc_html)
+
+    # Remove scripts completely.
+    working = re.sub(
+        r"<script\b[^>]*>.*?</script>",
+        " ",
+        working,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    ul_match = re.search(r"<ul[^>]*>(.*?)</ul>", working, flags=re.IGNORECASE | re.DOTALL)
+    if not ul_match:
+        return []
+
+    ul_html = ul_match.group(1)
+
+    li_markers = list(re.finditer(r"<li[^>]*>", ul_html, flags=re.IGNORECASE))
+    if not li_markers:
+        return []
+
+    features = []
+
+    for i, marker in enumerate(li_markers):
+        start = marker.end()
+        end = li_markers[i + 1].start() if i + 1 < len(li_markers) else len(ul_html)
+
+        chunk = ul_html[start:end]
+
+        chunk = re.sub(r"</li\s*>", " ", chunk, flags=re.IGNORECASE)
+        chunk = re.sub(r"<br\s*/?>", " ", chunk, flags=re.IGNORECASE)
+
+        text = BeautifulSoup(chunk, "html.parser").get_text(" ", strip=True)
+        text = clean_walgreens_text(text)
+
+        if not text:
+            continue
+
+        # Stop / skip utility copy if it leaks.
+        if re.search(r"^Made in USA\b", text, flags=re.IGNORECASE):
+            continue
+        if re.search(r"^\d+\.\s*To Use:", text, flags=re.IGNORECASE):
+            continue
+        if re.search(r"^\d+\.\s*To Dispose:", text, flags=re.IGNORECASE):
+            continue
+        if re.search(r"Walgreens does not represent or warrant", text, flags=re.IGNORECASE):
+            continue
+
+        features.append(text)
+
+    features = dedupe_preserve_order(features)
+    return features[:5]
 
 def _extract_walgreens_description_and_features_from_product_desc(html_text):
     """
-    productDesc structure for this Walgreens item:
-    - paragraph first
-    - then UL / LI bullets
+    Walgreens source structure for this item:
+    - productDesc contains paragraph first
+    - then UL / LI features
     - then Made in USA / To Use / To Dispose text
 
     We want:
-    - description = paragraph text before the utility copy
-    - features = LI items
+    - description = ONLY the paragraph text before <UL>
+    - features = each LI item split from raw LI markers
     """
     desc_html, source_path = _extract_walgreens_product_desc_block(html_text)
 
     if not desc_html:
         return "", [], source_path
 
-    desc_html = re.sub(
+    working = str(desc_html)
+
+    # Remove any scripts completely.
+    working = re.sub(
         r"<script\b[^>]*>.*?</script>",
         " ",
-        desc_html,
+        working,
         flags=re.IGNORECASE | re.DOTALL,
     )
 
-    soup = BeautifulSoup(desc_html, "html.parser")
+    # DESCRIPTION:
+    # Only take the content before the first <UL>.
+    before_ul = re.split(r"<ul[^>]*>", working, maxsplit=1, flags=re.IGNORECASE)[0]
 
-    # Description: collect paragraph text but stop before utility copy.
-    description_parts = []
-    for p in soup.find_all("p"):
-        text = _normalize_walgreens_text(p.get_text(" ", strip=True))
-        if not text:
-            continue
+    before_ul = re.sub(r"<br\s*/?>", " ", before_ul, flags=re.IGNORECASE)
+    before_ul = re.sub(r"</p\s*>\s*<p[^>]*>", " ", before_ul, flags=re.IGNORECASE)
 
-        if text.lower() == "made in usa":
-            break
-        if re.search(r"^\d+\.\s*To Use:", text, flags=re.IGNORECASE):
-            break
-        if re.search(r"^\d+\.\s*To Dispose:", text, flags=re.IGNORECASE):
-            break
-        if re.search(r"Walgreens does not represent or warrant", text, flags=re.IGNORECASE):
-            break
+    description_text = BeautifulSoup(before_ul, "html.parser").get_text(" ", strip=True)
+    description_text = clean_walgreens_text(description_text)
 
-        description_parts.append(text)
-
-    description_text = " ".join(description_parts).strip()
-
-    # Features: LI items only.
-    feature_items = []
-    for li in soup.find_all("li"):
-        text = _normalize_walgreens_text(li.get_text(" ", strip=True))
-        if not text:
-            continue
-
-        if text.lower() == "made in usa":
-            break
-        if re.search(r"^\d+\.\s*To Use:", text, flags=re.IGNORECASE):
-            break
-        if re.search(r"^\d+\.\s*To Dispose:", text, flags=re.IGNORECASE):
-            break
-        if re.search(r"Walgreens does not represent or warrant", text, flags=re.IGNORECASE):
-            break
-
-        feature_items.append(text)
-
-    feature_items = dedupe_preserve_order(feature_items)[:5]
+    # FEATURES:
+    # Split from raw LI tags so malformed Walgreens list markup doesn't cascade bullets.
+    feature_items = _extract_walgreens_feature_items_from_raw_product_desc(working)
 
     return (
         description_text,
         feature_items,
-        "walgreens_productDesc_paragraph_and_li",
+        "walgreens_productDesc_preUL_description_and_rawLI_features",
     )
-
 
 def extract_walgreens_images_from_html(html_text):
     """
