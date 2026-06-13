@@ -94,9 +94,9 @@ COPY_LINE_HEIGHT = 1.20
 SECTION_VERTICAL_GAP = 10
 
 # Use one shared spacing value so the image area feels mathematically even.
-IMG_SPACE_PX = 0
-IMG_BOX_HEIGHT = 132
-
+IMG_SPACE_PX = 2
+IMG_BOX_HEIGHT = 118
+IMG_SCORE_WIDTH_PX = 118
 
 DESCRIPTION_TO_FEATURES_GAP_PX = 100
 
@@ -325,10 +325,9 @@ def image_compare_cell_html(url, box_height=IMG_BOX_HEIGHT):
             f"margin:0;"
             f"padding:0;"
             f"overflow:hidden;"
-            f"background:transparent;"
+            f"background:#FFFFFF;"
             f"\">"
-            f"<img src=\"{safe_url}\" "
-            f"style=\"max-width:100%; max-height:{box_height}px; object-fit:contain; display:block;\" />"
+            f"<img src=\"{safe_url}\" style=\"max-width:100%; max-height:{box_height}px; object-fit:contain; display:block;\" />"
             f"</div>"
         )
 
@@ -344,7 +343,7 @@ def image_compare_cell_html(url, box_height=IMG_BOX_HEIGHT):
         f"color:#C62828;"
         f"font-size:16px;"
         f"font-weight:700;"
-        f"background:transparent;"
+        f"background:#FFFFFF;"
         f"\">"
         f"Missing"
         f"</div>"
@@ -356,7 +355,7 @@ def image_compare_row_html(s_url, r_url, score):
         f"<div style=\""
         f"display:grid;"
         f"grid-template-columns:minmax(0,1fr) minmax(0,1fr) {IMG_SCORE_WIDTH_PX}px;"
-        f"column-gap:8px;"
+        f"column-gap:{IMG_SPACE_PX}px;"
         f"align-items:center;"
         f"margin:0 0 {IMG_SPACE_PX}px 0;"
         f"padding:0;"
@@ -2641,6 +2640,25 @@ if uploaded_file and st.session_state.processing_done:
 
                     st.markdown(
                         image_compare_row_html(s_url, r_url, slot_score),
+                        unsafe_allow_html=True,
+                    )
+                    with img2:
+                        if r_url:
+                            st.image(r_url, use_container_width=True)
+                        else:
+                            st.markdown(
+                                equal_feature_block("Missing", min_height=IMG_BOX_HEIGHT),
+                                unsafe_allow_html=True,
+                            )
+
+                    with score_col:
+                        st.markdown(
+                            f"<div style='min-height:{IMG_BOX_HEIGHT}px; display:flex; align-items:center; justify-content:flex-start; text-align:left; margin:0; padding:0;'>{score_text_html(slot_score)}</div>",
+                            unsafe_allow_html=True,
+                        )
+
+                    st.markdown(
+                        f"<div style='height:{IMG_SPACE_PX}px;'></div>",
                         unsafe_allow_html=True,
                     )
                     
