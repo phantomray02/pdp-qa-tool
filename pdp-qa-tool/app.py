@@ -2248,7 +2248,6 @@ def _normalize_walgreens_text(value):
     value = value.replace("\\/", "/")
     value = value.replace('\\"', '"')
 
-    # Remove scripts if present.
     value = re.sub(
         r"<script\b[^>]*>.*?</script>",
         " ",
@@ -2259,8 +2258,7 @@ def _normalize_walgreens_text(value):
     if "<" in value and ">" in value:
         value = BeautifulSoup(value, "html.parser").get_text(" ", strip=True)
 
-    value = normalize_space(value)
-    return value
+    return normalize_space(value)
 
 
 def get_walgreens_product_id_from_url(retail_url):
@@ -2269,14 +2267,11 @@ def get_walgreens_product_id_from_url(retail_url):
 
     retail_url = str(retail_url or "").strip()
 
-    # Typical Walgreens PDP format:
-    # /store/c/.../ID=300432791-product
-    m = re.search(r'/ID=(\d+)-product', retail_url, flags=re.IGNORECASE)
+    m = re.search(r"/ID=(\d+)-product", retail_url, flags=re.IGNORECASE)
     if m:
         return m.group(1)
 
-    # Fallback if productId appears in query.
-    m = re.search(r'[?&]productId=(\d+)', retail_url, flags=re.IGNORECASE)
+    m = re.search(r"[?&]productId=(\d+)", retail_url, flags=re.IGNORECASE)
     if m:
         return m.group(1)
 
@@ -2331,14 +2326,6 @@ def find_first_dict_with_keys(obj, required_keys):
 
 
 def format_walgreens_title_from_parts(raw_title="", size_count="", primary_attr=""):
-    """
-    Example:
-    raw_title   = "Depend Adult Incontinence Underwear for Men Extra-Large Grey"
-    size_count  = "15.0 ea"
-    primary_attr= "Grey"
-
-    result      = "Depend Adult Incontinence Underwear for Men Extra-Large, 15.0 ea"
-    """
     raw_title = _normalize_walgreens_text(raw_title)
     size_count = _normalize_walgreens_text(size_count)
     primary_attr = _normalize_walgreens_text(primary_attr)
@@ -2368,24 +2355,22 @@ def format_walgreens_title_from_parts(raw_title="", size_count="", primary_attr=
                 title_clean = title_clean[: -len(color)].rstrip(" ,-/")
                 break
 
-    _extract_walgreens_feature_items_from_raw_product_desc(desc_html):    if size_count:
+    if size_count:
+        return f"{title_clean}, {size_count}"
+
+    return title_clean
+
+
+def _extract_walgreens_feature_items_from_raw_product_desc(desc_html):
     """
     Parse Walgreens feature bullets from the raw productDesc HTML string.
-
-    IMPORTANT:
-    Walgreens source often has malformed LI markup like:
-        <LI>Feature 1
-        <LI>Feature 2
-        <LI>Feature 3
-    with only the final LI explicitly closed.
-    So we split on raw <LI> markers instead of relying on BeautifulSoup nesting.
+    Split on raw <LI> markers because Walgreens productDesc markup can be malformed.
     """
     if not desc_html:
         return []
 
     working = str(desc_html)
 
-    # Remove scripts completely.
     working = re.sub(
         r"<script\b[^>]*>.*?</script>",
         " ",
@@ -2410,7 +2395,6 @@ def format_walgreens_title_from_parts(raw_title="", size_count="", primary_attr=
         end = li_markers[i + 1].start() if i + 1 < len(li_markers) else len(ul_html)
 
         chunk = ul_html[start:end]
-
         chunk = re.sub(r"</li\s*>", " ", chunk, flags=re.IGNORECASE)
         chunk = re.sub(r"<br\s*/?>", " ", chunk, flags=re.IGNORECASE)
 
@@ -2419,8 +2403,6 @@ def format_walgreens_title_from_parts(raw_title="", size_count="", primary_attr=
 
         if not text:
             continue
-
-        # Skip utility copy if it leaks through.
         if re.search(r"^Made in USA\b", text, flags=re.IGNORECASE):
             continue
         if re.search(r"^\d+\.\s*To Use:", text, flags=re.IGNORECASE):
@@ -2432,27 +2414,24 @@ def format_walgreens_title_from_parts(raw_title="", size_count="", primary_attr=
 
         features.append(text)
 
-    features = dedupe_preserve_order(features)
-    return features[:5]
+    return dedupe_preserve_order(features)[:5]
 
 
 def extract_walgreens_copy_from_product_desc_html(product_desc_html):
     """
-    productDesc structure for this Walgreens item:
+    productDesc structure:
     - paragraph first
     - then UL / LI bullets
-    - then Made in USA / To Use / To Dispose text
 
     We want:
-    - description = ONLY the paragraph text before <UL>
-    - features = each LI item split from raw LI markers
+    - description = ONLY content before the first <UL>
+    - features = LI items split from raw LI markers
     """
     if not product_desc_html:
         return "", []
 
     working = str(product_desc_html)
 
-    # Remove scripts completely.
     working = re.sub(
         r"<script\b[^>]*>.*?</script>",
         " ",
@@ -2460,16 +2439,13 @@ def extract_walgreens_copy_from_product_desc_html(product_desc_html):
         flags=re.IGNORECASE | re.DOTALL,
     )
 
-    # Only take content before the first <UL> for the description.
     before_ul = re.split(r"<ul[^>]*>", working, maxsplit=1, flags=re.IGNORECASE)[0]
-
     before_ul = re.sub(r"<br\s*/?>", " ", before_ul, flags=re.IGNORECASE)
     before_ul = re.sub(r"</p\s*>\s*<p[^>]*>", " ", before_ul, flags=re.IGNORECASE)
 
     description_text = BeautifulSoup(before_ul, "html.parser").get_text(" ", strip=True)
     description_text = _normalize_walgreens_text(description_text)
 
-    # Split features from raw LI markers.
     feature_items = _extract_walgreens_feature_items_from_raw_product_desc(working)
 
     return description_text, feature_items
@@ -2543,18 +2519,10 @@ def extract_walgreens_images_from_product_info(product_info):
                 if any(token in k.lower() for token in ["largeimageurl", "zoomimageurl", "stripurl"]):
                     maybe_add_url(v)
 
-    image_urls = dedupe_preserve_order(image_urls)
-    return image_urls[:8]
+    return dedupe_preserve_order(image_urls)[:8]
 
 
 def build_walgreens_bundle_from_api_payload(payload):
-    """
-    Build the Walgreens bundle from the lighter product JSON payload.
-    Works off the exact fields you identified:
-    - productInfo.title
-    - productInfo.sizeCount
-    - prodDetails.section[].description.productDesc
-    """
     empty = {
         "text": {
             "title": "",
@@ -2573,7 +2541,6 @@ def build_walgreens_bundle_from_api_payload(payload):
     if not payload:
         return empty
 
-    # Try common payload shapes.
     root = payload
     if isinstance(payload, dict) and "productData" in payload and isinstance(payload["productData"], dict):
         root = payload["productData"]
@@ -2585,7 +2552,6 @@ def build_walgreens_bundle_from_api_payload(payload):
         product_info = root.get("productInfo", {}) if isinstance(root.get("productInfo", {}), dict) else {}
         prod_details = root.get("prodDetails", {}) if isinstance(root.get("prodDetails", {}), dict) else {}
 
-    # Fallback recursive search if shape differs.
     if not product_info:
         product_info = find_first_dict_with_keys(root, {"title", "sizeCount"})
     if not prod_details:
@@ -2603,7 +2569,6 @@ def build_walgreens_bundle_from_api_payload(payload):
 
     section_list = prod_details.get("section", []) if isinstance(prod_details, dict) else []
     description, features = extract_walgreens_copy_from_product_sections(section_list)
-
     images = extract_walgreens_images_from_product_info(product_info)
 
     return {
@@ -2725,9 +2690,6 @@ def extract_walgreens_text_from_html(html_text, retail_url="", target_rpc=""):
 
 
 def extract_walgreens_images_from_html(html_text):
-    """
-    HTML fallback image extraction if API path fails.
-    """
     if not html_text:
         return []
 
@@ -2763,7 +2725,6 @@ def extract_walgreens_images_from_html(html_text):
 
         image_urls.append(url)
 
-    # Direct product image fields in raw HTML.
     for field_name in ["productImageUrl", "zoomImageUrl", "metaImage"]:
         for m in re.finditer(
             rf'"{field_name}"\s*:\s*"((?:\\.|[^"\\])*)"',
@@ -2772,7 +2733,6 @@ def extract_walgreens_images_from_html(html_text):
         ):
             maybe_add_url(_decode_walgreens_json_string(m.group(1)))
 
-    # filmStripUrl images.
     strip_patterns = [
         r'"largeImageUrl\d+"\s*:\s*"((?:\\.|[^"\\])*)"',
         r'"zoomImageUrl\d+"\s*:\s*"((?:\\.|[^"\\])*)"',
@@ -2782,7 +2742,6 @@ def extract_walgreens_images_from_html(html_text):
         for m in re.finditer(pattern, html_text, flags=re.IGNORECASE | re.DOTALL):
             maybe_add_url(_decode_walgreens_json_string(m.group(1)))
 
-    # Meta fallback.
     soup = BeautifulSoup(html_text, "html.parser")
     for selector in [
         "meta[property='og:image']",
@@ -2792,8 +2751,7 @@ def extract_walgreens_images_from_html(html_text):
         if tag:
             maybe_add_url(tag.get("content", ""))
 
-    image_urls = dedupe_preserve_order(image_urls)
-    return image_urls[:8]
+    return dedupe_preserve_order(image_urls)[:8]
 
 
 def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
@@ -2804,7 +2762,6 @@ def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
     """
     product_id = get_walgreens_product_id_from_url(retail_url)
 
-    # API-first path
     api_payload = get_walgreens_product_api_payload(product_id)
     api_bundle = build_walgreens_bundle_from_api_payload(api_payload)
 
@@ -2818,7 +2775,6 @@ def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
     if has_api_copy:
         return api_bundle
 
-    # Fallback to live HTML if API did not return usable data.
     html_text = get_walgreens_html(retail_url)
 
     return {
@@ -2839,9 +2795,6 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku=""):
 
     # Default path stays CVS.
     return get_cvs_bundle(retail_url, target_rpc)
-        return f"{title_clean}, {size_count}"
-
-    return title_clean
 
 # =========================================
 # RETAILER-SPECIFIC FINAL COPY CLEANUP
