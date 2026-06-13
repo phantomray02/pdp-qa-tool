@@ -94,7 +94,7 @@ COPY_LINE_HEIGHT = 1.20
 SECTION_VERTICAL_GAP = 15
 
 # Use one shared spacing value so the image area feels mathematically even.
-IMG_SPACE_PX = 0
+IMG_SPACE_PX = 2
 IMG_BOX_HEIGHT = 100
 IMG_SCORE_WIDTH_PX = 118
 
@@ -314,28 +314,27 @@ def image_header_html(label):
     )
 
 
-def image_compare_cell_html(url, box_height=IMG_BOX_HEIGHT):
+def image_compare_cell_html(url):
     if url:
         safe_url = html.escape(str(url), quote=True)
         return (
             f"<div style=\""
-            f"height:{box_height}px;"
             f"width:100%;"
-            f"display:flex;"
-            f"align-items:center;"
-            f"justify-content:center;"
             f"margin:0;"
             f"padding:0;"
+            f"display:flex;"
+            f"align-items:flex-start;"
+            f"justify-content:center;"
             f"overflow:hidden;"
             f"\">"
-            f"<img src=\"{safe_url}\" style=\"max-width:100%; max-height:{box_height}px; object-fit:contain;\" />"
+            f"<img src=\"{safe_url}\" style=\"display:block; width:100%; height:auto; object-fit:contain;\" />"
             f"</div>"
         )
 
     return (
         f"<div style=\""
-        f"height:{box_height}px;"
         f"width:100%;"
+        f"min-height:80px;"
         f"display:flex;"
         f"align-items:center;"
         f"justify-content:center;"
@@ -349,31 +348,29 @@ def image_compare_cell_html(url, box_height=IMG_BOX_HEIGHT):
         f"</div>"
     )
 
-
 def image_compare_row_html(s_url, r_url, score):
     return (
         f"<div style=\""
         f"display:grid;"
         f"grid-template-columns:minmax(0,1fr) minmax(0,1fr) {IMG_SCORE_WIDTH_PX}px;"
-        f"column-gap:{IMG_SPACE_PX}px;"
-        f"align-items:center;"
+        f"column-gap:8px;"
+        f"align-items:start;"
         f"margin:0 0 {IMG_SPACE_PX}px 0;"
         f"padding:0;"
         f"\">"
         f"<div style=\"margin:0; padding:0;\">"
-        f"{image_compare_cell_html(s_url, box_height=IMG_BOX_HEIGHT)}"
+        f"{image_compare_cell_html(s_url)}"
         f"</div>"
         f"<div style=\"margin:0; padding:0;\">"
-        f"{image_compare_cell_html(r_url, box_height=IMG_BOX_HEIGHT)}"
+        f"{image_compare_cell_html(r_url)}"
         f"</div>"
         f"<div style=\""
-        f"height:{IMG_BOX_HEIGHT}px;"
         f"display:flex;"
-        f"align-items:center;"
+        f"align-items:flex-start;"
         f"justify-content:flex-start;"
         f"text-align:left;"
         f"margin:0;"
-        f"padding:0;"
+        f"padding-top:4px;"
         f"\">"
         f"{score_text_html(score)}"
         f"</div>"
