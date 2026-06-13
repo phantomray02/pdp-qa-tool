@@ -2642,18 +2642,6 @@ if uploaded_file and st.session_state.processing_done:
                         image_compare_row_html(s_url, r_url, slot_score),
                         unsafe_allow_html=True,
                     )
-
-
-                    with score_col:
-                        st.markdown(
-                            f"<div style='min-height:{IMG_BOX_HEIGHT}px; display:flex; align-items:center; justify-content:flex-start; text-align:left; margin:0; padding:0;'>{score_text_html(slot_score)}</div>",
-                            unsafe_allow_html=True,
-                        )
-
-                    st.markdown(
-                        f"<div style='height:{IMG_SPACE_PX}px;'></div>",
-                        unsafe_allow_html=True,
-                    )
                     
                     st.markdown(f"<div style='height:{IMG_SPACE_PX}px;'></div>", unsafe_allow_html=True)
 
