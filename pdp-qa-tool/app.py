@@ -67,6 +67,7 @@ MAX_CACHE = 400
 # Retailer-specific fetch tuning
 WALGREENS_REQUEST_TIMEOUT = 18
 WALGREENS_DEBUG_TIMEOUT = 25
+WALGREENS_API_TIMEOUT = 10
 
 # =========================================
 # PERFORMANCE SETTINGS
@@ -633,6 +634,73 @@ def get_walgreens_html(url):
     Keeps CVS untouched.
     """
     return fetch_html_with_timeout(url, WALGREENS_REQUEST_TIMEOUT)
+
+def get_walgreens_product_id_from_url(retail_url):
+    if not retail_url:
+        return ""
+
+    retail_url = str(retail_url or "").strip()
+
+    # Typical Walgreens PDP format:
+    # /store/c/.../ID=300432791-product
+    m = re.search(r'/ID=(\d+)-product', retail_url, flags=re.IGNORECASE)
+    if m:
+        return m.group(1)
+
+    # Fallback if productId appears in query or elsewhere.
+    m = re.search(r'[?&]productId=(\d+)', retail_url, flags=re.IGNORECASE)
+    if m:
+        return m.group(1)
+
+    return ""
+
+
+def fetch_json_with_timeout(url, timeout_seconds):
+    if not url:
+        return None
+
+    try:
+        session = get_session()
+        r = session.get(url, timeout=timeout_seconds, allow_redirects=True)
+        if r.status_code == 200:
+            return r.json()
+    except Exception:
+        pass
+
+    return None
+
+
+def get_walgreens_product_api_payload(product_id):
+    """
+    Walgreens source exposes:
+    /productapi/v1/products?productId={prodId}
+    This is a much lighter request than loading the entire PDP HTML.
+    """
+    if not product_id:
+        return None
+
+    api_url = f"https://www.walgreens.com/productapi/v1/products?productId={product_id}"
+    return fetch_json_with_timeout(api_url, WALGREENS_API_TIMEOUT)
+
+
+def walk_json(obj):
+    if isinstance(obj, dict):
+        yield obj
+        for v in obj.values():
+            yield from walk_json(v)
+    elif isinstance(obj, list):
+        for item in obj:
+            yield from walk_json(item)
+
+
+def find_first_dict_with_keys(obj, required_keys):
+    required_keys = set(required_keys)
+
+    for node in walk_json(obj):
+        if isinstance(node, dict) and required_keys.issubset(set(node.keys())):
+            return node
+
+    return {}
 
 # =========================================
 # HTML / DOM DEBUG HELPERS
@@ -2506,8 +2574,252 @@ def extract_walgreens_text_from_html(html_text, retail_url="", target_rpc=""):
 
 
 @st.cache_data(show_spinner=False)
-def get_walgreens_bundle(retail_url, target_rpc=""):
+
+def format_walgreens_title_from_parts(raw_title="", size_count="", primary_attr=""):
+    raw_title = _normalize_walgreens_text(raw_title)
+    size_count = _normalize_walgreens_text(size_count)
+    primary_attr = _normalize_walgreens_text(primary_attr)
+
+    title_clean = raw_title.strip()
+
+    if primary_attr and title_clean.lower().endswith((" " + primary_attr).lower()):
+        title_clean = title_clean[: -(len(primary_attr) + 1)].rstrip(" ,-/")
+    else:
+        trailing_colors = [
+            " Grey",
+            " Gray",
+            " Black",
+            " White",
+            " Pink",
+            " Blue",
+            " Green",
+            " Red",
+            " Brown",
+            " Beige",
+            " Purple",
+            " Yellow",
+            " Orange",
+        ]
+        for color in trailing_colors:
+            if title_clean.lower().endswith(color.lower()):
+                title_clean = title_clean[: -len(color)].rstrip(" ,-/")
+                break
+
+    if size_count:
+        return f"{title_clean}, {size_count}"
+
+    return title_clean
+
+
+def extract_walgreens_copy_from_product_sections(section_list):
+    description = ""
+    features = []
+
+    if not isinstance(section_list, list):
+        return description, features
+
+    for section in section_list:
+        if not isinstance(section, dict):
+            continue
+
+        desc_obj = section.get("description", {})
+        if isinstance(desc_obj, dict) and desc_obj.get("productDesc"):
+            desc_html = _decode_walgreens_json_string(desc_obj.get("productDesc", ""))
+
+            desc_html = re.sub(
+                r"<script\b[^>]*>.*?</script>",
+                " ",
+                desc_html,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+
+            soup = BeautifulSoup(desc_html, "html.parser")
+
+            description_parts = []
+            for p in soup.find_all("p"):
+                text = _normalize_walgreens_text(p.get_text(" ", strip=True))
+                if not text:
+                    continue
+                if text.lower() == "made in usa":
+                    break
+                if re.search(r"^\d+\.\s*To Use:", text, flags=re.IGNORECASE):
+                    break
+                if re.search(r"^\d+\.\s*To Dispose:", text, flags=re.IGNORECASE):
+                    break
+                description_parts.append(text)
+
+            description = " ".join(description_parts).strip()
+
+            for li in soup.find_all("li"):
+                text = _normalize_walgreens_text(li.get_text(" ", strip=True))
+                if not text:
+                    continue
+                if text.lower() == "made in usa":
+                    break
+                if re.search(r"^\d+\.\s*To Use:", text, flags=re.IGNORECASE):
+                    break
+                if re.search(r"^\d+\.\s*To Dispose:", text, flags=re.IGNORECASE):
+                    break
+                features.append(text)
+
+            features = dedupe_preserve_order(features)[:5]
+            break
+
+    return description, features
+
+
+def extract_walgreens_images_from_product_info(product_info):
+    image_urls = []
+
+    def maybe_add_url(url):
+        if not url:
+            return
+
+        url = html.unescape(str(url).strip())
+
+        if url.startswith("//"):
+            url = "https:" + url
+
+        if not re.match(r"^https?://", url, flags=re.IGNORECASE):
+            return
+
+        lowered = url.lower()
+        if not any(ext in lowered for ext in [".jpg", ".jpeg", ".png", ".webp", ".avif"]):
+            return
+
+        bad_tokens = [
+            "sprite",
+            "icon",
+            "logo",
+            "placeholder",
+            "spacer",
+            "data:image",
+            ".svg",
+        ]
+        if any(tok in lowered for tok in bad_tokens):
+            return
+
+        image_urls.append(url)
+
+    if not isinstance(product_info, dict):
+        return []
+
+    for field_name in ["productImageUrl", "zoomImageUrl", "metaImage"]:
+        maybe_add_url(product_info.get(field_name, ""))
+
+    filmstrip = product_info.get("filmStripUrl", [])
+    if isinstance(filmstrip, list):
+        for item in filmstrip:
+            if not isinstance(item, dict):
+                continue
+            for k, v in item.items():
+                if any(token in k.lower() for token in ["largeimageurl", "zoomimageurl", "stripurl"]):
+                    maybe_add_url(v)
+
+    image_urls = dedupe_preserve_order(image_urls)
+    return image_urls[:8]
+
+
+def build_walgreens_bundle_from_api_payload(payload):
+    """
+    Build the Walgreens bundle from the lighter product JSON payload.
+    Works off the exact fields you identified:
+    - productInfo.title
+    - productInfo.sizeCount
+    - prodDetails.section[].description.productDesc
+    """
+    empty = {
+        "text": {
+            "title": "",
+            "description": "",
+            "features": [],
+            "debug": {
+                "Title Path": "walgreens_api_missing",
+                "Description Path": "walgreens_api_missing",
+                "Features Path": "walgreens_api_missing",
+                "Source Used": "walgreens_api",
+            },
+        },
+        "images": [],
+    }
+
+    if not payload:
+        return empty
+
+    # Try common payload shapes.
+    root = payload
+    if isinstance(payload, dict) and "productData" in payload and isinstance(payload["productData"], dict):
+        root = payload["productData"]
+
+    product_info = {}
+    prod_details = {}
+
+    if isinstance(root, dict):
+        product_info = root.get("productInfo", {}) if isinstance(root.get("productInfo", {}), dict) else {}
+        prod_details = root.get("prodDetails", {}) if isinstance(root.get("prodDetails", {}), dict) else {}
+
+    # Fallback recursive search if shape differs.
+    if not product_info:
+        product_info = find_first_dict_with_keys(root, {"title", "sizeCount"})
+    if not prod_details:
+        prod_details = find_first_dict_with_keys(root, {"section"})
+
+    raw_title = product_info.get("title", "")
+    size_count = product_info.get("sizeCount", "")
+    primary_attr = product_info.get("primaryAttribute", "")
+
+    final_title = format_walgreens_title_from_parts(
+        raw_title=raw_title,
+        size_count=size_count,
+        primary_attr=primary_attr,
+    )
+
+    section_list = prod_details.get("section", []) if isinstance(prod_details, dict) else []
+    description, features = extract_walgreens_copy_from_product_sections(section_list)
+
+    images = extract_walgreens_images_from_product_info(product_info)
+
+    return {
+        "text": {
+            "title": final_title,
+            "description": description,
+            "features": features[:5],
+            "debug": {
+                "Title Path": "walgreens_api_productInfo_title_plus_sizeCount",
+                "Description Path": "walgreens_api_prodDetails_section_description_productDesc" if description else "walgreens_api_description_missing",
+                "Features Path": "walgreens_api_prodDetails_section_description_productDesc" if features else "walgreens_api_features_missing",
+                "Source Used": "walgreens_api",
+            },
+        },
+        "images": images,
+    }
+    
+def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
+    """
+    Walgreens strategy:
+    1) Try the lighter product API first.
+    2) If API fails, fall back to live HTML extraction.
+    3) Keep CVS untouched.
+    """
+    product_id = get_walgreens_product_id_from_url(retail_url)
+
+    # API-first path
+    api_payload = get_walgreens_product_api_payload(product_id)
+    api_bundle = build_walgreens_bundle_from_api_payload(api_payload)
+
+    has_api_copy = (
+        api_bundle["text"].get("title")
+        or api_bundle["text"].get("description")
+        or api_bundle["text"].get("features")
+        or api_bundle.get("images")
+    )
+
+    if has_api_copy:
+        return api_bundle
+
+    # Fallback to live HTML if API did not return usable data.
     html_text = get_walgreens_html(retail_url)
+
     return {
         "text": extract_walgreens_text_from_html(
             html_text,
@@ -2518,11 +2830,11 @@ def get_walgreens_bundle(retail_url, target_rpc=""):
     }
 
 
-def get_retailer_bundle(retailer_name, retail_url, target_rpc=""):
+def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku=""):
     retailer = str(retailer_name or "").strip().lower()
 
     if retailer == "walgreens":
-        return get_walgreens_bundle(retail_url, target_rpc)
+        return get_walgreens_bundle(retail_url, target_rpc, sku=sku)
 
     # Default path stays CVS.
     return get_cvs_bundle(retail_url, target_rpc)
@@ -2852,7 +3164,12 @@ def process_row(row):
         # Do NOT create a nested thread pool here.
         # The outer batch executor already parallelizes rows.
         s_bundle = get_salsify_bundle(salsify_url)
-        r_bundle = get_retailer_bundle(retailer_name, retail_url, target_sku)
+        r_bundle = get_retailer_bundle(
+            retailer_name,
+            retail_url,
+            target_sku,
+            sku=row.get("sku", ""),
+        )
 
         s_text = s_bundle["text"]
         s_images = s_bundle["images"]
@@ -3434,131 +3751,10 @@ if uploaded_file and st.session_state.processing_done:
                 retailer_name,
                 retail_url,
                 current_target_sku,
+                sku=sku,
             )
             r_text = r_bundle["text"] or {}
             r_images = r_bundle["images"]
-
-            # =========================================
-            # HTML / DOM DEBUGGER
-            # =========================================
-            show_debugger_for_this_row = show_html_debugger and (
-                not debug_only_sku or str(sku).strip() == debug_only_sku
-            )
-
-            if show_debugger_for_this_row:
-                debug_url = retail_url if debugger_source == "Retailer page" else salsify_url
-                debug_label = retailer_name if debugger_source == "Retailer page" else "Salsify"
-
-                with st.expander(f"🧪 HTML / DOM Debugger — {debug_label} — SKU {sku}", expanded=False):
-                    if not debug_url or str(debug_url).strip().lower() in {"", "n/a", "#n/a", "na", "nan", "none"}:
-                        st.warning("No usable URL available for this debugger view.")
-                    else:
-                        debug_fetch = resolve_debug_views(
-                            debug_url=debug_url,
-                            retailer_name=retailer_name if debugger_source == "Retailer page" else "salsify",
-                            use_manual_html_override=use_manual_html_override,
-                            manual_html_text=manual_html_text,
-                            manual_html_file=manual_html_file,
-                        )
-
-                        st.caption(f"Requested URL: {debug_fetch['requested_url']}")
-                        if debug_fetch.get("final_url"):
-                            st.caption(f"Final URL: {debug_fetch['final_url']}")
-
-                        meta_cols = st.columns(5)
-                        meta_cols[0].metric(
-                            "Status",
-                            str(debug_fetch["status_code"]) if debug_fetch.get("status_code") is not None else "None",
-                        )
-                        meta_cols[1].metric("Reason", debug_fetch.get("reason", "") or "None")
-                        meta_cols[2].metric("Content-Type", debug_fetch.get("content_type", "") or "None")
-                        meta_cols[3].metric("Text Length", str(debug_fetch.get("text_length", 0)))
-                        meta_cols[4].metric("Redirects", str(len(debug_fetch.get("history", []))))
-
-                        if debug_fetch.get("mode") == "manual_html_override":
-                            st.success("Using manual HTML override for debugger.")
-                        elif debug_fetch.get("error"):
-                            st.error(f"Fetch error: {debug_fetch['error']}")
-
-                        if debug_fetch.get("history"):
-                            st.write("### Redirect History")
-                            st.json(debug_fetch["history"])
-
-                        if debug_fetch.get("response_headers"):
-                            st.write("### Response Headers")
-                            st.json(debug_fetch["response_headers"])
-
-                        tab_raw, tab_dom_text, tab_dom_pretty, tab_marker = st.tabs(
-                            ["Raw HTML", "DOM Text", "Prettified DOM", "Marker Test"]
-                        )
-
-                        with tab_raw:
-                            st.text_area(
-                                f"raw_html_{sku}_{debugger_source}",
-                                debug_fetch.get("raw_html", ""),
-                                height=500,
-                            )
-
-                        with tab_dom_text:
-                            st.text_area(
-                                f"dom_text_{sku}_{debugger_source}",
-                                debug_fetch.get("dom_text", ""),
-                                height=500,
-                            )
-
-                        with tab_dom_pretty:
-                            st.text_area(
-                                f"pretty_dom_{sku}_{debugger_source}",
-                                debug_fetch.get("prettified_dom", ""),
-                                height=500,
-                            )
-
-                        with tab_marker:
-                            marker_source = st.radio(
-                                "Marker source",
-                                ["DOM Text", "Raw HTML"],
-                                key=f"marker_source_{sku}_{debugger_source}",
-                                horizontal=True,
-                            )
-
-                            start_marker = st.text_input(
-                                "Start marker",
-                                key=f"start_marker_{sku}_{debugger_source}",
-                            )
-
-                            end_marker = st.text_input(
-                                "End marker",
-                                key=f"end_marker_{sku}_{debugger_source}",
-                            )
-
-                            source_text = (
-                                debug_fetch.get("dom_text", "")
-                                if marker_source == "DOM Text"
-                                else debug_fetch.get("raw_html", "")
-                            )
-
-                            marker_preview = preview_between_markers(
-                                source_text,
-                                start_marker=start_marker,
-                                end_marker=end_marker,
-                            )
-
-                            st.write("### Marker Match Status")
-                            st.write(
-                                {
-                                    "start_found": marker_preview["start_found"],
-                                    "end_found": marker_preview["end_found"],
-                                    "start_index": marker_preview["start_index"],
-                                    "end_index": marker_preview["end_index"],
-                                }
-                            )
-
-                            st.write("### Extracted Preview")
-                            st.text_area(
-                                f"marker_preview_{sku}_{debugger_source}",
-                                marker_preview["preview"],
-                                height=350,
-                            )
 
             # Retailer-specific final cleanup
             r_text = finalize_retailer_copy(retailer_name, r_text)
