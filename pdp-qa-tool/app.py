@@ -698,6 +698,88 @@ def _parse_salsify_page(html_text):
         "images": images,
     }
 
+def extract_walgreens_images_from_html(html_text):
+    if not html_text:
+        return [ = html.unescape(str(url).strip())        return []
+
+        if url.startswith("//"):
+            url = "https:" + url
+
+        if not re.match(r"^https?://", url, flags=re.IGNORECASE):
+            return
+
+        lowered = url.lower()
+
+        bad_tokens = [
+            "sprite",
+            "icon",
+            "logo",
+            "placeholder",
+            "spacer",
+            "data:image",
+            ".svg",
+        ]
+        if any(tok in lowered for tok in bad_tokens):
+            return
+
+        if any(ext in lowered for ext in [".jpg", ".jpeg", ".png", ".webp", ".avif"]):
+            image_urls.append(url)
+
+    # 1) JSON image values.
+    for data in json_candidates:
+        for value in _iter_matching_values(
+            data,
+            {"image", "images", "imageurl", "media", "mediagallery", "assets"},
+        ):
+            if isinstance(value, str):
+                maybe_add_url(value)
+            elif isinstance(value, list):
+                for item in value:
+                    if isinstance(item, str):
+                        maybe_add_url(item)
+                    elif isinstance(item, dict):
+                        for k in ["url", "src", "image", "imageUrl", "large", "original"]:
+                            if k in item:
+                                maybe_add_url(item.get(k))
+            elif isinstance(value, dict):
+                for k in ["url", "src", "image", "imageUrl", "large", "original"]:
+                    if k in value:
+                        maybe_add_url(value.get(k))
+
+    # 2) Meta image.
+    for selector in [
+        "meta[property='og:image']",
+        "meta[name='twitter:image']",
+    ]:
+        tag = soup.select_one(selector)
+        if tag:
+            maybe_add_url(tag.get("content", ""))
+
+    # 3) Visible product/gallery images.
+    for img in soup.find_all("img"):
+        src = img.get("src") or img.get("data-src") or img.get("data-zoom-image") or ""
+        maybe_add_url(src)
+
+    # 4) Regex fallback on raw HTML.
+    regex_urls = re.findall(
+        r'https?://[^"\']+\.(?:jpg|jpeg|png|webp|avif)(?:\?[^"\']*)?',
+        html_text,
+        flags=re.IGNORECASE,
+    )
+    for url in regex_urls:
+        maybe_add_url(url)
+
+    image_urls = dedupe_preserve_order(image_urls)
+    return image_urls[:8]
+
+    soup = BeautifulSoup(html_text, "html.parser")
+    json_candidates = _extract_json_candidates_from_html(html_text, soup)
+
+    image_urls = []
+
+    def maybe_add_url(url):
+        if not url:
+            return
 
 @st.cache_data(show_spinner=False)
 def get_salsify_bundle(url):
