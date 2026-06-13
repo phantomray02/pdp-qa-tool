@@ -91,6 +91,11 @@ MAX_IMAGE_BYTES = 12 * 1024 * 1024
 MAX_SAFE_IMAGE_PIXELS = 50_000_000
 MAX_IMAGE_SLOTS_TO_COMPARE = 5
 
+html_cache = {}
+image_hash_cache = {}
+
+thread_local = threading.local()
+
 # =========================================
 # VISUAL LAYOUT SETTINGS
 # =========================================
@@ -150,7 +155,15 @@ def dedupe_preserve_order(items):
 
 
 def keyword_score(a, b):
-    return int(SequenceMatcher(None, normalize_text(a), normalize_text(b)).ratio() * 100)
+    a_norm = normalize_text(a)
+    b_norm = normalize_text(b)
+
+    if not a_norm and not b_norm:
+        return 0
+    if not a_norm or not b_norm:
+        return 0
+
+    return int(SequenceMatcher(None, a_norm, b_norm).ratio() * 100)
 
 
 def description_similarity_score(a, b):
@@ -624,7 +637,7 @@ def get_html(url):
         pass
 
     return ""
-    
+
 def fetch_html_with_timeout(url, timeout_seconds):
     if not url:
         return ""
@@ -2281,18 +2294,28 @@ def _normalize_walgreens_text(value):
 
 
 def get_walgreens_product_id_from_url(retail_url):
+    """
+    Supports Walgreens product URLs like:
+    - /ID=300432791-product
+    - /ID=prod6153586-product
+    - ?productId=300432791
+    - ?productId=prod6153586
+    """
     if not retail_url:
         return ""
 
     retail_url = str(retail_url or "").strip()
 
-    m = re.search(r"/ID=(\d+)-product", retail_url, flags=re.IGNORECASE)
-    if m:
-        return m.group(1)
+    patterns = [
+        r"/ID=([A-Za-z0-9]+)-product",
+        r"[?&]productId=([A-Za-z0-9]+)",
+        r'"productId"\s*:\s*"([A-Za-z0-9]+)"',
+    ]
 
-    m = re.search(r"[?&]productId=(\d+)", retail_url, flags=re.IGNORECASE)
-    if m:
-        return m.group(1)
+    for pattern in patterns:
+        m = re.search(pattern, retail_url, flags=re.IGNORECASE)
+        if m:
+            return m.group(1)
 
     return ""
 
@@ -2606,6 +2629,104 @@ def build_walgreens_bundle_from_api_payload(payload):
     }
 
 
+def get_walgreens_prod_desc_url(product_id):
+    if not product_id:
+        return ""
+    return f"https://www.walgreens.com/store/store/prodDesc.jsp?id={product_id}"
+
+
+def get_walgreens_prod_desc_html(product_id):
+    """
+    Lightweight Walgreens copy endpoint.
+    Often more reliable than the full PDP HTML for prod... items.
+    """
+    url = get_walgreens_prod_desc_url(product_id)
+    return fetch_html_with_timeout(url, WALGREENS_REQUEST_TIMEOUT)
+
+
+def build_walgreens_title_from_url_slug(retail_url, description_html=""):
+    """
+    Fallback title builder for prodDesc.jsp route.
+    """
+    retail_url = str(retail_url or "").strip()
+
+    slug_match = re.search(
+        r"/store/c/([^/]+)/ID=[A-Za-z0-9]+-product",
+        retail_url,
+        flags=re.IGNORECASE,
+    )
+
+    if not slug_match:
+        return ""
+
+    slug = slug_match.group(1)
+    title = slug.replace("-", " ")
+    title = title.replace(" ,", ",")
+    title = html.unescape(title)
+    title = normalize_space(title)
+
+    title = " ".join(word.capitalize() if word.islower() else word for word in title.split())
+
+    desc_text = BeautifulSoup(str(description_html or ""), "html.parser").get_text(" ", strip=True)
+    desc_text = normalize_space(desc_text)
+
+    count_match = re.search(r"(\d+)\s+count", desc_text, flags=re.IGNORECASE)
+    if count_match:
+        count_val = count_match.group(1)
+        title = f"{title}, {count_val}.0 ea"
+
+    return normalize_space(title)
+
+
+def build_walgreens_bundle_from_prod_desc_fragment(product_id, retail_url=""):
+    """
+    Fallback path for prod... Walgreens items.
+    Uses the lightweight prodDesc.jsp endpoint for description/features.
+    """
+    empty = {
+        "text": {
+            "title": "",
+            "description": "",
+            "features": [],
+            "debug": {
+                "Title Path": "walgreens_prodDesc_missing",
+                "Description Path": "walgreens_prodDesc_missing",
+                "Features Path": "walgreens_prodDesc_missing",
+                "Source Used": "walgreens_prodDesc_fragment",
+            },
+        },
+        "images": [],
+    }
+
+    if not product_id:
+        return empty
+
+    fragment_html = get_walgreens_prod_desc_html(product_id)
+    if not fragment_html:
+        return empty
+
+    description, features = extract_walgreens_copy_from_product_desc_html(fragment_html)
+    title = build_walgreens_title_from_url_slug(
+        retail_url=retail_url,
+        description_html=fragment_html,
+    )
+
+    return {
+        "text": {
+            "title": title,
+            "description": description,
+            "features": features[:5],
+            "debug": {
+                "Title Path": "walgreens_prodDesc_url_slug_fallback" if title else "walgreens_prodDesc_title_missing",
+                "Description Path": "walgreens_prodDesc_fragment" if description else "walgreens_prodDesc_description_missing",
+                "Features Path": "walgreens_prodDesc_fragment" if features else "walgreens_prodDesc_features_missing",
+                "Source Used": "walgreens_prodDesc_fragment",
+            },
+        },
+        "images": [],
+    }
+
+
 def _extract_walgreens_title_from_source(html_text):
     if not html_text:
         return "", "walgreens_title_missing"
@@ -2776,11 +2897,30 @@ def extract_walgreens_images_from_html(html_text):
 def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
     """
     Walgreens strategy:
-    1) Try the lighter product API first.
-    2) If API fails, fall back to live HTML extraction.
+    1) For prod... items, try the lightweight prodDesc.jsp fragment first.
+    2) Then try the lighter product API.
+    3) If that fails, fall back to full PDP HTML.
     """
     product_id = get_walgreens_product_id_from_url(retail_url)
+    product_id_lc = str(product_id or "").lower()
 
+    # 1) prod... items often work better through prodDesc.jsp
+    if product_id_lc.startswith("prod"):
+        fragment_bundle = build_walgreens_bundle_from_prod_desc_fragment(
+            product_id,
+            retail_url=retail_url,
+        )
+
+        has_fragment_copy = (
+            fragment_bundle["text"].get("title")
+            or fragment_bundle["text"].get("description")
+            or fragment_bundle["text"].get("features")
+        )
+
+        if has_fragment_copy:
+            return fragment_bundle
+
+    # 2) API-first path
     api_payload = get_walgreens_product_api_payload(product_id)
     api_bundle = build_walgreens_bundle_from_api_payload(api_payload)
 
@@ -2794,6 +2934,22 @@ def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
     if has_api_copy:
         return api_bundle
 
+    # 3) Try prodDesc fragment even for numeric IDs if API didn't help
+    fragment_bundle = build_walgreens_bundle_from_prod_desc_fragment(
+        product_id,
+        retail_url=retail_url,
+    )
+
+    has_fragment_copy = (
+        fragment_bundle["text"].get("title")
+        or fragment_bundle["text"].get("description")
+        or fragment_bundle["text"].get("features")
+    )
+
+    if has_fragment_copy:
+        return fragment_bundle
+
+    # 4) Last fallback: full PDP HTML
     html_text = get_walgreens_html(retail_url)
 
     return {
@@ -2804,7 +2960,6 @@ def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
         ),
         "images": extract_walgreens_images_from_html(html_text),
     }
-
 
 def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku=""):
     retailer = str(retailer_name or "").strip().lower()
@@ -2998,14 +3153,50 @@ def get_image_dhash(url):
 
     try:
         session = get_session()
-        r = session.get(url, timeout=IMAGE_TIMEOUT)
+
+        # Stream the response so we can stop early if the file is too large.
+        r = session.get(url, timeout=IMAGE_TIMEOUT, stream=True)
         if r.status_code != 200:
             return None
-        if "image" not in r.headers.get("Content-Type", ""):
+
+        content_type = str(r.headers.get("Content-Type", "") or "")
+        if "image" not in content_type.lower():
             return None
 
-        img = Image.open(BytesIO(r.content))
-        img = img.convert("L").resize((IMAGE_HASH_WIDTH, IMAGE_HASH_HEIGHT))
+        content_length = str(r.headers.get("Content-Length", "") or "").strip()
+        if content_length.isdigit() and int(content_length) > MAX_IMAGE_BYTES:
+            return None
+
+        image_bytes = bytearray()
+
+        for chunk in r.iter_content(chunk_size=65536):
+            if not chunk:
+                continue
+
+            image_bytes.extend(chunk)
+
+            if len(image_bytes) > MAX_IMAGE_BYTES:
+                return None
+
+        if not image_bytes:
+            return None
+
+        bio = BytesIO(image_bytes)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+
+            img = Image.open(bio)
+
+            width, height = img.size
+            if width * height > MAX_SAFE_IMAGE_PIXELS:
+                return None
+
+            img.load()
+
+        img = img.convert("L")
+        img.thumbnail((256, 256))
+        img = img.resize((IMAGE_HASH_WIDTH, IMAGE_HASH_HEIGHT))
 
         bits = []
         for y in range(IMAGE_HASH_HEIGHT):
@@ -3023,9 +3214,12 @@ def get_image_dhash(url):
             image_hash_cache.pop(next(iter(image_hash_cache)))
 
         return h
+
+    except (Image.DecompressionBombWarning, UnidentifiedImageError, OSError, ValueError):
+        return None
     except Exception:
         return None
-        
+
 def hamming_distance(a, b):
     return bin(a ^ b).count("1")
 
@@ -3440,6 +3634,7 @@ if uploaded_file:
             st.session_state.report_bytes = None
             st.session_state.report_filename = None
             clear_in_memory_caches()
+            st.cache_data.clear()
             
         df = read_uploaded_file_from_bytes(file_bytes, uploaded_file.name)
         df = prepare_input_df(df)
