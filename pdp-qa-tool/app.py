@@ -2339,9 +2339,9 @@ if uploaded_file:
             st.session_state.report_filename = None
             clear_in_memory_caches()
             
-        ddf = read_uploaded_file_from_bytes(file_bytes, uploaded_file.name)
+        df = read_uploaded_file_from_bytes(file_bytes, uploaded_file.name)
         df = prepare_input_df(df)
-        
+
         all_retailers = sorted(df["retailer"].dropna().astype(str).unique().tolist()) if "retailer" in df.columns else ["CVS"]
         if not all_retailers:
             all_retailers = ["CVS"]
