@@ -3096,7 +3096,7 @@ if uploaded_file and st.session_state.processing_done:
 
         df = prepare_input_df(df)
 
-       if st.session_state.selected_retailer not in ["All", "-- Select Retailer --"] and "retailer" in df.columns:
+        if st.session_state.selected_retailer not in ["All", "-- Select Retailer --"] and "retailer" in df.columns:
             df = df[df["retailer"].astype(str) == st.session_state.selected_retailer]
 
         if st.session_state.selected_brand != "All" and "brand" in df.columns:
@@ -3122,16 +3122,7 @@ if uploaded_file and st.session_state.processing_done:
         hidden_count = int(visual_df["retail_url_clean"].isin(invalid_retail_values).sum())
 
         visual_df = visual_df[~visual_df["retail_url_clean"].isin(invalid_retail_values)].copy()
-        visual_df.drop(columns=["retail_url_clean"], inplace=True, errors="ignore")
-
-        st.markdown("## 👁️ Full Visual QA Review")
-
-        if hidden_count > 0:
-            st.caption(f"Excluded from Full Visual QA only: {hidden_count} item(s) with missing retailer URLs.")
-            
-        if visual_df.empty:
-            st.info("No visually reviewable items found. Products without retailer URLs are still included in the extract.")
-            st.stop()
+        visual_df.drop(columns=["retail_url_clean"], inplace=True, errors="ignore
 
         for _, row in visual_df.iterrows():
             sku = row.get("sku", "Missing SKU")
