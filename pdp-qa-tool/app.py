@@ -64,6 +64,9 @@ HEADERS = {
 REQUEST_TIMEOUT = 6
 IMAGE_TIMEOUT = 2.5
 MAX_CACHE = 400
+# Retailer-specific fetch tuning
+WALGREENS_REQUEST_TIMEOUT = 18
+WALGREENS_DEBUG_TIMEOUT = 25
 
 # =========================================
 # PERFORMANCE SETTINGS
@@ -609,6 +612,28 @@ def get_html(url):
 
     return ""
 
+def fetch_html_with_timeout(url, timeout_seconds):
+    if not url:
+        return ""
+
+    try:
+        session = get_session()
+        r = session.get(url, timeout=timeout_seconds, allow_redirects=True)
+        if r.status_code == 200 and r.text:
+            return r.text
+    except Exception:
+        pass
+
+    return ""
+
+
+def get_walgreens_html(url):
+    """
+    Walgreens-specific fetch path with a longer timeout.
+    Keeps CVS untouched.
+    """
+    return fetch_html_with_timeout(url, WALGREENS_REQUEST_TIMEOUT)
+
 # =========================================
 # HTML / DOM DEBUG HELPERS
 # =========================================
@@ -682,9 +707,10 @@ def preview_between_markers(text, start_marker="", end_marker=""):
     return result
 
 
-def fetch_url_debug(url):
+def fetch_url_debug(url, retailer_name=""):
     """
     Fresh non-cached fetch debugger so we can see exactly what the app receives.
+    Uses retailer-specific timeout tuning when needed.
     """
     result = {
         "requested_url": str(url or ""),
@@ -703,13 +729,19 @@ def fetch_url_debug(url):
     }
 
     url = str(url or "").strip()
+    retailer_name = str(retailer_name or "").strip().lower()
+
     if not url:
         result["error"] = "No URL provided."
         return result
 
+    timeout_seconds = REQUEST_TIMEOUT
+    if retailer_name == "walgreens":
+        timeout_seconds = WALGREENS_DEBUG_TIMEOUT
+
     try:
         session = get_session()
-        r = session.get(url, timeout=REQUEST_TIMEOUT, allow_redirects=True)
+        r = session.get(url, timeout=timeout_seconds, allow_redirects=True)
 
         result["final_url"] = str(r.url or "")
         result["status_code"] = int(r.status_code)
@@ -724,7 +756,6 @@ def fetch_url_debug(url):
             for h in r.history
         ]
 
-        # Keep a smaller header set for easy reading.
         interesting_headers = [
             "Content-Type",
             "Content-Length",
@@ -751,6 +782,7 @@ def fetch_url_debug(url):
         result["error"] = repr(e)
 
     return result
+    
     
 @st.cache_data(show_spinner=False)
 def get_debug_views_for_url(url):
@@ -2748,7 +2780,7 @@ def extract_walgreens_text_from_html(html_text, retail_url="", target_rpc=""):
 
 @st.cache_data(show_spinner=False)
 def get_walgreens_bundle(retail_url, target_rpc=""):
-    html_text = get_html(retail_url)
+    html_text = get_walgreens_html(retail_url)
     return {
         "text": extract_walgreens_text_from_html(
             html_text,
@@ -2757,7 +2789,6 @@ def get_walgreens_bundle(retail_url, target_rpc=""):
         ),
         "images": extract_walgreens_images_from_html(html_text),
     }
-
 
 def get_retailer_bundle(retailer_name, retail_url, target_rpc=""):
     retailer = str(retailer_name or "").strip().lower()
@@ -3568,7 +3599,10 @@ if uploaded_file and st.session_state.processing_done:
                     if not debug_url or str(debug_url).strip().lower() in {"", "n/a", "#n/a", "na", "nan", "none"}:
                         st.warning("No usable URL available for this debugger view.")
                     else:
-                        debug_fetch = fetch_url_debug(debug_url)
+                        debug_fetch = fetch_url_debug(
+                            debug_url,
+                            retailer_name=retailer_name if debugger_source == "Retailer page" else "salsify",
+                        )
 
                         st.caption(f"Requested URL: {debug_fetch['requested_url']}")
                         if debug_fetch["final_url"]:
