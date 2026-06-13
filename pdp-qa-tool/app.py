@@ -3756,6 +3756,7 @@ if uploaded_file and st.session_state.processing_done:
                 current_target_sku,
                 sku=sku,
             )
+        
             r_text = r_bundle["text"] or {}
             r_images = r_bundle["images"]
 
