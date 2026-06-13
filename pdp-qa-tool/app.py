@@ -89,7 +89,7 @@ thread_local = threading.local()
 # VISUAL LAYOUT SETTINGS
 # =========================================
 SECTION_HEADER_SIZE = 32
-COPY_TEXT_SIZE = 26
+COPY_TEXT_SIZE = 35
 COPY_LINE_HEIGHT = 1.20
 SECTION_VERTICAL_GAP = 10
 
