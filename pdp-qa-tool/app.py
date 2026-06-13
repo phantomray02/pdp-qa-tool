@@ -2145,69 +2145,9 @@ def _safe_json_loads(text):
         return None
 
 
-def _walk_json(obj):
-    if isinstance(obj, dict):
-        yield obj
-        for v in obj.values():
-            yield from _walk_json(v)
-    elif isinstance(obj, list):
-        for item in obj:
-            yield from _walk_json(item)
-
-
-def _iter_matching_values(obj, key_names):
-    key_names = {str(k).lower().strip() for k in key_names}
-
-    for node in _walk_json(obj):
-        if isinstance(node, dict):
-            for k, v in node.items():
-                if str(k).lower().strip() in key_names:
-                    yield v
-
-
-def _extract_json_candidates_from_html(html_text, soup):
-    candidates = []
-
-    # JSON-LD first.
-    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
-        raw = script.string or script.get_text(" ", strip=True) or ""
-        raw = raw.strip()
-        if not raw:
-            continue
-
-        parsed = _safe_json_loads(raw)
-        if parsed is not None:
-            candidates.append(parsed)
-
-    # Generic JSON-ish script patterns.
-    script_texts = []
-    for script in soup.find_all("script"):
-        raw = script.string or script.get_text(" ", strip=True) or ""
-        raw = raw.strip()
-        if not raw:
-            continue
-        script_texts.append(raw)
-
-    full_script_blob = "\n".join(script_texts)
-
-    regex_patterns = [
-        r'window\.__NEXT_DATA__\s*=\s*(\{.*?\})\s*;',
-        r'window\.__PRELOADED_STATE__\s*=\s*(\{.*?\})\s*;',
-        r'window\.__INITIAL_STATE__\s*=\s*(\{.*?\})\s*;',
-        r'__NEXT_DATA__"\s*type="application/json">\s*(\{.*?\})\s*</script>',
-    ]
-
-    for pattern in regex_patterns:
-        for m in re.finditer(pattern, html_text or "", flags=re.DOTALL):
-            raw = m.group(1).strip()
-            parsed = _safe_json_loads(raw)
-            if parsed is not None:
-                candidates.append(parsed)
-
-    return candidates
 def _decode_walgreens_json_string(raw_value):
     """
-    Decodes Walgreens JSON-like string fragments such as:
+    Decodes Walgreens JSON-like fragments such as:
     \\u003cp\\u003eHello\\u003c/p\\u003e
     """
     if not raw_value:
@@ -2226,17 +2166,77 @@ def _decode_walgreens_json_string(raw_value):
     return decoded.strip()
 
 
+def _normalize_walgreens_text(value):
+    if not value:
+        return ""
+
+    value = str(value)
+    value = html.unescape(value)
+
+    value = value.replace("\\u003c", "<")
+    value = value.replace("\\u003e", ">")
+    value = value.replace("\\u0026", "&")
+    value = value.replace("\\n", " ")
+    value = value.replace("\\/", "/")
+    value = value.replace('\\"', '"')
+
+    # Remove script tags if present.
+    value = re.sub(
+        r"<script\b[^>]*>.*?</script>",
+        " ",
+        value,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    if "<" in value and ">" in value:
+        value = BeautifulSoup(value, "html.parser").get_text(" ", strip=True)
+
+    value = normalize_space(value)
+    return value
+
+
+def _extract_json_candidates_from_html(html_text, soup):
+    candidates = []
+
+    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        raw = script.string or script.get_text(" ", strip=True) or ""
+        raw = raw.strip()
+        if not raw:
+            continue
+
+        parsed = _safe_json_loads(raw)
+        if parsed is not None:
+            candidates.append(parsed)
+
+    regex_patterns = [
+        r'window\.__NEXT_DATA__\s*=\s*(\{.*?\})\s*;',
+        r'window\.__PRELOADED_STATE__\s*=\s*(\{.*?\})\s*;',
+        r'window\.__INITIAL_STATE__\s*=\s*(\{.*?\})\s*;',
+        r'window\.__APP_INITIAL_STATE__\s*=\s*(\{.*?\})\s*;',
+    ]
+
+    for pattern in regex_patterns:
+        for m in re.finditer(pattern, html_text or "", flags=re.DOTALL):
+            raw = m.group(1).strip()
+            parsed = _safe_json_loads(raw)
+            if parsed is not None:
+                candidates.append(parsed)
+
+    return candidates
+
+
 def _extract_walgreens_title_from_source(html_text):
     """
-    Title logic for this Walgreens item:
-    - pull productInfo.title
-    - remove trailing color like Grey
+    Walgreens title rule for this item:
+    - use productInfo.title
+    - remove trailing color token like Grey
     - append sizeCount
+
     Example:
-      Depend Adult Incontinence Underwear for Men Extra-Large Grey
-      + 15.0 ea
-      =>
-      Depend Adult Incontinence Underwear for Men Extra-Large, 15.0 ea
+    Depend Adult Incontinence Underwear for Men Extra-Large Grey
+    + 15.0 ea
+    =>
+    Depend Adult Incontinence Underwear for Men Extra-Large, 15.0 ea
     """
     if not html_text:
         return "", "walgreens_title_missing"
@@ -2253,6 +2253,12 @@ def _extract_walgreens_title_from_source(html_text):
         flags=re.IGNORECASE | re.DOTALL,
     )
 
+    primary_attr_match = re.search(
+        r'"primaryAttribute"\s*:\s*"((?:\\.|[^"\\])*)"',
+        html_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
     if not title_match:
         return "", "walgreens_productInfo_title_missing"
 
@@ -2263,28 +2269,35 @@ def _extract_walgreens_title_from_source(html_text):
     if size_match:
         size_count = _decode_walgreens_json_string(size_match.group(1))
 
-    # Remove trailing color token for Walgreens display title.
-    trailing_colors = [
-        " Grey",
-        " Gray",
-        " Black",
-        " White",
-        " Pink",
-        " Blue",
-        " Green",
-        " Red",
-        " Brown",
-        " Beige",
-        " Purple",
-        " Yellow",
-        " Orange",
-    ]
+    primary_attr = ""
+    if primary_attr_match:
+        primary_attr = _decode_walgreens_json_string(primary_attr_match.group(1))
 
     title_clean = title.strip()
-    for color in trailing_colors:
-        if title_clean.lower().endswith(color.lower()):
-            title_clean = title_clean[: -len(color)].rstrip(" ,-/")
-            break
+
+    # Prefer removing the actual primary attribute if it matches the trailing token.
+    if primary_attr and title_clean.lower().endswith((" " + primary_attr).lower()):
+        title_clean = title_clean[: -(len(primary_attr) + 1)].rstrip(" ,-/")
+    else:
+        trailing_colors = [
+            " Grey",
+            " Gray",
+            " Black",
+            " White",
+            " Pink",
+            " Blue",
+            " Green",
+            " Red",
+            " Brown",
+            " Beige",
+            " Purple",
+            " Yellow",
+            " Orange",
+        ]
+        for color in trailing_colors:
+            if title_clean.lower().endswith(color.lower()):
+                title_clean = title_clean[: -len(color)].rstrip(" ,-/")
+                break
 
     if size_count:
         final_title = f"{title_clean}, {size_count}"
@@ -2295,7 +2308,7 @@ def _extract_walgreens_title_from_source(html_text):
 
 def _extract_walgreens_product_desc_block(html_text):
     """
-    Pulls the raw HTML-like description block from:
+    Pulls productDesc from:
     prodDetails.section[].description.productDesc
     """
     if not html_text:
@@ -2317,12 +2330,13 @@ def _extract_walgreens_product_desc_block(html_text):
 
 def _extract_walgreens_description_and_features_from_product_desc(html_text):
     """
-    Walgreens source structure for this item:
-    - productDesc contains paragraph first
-    - then UL/LI features
-    - then Made in USA and usage/disposal text
+    productDesc structure for this Walgreens item:
+    - paragraph first
+    - then UL / LI bullets
+    - then Made in USA / To Use / To Dispose text
+
     We want:
-    - description = paragraph before UL
+    - description = paragraph text before the utility copy
     - features = LI items
     """
     desc_html, source_path = _extract_walgreens_product_desc_block(html_text)
@@ -2330,7 +2344,6 @@ def _extract_walgreens_description_and_features_from_product_desc(html_text):
     if not desc_html:
         return "", [], source_path
 
-    # Remove script tags inside productDesc.
     desc_html = re.sub(
         r"<script\b[^>]*>.*?</script>",
         " ",
@@ -2340,34 +2353,42 @@ def _extract_walgreens_description_and_features_from_product_desc(html_text):
 
     soup = BeautifulSoup(desc_html, "html.parser")
 
-    # Description: take paragraph text, but stop before "Made in USA"
+    # Description: collect paragraph text but stop before utility copy.
     description_parts = []
     for p in soup.find_all("p"):
-        text = normalize_space(p.get_text(" ", strip=True))
+        text = _normalize_walgreens_text(p.get_text(" ", strip=True))
         if not text:
             continue
+
         if text.lower() == "made in usa":
             break
         if re.search(r"^\d+\.\s*To Use:", text, flags=re.IGNORECASE):
             break
         if re.search(r"^\d+\.\s*To Dispose:", text, flags=re.IGNORECASE):
             break
+        if re.search(r"Walgreens does not represent or warrant", text, flags=re.IGNORECASE):
+            break
+
         description_parts.append(text)
 
     description_text = " ".join(description_parts).strip()
 
-    # Features: all LI items
+    # Features: LI items only.
     feature_items = []
     for li in soup.find_all("li"):
-        text = normalize_space(li.get_text(" ", strip=True))
+        text = _normalize_walgreens_text(li.get_text(" ", strip=True))
         if not text:
             continue
+
         if text.lower() == "made in usa":
             break
         if re.search(r"^\d+\.\s*To Use:", text, flags=re.IGNORECASE):
             break
         if re.search(r"^\d+\.\s*To Dispose:", text, flags=re.IGNORECASE):
             break
+        if re.search(r"Walgreens does not represent or warrant", text, flags=re.IGNORECASE):
+            break
+
         feature_items.append(text)
 
     feature_items = dedupe_preserve_order(feature_items)[:5]
@@ -2379,45 +2400,15 @@ def _extract_walgreens_description_and_features_from_product_desc(html_text):
     )
 
 
-def extract_walgreens_text_from_html(html_text, retail_url="", target_rpc=""):
-    debug = {
-        "Title Path": "",
-        "Description Path": "",
-        "Features Path": "",
-        "Source Used": "walgreens",
-    }
-
-    if not html_text:
-        return {
-            "title": "",
-            "description": "",
-            "features": [],
-            "debug": debug,
-        }
-
-    # TITLE
-    title, title_path = _extract_walgreens_title_from_source(html_text)
-
-    # DESCRIPTION + FEATURES
-    description, features, copy_path = _extract_walgreens_description_and_features_from_product_desc(html_text)
-
-    debug["Title Path"] = title_path
-    debug["Description Path"] = copy_path if description else "walgreens_description_missing"
-    debug["Features Path"] = copy_path if features else "walgreens_features_missing"
-
-    return {
-        "title": title,
-        "description": description,
-        "features": features[:5],
-        "debug": debug,
-    }
-
 def extract_walgreens_images_from_html(html_text):
+    """
+    Direct-source Walgreens image extraction:
+    - productImageUrl
+    - zoomImageUrl
+    - filmStripUrl large/zoom images
+    """
     if not html_text:
         return []
-
-    soup = BeautifulSoup(html_text, "html.parser")
-    json_candidates = _extract_json_candidates_from_html(html_text, soup)
 
     image_urls = []
 
@@ -2426,7 +2417,6 @@ def extract_walgreens_images_from_html(html_text):
             return
 
         url = html.unescape(str(url).strip())
-
         if url.startswith("//"):
             url = "https:" + url
 
@@ -2434,6 +2424,8 @@ def extract_walgreens_images_from_html(html_text):
             return
 
         lowered = url.lower()
+        if not any(ext in lowered for ext in [".jpg", ".jpeg", ".png", ".webp", ".avif"]):
+            return
 
         bad_tokens = [
             "sprite",
@@ -2447,31 +2439,29 @@ def extract_walgreens_images_from_html(html_text):
         if any(tok in lowered for tok in bad_tokens):
             return
 
-        if any(ext in lowered for ext in [".jpg", ".jpeg", ".png", ".webp", ".avif"]):
-            image_urls.append(url)
+        image_urls.append(url)
 
-    # 1) JSON image values.
-    for data in json_candidates:
-        for value in _iter_matching_values(
-            data,
-            {"image", "images", "imageurl", "media", "mediagallery", "assets"},
+    # 1) Main image fields.
+    for field_name in ["productImageUrl", "zoomImageUrl", "metaImage"]:
+        for m in re.finditer(
+            rf'"{field_name}"\s*:\s*"((?:\\.|[^"\\])*)"',
+            html_text,
+            flags=re.IGNORECASE | re.DOTALL,
         ):
-            if isinstance(value, str):
-                maybe_add_url(value)
-            elif isinstance(value, list):
-                for item in value:
-                    if isinstance(item, str):
-                        maybe_add_url(item)
-                    elif isinstance(item, dict):
-                        for k in ["url", "src", "image", "imageUrl", "large", "original"]:
-                            if k in item:
-                                maybe_add_url(item.get(k))
-            elif isinstance(value, dict):
-                for k in ["url", "src", "image", "imageUrl", "large", "original"]:
-                    if k in value:
-                        maybe_add_url(value.get(k))
+            maybe_add_url(_decode_walgreens_json_string(m.group(1)))
 
-    # 2) Meta image.
+    # 2) filmStripUrl images.
+    strip_patterns = [
+        r'"largeImageUrl\d+"\s*:\s*"((?:\\.|[^"\\])*)"',
+        r'"zoomImageUrl\d+"\s*:\s*"((?:\\.|[^"\\])*)"',
+        r'"stripUrl\d+"\s*:\s*"((?:\\.|[^"\\])*)"',
+    ]
+    for pattern in strip_patterns:
+        for m in re.finditer(pattern, html_text, flags=re.IGNORECASE | re.DOTALL):
+            maybe_add_url(_decode_walgreens_json_string(m.group(1)))
+
+    # 3) Meta image fallback.
+    soup = BeautifulSoup(html_text, "html.parser")
     for selector in [
         "meta[property='og:image']",
         "meta[name='twitter:image']",
@@ -2480,536 +2470,8 @@ def extract_walgreens_images_from_html(html_text):
         if tag:
             maybe_add_url(tag.get("content", ""))
 
-    # 3) Visible product/gallery images.
-    for img in soup.find_all("img"):
-        src = img.get("src") or img.get("data-src") or img.get("data-zoom-image") or ""
-        maybe_add_url(src)
-
-    # 4) Regex fallback on raw HTML.
-    regex_urls = re.findall(
-        r'https?://[^"\']+\.(?:jpg|jpeg|png|webp|avif)(?:\?[^"\']*)?',
-        html_text,
-        flags=re.IGNORECASE,
-    )
-    for url in regex_urls:
-        maybe_add_url(url)
-
     image_urls = dedupe_preserve_order(image_urls)
     return image_urls[:8]
-    
-def _strip_html_to_text(value):
-    if not value:
-        return ""
-
-    value = str(value)
-    value = html.unescape(value)
-
-    # Handle both raw HTML and escaped HTML.
-    if "<" in value or "&lt;" in value:
-        value = BeautifulSoup(value, "html.parser").get_text(" ", strip=True)
-
-    value = re.sub(r"\s+", " ", value).strip()
-    return value
-
-
-def _normalize_walgreens_text(value):
-    value = _strip_html_to_text(value)
-    value = value.replace("\\n", " ").replace("\\/", "/").replace('\\"', '"')
-    value = re.sub(r"\s+", " ", value).strip()
-    return value
-
-
-def _normalize_walgreens_features(items, max_features=5):
-    cleaned = []
-
-    def add_text(text):
-        text = _normalize_walgreens_text(text)
-        if not text:
-            return
-
-        split_parts = [text]
-
-        if "•" in text:
-            split_parts = [x.strip() for x in text.split("•")]
-        elif " | " in text:
-            split_parts = [x.strip() for x in text.split(" | ")]
-        elif "\n" in text:
-            split_parts = [x.strip() for x in text.splitlines()]
-
-        for part in split_parts:
-            part = _normalize_walgreens_text(part)
-            if not part:
-                continue
-            cleaned.append(part)
-
-    for item in items:
-        if isinstance(item, str):
-            add_text(item)
-        elif isinstance(item, dict):
-            for k, v in item.items():
-                key = str(k).lower().strip()
-                if key in {"text", "value", "label", "name", "feature", "description"} and isinstance(v, str):
-                    add_text(v)
-        elif isinstance(item, list):
-            for sub in item:
-                if isinstance(sub, str):
-                    add_text(sub)
-                elif isinstance(sub, dict):
-                    for k, v in sub.items():
-                        key = str(k).lower().strip()
-                        if key in {"text", "value", "label", "name", "feature", "description"} and isinstance(v, str):
-                            add_text(v)
-
-    cleaned = dedupe_preserve_order(cleaned)
-    cleaned = [x for x in cleaned if len(x) >= 3]
-    return cleaned[:max_features]
-
-
-def _looks_like_good_title(text):
-    text = _normalize_walgreens_text(text)
-    if not text:
-        return False
-    if len(text) < 8:
-        return False
-
-    lowered = text.lower()
-    bad_exact = {
-        "walgreens",
-        "product",
-        "details",
-        "shop",
-        "home",
-    }
-    if lowered in bad_exact:
-        return False
-
-    return True
-
-
-def _extract_walgreens_title(soup, json_candidates, html_text):
-    # 1) Visible H1.
-    h1 = soup.find("h1")
-    if h1:
-        title = _normalize_walgreens_text(h1.get_text(" ", strip=True))
-        if _looks_like_good_title(title):
-            return title, "walgreens_h1"
-
-    # 2) Meta tags.
-    meta_candidates = [
-        ("meta[property='og:title']", "content"),
-        ("meta[name='twitter:title']", "content"),
-        ("meta[name='title']", "content"),
-    ]
-    for selector, attr in meta_candidates:
-        tag = soup.select_one(selector)
-        if tag:
-            title = _normalize_walgreens_text(tag.get(attr, ""))
-            if _looks_like_good_title(title):
-                return title, f"walgreens_{selector}"
-
-    # 3) JSON candidates.
-    possible_titles = []
-    for data in json_candidates:
-        for value in _iter_matching_values(
-            data,
-            {"name", "productname", "producttitle", "title"},
-        ):
-            if isinstance(value, str):
-                text = _normalize_walgreens_text(value)
-                if _looks_like_good_title(text):
-                    possible_titles.append(text)
-
-    if possible_titles:
-        possible_titles.sort(key=len, reverse=True)
-        return possible_titles[0], "walgreens_json"
-
-    # 4) Regex fallback.
-    regex_patterns = [
-        r'"productTitle"\s*:\s*"([^"]+)"',
-        r'"productName"\s*:\s*"([^"]+)"',
-        r'"name"\s*:\s*"([^"]+)"',
-        r'"title"\s*:\s*"([^"]+)"',
-    ]
-    for pattern in regex_patterns:
-        m = re.search(pattern, html_text or "", flags=re.IGNORECASE)
-        if m:
-            title = _normalize_walgreens_text(m.group(1))
-            if _looks_like_good_title(title):
-                return title, "walgreens_regex"
-
-    # 5) HTML title.
-    if soup.title:
-        title = _normalize_walgreens_text(soup.title.get_text(" ", strip=True))
-        if _looks_like_good_title(title):
-            return title, "walgreens_html_title"
-
-    return "", "walgreens_title_missing"
-
-
-def _textblob_from_html(html_text):
-    raw = html.unescape(html_text or "")
-    text = BeautifulSoup(raw, "html.parser").get_text("\n", strip=True)
-    text = text.replace("\r", "\n")
-    text = re.sub(r"\n{2,}", "\n", text)
-    return text.strip()
-
-
-def _extract_walgreens_copy_block_from_textblob(html_text):
-    """
-    CVS-style bounded extraction for Walgreens:
-    Start at Description.
-    Stop at Product Specifications / Ingredients / Walgreens disclaimer / other hard stops.
-    """
-    textblob = _textblob_from_html(html_text)
-
-    if not textblob:
-        return "", "", "walgreens_textblob_empty"
-
-    start_markers = [
-        r"\bDescription\b",
-    ]
-
-    end_markers = [
-        r"\bProduct Specifications\b",
-        r"\bIngredients\b",
-        r"Walgreens does not represent or warrant",
-        r"Statements regarding dietary supplements have not been evaluated",
-        r"\bRatings and Reviews\b",
-        r"\bShow more\b",
-    ]
-
-    start_idx = -1
-    start_used = ""
-
-    for marker in start_markers:
-        m = re.search(marker, textblob, flags=re.IGNORECASE)
-        if m:
-            start_idx = m.start()
-            start_used = marker
-            break
-
-    if start_idx == -1:
-        return "", "", "walgreens_description_start_missing"
-
-    working = textblob[start_idx:]
-
-    end_idx = len(working)
-    end_used = ""
-
-    for marker in end_markers:
-        m = re.search(marker, working, flags=re.IGNORECASE)
-        if m:
-            if m.start() < end_idx:
-                end_idx = m.start()
-                end_used = marker
-
-    block = working[:end_idx].strip()
-
-    # Remove the heading itself.
-    block = re.sub(r"^\s*Description\s*", "", block, flags=re.IGNORECASE).strip()
-
-    # Remove repeated title line if it got captured.
-    lines = [re.sub(r"\s+", " ", x).strip() for x in block.splitlines()]
-    lines = [x for x in lines if x]
-
-    if not lines:
-        return "", "", f"walgreens_copy_block_empty_after_{start_used}"
-
-    # Detect bullet-style feature lines like:
-    # DEPEND FRESH PROTECTION: ...
-    bullet_pattern = re.compile(
-        r"^[A-Z0-9][A-Z0-9\s&/\-\(\)\+',\.]{2,}:\s+.+$"
-    )
-
-    description_lines = []
-    feature_lines = []
-
-    for line in lines:
-        clean_line = _normalize_walgreens_text(line)
-        if not clean_line:
-            continue
-
-        # Hard stop noise inside the block.
-        if re.search(r"^Made in USA\b", clean_line, flags=re.IGNORECASE):
-            break
-        if re.search(r"^\d+\.\s*To Use:", clean_line, flags=re.IGNORECASE):
-            break
-        if re.search(r"^\d+\.\s*To Dispose:", clean_line, flags=re.IGNORECASE):
-            break
-        if re.search(r"Walgreens does not represent or warrant", clean_line, flags=re.IGNORECASE):
-            break
-
-        if bullet_pattern.match(clean_line):
-            feature_lines.append(clean_line)
-        else:
-            description_lines.append(clean_line)
-
-    description = " ".join(description_lines).strip()
-    features = _normalize_walgreens_features(feature_lines, max_features=5)
-
-    path = "walgreens_textblob_description_block"
-    if end_used:
-        path += f"_to_{end_used}"
-
-    return description, features, path
-
-def _extract_walgreens_copy_from_dom(soup):
-    """
-    DOM-first Walgreens copy extractor based on the product description accordion.
-
-    Targets structures like:
-    - div[data-testid="inner-div"][id*="description"]
-    - div[id*="product_description_content"]
-    - div#product_description
-
-    Returns:
-        description, features, debug_path
-    """
-    container_candidates = []
-
-    # Most specific first.
-    selectors = [
-        "div#product_description",
-        "div[id*='product_description_content'] div#product_description",
-        "div[id*='product_description_content']",
-        "div[data-testid='inner-div'][id*='description'] div#product_description",
-        "div[data-testid='inner-div'][id*='description']",
-    ]
-
-    seen_ids = set()
-
-    for selector in selectors:
-        for tag in soup.select(selector):
-            tag_id = id(tag)
-            if tag_id in seen_ids:
-                continue
-            seen_ids.add(tag_id)
-            container_candidates.append((selector, tag))
-
-    for selector, container in container_candidates:
-        # Prefer the inner product_description block if it exists inside a broader container.
-        inner = container.select_one("div#product_description")
-        if inner:
-            container = inner
-
-        # Pull description paragraphs.
-        p_texts = []
-        for p in container.find_all("p"):
-            text = _normalize_walgreens_text(p.get_text(" ", strip=True))
-            if not text:
-                continue
-
-            # Skip junk / utility copy.
-            if text.lower() == "description":
-                continue
-            if re.search(r"^made in usa\b", text, flags=re.IGNORECASE):
-                continue
-            if re.search(r"^\d+\.\s*to use:", text, flags=re.IGNORECASE):
-                continue
-            if re.search(r"^\d+\.\s*to dispose:", text, flags=re.IGNORECASE):
-                continue
-            if re.search(r"walgreens does not represent or warrant", text, flags=re.IGNORECASE):
-                continue
-
-            p_texts.append(text)
-
-        # Pull feature bullets.
-        li_texts = []
-        for li in container.find_all("li"):
-            text = _normalize_walgreens_text(li.get_text(" ", strip=True))
-            if not text:
-                continue
-
-            if re.search(r"^made in usa\b", text, flags=re.IGNORECASE):
-                continue
-            if re.search(r"^\d+\.\s*to use:", text, flags=re.IGNORECASE):
-                continue
-            if re.search(r"^\d+\.\s*to dispose:", text, flags=re.IGNORECASE):
-                continue
-            if re.search(r"walgreens does not represent or warrant", text, flags=re.IGNORECASE):
-                continue
-
-            li_texts.append(text)
-
-        description = " ".join(p_texts).strip()
-        features = _normalize_walgreens_features(li_texts, max_features=5)
-
-        # If there are no <li> tags, try to split out feature-style lines from free text.
-        if not features:
-            text_lines = []
-            raw_text = container.get_text("\n", strip=True)
-            for line in raw_text.splitlines():
-                clean_line = _normalize_walgreens_text(line)
-                if not clean_line:
-                    continue
-                text_lines.append(clean_line)
-
-            bullet_pattern = re.compile(r"^[A-Z0-9][A-Z0-9\s&/\-\(\)\+',\.]{2,}:\s+.+$")
-            inferred_features = [x for x in text_lines if bullet_pattern.match(x)]
-            features = _normalize_walgreens_features(inferred_features, max_features=5)
-
-        if description or features:
-            return description, features, f"walgreens_dom_container::{selector}"
-
-    return "", [], "walgreens_dom_container_missing"
-
-def _extract_walgreens_description(soup, json_candidates, html_text):
-    # 1) DOM-first extraction based on the actual description accordion.
-    dom_description, dom_features, dom_path = _extract_walgreens_copy_from_dom(soup)
-    if dom_description and len(dom_description) >= 40:
-        return dom_description, dom_path
-
-    # 2) CVS-style bounded textblob fallback.
-    description, _, path = _extract_walgreens_copy_block_from_textblob(html_text)
-    if description and len(description) >= 40:
-        return description, path
-
-    # 3) JSON candidates.
-    possible_desc = []
-    for data in json_candidates:
-        for value in _iter_matching_values(
-            data,
-            {
-                "description",
-                "longdescription",
-                "shortdescription",
-                "productdescription",
-                "fulldescription",
-            },
-        ):
-            if isinstance(value, str):
-                text = _normalize_walgreens_text(value)
-                if len(text) >= 40:
-                    possible_desc.append(text)
-
-    if possible_desc:
-        possible_desc.sort(key=len, reverse=True)
-        return possible_desc[0], "walgreens_json"
-
-    # 4) Meta description.
-    meta_tag = soup.find("meta", attrs={"name": "description"})
-    if meta_tag:
-        meta_desc = _normalize_walgreens_text(meta_tag.get("content", ""))
-        if len(meta_desc) >= 40:
-            return meta_desc, "walgreens_meta_description"
-
-    # 5) Visible DOM fallback.
-    selectors = [
-        "[data-testid*='description']",
-        "[id*='description']",
-        "[class*='description']",
-        "[id*='about']",
-        "[class*='about']",
-        "[id*='details']",
-        "[class*='details']",
-    ]
-
-    visible_desc = []
-    for selector in selectors:
-        for tag in soup.select(selector):
-            text = _normalize_walgreens_text(tag.get_text(" ", strip=True))
-            if len(text) >= 40:
-                visible_desc.append(text)
-
-    if visible_desc:
-        visible_desc.sort(key=len, reverse=True)
-        return visible_desc[0], "walgreens_dom"
-
-    # 6) Regex fallback.
-    regex_patterns = [
-        r'"longDescription"\s*:\s*"([^"]+)"',
-        r'"shortDescription"\s*:\s*"([^"]+)"',
-        r'"description"\s*:\s*"([^"]+)"',
-    ]
-    for pattern in regex_patterns:
-        m = re.search(pattern, html_text or "", flags=re.IGNORECASE)
-        if m:
-            desc = _normalize_walgreens_text(m.group(1))
-            if len(desc) >= 40:
-                return desc, "walgreens_regex"
-
-    return "", "walgreens_description_missing"
-
-
-def _extract_walgreens_features(soup, json_candidates, html_text):
-    # 1) DOM-first extraction based on the actual description accordion.
-    dom_description, dom_features, dom_path = _extract_walgreens_copy_from_dom(soup)
-    if dom_features:
-        return dom_features, dom_path + "::features"
-
-    # 2) CVS-style bounded textblob fallback.
-    _, features, path = _extract_walgreens_copy_block_from_textblob(html_text)
-    if features:
-        return features, path + "_features"
-
-    feature_candidates = []
-
-    # 3) JSON candidates.
-    feature_keys = {
-        "features",
-        "featurebullets",
-        "bullets",
-        "highlights",
-        "benefits",
-        "producthighlights",
-        "keyfeatures",
-        "attributehighlights",
-    }
-
-    for data in json_candidates:
-        for value in _iter_matching_values(data, feature_keys):
-            if isinstance(value, list):
-                feature_candidates.extend(value)
-            elif isinstance(value, str):
-                feature_candidates.append(value)
-            elif isinstance(value, dict):
-                feature_candidates.append(value)
-
-    normalized = _normalize_walgreens_features(feature_candidates, max_features=5)
-    if normalized:
-        return normalized, "walgreens_json"
-
-    # 4) Visible bullet fallback.
-    section_keywords = {"feature", "features", "highlight", "highlights", "details", "about"}
-    visible_bullets = []
-
-    for section in soup.find_all(["section", "div", "article"]):
-        section_text = _normalize_walgreens_text(section.get_text(" ", strip=True)).lower()
-
-        if not any(k in section_text for k in section_keywords):
-            continue
-
-        for li in section.find_all("li"):
-            text = _normalize_walgreens_text(li.get_text(" ", strip=True))
-            if len(text) >= 3:
-                visible_bullets.append(text)
-
-    normalized = _normalize_walgreens_features(visible_bullets, max_features=5)
-    if normalized:
-        return normalized, "walgreens_dom"
-
-    # 5) Regex fallback arrays.
-    regex_patterns = [
-        r'"features"\s*:\s*(\[[^\]]+\])',
-        r'"featureBullets"\s*:\s*(\[[^\]]+\])',
-        r'"highlights"\s*:\s*(\[[^\]]+\])',
-        r'"keyFeatures"\s*:\s*(\[[^\]]+\])',
-        r'"bullets"\s*:\s*(\[[^\]]+\])',
-    ]
-
-    for pattern in regex_patterns:
-        m = re.search(pattern, html_text or "", flags=re.IGNORECASE | re.DOTALL)
-        if not m:
-            continue
-
-        raw = m.group(1)
-        parsed = _safe_json_loads(raw)
-        if isinstance(parsed, list):
-            normalized = _normalize_walgreens_features(parsed, max_features=5)
-            if normalized:
-                return normalized, "walgreens_regex"
-
-    return [], "walgreens_features_missing"
 
 
 def extract_walgreens_text_from_html(html_text, retail_url="", target_rpc=""):
@@ -3028,16 +2490,12 @@ def extract_walgreens_text_from_html(html_text, retail_url="", target_rpc=""):
             "debug": debug,
         }
 
-    soup = BeautifulSoup(html_text, "html.parser")
-    json_candidates = _extract_json_candidates_from_html(html_text, soup)
-
-    title, title_path = _extract_walgreens_title(soup, json_candidates, html_text)
-    description, desc_path = _extract_walgreens_description(soup, json_candidates, html_text)
-    features, feature_path = _extract_walgreens_features(soup, json_candidates, html_text)
+    title, title_path = _extract_walgreens_title_from_source(html_text)
+    description, features, copy_path = _extract_walgreens_description_and_features_from_product_desc(html_text)
 
     debug["Title Path"] = title_path
-    debug["Description Path"] = desc_path
-    debug["Features Path"] = feature_path
+    debug["Description Path"] = copy_path if description else "walgreens_description_missing"
+    debug["Features Path"] = copy_path if features else "walgreens_features_missing"
 
     return {
         "title": title,
@@ -3045,6 +2503,7 @@ def extract_walgreens_text_from_html(html_text, retail_url="", target_rpc=""):
         "features": features[:5],
         "debug": debug,
     }
+
 
 @st.cache_data(show_spinner=False)
 def get_walgreens_bundle(retail_url, target_rpc=""):
@@ -3058,6 +2517,7 @@ def get_walgreens_bundle(retail_url, target_rpc=""):
         "images": extract_walgreens_images_from_html(html_text),
     }
 
+
 def get_retailer_bundle(retailer_name, retail_url, target_rpc=""):
     retailer = str(retailer_name or "").strip().lower()
 
@@ -3066,6 +2526,7 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc=""):
 
     # Default path stays CVS.
     return get_cvs_bundle(retail_url, target_rpc)
+
 
 # =========================================
 # RETAILER-SPECIFIC FINAL COPY CLEANUP
@@ -3084,7 +2545,6 @@ def clean_walgreens_text(text):
     text = text.replace("\\/", "/")
     text = text.replace('\\"', '"')
 
-    # Remove script tags if any leaked through.
     text = re.sub(
         r"<script\b[^>]*>.*?</script>",
         " ",
@@ -3092,13 +2552,11 @@ def clean_walgreens_text(text):
         flags=re.IGNORECASE | re.DOTALL,
     )
 
-    # If HTML is present, flatten it.
     if "<" in text and ">" in text:
         text = BeautifulSoup(text, "html.parser").get_text(" ", strip=True)
 
     text = normalize_space(text)
 
-    # Trim Walgreens trailing utility copy if any leaked through.
     stop_patterns = [
         r"\bMade in USA\b.*$",
         r"\b1\.\s*To Use:.*$",
@@ -3129,7 +2587,6 @@ def normalize_walgreens_features_final(items, max_features=5):
         if not text:
             continue
 
-        # Remove noise lines that should not become bullets.
         if re.search(r"^Made in USA\b", text, flags=re.IGNORECASE):
             continue
         if re.search(r"^\d+\.\s*To Use:", text, flags=re.IGNORECASE):
@@ -3152,8 +2609,7 @@ def clean_walgreens_title(text):
     text = clean_walgreens_text(text)
     text = normalize_space(text)
 
-    # Safety cleanup only. Do NOT rebuild the title here.
-    # The Walgreens title builder should already produce:
+    # The title builder should already have constructed:
     # "Depend Adult Incontinence Underwear for Men Extra-Large, 15.0 ea"
     text = re.sub(r"\s+,", ",", text)
     text = re.sub(r",\s*,", ", ", text)
