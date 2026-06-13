@@ -2643,8 +2643,6 @@ if uploaded_file and st.session_state.processing_done:
                     r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else ""
                     slot_score = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
 
-                    img1, img2, score_col = st.columns([1, 1, 0.65], gap="small")
-
                     with img1:
                         if s_url:
                             st.image(s_url, use_container_width=True)
