@@ -3192,18 +3192,10 @@ if use_manual_html_override:
     )
 
 # =========================================
-# FILE / INPUT HELPERS (RE-ADD ABOVE FILE + PROCESSING)
+# FILE / INPUT HELPERS
 # =========================================
 def read_uploaded_file_from_bytes(file_bytes, file_name):
-    if not file_bytes:
-        raise EmptyDataError("Uploaded file is empty.")
-
-    if isinstance(file_bytes, bytes) and len(file_bytes.strip()) == 0:
-        raise EmptyDataError("Uploaded file is empty.")
-
-    file_name = str(file_name or "").lower().strip()
-
-    if file_name.endswith(".xlsx"):
+    if file_bytes is None_name.endswith(".xlsx"):    if file_bytes is None:
         xls = pd.ExcelFile(BytesIO(file_bytes), engine="openpyxl")
         frames = []
 
@@ -3224,12 +3216,21 @@ def read_uploaded_file_from_bytes(file_bytes, file_name):
         if not frames:
             raise EmptyDataError("No readable sheets found in uploaded Excel file.")
 
-        return pd.concat(frames, ignore_index=True)
+        out = pd.concat(frames, ignore_index=True)
 
+        if out is None or not isinstance(out, pd.DataFrame) or out.empty:
+            raise EmptyDataError("Excel file did not produce a readable dataframe.")
+
+        return out
+
+    # CSV fallback
     last_error = None
     for encoding in ["utf-8-sig", "utf-8", "latin1"]:
         try:
-            return pd.read_csv(BytesIO(file_bytes), encoding=encoding)
+            out = pd.read_csv(BytesIO(file_bytes), encoding=encoding)
+            if out is None or not isinstance(out, pd.DataFrame):
+                continue
+            return out
         except Exception as e:
             last_error = e
 
@@ -3263,6 +3264,9 @@ def infer_retailer_name_from_url(url):
 
 
 def prepare_input_df(df):
+    if df is None or not isinstance(df, pd.DataFrame):
+        raise ValueError("Input dataframe is missing or invalid before normalization.")
+
     df = df.copy()
     df.columns = [str(c).strip().lower() for c in df.columns]
 
@@ -3319,15 +3323,55 @@ def prepare_input_df(df):
             .str.strip()
         )
 
+    # Normalize retailer column.
+    if "retailer" not in df.columns:
+        df["retailer"] = df["retail_url"].apply(infer_retailer_name_from_url)
+    else:
+        df["retailer"] = (
+            df["retailer"]
+            .replace("#N/A", "")
+            .fillna("")
+            .astype(str)
+            .str.strip()
+        )
+
+    required = ["sku", "salsify_url", "retail_url"]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing required columns: {missing}")
+
+    if df is None or not isinstance(df, pd.DataFrame):
+        raise ValueError("Normalized dataframe is invalid after prepare_input_df.")
+
+    return df
+
+
+def clear_in_memory_caches():
+    global html_cache, image_hash_cache
+
+    if "html_cache" not in globals() or not isinstance(html_cache, dict):
+        html_cache = {}
+    if "image_hash_cache" not in globals() or not isinstance(image_hash_cache, dict):
+        image_hash_cache = {}
+
+    html_cache.clear()
+    image_hash_cache.clear()
+
+
 # =========================================
 # FILE + PROCESSING
 # =========================================
 if uploaded_file:
     try:
         file_bytes = uploaded_file.getvalue()
+
+        if file_bytes is None or len(file_bytes) == 0:
+            st.error("The uploaded file is empty.")
+            st.stop()
+
         st.session_state.uploaded_file_bytes = file_bytes
         file_hash = hashlib.md5(file_bytes).hexdigest()
-        
+
         if st.session_state.last_file_hash != file_hash:
             st.session_state.summary_rows = []
             st.session_state.export_rows = []
@@ -3345,35 +3389,45 @@ if uploaded_file:
             st.session_state.report_bytes = None
             st.session_state.report_filename = None
             clear_in_memory_caches()
-            
-        df = read_uploaded_file_from_bytes(file_bytes, uploaded_file.name)
-        df = prepare_input_df(df)
 
-        all_retailers = sorted(df["retailer"].dropna().astype(str).unique().tolist()) if "retailer" in df.columns else ["CVS"]
+        df = read_uploaded_file_from_bytes(file_bytes, uploaded_file.name)
+        if df is None or not isinstance(df, pd.DataFrame):
+            raise ValueError("Uploaded file could not be parsed into a dataframe.")
+
+        df = prepare_input_df(df)
+        if df is None or not isinstance(df, pd.DataFrame):
+            raise ValueError("Input normalization returned an invalid dataframe.")
+
+        if "retailer" in df.columns:
+            all_retailers = sorted(df["retailer"].dropna().astype(str).unique().tolist())
+        else:
+            all_retailers = ["CVS"]
+
         if not all_retailers:
             all_retailers = ["CVS"]
-        
+
         multi_retailer = len(all_retailers) > 1
-        
+
         # Retailer must be selected before batch if multiple retailers exist.
         if multi_retailer:
             retailer_options = ["-- Select Retailer --"] + all_retailers
-        
+
             if st.session_state.selected_retailer not in all_retailers:
                 st.session_state.selected_retailer = "-- Select Retailer --"
-        
+
             selected_retailer = st.selectbox(
                 "🏪 Select Retailer",
                 retailer_options,
                 key="selected_retailer",
             )
-        
+
             if selected_retailer == "-- Select Retailer --":
                 st.info("Select a retailer to run the batch.")
                 st.stop()
         else:
             # Auto-select the only retailer and show it directly under upload.
             st.session_state.selected_retailer = all_retailers[0]
+
             selected_retailer = st.selectbox(
                 "🏪 Select Retailer",
                 all_retailers,
@@ -3381,8 +3435,9 @@ if uploaded_file:
                 key="selected_retailer_single",
                 disabled=True,
             )
-        
-        df = df[df["retailer"].astype(str) == selected_retailer]
+
+        if "retailer" in df.columns and selected_retailer not in ["-- Select Retailer --", "All"]:
+            df = df[df["retailer"].astype(str) == selected_retailer]
 
         brands = sorted(df["brand"].dropna().astype(str).unique().tolist()) if "brand" in df.columns else []
         brand_options = ["All"] + brands
@@ -3390,7 +3445,11 @@ if uploaded_file:
         if st.session_state.selected_brand not in brand_options:
             st.session_state.selected_brand = "All"
 
-        selected_brand = st.selectbox("🏷️ Select Brand", brand_options, key="selected_brand")
+        selected_brand = st.selectbox(
+            "🏷️ Select Brand",
+            brand_options,
+            key="selected_brand",
+        )
 
         if selected_brand != "All" and "brand" in df.columns:
             df = df[df["brand"].astype(str) == selected_brand]
@@ -3416,64 +3475,31 @@ if uploaded_file:
 
             progress_bar = st.session_state.progress_bar
             status_text = st.empty()
+
             st.write("### Overall Progress")
             overall_progress_bar = st.progress(0)
 
             total = len(batch_df)
             completed = 0
-
             batch_records = batch_df.to_dict("records")
-            
+
             with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                 futures = [executor.submit(process_row, row_dict) for row_dict in batch_records]
-            
+
                 for future in as_completed(futures):
                     completed += 1
                     result = future.result()
-            
+
                     if result:
                         summary = result.get("summary")
                         detail = result.get("detail")
-                        debug = result.get("debug")
-            
-                        if summary and summary["SKU"] not in st.session_state.summary_skus:
-                            st.session_state.summary_rows.append(summary)
-                            st.session_state.summary_skus.add(summary["SKU"])
-            
-                        if detail and detail["SKU"] not in st.session_state.detail_skus:
-                            st.session_state.export_rows.append(detail)
-                            st.session_state.detail_skus.add(detail["SKU"])
-            
-                        if debug and debug["SKU"] not in st.session_state.debug_skus:
-                            st.session_state.debug_rows.append(debug)
-                            st.session_state.debug_skus.add(debug["SKU"])
-            
-                    if completed % UI_UPDATE_EVERY == 0 or completed == total:
-                        progress_bar.progress(completed / max(total, 1))
-                        status_text.markdown(
-                            f"**Processed:** {completed}/{total}  \n"
-                            f"**Overall:** {start + completed}/{len(df)}"
-                        )
-                        overall_progress_bar.progress((start + completed) / max(len(df), 1))
+                        debug = result.get("
+        raise EmptyDataError("Uploaded file is empty.")
 
-            if start + BATCH_SIZE < len(df):
-                st.session_state.start_idx += BATCH_SIZE
-                time.sleep(0.05)
-                st.rerun()
-            else:
-                st.session_state.processing_done = True
-                st.rerun()
+    if isinstance(file_bytes, bytes) and len(file_bytes) == 0:
+        raise EmptyDataError("Uploaded file is empty.")
 
-    except EmptyDataError:
-        st.error("🔥 CRITICAL APP ERROR")
-        st.text("The uploaded CSV is empty or could not be read.")
-    except ValueError as e:
-        st.error("❌ INPUT FILE ERROR")
-        st.text(str(e))
-    except Exception as e:
-        st.error("🔥 CRITICAL APP ERROR")
-        st.text(str(e))
-        st.text(traceback.format_exc())
+    file_name = str(file_name or "").lower().strip()
 
 # =========================================
 # TOP EXPORT SECTION
