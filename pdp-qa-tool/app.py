@@ -89,7 +89,7 @@ thread_local = threading.local()
 # VISUAL LAYOUT SETTINGS
 # =========================================
 SECTION_HEADER_SIZE = 32
-COPY_TEXT_SIZE = 35
+COPY_TEXT_SIZE = 50
 COPY_LINE_HEIGHT = 1.20
 SECTION_VERTICAL_GAP = 10
 
@@ -98,7 +98,7 @@ IMG_SPACE_PX = 12
 IMG_BOX_HEIGHT = 132
 IMG_SCORE_WIDTH_PX = 118
 
-DESCRIPTION_TO_FEATURES_GAP_PX = 100
+DESCRIPTION_TO_FEATURES_GAP_PX = 125
 
 def get_session():
     if not hasattr(thread_local, "session"):
