@@ -600,6 +600,11 @@ def clear_in_memory_caches():
 # HTML FETCH
 # =========================================
 def get_html(url):
+    global html_cache
+
+    if "html_cache" not in globals() or not isinstance(globals().get("html_cache"), dict):
+        html_cache = {}
+
     if not url:
         return ""
 
@@ -612,16 +617,14 @@ def get_html(url):
         r = session.get(url, timeout=REQUEST_TIMEOUT)
         if r.status_code == 200 and r.text:
             html_cache[url] = r.text
-
             while len(html_cache) > HTML_CACHE_MAX:
                 html_cache.pop(next(iter(html_cache)))
-
             return r.text
     except Exception:
         pass
 
     return ""
-
+    
 def fetch_html_with_timeout(url, timeout_seconds):
     if not url:
         return ""
@@ -2982,6 +2985,11 @@ def debug_description(desc):
 # IMAGE HASHING (FAST IMAGE COMPARE)
 # =========================================
 def get_image_dhash(url):
+    global image_hash_cache
+
+    if "image_hash_cache" not in globals() or not isinstance(globals().get("image_hash_cache"), dict):
+        image_hash_cache = {}
+
     if not url:
         return None
 
@@ -2990,50 +2998,14 @@ def get_image_dhash(url):
 
     try:
         session = get_session()
-
-        # Stream the response so we can stop early if the file is too large.
-        r = session.get(url, timeout=IMAGE_TIMEOUT, stream=True)
+        r = session.get(url, timeout=IMAGE_TIMEOUT)
         if r.status_code != 200:
             return None
-
-        content_type = str(r.headers.get("Content-Type", "") or "")
-        if "image" not in content_type.lower():
+        if "image" not in r.headers.get("Content-Type", ""):
             return None
 
-        content_length = str(r.headers.get("Content-Length", "") or "").strip()
-        if content_length.isdigit() and int(content_length) > MAX_IMAGE_BYTES:
-            return None
-
-        image_bytes = bytearray()
-
-        for chunk in r.iter_content(chunk_size=65536):
-            if not chunk:
-                continue
-
-            image_bytes.extend(chunk)
-
-            if len(image_bytes) > MAX_IMAGE_BYTES:
-                return None
-
-        if not image_bytes:
-            return None
-
-        bio = BytesIO(image_bytes)
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", Image.DecompressionBombWarning)
-
-            img = Image.open(bio)
-
-            width, height = img.size
-            if width * height > MAX_SAFE_IMAGE_PIXELS:
-                return None
-
-            img.load()
-
-        img = img.convert("L")
-        img.thumbnail((256, 256))
-        img = img.resize((IMAGE_HASH_WIDTH, IMAGE_HASH_HEIGHT))
+        img = Image.open(BytesIO(r.content))
+        img = img.convert("L").resize((IMAGE_HASH_WIDTH, IMAGE_HASH_HEIGHT))
 
         bits = []
         for y in range(IMAGE_HASH_HEIGHT):
@@ -3051,9 +3023,6 @@ def get_image_dhash(url):
             image_hash_cache.pop(next(iter(image_hash_cache)))
 
         return h
-
-    except (Image.DecompressionBombWarning, UnidentifiedImageError, OSError, ValueError):
-        return None
     except Exception:
         return None
         
