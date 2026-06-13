@@ -586,6 +586,13 @@ def prepare_input_df(df):
     return df
     
 def clear_in_memory_caches():
+    global html_cache, image_hash_cache
+
+    if "html_cache" not in globals() or not isinstance(globals().get("html_cache"), dict):
+        html_cache = {}
+    if "image_hash_cache" not in globals() or not isinstance(globals().get("image_hash_cache"), dict):
+        image_hash_cache = {}
+
     html_cache.clear()
     image_hash_cache.clear()
 
