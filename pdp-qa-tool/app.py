@@ -3119,10 +3119,30 @@ if uploaded_file and st.session_state.processing_done:
             .str.lower()
         )
 
-        hidden_count = int(visual_df["retail_url_clean"].isin(invalid_retail_values).sum())
+        hidden_count = int(
+            visual_df["retail_url_clean"].isin(invalid_retail_values).sum()
+        )
 
-        visual_df = visual_df[~visual_df["retail_url_clean"].isin(invalid_retail_values)].copy()
-        visual_df.drop(columns=["retail_url_clean"], inplace=True, errors="ignore
+        visual_df = visual_df[
+            ~visual_df["retail_url_clean"].isin(invalid_retail_values)
+        ].copy()
+
+        visual_df.drop(columns=["retail_url_clean"], inplace=True, errors="ignore")
+
+        st.markdown("## 👁️ Full Visual QA Review")
+
+        if hidden_count > 0:
+            st.caption(
+                f"Excluded from Full Visual QA only: {hidden_count} item(s) with missing retailer URLs."
+            )
+
+        if visual_df.empty:
+            st.info(
+                "No visually reviewable items found. Products without retailer URLs are still included in the extract."
+            )
+            st.stop()
+
+        for _, row in visual_df.iterrows():
 
         for _, row in visual_df.iterrows():
             sku = row.get("sku", "Missing SKU")
