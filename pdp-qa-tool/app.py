@@ -2642,14 +2642,7 @@ if uploaded_file and st.session_state.processing_done:
                         image_compare_row_html(s_url, r_url, slot_score),
                         unsafe_allow_html=True,
                     )
-                    with img2:
-                        if r_url:
-                            st.image(r_url, use_container_width=True)
-                        else:
-                            st.markdown(
-                                equal_feature_block("Missing", min_height=IMG_BOX_HEIGHT),
-                                unsafe_allow_html=True,
-                            )
+
 
                     with score_col:
                         st.markdown(
