@@ -507,24 +507,50 @@ def prepare_input_df(df):
     df = df.copy()
     df.columns = [str(c).strip().lower() for c in df.columns]
 
+    # Rename only safe one-to-one columns first.
     df.rename(
         columns={
             "salsify url": "salsify_url",
             "retail url": "retail_url",
             "sku id": "sku",
             "product sku": "sku",
-            "cvs rpc": "retailer_rpc",
-            "walgreens rpc": "retailer_rpc",
             "retailer name": "retailer",
             "retailer_name": "retailer",
         },
         inplace=True,
     )
 
+    # Build one normalized retailer_rpc column without creating duplicate column names.
+    rpc_candidates = []
+    for rpc_col in ["retailer_rpc", "cvs rpc", "walgreens rpc"]:
+        if rpc_col in df.columns:
+            rpc_candidates.append(
+                df[rpc_col]
+                .replace("#N/A", "")
+                .fillna("")
+                .astype(str)
+                .str.strip()
+            )
+
+    if rpc_candidates:
+        retailer_rpc = rpc_candidates[0].copy()
+        for series in rpc_candidates[1:]:
+            retailer_rpc = retailer_rpc.where(retailer_rpc != "", series)
+        df["retailer_rpc"] = retailer_rpc
+    else:
+        df["retailer_rpc"] = ""
+
+    # Remove original retailer-specific rpc columns after combining.
+    for rpc_col in ["cvs rpc", "walgreens rpc"]:
+        if rpc_col in df.columns:
+            df.drop(columns=[rpc_col], inplace=True)
+
+    # Ensure required working columns exist.
     for col in ["sku", "salsify_url", "retail_url", "brand", "retailer_rpc"]:
         if col not in df.columns:
             df[col] = ""
 
+    # Clean standard text columns safely.
     for col in ["sku", "salsify_url", "retail_url", "brand", "retailer_rpc"]:
         df[col] = (
             df[col]
@@ -534,6 +560,7 @@ def prepare_input_df(df):
             .str.strip()
         )
 
+    # Normalize retailer column.
     if "retailer" not in df.columns:
         df["retailer"] = df["retail_url"].apply(infer_retailer_name_from_url)
     else:
