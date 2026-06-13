@@ -383,14 +383,14 @@ def image_tile_html(label, url, box_height=170):
     if url:
         safe_url = html.escape(url, quote=True)
         return f'''<div style="border:1px solid #E0E0E0;border-radius:8px;background:#FFFFFF;padding:8px;">
-<div style="font-size:25px;font-weight:600;margin-bottom:6px;">{safe_label}</div>
+<div style="font-size:45px;font-weight:600;margin-bottom:6px;">{safe_label}</div>
 <div style="height:{box_height}px;display:flex;align-items:center;justify-content:center;background:#FAFAFA;border-radius:6px;overflow:hidden;">
 <img src="{safe_url}" style="max-width:100%;max-height:{box_height}px;object-fit:contain;" />
 </div>
 </div>'''
     else:
         return f'''<div style="border:1px solid #E0E0E0;border-radius:8px;background:#FFFFFF;padding:8px;">
-<div style="font-size:25px;font-weight:600;margin-bottom:6px;">{safe_label}</div>
+<div style="font-size:45px;font-weight:600;margin-bottom:6px;">{safe_label}</div>
 <div style="height:{box_height}px;display:flex;align-items:center;justify-content:center;background:#FAFAFA;border-radius:6px;color:#C62828;font-size:14px;font-weight:600;">
 ❌ Missing
 </div>
