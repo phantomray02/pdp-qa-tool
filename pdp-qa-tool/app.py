@@ -2205,6 +2205,212 @@ def _extract_json_candidates_from_html(html_text, soup):
                 candidates.append(parsed)
 
     return candidates
+def _decode_walgreens_json_string(raw_value):
+    """
+    Decodes Walgreens JSON-like string fragments such as:
+    \\u003cp\\u003eHello\\u003c/p\\u003e
+    """
+    if not raw_value:
+        return ""
+
+    raw_value = str(raw_value)
+
+    try:
+        decoded = json.loads(f'"{raw_value}"')
+    except Exception:
+        decoded = raw_value
+        decoded = decoded.replace('\\"', '"')
+        decoded = decoded.replace("\\/", "/")
+
+    decoded = html.unescape(decoded)
+    return decoded.strip()
+
+
+def _extract_walgreens_title_from_source(html_text):
+    """
+    Title logic for this Walgreens item:
+    - pull productInfo.title
+    - remove trailing color like Grey
+    - append sizeCount
+    Example:
+      Depend Adult Incontinence Underwear for Men Extra-Large Grey
+      + 15.0 ea
+      =>
+      Depend Adult Incontinence Underwear for Men Extra-Large, 15.0 ea
+    """
+    if not html_text:
+        return "", "walgreens_title_missing"
+
+    title_match = re.search(
+        r'"productInfo"\s*:\s*\{.*?"title"\s*:\s*"((?:\\.|[^"\\])*)"',
+        html_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    size_match = re.search(
+        r'"sizeCount"\s*:\s*"((?:\\.|[^"\\])*)"',
+        html_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    if not title_match:
+        return "", "walgreens_productInfo_title_missing"
+
+    raw_title = title_match.group(1)
+    title = _decode_walgreens_json_string(raw_title)
+
+    size_count = ""
+    if size_match:
+        size_count = _decode_walgreens_json_string(size_match.group(1))
+
+    # Remove trailing color token for Walgreens display title.
+    trailing_colors = [
+        " Grey",
+        " Gray",
+        " Black",
+        " White",
+        " Pink",
+        " Blue",
+        " Green",
+        " Red",
+        " Brown",
+        " Beige",
+        " Purple",
+        " Yellow",
+        " Orange",
+    ]
+
+    title_clean = title.strip()
+    for color in trailing_colors:
+        if title_clean.lower().endswith(color.lower()):
+            title_clean = title_clean[: -len(color)].rstrip(" ,-/")
+            break
+
+    if size_count:
+        final_title = f"{title_clean}, {size_count}"
+        return final_title, "walgreens_productInfo_title_plus_sizeCount"
+
+    return title_clean, "walgreens_productInfo_title_only"
+
+
+def _extract_walgreens_product_desc_block(html_text):
+    """
+    Pulls the raw HTML-like description block from:
+    prodDetails.section[].description.productDesc
+    """
+    if not html_text:
+        return "", "walgreens_productDesc_missing"
+
+    desc_match = re.search(
+        r'"productDesc"\s*:\s*"((?:\\.|[^"\\])*)"',
+        html_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    if not desc_match:
+        return "", "walgreens_productDesc_missing"
+
+    raw_desc = desc_match.group(1)
+    desc_html = _decode_walgreens_json_string(raw_desc)
+    return desc_html, "walgreens_productDesc_found"
+
+
+def _extract_walgreens_description_and_features_from_product_desc(html_text):
+    """
+    Walgreens source structure for this item:
+    - productDesc contains paragraph first
+    - then UL/LI features
+    - then Made in USA and usage/disposal text
+    We want:
+    - description = paragraph before UL
+    - features = LI items
+    """
+    desc_html, source_path = _extract_walgreens_product_desc_block(html_text)
+
+    if not desc_html:
+        return "", [], source_path
+
+    # Remove script tags inside productDesc.
+    desc_html = re.sub(
+        r"<script\b[^>]*>.*?</script>",
+        " ",
+        desc_html,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    soup = BeautifulSoup(desc_html, "html.parser")
+
+    # Description: take paragraph text, but stop before "Made in USA"
+    description_parts = []
+    for p in soup.find_all("p"):
+        text = normalize_space(p.get_text(" ", strip=True))
+        if not text:
+            continue
+        if text.lower() == "made in usa":
+            break
+        if re.search(r"^\d+\.\s*To Use:", text, flags=re.IGNORECASE):
+            break
+        if re.search(r"^\d+\.\s*To Dispose:", text, flags=re.IGNORECASE):
+            break
+        description_parts.append(text)
+
+    description_text = " ".join(description_parts).strip()
+
+    # Features: all LI items
+    feature_items = []
+    for li in soup.find_all("li"):
+        text = normalize_space(li.get_text(" ", strip=True))
+        if not text:
+            continue
+        if text.lower() == "made in usa":
+            break
+        if re.search(r"^\d+\.\s*To Use:", text, flags=re.IGNORECASE):
+            break
+        if re.search(r"^\d+\.\s*To Dispose:", text, flags=re.IGNORECASE):
+            break
+        feature_items.append(text)
+
+    feature_items = dedupe_preserve_order(feature_items)[:5]
+
+    return (
+        description_text,
+        feature_items,
+        "walgreens_productDesc_paragraph_and_li",
+    )
+
+
+def extract_walgreens_text_from_html(html_text, retail_url="", target_rpc=""):
+    debug = {
+        "Title Path": "",
+        "Description Path": "",
+        "Features Path": "",
+        "Source Used": "walgreens",
+    }
+
+    if not html_text:
+        return {
+            "title": "",
+            "description": "",
+            "features": [],
+            "debug": debug,
+        }
+
+    # TITLE
+    title, title_path = _extract_walgreens_title_from_source(html_text)
+
+    # DESCRIPTION + FEATURES
+    description, features, copy_path = _extract_walgreens_description_and_features_from_product_desc(html_text)
+
+    debug["Title Path"] = title_path
+    debug["Description Path"] = copy_path if description else "walgreens_description_missing"
+    debug["Features Path"] = copy_path if features else "walgreens_features_missing"
+
+    return {
+        "title": title,
+        "description": description,
+        "features": features[:5],
+        "debug": debug,
+    }
 
 def extract_walgreens_images_from_html(html_text):
     if not html_text:
@@ -2860,6 +3066,117 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc=""):
 
     # Default path stays CVS.
     return get_cvs_bundle(retail_url, target_rpc)
+
+# =========================================
+# RETAILER-SPECIFIC FINAL COPY CLEANUP
+# =========================================
+def clean_walgreens_text(text):
+    if not text:
+        return ""
+
+    text = str(text)
+    text = html.unescape(text)
+
+    text = text.replace("\\u003c", "<")
+    text = text.replace("\\u003e", ">")
+    text = text.replace("\\u0026", "&")
+    text = text.replace("\\n", " ")
+    text = text.replace("\\/", "/")
+    text = text.replace('\\"', '"')
+
+    # Remove script tags if any leaked through.
+    text = re.sub(
+        r"<script\b[^>]*>.*?</script>",
+        " ",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    # If HTML is present, flatten it.
+    if "<" in text and ">" in text:
+        text = BeautifulSoup(text, "html.parser").get_text(" ", strip=True)
+
+    text = normalize_space(text)
+
+    # Trim Walgreens trailing utility copy if any leaked through.
+    stop_patterns = [
+        r"\bMade in USA\b.*$",
+        r"\b1\.\s*To Use:.*$",
+        r"\b2\.\s*To Dispose:.*$",
+        r"Walgreens does not represent or warrant.*$",
+    ]
+    for pattern in stop_patterns:
+        text = re.sub(pattern, "", text, flags=re.IGNORECASE | re.DOTALL).strip()
+
+    return normalize_space(text)
+
+
+def normalize_walgreens_features_final(items, max_features=5):
+    cleaned = []
+
+    if not items:
+        return []
+
+    if isinstance(items, str):
+        items = [items]
+
+    for item in items:
+        if not item:
+            continue
+
+        text = clean_walgreens_text(item)
+
+        if not text:
+            continue
+
+        # Remove noise lines that should not become bullets.
+        if re.search(r"^Made in USA\b", text, flags=re.IGNORECASE):
+            continue
+        if re.search(r"^\d+\.\s*To Use:", text, flags=re.IGNORECASE):
+            continue
+        if re.search(r"^\d+\.\s*To Dispose:", text, flags=re.IGNORECASE):
+            continue
+        if re.search(r"Walgreens does not represent or warrant", text, flags=re.IGNORECASE):
+            continue
+
+        cleaned.append(text)
+
+    cleaned = dedupe_preserve_order(cleaned)
+    return cleaned[:max_features]
+
+
+def clean_walgreens_title(text):
+    if not text:
+        return ""
+
+    text = clean_walgreens_text(text)
+    text = normalize_space(text)
+
+    # Safety cleanup only. Do NOT rebuild the title here.
+    # The Walgreens title builder should already produce:
+    # "Depend Adult Incontinence Underwear for Men Extra-Large, 15.0 ea"
+    text = re.sub(r"\s+,", ",", text)
+    text = re.sub(r",\s*,", ", ", text)
+    text = normalize_space(text)
+
+    return text
+
+
+def finalize_retailer_copy(retailer_name, r_text):
+    retailer = str(retailer_name or "").strip().lower()
+    out = dict(r_text or {})
+
+    if retailer == "walgreens":
+        out["title"] = clean_walgreens_title(out.get("title", ""))
+        out["description"] = clean_walgreens_text(out.get("description", ""))
+        out["features"] = normalize_walgreens_features_final(out.get("features", []), max_features=5)
+        return out
+
+    # Default path remains CVS.
+    out["title"] = normalize_space(out.get("title", ""))
+    out["description"] = clean_cvs_text(out.get("description", ""))
+    out["features"] = normalize_cvs_features(out.get("features", []))
+    return out
     
 # =========================================
 # QUALITY HELPERS
@@ -3087,10 +3404,8 @@ def process_row(row):
         r_text = r_bundle["text"] or {}
         r_images = r_bundle["images"]
 
+        r_text = finalize_retailer_copy(retailer_name, r_text)
         debug_data = r_text.get("debug", {})
-
-        r_text["description"] = clean_cvs_text(r_text.get("description", ""))
-        r_text["features"] = normalize_cvs_features(r_text.get("features", []))
 
         title_score = keyword_score(s_text.get("title", ""), r_text.get("title", ""))
 
@@ -3689,27 +4004,31 @@ if uploaded_file and st.session_state.processing_done:
                             manual_html_text=manual_html_text,
                             manual_html_file=manual_html_file,
                         )
+
                         st.caption(f"Requested URL: {debug_fetch['requested_url']}")
-                        if debug_fetch["final_url"]:
+                        if debug_fetch.get("final_url"):
                             st.caption(f"Final URL: {debug_fetch['final_url']}")
 
                         meta_cols = st.columns(5)
-                        meta_cols[0].metric("Status", str(debug_fetch["status_code"]) if debug_fetch["status_code"] is not None else "None")
-                        meta_cols[1].metric("Reason", debug_fetch["reason"] or "None")
-                        meta_cols[2].metric("Content-Type", debug_fetch["content_type"] or "None")
-                        meta_cols[3].metric("Text Length", str(debug_fetch["text_length"]))
-                        meta_cols[4].metric("Redirects", str(len(debug_fetch["history"])))
+                        meta_cols[0].metric(
+                            "Status",
+                            str(debug_fetch["status_code"]) if debug_fetch.get("status_code") is not None else "None",
+                        )
+                        meta_cols[1].metric("Reason", debug_fetch.get("reason", "") or "None")
+                        meta_cols[2].metric("Content-Type", debug_fetch.get("content_type", "") or "None")
+                        meta_cols[3].metric("Text Length", str(debug_fetch.get("text_length", 0)))
+                        meta_cols[4].metric("Redirects", str(len(debug_fetch.get("history", []))))
 
-                        if debug_fetch["mode"] == "manual_html_override":
+                        if debug_fetch.get("mode") == "manual_html_override":
                             st.success("Using manual HTML override for debugger.")
-                        elif debug_fetch["error"]:
+                        elif debug_fetch.get("error"):
                             st.error(f"Fetch error: {debug_fetch['error']}")
-                            
-                        if debug_fetch["history"]:
+
+                        if debug_fetch.get("history"):
                             st.write("### Redirect History")
                             st.json(debug_fetch["history"])
 
-                        if debug_fetch["response_headers"]:
+                        if debug_fetch.get("response_headers"):
                             st.write("### Response Headers")
                             st.json(debug_fetch["response_headers"])
 
@@ -3720,21 +4039,21 @@ if uploaded_file and st.session_state.processing_done:
                         with tab_raw:
                             st.text_area(
                                 f"raw_html_{sku}_{debugger_source}",
-                                debug_fetch["raw_html"],
+                                debug_fetch.get("raw_html", ""),
                                 height=500,
                             )
 
                         with tab_dom_text:
                             st.text_area(
                                 f"dom_text_{sku}_{debugger_source}",
-                                debug_fetch["dom_text"],
+                                debug_fetch.get("dom_text", ""),
                                 height=500,
                             )
 
                         with tab_dom_pretty:
                             st.text_area(
                                 f"pretty_dom_{sku}_{debugger_source}",
-                                debug_fetch["prettified_dom"],
+                                debug_fetch.get("prettified_dom", ""),
                                 height=500,
                             )
 
@@ -3757,9 +4076,9 @@ if uploaded_file and st.session_state.processing_done:
                             )
 
                             source_text = (
-                                debug_fetch["dom_text"]
+                                debug_fetch.get("dom_text", "")
                                 if marker_source == "DOM Text"
-                                else debug_fetch["raw_html"]
+                                else debug_fetch.get("raw_html", "")
                             )
 
                             marker_preview = preview_between_markers(
@@ -3785,8 +4104,8 @@ if uploaded_file and st.session_state.processing_done:
                                 height=350,
                             )
 
-            r_text["description"] = clean_cvs_text(r_text.get("description", ""))
-            r_text["features"] = normalize_cvs_features(r_text.get("features", []))
+            # Retailer-specific final cleanup
+            r_text = finalize_retailer_copy(retailer_name, r_text)
 
             s_title = s_text.get("title") or ""
             r_title = r_text.get("title") or ""
@@ -3866,7 +4185,7 @@ if uploaded_file and st.session_state.processing_done:
                         + "</div>",
                         unsafe_allow_html=True,
                     )
-                    
+
                 st.markdown(
                     f"<div style='height:{TITLE_TO_DESCRIPTION_GAP_PX}px;'></div>",
                     unsafe_allow_html=True,
@@ -3896,7 +4215,7 @@ if uploaded_file and st.session_state.processing_done:
                     unsafe_allow_html=True,
                 )
 
-                # FEATURES.
+                # FEATURES
                 st.markdown(section_header_html("Features", avg_feature_score), unsafe_allow_html=True)
 
                 for s_val, r_val, row_score in feature_rows:
@@ -3947,8 +4266,11 @@ if uploaded_file and st.session_state.processing_done:
                         image_compare_row_html(s_url, r_url, slot_score),
                         unsafe_allow_html=True,
                     )
-                    
-                    st.markdown(f"<div style='height:{IMG_SPACE_PX}px;'></div>", unsafe_allow_html=True)
+
+                    st.markdown(
+                        f"<div style='height:{IMG_SPACE_PX}px;'></div>",
+                        unsafe_allow_html=True,
+                    )
 
             st.divider()
 
