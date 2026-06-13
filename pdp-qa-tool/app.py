@@ -436,11 +436,36 @@ def build_image_panel_html(s_images, r_images, max_images, retailer_name="CVS", 
     return f'''<div style="padding-right:4px;">{"".join(blocks)}</div>'''
 
 
-def read_uploaded_csv_from_bytes(file_bytes):
+def read_uploaded_file_from_bytes(file_bytes, file_name):
     if not file_bytes:
         raise EmptyDataError("Uploaded file is empty.")
     if len(file_bytes.strip()) == 0:
         raise EmptyDataError("Uploaded file is empty.")
+
+    file_name = str(file_name or "").lower().strip()
+
+    if file_name.endswith(".xlsx"):
+        xls = pd.ExcelFile(BytesIO(file_bytes), engine="openpyxl")
+        frames = []
+
+        for sheet_name in xls.sheet_names:
+            sheet_df = pd.read_excel(
+                BytesIO(file_bytes),
+                sheet_name=sheet_name,
+                engine="openpyxl",
+            )
+
+            if sheet_df is None or sheet_df.empty:
+                continue
+
+            sheet_df = sheet_df.copy()
+            sheet_df["retailer"] = str(sheet_name).strip()
+            frames.append(sheet_df)
+
+        if not frames:
+            raise EmptyDataError("No readable sheets found in uploaded Excel file.")
+
+        return pd.concat(frames, ignore_index=True)
 
     last_error = None
     for encoding in ["utf-8-sig", "utf-8", "latin1"]:
@@ -449,8 +474,7 @@ def read_uploaded_csv_from_bytes(file_bytes):
         except Exception as e:
             last_error = e
 
-    raise last_error if last_error else EmptyDataError("Could not parse uploaded CSV.")
-
+    raise last_error if last_error else EmptyDataError("Could not parse uploaded file.")
 
 def infer_retailer_name_from_url(url):
     if pd.isna(url):
@@ -480,8 +504,7 @@ def infer_retailer_name_from_url(url):
 
 
 def prepare_input_df(df):
-    df = df.copy()
-    df.columns = [str(c).strip().lower() for c in df.columns]
+    df.columns = [str(c).strip().lower() for c in df.columns]    df = df.copy()
 
     df.rename(
         columns={
@@ -489,19 +512,19 @@ def prepare_input_df(df):
             "retail url": "retail_url",
             "sku id": "sku",
             "product sku": "sku",
-            "walgreens rpc": "cvs_rpc",   # internal alias only
-            "cvs rpc": "cvs_rpc",
+            "cvs rpc": "retailer_rpc",
+            "walgreens rpc": "retailer_rpc",
             "retailer name": "retailer",
             "retailer_name": "retailer",
         },
         inplace=True,
     )
 
-    for col in ["sku", "salsify_url", "retail_url", "brand", "cvs_rpc"]:
+    for col in ["sku", "salsify_url", "retail_url", "brand", "retailer_rpc"]:
         if col not in df.columns:
             df[col] = ""
 
-    for col in ["sku", "salsify_url", "retail_url", "brand", "cvs_rpc"]:
+    for col in ["sku", "salsify_url", "retail_url", "brand", "retailer_rpc"]:
         df[col] = (
             df[col]
             .replace("#N/A", "")
@@ -512,11 +535,6 @@ def prepare_input_df(df):
 
     if "retailer" not in df.columns:
         df["retailer"] = df["retail_url"].apply(infer_retailer_name_from_url)
-
-        df.loc[
-            (df["retailer"] == "Retailer") & (df["cvs_rpc"] != ""),
-            "retailer"
-        ] = "Walgreens"
     else:
         df["retailer"] = (
             df["retailer"]
@@ -526,13 +544,10 @@ def prepare_input_df(df):
             .str.strip()
         )
 
-        inferred = df["retail_url"].apply(infer_retailer_name_from_url)
-        df["retailer"] = df["retailer"].where(df["retailer"] != "", inferred)
-
-        df.loc[
-            (df["retailer"] == "Retailer") & (df["cvs_rpc"] != ""),
-            "retailer"
-        ] = "Walgreens"
+    required = ["sku", "salsify_url", "retail_url"]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing required columns: {missing}")
 
     return df
     
@@ -1988,7 +2003,7 @@ def process_row(row):
     try:
         retail_url = row.get("retail_url", "")
         salsify_url = row.get("salsify_url", "")
-        cvs_rpc = row.get("cvs_rpc") or row.get("CVS RPC") or ""
+        cvs_rpc = row.get("retailer_rpc", "")
         retailer_name = row.get("retailer", "") or infer_retailer_name_from_url(retail_url)
 
         salsify_url = str(salsify_url or "").strip()
@@ -2274,7 +2289,7 @@ if "report_filename" not in st.session_state:
 top_upload_col, top_download_col = st.columns([2.4, 1.1], gap="small")
 
 with top_upload_col:
-    uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
+    uploaded_file = st.file_uploader("Upload Master File", type=["xlsx", "csv"])
 
 with top_download_col:
     st.markdown("<div style='height: 30px;'></div>", unsafe_allow_html=True)
@@ -2323,7 +2338,7 @@ if uploaded_file:
             st.session_state.report_filename = None
             clear_in_memory_caches()
             
-        df = read_uploaded_csv_from_bytes(file_bytes)
+        df = read_uploaded_file_from_bytes(file_bytes, uploaded_file.name)_bytes)
         df = prepare_input_df(df)
         
         all_retailers = sorted(df["retailer"].dropna().astype(str).unique().tolist()) if "retailer" in df.columns else ["CVS"]
