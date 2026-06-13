@@ -94,9 +94,10 @@ COPY_LINE_HEIGHT = 1.20
 SECTION_VERTICAL_GAP = 10
 
 # Use one shared spacing value so the image area feels mathematically even.
-IMG_SPACE_PX = 8
-IMG_BOX_HEIGHT = 140
-IMG_SCORE_WIDTH_PX = 120
+IMG_SPACE_PX = 0
+IMG_BOX_HEIGHT = 132
+IMG_SCORE_WIDTH_PX = 118
+
 
 DESCRIPTION_TO_FEATURES_GAP_PX = 100
 
@@ -325,9 +326,10 @@ def image_compare_cell_html(url, box_height=IMG_BOX_HEIGHT):
             f"margin:0;"
             f"padding:0;"
             f"overflow:hidden;"
-            f"background:#FFFFFF;"
+            f"background:transparent;"
             f"\">"
-            f"<img src=\"{safe_url}\" style=\"max-width:100%; max-height:{box_height}px; object-fit:contain; display:block;\" />"
+            f"<img src=\"{safe_url}\" "
+            f"style=\"max-width:100%; max-height:{box_height}px; object-fit:contain; display:block;\" />"
             f"</div>"
         )
 
@@ -343,7 +345,7 @@ def image_compare_cell_html(url, box_height=IMG_BOX_HEIGHT):
         f"color:#C62828;"
         f"font-size:16px;"
         f"font-weight:700;"
-        f"background:#FFFFFF;"
+        f"background:transparent;"
         f"\">"
         f"Missing"
         f"</div>"
@@ -355,7 +357,7 @@ def image_compare_row_html(s_url, r_url, score):
         f"<div style=\""
         f"display:grid;"
         f"grid-template-columns:minmax(0,1fr) minmax(0,1fr) {IMG_SCORE_WIDTH_PX}px;"
-        f"column-gap:{IMG_SPACE_PX}px;"
+        f"column-gap:8px;"
         f"align-items:center;"
         f"margin:0 0 {IMG_SPACE_PX}px 0;"
         f"padding:0;"
