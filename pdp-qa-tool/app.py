@@ -7,10 +7,6 @@ import json
 import time
 import hashlib
 import traceback
-import threading
-import base64
-import warnings
-
 from io import BytesIO
 from difflib import SequenceMatcher
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -19,15 +15,14 @@ import pandas as pd
 import requests
 import streamlit as st
 import streamlit.components.v1 as components
-
 from bs4 import BeautifulSoup
-from PIL import Image, UnidentifiedImageError
-
+from PIL import Image
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
 from pandas.errors import EmptyDataError
+import threading
 from requests.adapters import HTTPAdapter
-
+import base64
 
 # =========================================
 # APP SETUP
@@ -36,23 +31,32 @@ st.set_page_config(layout="wide")
 st.title("PDP QA Tool ✅")
 
 st.markdown(
-    """
-    <style>
-    .block-container {
-        padding-top: 1rem;
-        padding-bottom: 2rem;
-    }
-    </style>
-    """,
+    "<style>"
+    "div[data-testid='stFileUploader'] > section {"
+    "background:#232733;"
+    "border:1px solid #2f3442;"
+    "border-radius:10px;"
+    "padding:10px;"
+    "}"
+    "div[data-testid='stDownloadButton'] > button {"
+    "width:100%;"
+    "min-height:56px;"
+    "border-radius:10px;"
+    "border:1px solid #2f3442;"
+    "background:#232733;"
+    "color:white;"
+    "font-weight:700;"
+    "}"
+    "div[data-testid='stDownloadButton'] > button:hover {"
+    "border-color:#4EA1FF;"
+    "color:white;"
+    "}"
+    "</style>",
     unsafe_allow_html=True,
 )
 
 HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0 Safari/537.36"
-    ),
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
     "Accept-Language": "en-US,en;q=0.9",
     "Connection": "keep-alive",
 }
@@ -60,42 +64,30 @@ HEADERS = {
 REQUEST_TIMEOUT = 6
 IMAGE_TIMEOUT = 2.5
 MAX_CACHE = 400
-
 # Retailer-specific fetch tuning
 WALGREENS_REQUEST_TIMEOUT = 18
 WALGREENS_DEBUG_TIMEOUT = 25
 WALGREENS_API_TIMEOUT = 10
 
-
 # =========================================
 # PERFORMANCE SETTINGS
 # =========================================
-# Lower these for Streamlit Cloud stability.
-BATCH_SIZE = 8
-MAX_WORKERS = 3
-UI_UPDATE_EVERY = 2
+BATCH_SIZE = 16
+MAX_WORKERS = 6
+UI_UPDATE_EVERY = 4
 
 # Faster image compare via tiny difference hash.
 IMAGE_HASH_WIDTH = 9
 IMAGE_HASH_HEIGHT = 8
 
 # Keep caches smaller to prevent Streamlit Cloud memory pressure.
-HTML_CACHE_MAX = 60
-IMAGE_HASH_CACHE_MAX = 120
+HTML_CACHE_MAX = 80
+IMAGE_HASH_CACHE_MAX = 300
 
-# Hard image safety limits.
-MAX_IMAGE_BYTES = 12 * 1024 * 1024
-MAX_SAFE_IMAGE_PIXELS = 50_000_000
-MAX_IMAGE_SLOTS_TO_COMPARE = 5
-
-
-# =========================================
-# GLOBAL CACHES / THREAD STATE
-# =========================================
 html_cache = {}
 image_hash_cache = {}
-thread_local = threading.local()
 
+thread_local = threading.local()
 
 # =========================================
 # VISUAL LAYOUT SETTINGS
@@ -128,18 +120,473 @@ def get_session():
         thread_local.session = session
     return thread_local.session
 
+# =========================================
+# GENERIC HELPERS
+# =========================================
+def normalize_space(text):
+    text = str(text or "")
+    text = html.unescape(text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
 
+
+def normalize_text(text):
+    if not isinstance(text, str):
+        return ""
+    return re.sub(r"[^a-z0-9\s]", "", text.lower())
+
+
+def dedupe_preserve_order(items):
+    seen = set()
+    out = []
+    for item in items:
+        item = normalize_space(item)
+        if item and item not in seen:
+            seen.add(item)
+            out.append(item)
+    return out
+
+
+def keyword_score(a, b):
+    return int(SequenceMatcher(None, normalize_text(a), normalize_text(b)).ratio() * 100)
+
+
+def description_similarity_score(a, b):
+    a_norm = normalize_text(a)
+    b_norm = normalize_text(b)
+
+    if not a_norm and not b_norm:
+        return 100
+
+    if a_norm == b_norm:
+        return 100
+
+    return int(SequenceMatcher(None, a_norm, b_norm).ratio() * 100)
+
+def html_escape_text(text):
+    return html.escape(str(text or ""))
+
+
+def equal_height_block(text, min_height=210):
+    safe_text = html_escape_text(text or "Missing")
+    return (
+        f"<div style=\""
+        f"width:100%;"
+        f"min-height:{min_height}px;"
+        f"padding:0;"
+        f"margin:0;"
+        f"background:transparent;"
+        f"color:#FFFFFF;"
+        f"white-space:pre-wrap;"
+        f"line-height:{COPY_LINE_HEIGHT};"
+        f"font-size:{COPY_TEXT_SIZE}px;"
+        f"font-weight:500;"
+        f"text-indent:0;"
+        f"overflow-wrap:anywhere;"
+        f"word-break:break-word;"
+        f"\">{safe_text}</div>"
+    )
+
+
+def equal_feature_block(text, min_height=90):
+    safe_text = html_escape_text(text or "Missing")
+    return (
+        f"<div style=\""
+        f"width:100%;"
+        f"min-height:{min_height}px;"
+        f"padding:0;"
+        f"margin:0;"
+        f"background:transparent;"
+        f"color:#FFFFFF;"
+        f"white-space:pre-wrap;"
+        f"line-height:{COPY_LINE_HEIGHT};"
+        f"font-size:{COPY_TEXT_SIZE}px;"
+        f"font-weight:500;"
+        f"text-indent:0;"
+        f"overflow-wrap:anywhere;"
+        f"word-break:break-word;"
+        f"\">{safe_text}</div>"
+    )
+
+
+def score_text_html(score):
+    if score >= 80:
+        color = "#4CAF50"
+        label = "Strong"
+    elif score >= 50:
+        color = "#FFC107"
+        label = "Review"
+    else:
+        color = "#F44336"
+        label = "Poor"
+
+    return f"<span style='color:{color}; font-weight:900; font-size:22px;'>{score}% ({label})</span>"
+
+
+def section_header_html(label, score):
+    safe_label = html_escape_text(label or "")
+    return (
+        f"<div style=\""
+        f"display:flex;"
+        f"justify-content:space-between;"
+        f"align-items:flex-end;"
+        f"gap:12px;"
+        f"margin-top:{SECTION_VERTICAL_GAP}px;"
+        f"margin-bottom:{SECTION_VERTICAL_GAP}px;"
+        f"\">"
+        f"<div style=\"font-size:{SECTION_HEADER_SIZE}px; font-weight:900; color:#FFFFFF; line-height:1.0;\">"
+        f"{safe_label}"
+        f"</div>"
+        f"<div style=\"line-height:1.0;\">{score_text_html(score)}</div>"
+        f"</div>"
+    )
+
+
+def avg_score_bar_html(label, score):
+    if score >= 80:
+        color = "#2E7D32"
+    elif score >= 50:
+        color = "#F9A825"
+    else:
+        color = "#C62828"
+
+    safe_label = html_escape_text(label or "")
+    return (
+        f"<div style=\""
+        f"background-color:{color};"
+        f"padding:6px 10px;"
+        f"border-radius:4px;"
+        f"color:white;"
+        f"font-weight:900;"
+        f"font-size:19px;"
+        f"margin-top:2px;"
+        f"margin-bottom:{IMG_SPACE_PX}px;"
+        f"display:flex;"
+        f"justify-content:space-between;"
+        f"align-items:center;"
+        f"gap:10px;"
+        f"\">"
+        f"<span>{safe_label}</span>"
+        f"<span style=\"color:#FFFFFF; font-weight:900; font-size:20px;\">{score}%</span>"
+        f"</div>"
+    )
+
+
+def column_header_link_html(label, item_number, href):
+    safe_label = html_escape_text(label or "")
+    safe_item = html_escape_text(item_number or "")
+    safe_href = html.escape(str(href or ""), quote=True)
+
+    if safe_href and safe_item:
+        item_html = (
+            f"<a href=\"{safe_href}\" target=\"_blank\" "
+            f"style=\"color:#3EA6FF; text-decoration:none; font-weight:900;\">"
+            f"{safe_item}</a>"
+        )
+    else:
+        item_html = f"<span style=\"color:#3EA6FF; font-weight:900;\">{safe_item or 'Missing'}</span>"
+
+    return (
+        f"<div style=\""
+        f"text-align:left;"
+        f"margin-top:0;"
+        f"margin-bottom:2px;"
+        f"font-size:28px;"
+        f"font-weight:900;"
+        f"color:#FFFFFF;"
+        f"line-height:1.05;"
+        f"\">"
+        f"{safe_label}: {item_html}"
+        f"</div>"
+    )
+
+
+def image_header_html(label):
+    safe_label = html_escape_text(label or "")
+    return (
+        f"<div style=\""
+        f"text-align:left;"
+        f"margin-top:0;"
+        f"margin-bottom:2px;"
+        f"font-size:28px;"
+        f"font-weight:900;"
+        f"color:#FFFFFF;"
+        f"line-height:1.05;"
+        f"\">"
+        f"{safe_label}"
+        f"</div>"
+    )
+
+
+def image_compare_cell_html(url):
+    if url:
+        safe_url = html.escape(str(url), quote=True)
+        return (
+            f"<div style=\""
+            f"width:100%;"
+            f"margin:0;"
+            f"padding:0;"
+            f"display:flex;"
+            f"align-items:flex-start;"
+            f"justify-content:center;"
+            f"overflow:hidden;"
+            f"\">"
+            f"<img src=\"{safe_url}\" style=\"display:block; width:100%; height:auto; object-fit:contain;\" />"
+            f"</div>"
+        )
+
+    return (
+        f"<div style=\""
+        f"width:100%;"
+        f"min-height:80px;"
+        f"display:flex;"
+        f"align-items:center;"
+        f"justify-content:center;"
+        f"margin:0;"
+        f"padding:0;"
+        f"color:#C62828;"
+        f"font-size:16px;"
+        f"font-weight:700;"
+        f"\">"
+        f"Missing"
+        f"</div>"
+    )
+
+def image_compare_row_html(s_url, r_url, score):
+    return (
+        f"<div style=\""
+        f"display:grid;"
+        f"grid-template-columns:minmax(0,1fr) minmax(0,1fr) {IMG_SCORE_WIDTH_PX}px;"
+        f"column-gap:8px;"
+        f"align-items:start;"
+        f"margin:0 0 {IMG_SPACE_PX}px 0;"
+        f"padding:0;"
+        f"\">"
+        f"<div style=\"margin:0; padding:0;\">"
+        f"{image_compare_cell_html(s_url)}"
+        f"</div>"
+        f"<div style=\"margin:0; padding:0;\">"
+        f"{image_compare_cell_html(r_url)}"
+        f"</div>"
+        f"<div style=\""
+        f"display:flex;"
+        f"align-items:flex-start;"
+        f"justify-content:flex-start;"
+        f"text-align:left;"
+        f"margin:0;"
+        f"padding-top:4px;"
+        f"\">"
+        f"{score_text_html(score)}"
+        f"</div>"
+        f"</div>"
+    )
+
+def image_tile_html(label, url, box_height=170):
+    safe_label = html.escape(label)
+
+    if url:
+        safe_url = html.escape(url, quote=True)
+        return f'''<div style="border:1px solid #E0E0E0;border-radius:8px;background:#FFFFFF;padding:8px;">
+<div style="font-size:45px;font-weight:600;margin-bottom:6px;">{safe_label}</div>
+<div style="height:{box_height}px;display:flex;align-items:center;justify-content:center;background:#FAFAFA;border-radius:6px;overflow:hidden;">
+<img src="{safe_url}" style="max-width:100%;max-height:{box_height}px;object-fit:contain;" />
+</div>
+</div>'''
+    else:
+        return f'''<div style="border:1px solid #E0E0E0;border-radius:8px;background:#FFFFFF;padding:8px;">
+<div style="font-size:45px;font-weight:600;margin-bottom:6px;">{safe_label}</div>
+<div style="height:{box_height}px;display:flex;align-items:center;justify-content:center;background:#FAFAFA;border-radius:6px;color:#C62828;font-size:14px;font-weight:600;">
+❌ Missing
+</div>
+</div>'''
+
+
+def image_slot_block_html(slot_num, s_url, r_url, score, retailer_name="CVS", box_height=170):
+    if score >= 80:
+        score_color = "#2E7D32"
+    elif score >= 50:
+        score_color = "#F9A825"
+    else:
+        score_color = "#C62828"
+
+    return f'''<div style="border:1px solid #DADADA;border-radius:10px;padding:10px;margin-bottom:12px;background:#FCFCFC;">
+<div style="font-weight:700;margin-bottom:10px;color:{score_color};">Image Slot {slot_num} — {score}%</div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+{image_tile_html("Salsify", s_url, box_height=box_height)}
+{image_tile_html(retailer_name, r_url, box_height=box_height)}
+</div>
+</div>'''
+
+
+def build_image_panel_html(s_images, r_images, max_images, retailer_name="CVS", box_height=170):
+    blocks = []
+
+    for i in range(max_images):
+        s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else ""
+        r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else ""
+        score = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
+
+        blocks.append(
+            image_slot_block_html(
+                slot_num=i + 1,
+                s_url=s_url,
+                r_url=r_url,
+                score=score,
+                retailer_name=retailer_name,
+                box_height=box_height,
+            )
+        )
+
+    return f'''<div style="padding-right:4px;">{"".join(blocks)}</div>'''
+
+
+def read_uploaded_file_from_bytes(file_bytes, file_name):
+    if not file_bytes:
+        raise EmptyDataError("Uploaded file is empty.")
+    if len(file_bytes.strip()) == 0:
+        raise EmptyDataError("Uploaded file is empty.")
+
+    file_name = str(file_name or "").lower().strip()
+
+    if file_name.endswith(".xlsx"):
+        xls = pd.ExcelFile(BytesIO(file_bytes), engine="openpyxl")
+        frames = []
+
+        for sheet_name in xls.sheet_names:
+            sheet_df = pd.read_excel(
+                BytesIO(file_bytes),
+                sheet_name=sheet_name,
+                engine="openpyxl",
+            )
+
+            if sheet_df is None or sheet_df.empty:
+                continue
+
+            sheet_df = sheet_df.copy()
+            sheet_df["retailer"] = str(sheet_name).strip()
+            frames.append(sheet_df)
+
+        if not frames:
+            raise EmptyDataError("No readable sheets found in uploaded Excel file.")
+
+        return pd.concat(frames, ignore_index=True)
+
+    last_error = None
+    for encoding in ["utf-8-sig", "utf-8", "latin1"]:
+        try:
+            return pd.read_csv(BytesIO(file_bytes), encoding=encoding)
+        except Exception as e:
+            last_error = e
+
+    raise last_error if last_error else EmptyDataError("Could not parse uploaded file.")
+
+def infer_retailer_name_from_url(url):
+    if pd.isna(url):
+        return "Retailer"
+
+    url = str(url or "").strip().lower()
+
+    if not url:
+        return "Retailer"
+
+    if "cvs.com" in url:
+        return "CVS"
+    if "walmart.com" in url:
+        return "Walmart"
+    if "target.com" in url:
+        return "Target"
+    if "kroger.com" in url:
+        return "Kroger"
+    if "samsclub.com" in url or "sam's club" in url:
+        return "Sam's Club"
+    if "walgreens.com" in url:
+        return "Walgreens"
+    if "amazon.com" in url:
+        return "Amazon"
+
+    return "Retailer"
+
+
+def prepare_input_df(df):
+    df = df.copy()
+    df.columns = [str(c).strip().lower() for c in df.columns]
+
+    # Rename only safe one-to-one columns first.
+    df.rename(
+        columns={
+            "salsify url": "salsify_url",
+            "retail url": "retail_url",
+            "sku id": "sku",
+            "product sku": "sku",
+            "retailer name": "retailer",
+            "retailer_name": "retailer",
+        },
+        inplace=True,
+    )
+
+    # Build one normalized retailer_rpc column without creating duplicate column names.
+    rpc_candidates = []
+    for rpc_col in ["retailer_rpc", "cvs rpc", "walgreens rpc"]:
+        if rpc_col in df.columns:
+            rpc_candidates.append(
+                df[rpc_col]
+                .replace("#N/A", "")
+                .fillna("")
+                .astype(str)
+                .str.strip()
+            )
+
+    if rpc_candidates:
+        retailer_rpc = rpc_candidates[0].copy()
+        for series in rpc_candidates[1:]:
+            retailer_rpc = retailer_rpc.where(retailer_rpc != "", series)
+        df["retailer_rpc"] = retailer_rpc
+    else:
+        df["retailer_rpc"] = ""
+
+    # Remove original retailer-specific rpc columns after combining.
+    for rpc_col in ["cvs rpc", "walgreens rpc"]:
+        if rpc_col in df.columns:
+            df.drop(columns=[rpc_col], inplace=True)
+
+    # Ensure required working columns exist.
+    for col in ["sku", "salsify_url", "retail_url", "brand", "retailer_rpc"]:
+        if col not in df.columns:
+            df[col] = ""
+
+    # Clean standard text columns safely.
+    for col in ["sku", "salsify_url", "retail_url", "brand", "retailer_rpc"]:
+        df[col] = (
+            df[col]
+            .replace("#N/A", "")
+            .fillna("")
+            .astype(str)
+            .str.strip()
+        )
+
+    # Normalize retailer column.
+    if "retailer" not in df.columns:
+        df["retailer"] = df["retail_url"].apply(infer_retailer_name_from_url)
+    else:
+        df["retailer"] = (
+            df["retailer"]
+            .replace("#N/A", "")
+            .fillna("")
+            .astype(str)
+            .str.strip()
+        )
+
+    required = ["sku", "salsify_url", "retail_url"]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing required columns: {missing}")
+
+    return df
+    
 def clear_in_memory_caches():
-    global html_cache, image_hash_cache
-
-    if not isinstance(html_cache, dict):
-        html_cache = {}
-    if not isinstance(image_hash_cache, dict):
-        image_hash_cache = {}
-
     html_cache.clear()
     image_hash_cache.clear()
-    
+
 # =========================================
 # HTML FETCH
 # =========================================
@@ -1772,6 +2219,7 @@ def _safe_json_loads(text):
     except Exception:
         return None
 
+
 def _decode_walgreens_json_string(raw_value):
     """
     Decodes Walgreens JSON-like fragments such as:
@@ -1819,28 +2267,20 @@ def _normalize_walgreens_text(value):
 
     return normalize_space(value)
 
+
 def get_walgreens_product_id_from_url(retail_url):
-    """
-    Supports Walgreens product URLs like:
-    - /ID=300432791-product
-    - /ID=prod6153586-product
-    - ?productId=300432791
-    - ?productId=prod6153586
-    """
     if not retail_url:
         return ""
 
     retail_url = str(retail_url or "").strip()
 
-    patterns = [
-        r"/ID=([A-Za-z0-9]+)-product",
-        r"[?&]productId=([A-Za-z0-9]+)",
-    ]
+    m = re.search(r"/ID=(\d+)-product", retail_url, flags=re.IGNORECASE)
+    if m:
+        return m.group(1)
 
-    for pattern in patterns:
-        m = re.search(pattern, retail_url, flags=re.IGNORECASE)
-        if m:
-            return m.group(1)
+    m = re.search(r"[?&]productId=(\d+)", retail_url, flags=re.IGNORECASE)
+    if m:
+        return m.group(1)
 
     return ""
 
@@ -1862,28 +2302,14 @@ def fetch_json_with_timeout(url, timeout_seconds):
 
 def get_walgreens_product_api_payload(product_id):
     """
-    Walgreens lighter product endpoint.
+    Walgreens source exposes a lighter product endpoint:
+    /productapi/v1/products?productId={prodId}
     """
     if not product_id:
         return None
 
     api_url = f"https://www.walgreens.com/productapi/v1/products?productId={product_id}"
     return fetch_json_with_timeout(api_url, WALGREENS_API_TIMEOUT)
-
-
-def get_walgreens_prod_desc_url(product_id):
-    if not product_id:
-        return ""
-    return f"https://www.walgreens.com/store/store/prodDesc.jsp?id={product_id}"
-
-
-def get_walgreens_prod_desc_html(product_id):
-    """
-    Lightweight Walgreens copy endpoint.
-    Often more reliable than the full PDP HTML for prod... items.
-    """
-    url = get_walgreens_prod_desc_url(product_id)
-    return fetch_html_with_timeout(url, WALGREENS_REQUEST_TIMEOUT)
 
 
 def walk_json(obj):
@@ -1904,56 +2330,6 @@ def find_first_dict_with_keys(obj, required_keys):
             return node
 
     return {}
-
-
-def _safe_json_loads(text):
-    try:
-        return json.loads(text)
-    except Exception:
-        return None
-
-
-def _decode_walgreens_json_string(raw_value):
-    if not raw_value:
-        return ""
-
-    raw_value = str(raw_value)
-
-    try:
-        decoded = json.loads(f'"{raw_value}"')
-    except Exception:
-        decoded = raw_value
-        decoded = decoded.replace('\\"', '"')
-        decoded = decoded.replace("\\/", "/")
-
-    return html.unescape(decoded).strip()
-
-
-def _normalize_walgreens_text(value):
-    if not value:
-        return ""
-
-    value = str(value)
-    value = html.unescape(value)
-
-    value = value.replace("\\u003c", "<")
-    value = value.replace("\\u003e", ">")
-    value = value.replace("\\u0026", "&")
-    value = value.replace("\\n", " ")
-    value = value.replace("\\/", "/")
-    value = value.replace('\\"', '"')
-
-    value = re.sub(
-        r"<script\b[^>]*>.*?</script>",
-        " ",
-        value,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-
-    if "<" in value and ">" in value:
-        value = BeautifulSoup(value, "html.parser").get_text(" ", strip=True)
-
-    return normalize_space(value)
 
 
 def format_walgreens_title_from_parts(raw_title="", size_count="", primary_attr=""):
@@ -1994,13 +2370,8 @@ def format_walgreens_title_from_parts(raw_title="", size_count="", primary_attr=
 
 def _extract_walgreens_feature_items_from_raw_product_desc(desc_html):
     """
-    Parse Walgreens feature bullets from raw productDesc HTML.
-
-    Walgreens productDesc often has malformed LI markup like:
-        <LI>Feature 1
-        <LI>Feature 2
-        <LI>Feature 3
-    so we split on raw <LI> markers instead of trusting BeautifulSoup nesting.
+    Parse Walgreens feature bullets from the raw productDesc HTML string.
+    Split on raw <LI> markers because Walgreens productDesc markup can be malformed.
     """
     if not desc_html:
         return []
@@ -2223,98 +2594,6 @@ def build_walgreens_bundle_from_api_payload(payload):
     }
 
 
-def build_walgreens_title_from_url_slug(retail_url, description_html=""):
-    """
-    Fallback title builder for prodDesc.jsp route.
-
-    Example:
-    /store/c/depend-adult-incontinence-underwear-for-men,-disposable,-maximum-large/ID=prod6376552-product
-    ->
-    Depend Adult Incontinence Underwear For Men, Disposable, Maximum Large
-
-    Then append count if we can find it in the "WHAT'S INCLUDED" text.
-    """
-    retail_url = str(retail_url or "").strip()
-
-    slug_match = re.search(
-        r"/store/c/([^/]+)/ID=[A-Za-z0-9]+-product",
-        retail_url,
-        flags=re.IGNORECASE,
-    )
-
-    if not slug_match:
-        return ""
-
-    slug = slug_match.group(1)
-
-    title = slug.replace("-", " ")
-    title = title.replace(" ,", ",")
-    title = html.unescape(title)
-    title = normalize_space(title)
-
-    # Mild title-case cleanup.
-    title = " ".join(word.capitalize() if word.islower() else word for word in title.split())
-
-    desc_text = BeautifulSoup(str(description_html or ""), "html.parser").get_text(" ", strip=True)
-    desc_text = normalize_space(desc_text)
-
-    count_match = re.search(r"\b(\d+)\s+count\b", desc_text, flags=re.IGNORECASE)
-    if count_match:
-        count_val = count_match.group(1)
-        title = f"{title}, {count_val}.0 ea"
-
-    return normalize_space(title)
-
-
-def build_walgreens_bundle_from_prod_desc_fragment(product_id, retail_url=""):
-    """
-    Fallback path for prod... Walgreens items.
-    Uses the lightweight prodDesc.jsp endpoint for description/features.
-    """
-    empty = {
-        "text": {
-            "title": "",
-            "description": "",
-            "features": [],
-            "debug": {
-                "Title Path": "walgreens_prodDesc_missing",
-                "Description Path": "walgreens_prodDesc_missing",
-                "Features Path": "walgreens_prodDesc_missing",
-                "Source Used": "walgreens_prodDesc_fragment",
-            },
-        },
-        "images": [],
-    }
-
-    if not product_id:
-        return empty
-
-    fragment_html = get_walgreens_prod_desc_html(product_id)
-    if not fragment_html:
-        return empty
-
-    description, features = extract_walgreens_copy_from_product_desc_html(fragment_html)
-    title = build_walgreens_title_from_url_slug(
-        retail_url=retail_url,
-        description_html=fragment_html,
-    )
-
-    return {
-        "text": {
-            "title": title,
-            "description": description,
-            "features": features[:5],
-            "debug": {
-                "Title Path": "walgreens_prodDesc_url_slug_fallback" if title else "walgreens_prodDesc_title_missing",
-                "Description Path": "walgreens_prodDesc_fragment" if description else "walgreens_prodDesc_description_missing",
-                "Features Path": "walgreens_prodDesc_fragment" if features else "walgreens_prodDesc_features_missing",
-                "Source Used": "walgreens_prodDesc_fragment",
-            },
-        },
-        "images": [],
-    }
-
-
 def _extract_walgreens_title_from_source(html_text):
     if not html_text:
         return "", "walgreens_title_missing"
@@ -2485,30 +2764,11 @@ def extract_walgreens_images_from_html(html_text):
 def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
     """
     Walgreens strategy:
-    1) For prod... items, try the lightweight prodDesc.jsp fragment first.
-    2) Then try the lighter product API.
-    3) If that fails, fall back to full PDP HTML.
+    1) Try the lighter product API first.
+    2) If API fails, fall back to live HTML extraction.
     """
     product_id = get_walgreens_product_id_from_url(retail_url)
-    product_id_lc = str(product_id or "").lower()
 
-    # 1) prod... items often work better through prodDesc.jsp
-    if product_id_lc.startswith("prod"):
-        fragment_bundle = build_walgreens_bundle_from_prod_desc_fragment(
-            product_id,
-            retail_url=retail_url,
-        )
-
-        has_fragment_copy = (
-            fragment_bundle["text"].get("title")
-            or fragment_bundle["text"].get("description")
-            or fragment_bundle["text"].get("features")
-        )
-
-        if has_fragment_copy:
-            return fragment_bundle
-
-    # 2) API-first path
     api_payload = get_walgreens_product_api_payload(product_id)
     api_bundle = build_walgreens_bundle_from_api_payload(api_payload)
 
@@ -2522,22 +2782,6 @@ def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
     if has_api_copy:
         return api_bundle
 
-    # 3) Try prodDesc fragment even for numeric IDs if API didn't help
-    fragment_bundle = build_walgreens_bundle_from_prod_desc_fragment(
-        product_id,
-        retail_url=retail_url,
-    )
-
-    has_fragment_copy = (
-        fragment_bundle["text"].get("title")
-        or fragment_bundle["text"].get("description")
-        or fragment_bundle["text"].get("features")
-    )
-
-    if has_fragment_copy:
-        return fragment_bundle
-
-    # 4) Last fallback: full PDP HTML
     html_text = get_walgreens_html(retail_url)
 
     return {
@@ -2648,6 +2892,7 @@ def clean_walgreens_title(text):
 
     return text
 
+
 def finalize_retailer_copy(retailer_name, r_text):
     retailer = str(retailer_name or "").strip().lower()
     out = dict(r_text or {})
@@ -2736,50 +2981,14 @@ def get_image_dhash(url):
 
     try:
         session = get_session()
-
-        # Stream the response so we can stop early if the file is too large.
-        r = session.get(url, timeout=IMAGE_TIMEOUT, stream=True)
+        r = session.get(url, timeout=IMAGE_TIMEOUT)
         if r.status_code != 200:
             return None
-
-        content_type = str(r.headers.get("Content-Type", "") or "")
-        if "image" not in content_type.lower():
+        if "image" not in r.headers.get("Content-Type", ""):
             return None
 
-        content_length = str(r.headers.get("Content-Length", "") or "").strip()
-        if content_length.isdigit() and int(content_length) > MAX_IMAGE_BYTES:
-            return None
-
-        image_bytes = bytearray()
-
-        for chunk in r.iter_content(chunk_size=65536):
-            if not chunk:
-                continue
-
-            image_bytes.extend(chunk)
-
-            if len(image_bytes) > MAX_IMAGE_BYTES:
-                return None
-
-        if not image_bytes:
-            return None
-
-        bio = BytesIO(image_bytes)
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", Image.DecompressionBombWarning)
-
-            img = Image.open(bio)
-
-            width, height = img.size
-            if width * height > MAX_SAFE_IMAGE_PIXELS:
-                return None
-
-            img.load()
-
-        img = img.convert("L")
-        img.thumbnail((256, 256))
-        img = img.resize((IMAGE_HASH_WIDTH, IMAGE_HASH_HEIGHT))
+        img = Image.open(BytesIO(r.content))
+        img = img.convert("L").resize((IMAGE_HASH_WIDTH, IMAGE_HASH_HEIGHT))
 
         bits = []
         for y in range(IMAGE_HASH_HEIGHT):
@@ -2793,16 +3002,16 @@ def get_image_dhash(url):
             h = (h << 1) | bit
 
         image_hash_cache[url] = h
+
         while len(image_hash_cache) > IMAGE_HASH_CACHE_MAX:
             image_hash_cache.pop(next(iter(image_hash_cache)))
 
         return h
 
-    except (Image.DecompressionBombWarning, UnidentifiedImageError, OSError, ValueError):
-        return None
     except Exception:
         return None
-        
+
+
 def hamming_distance(a, b):
     return bin(a ^ b).count("1")
 
@@ -2962,7 +3171,7 @@ def process_row(row):
 
         img_scores = []
         image_position_scores = {}
-        max_img_positions = min(max(len(s_images), len(r_images)), MAX_IMAGE_SLOTS_TO_COMPARE)
+        max_img_positions = max(len(s_images), len(r_images))
 
         for i in range(max_img_positions):
             s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else None
@@ -3192,186 +3401,14 @@ if use_manual_html_override:
     )
 
 # =========================================
-# FILE / INPUT HELPERS
-# =========================================
-def read_uploaded_file_from_bytes(file_bytes, file_name):
-    if file_bytes is None_name.endswith(".xlsx"):    if file_bytes is None:
-        xls = pd.ExcelFile(BytesIO(file_bytes), engine="openpyxl")
-        frames = []
-
-        for sheet_name in xls.sheet_names:
-            sheet_df = pd.read_excel(
-                BytesIO(file_bytes),
-                sheet_name=sheet_name,
-                engine="openpyxl",
-            )
-
-            if sheet_df is None or sheet_df.empty:
-                continue
-
-            sheet_df = sheet_df.copy()
-            sheet_df["retailer"] = str(sheet_name).strip()
-            frames.append(sheet_df)
-
-        if not frames:
-            raise EmptyDataError("No readable sheets found in uploaded Excel file.")
-
-        out = pd.concat(frames, ignore_index=True)
-
-        if out is None or not isinstance(out, pd.DataFrame) or out.empty:
-            raise EmptyDataError("Excel file did not produce a readable dataframe.")
-
-        return out
-
-    # CSV fallback
-    last_error = None
-    for encoding in ["utf-8-sig", "utf-8", "latin1"]:
-        try:
-            out = pd.read_csv(BytesIO(file_bytes), encoding=encoding)
-            if out is None or not isinstance(out, pd.DataFrame):
-                continue
-            return out
-        except Exception as e:
-            last_error = e
-
-    raise last_error if last_error else EmptyDataError("Could not parse uploaded file.")
-
-
-def infer_retailer_name_from_url(url):
-    if pd.isna(url):
-        return "Retailer"
-
-    url = str(url or "").strip().lower()
-
-    if not url:
-        return "Retailer"
-    if "cvs.com" in url:
-        return "CVS"
-    if "walgreens.com" in url:
-        return "Walgreens"
-    if "walmart.com" in url:
-        return "Walmart"
-    if "target.com" in url:
-        return "Target"
-    if "kroger.com" in url:
-        return "Kroger"
-    if "samsclub.com" in url or "sam's club" in url:
-        return "Sam's Club"
-    if "amazon.com" in url:
-        return "Amazon"
-
-    return "Retailer"
-
-
-def prepare_input_df(df):
-    if df is None or not isinstance(df, pd.DataFrame):
-        raise ValueError("Input dataframe is missing or invalid before normalization.")
-
-    df = df.copy()
-    df.columns = [str(c).strip().lower() for c in df.columns]
-
-    # Safe one-to-one renames.
-    df.rename(
-        columns={
-            "salsify url": "salsify_url",
-            "retail url": "retail_url",
-            "sku id": "sku",
-            "product sku": "sku",
-            "retailer name": "retailer",
-            "retailer_name": "retailer",
-        },
-        inplace=True,
-    )
-
-    # Build one normalized retailer_rpc column without creating duplicate names.
-    rpc_candidates = []
-    for rpc_col in ["retailer_rpc", "cvs rpc", "walgreens rpc"]:
-        if rpc_col in df.columns:
-            rpc_candidates.append(
-                df[rpc_col]
-                .replace("#N/A", "")
-                .fillna("")
-                .astype(str)
-                .str.strip()
-            )
-
-    if rpc_candidates:
-        retailer_rpc = rpc_candidates[0].copy()
-        for series in rpc_candidates[1:]:
-            retailer_rpc = retailer_rpc.where(retailer_rpc != "", series)
-        df["retailer_rpc"] = retailer_rpc
-    else:
-        df["retailer_rpc"] = ""
-
-    # Drop retailer-specific RPC source columns after combining.
-    for rpc_col in ["cvs rpc", "walgreens rpc"]:
-        if rpc_col in df.columns:
-            df.drop(columns=[rpc_col], inplace=True)
-
-    # Ensure required working columns exist.
-    for col in ["sku", "salsify_url", "retail_url", "brand", "retailer_rpc"]:
-        if col not in df.columns:
-            df[col] = ""
-
-    # Clean standard text columns safely.
-    for col in ["sku", "salsify_url", "retail_url", "brand", "retailer_rpc"]:
-        df[col] = (
-            df[col]
-            .replace("#N/A", "")
-            .fillna("")
-            .astype(str)
-            .str.strip()
-        )
-
-    # Normalize retailer column.
-    if "retailer" not in df.columns:
-        df["retailer"] = df["retail_url"].apply(infer_retailer_name_from_url)
-    else:
-        df["retailer"] = (
-            df["retailer"]
-            .replace("#N/A", "")
-            .fillna("")
-            .astype(str)
-            .str.strip()
-        )
-
-    required = ["sku", "salsify_url", "retail_url"]
-    missing = [c for c in required if c not in df.columns]
-    if missing:
-        raise ValueError(f"Missing required columns: {missing}")
-
-    if df is None or not isinstance(df, pd.DataFrame):
-        raise ValueError("Normalized dataframe is invalid after prepare_input_df.")
-
-    return df
-
-
-def clear_in_memory_caches():
-    global html_cache, image_hash_cache
-
-    if "html_cache" not in globals() or not isinstance(html_cache, dict):
-        html_cache = {}
-    if "image_hash_cache" not in globals() or not isinstance(image_hash_cache, dict):
-        image_hash_cache = {}
-
-    html_cache.clear()
-    image_hash_cache.clear()
-
-
-# =========================================
 # FILE + PROCESSING
 # =========================================
 if uploaded_file:
     try:
         file_bytes = uploaded_file.getvalue()
-
-        if file_bytes is None or len(file_bytes) == 0:
-            st.error("The uploaded file is empty.")
-            st.stop()
-
         st.session_state.uploaded_file_bytes = file_bytes
         file_hash = hashlib.md5(file_bytes).hexdigest()
-
+        
         if st.session_state.last_file_hash != file_hash:
             st.session_state.summary_rows = []
             st.session_state.export_rows = []
@@ -3389,45 +3426,35 @@ if uploaded_file:
             st.session_state.report_bytes = None
             st.session_state.report_filename = None
             clear_in_memory_caches()
-
+            
         df = read_uploaded_file_from_bytes(file_bytes, uploaded_file.name)
-        if df is None or not isinstance(df, pd.DataFrame):
-            raise ValueError("Uploaded file could not be parsed into a dataframe.")
-
         df = prepare_input_df(df)
-        if df is None or not isinstance(df, pd.DataFrame):
-            raise ValueError("Input normalization returned an invalid dataframe.")
 
-        if "retailer" in df.columns:
-            all_retailers = sorted(df["retailer"].dropna().astype(str).unique().tolist())
-        else:
-            all_retailers = ["CVS"]
-
+        all_retailers = sorted(df["retailer"].dropna().astype(str).unique().tolist()) if "retailer" in df.columns else ["CVS"]
         if not all_retailers:
             all_retailers = ["CVS"]
-
+        
         multi_retailer = len(all_retailers) > 1
-
+        
         # Retailer must be selected before batch if multiple retailers exist.
         if multi_retailer:
             retailer_options = ["-- Select Retailer --"] + all_retailers
-
+        
             if st.session_state.selected_retailer not in all_retailers:
                 st.session_state.selected_retailer = "-- Select Retailer --"
-
+        
             selected_retailer = st.selectbox(
                 "🏪 Select Retailer",
                 retailer_options,
                 key="selected_retailer",
             )
-
+        
             if selected_retailer == "-- Select Retailer --":
                 st.info("Select a retailer to run the batch.")
                 st.stop()
         else:
             # Auto-select the only retailer and show it directly under upload.
             st.session_state.selected_retailer = all_retailers[0]
-
             selected_retailer = st.selectbox(
                 "🏪 Select Retailer",
                 all_retailers,
@@ -3435,9 +3462,8 @@ if uploaded_file:
                 key="selected_retailer_single",
                 disabled=True,
             )
-
-        if "retailer" in df.columns and selected_retailer not in ["-- Select Retailer --", "All"]:
-            df = df[df["retailer"].astype(str) == selected_retailer]
+        
+        df = df[df["retailer"].astype(str) == selected_retailer]
 
         brands = sorted(df["brand"].dropna().astype(str).unique().tolist()) if "brand" in df.columns else []
         brand_options = ["All"] + brands
@@ -3445,11 +3471,7 @@ if uploaded_file:
         if st.session_state.selected_brand not in brand_options:
             st.session_state.selected_brand = "All"
 
-        selected_brand = st.selectbox(
-            "🏷️ Select Brand",
-            brand_options,
-            key="selected_brand",
-        )
+        selected_brand = st.selectbox("🏷️ Select Brand", brand_options, key="selected_brand")
 
         if selected_brand != "All" and "brand" in df.columns:
             df = df[df["brand"].astype(str) == selected_brand]
@@ -3475,38 +3497,38 @@ if uploaded_file:
 
             progress_bar = st.session_state.progress_bar
             status_text = st.empty()
-
             st.write("### Overall Progress")
             overall_progress_bar = st.progress(0)
 
             total = len(batch_df)
             completed = 0
-            batch_records = batch_df.to_dict("records")
 
+            batch_records = batch_df.to_dict("records")
+            
             with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                 futures = [executor.submit(process_row, row_dict) for row_dict in batch_records]
-
+            
                 for future in as_completed(futures):
                     completed += 1
                     result = future.result()
-
+            
                     if result:
                         summary = result.get("summary")
                         detail = result.get("detail")
                         debug = result.get("debug")
-
+            
                         if summary and summary["SKU"] not in st.session_state.summary_skus:
                             st.session_state.summary_rows.append(summary)
                             st.session_state.summary_skus.add(summary["SKU"])
-
+            
                         if detail and detail["SKU"] not in st.session_state.detail_skus:
                             st.session_state.export_rows.append(detail)
                             st.session_state.detail_skus.add(detail["SKU"])
-
+            
                         if debug and debug["SKU"] not in st.session_state.debug_skus:
                             st.session_state.debug_rows.append(debug)
                             st.session_state.debug_skus.add(debug["SKU"])
-
+            
                     if completed % UI_UPDATE_EVERY == 0 or completed == total:
                         progress_bar.progress(completed / max(total, 1))
                         status_text.markdown(
@@ -3525,8 +3547,15 @@ if uploaded_file:
 
     except EmptyDataError:
         st.error("🔥 CRITICAL APP ERROR")
-        st.text
-        
+        st.text("The uploaded CSV is empty or could not be read.")
+    except ValueError as e:
+        st.error("❌ INPUT FILE ERROR")
+        st.text(str(e))
+    except Exception as e:
+        st.error("🔥 CRITICAL APP ERROR")
+        st.text(str(e))
+        st.text(traceback.format_exc())
+
 # =========================================
 # TOP EXPORT SECTION
 # =========================================
@@ -3720,7 +3749,7 @@ if uploaded_file and st.session_state.processing_done:
             copy_avg_score = int((title_score + desc_score + avg_feature_score) / 3)
 
             img_scores = []
-            max_images = min(max(len(s_images), len(r_images)), MAX_IMAGE_SLOTS_TO_COMPARE)
+            max_images = max(len(s_images), len(r_images))
 
             for i in range(max_images):
                 s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else None
