@@ -1890,7 +1890,515 @@ def get_cvs_bundle(retail_url, target_rpc=""):
         "images": extract_cvs_images_from_html(html_text),
     }
 
+# =========================================
+# WALGREENS PARSERS
+# =========================================
+def _safe_json_loads(text):
+    try:
+        return json.loads(text)
+    except Exception:
+        return None
 
+
+def _walk_json(obj):
+    if isinstance(obj, dict):
+        yield obj
+        for v in obj.values():
+            yield from _walk_json(v)
+    elif isinstance(obj, list):
+        for item in obj:
+            yield from _walk_json(item)
+
+
+def _iter_matching_values(obj, key_names):
+    key_names = {str(k).lower().strip() for k in key_names}
+
+    for node in _walk_json(obj):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if str(k).lower().strip() in key_names:
+                    yield v
+
+
+def _extract_json_candidates_from_html(html_text, soup):
+    candidates = []
+
+    # JSON-LD first.
+    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        raw = script.string or script.get_text(" ", strip=True) or ""
+        raw = raw.strip()
+        if not raw:
+            continue
+
+        parsed = _safe_json_loads(raw)
+        if parsed is not None:
+            candidates.append(parsed)
+
+    # Generic JSON-ish script patterns.
+    script_texts = []
+    for script in soup.find_all("script"):
+        raw = script.string or script.get_text(" ", strip=True) or ""
+        raw = raw.strip()
+        if not raw:
+            continue
+        script_texts.append(raw)
+
+    full_script_blob = "\n".join(script_texts)
+
+    regex_patterns = [
+        r'window\.__NEXT_DATA__\s*=\s*(\{.*?\})\s*;',
+        r'window\.__PRELOADED_STATE__\s*=\s*(\{.*?\})\s*;',
+        r'window\.__INITIAL_STATE__\s*=\s*(\{.*?\})\s*;',
+        r'__NEXT_DATA__"\s*type="application/json">\s*(\{.*?\})\s*</script>',
+    ]
+
+    for pattern in regex_patterns:
+        for m in re.finditer(pattern, html_text or "", flags=re.DOTALL):
+            raw = m.group(1).strip()
+            parsed = _safe_json_loads(raw)
+            if parsed is not None:
+                candidates.append(parsed)
+
+    return candidates
+
+
+def _strip_html_to_text(value):
+    if not value:
+        return ""
+
+    value = str(value)
+    value = html.unescape(value)
+
+    if "<" in value and ">" in value:
+        value = BeautifulSoup(value, "html.parser").get_text(" ", strip=True)
+
+    value = re.sub(r"\s+", " ", value).strip()
+    return value
+
+
+def _normalize_walgreens_text(value):
+    value = _strip_html_to_text(value)
+    value = value.replace("\\n", " ").replace("\\/", "/").replace('\\"', '"')
+    value = re.sub(r"\s+", " ", value).strip()
+    return value
+
+
+def _normalize_walgreens_features(items, max_features=5):
+    cleaned = []
+
+    def add_text(text):
+        text = _normalize_walgreens_text(text)
+        if not text:
+            return
+
+        # Break common separators into feature lines if needed.
+        split_parts = [text]
+
+        if "•" in text:
+            split_parts = [x.strip() for x in text.split("•")]
+        elif " | " in text:
+            split_parts = [x.strip() for x in text.split(" | ")]
+        elif "\n" in text:
+            split_parts = [x.strip() for x in text.splitlines()]
+
+        for part in split_parts:
+            part = _normalize_walgreens_text(part)
+            if not part:
+                continue
+            cleaned.append(part)
+
+    for item in items:
+        if isinstance(item, str):
+            add_text(item)
+        elif isinstance(item, dict):
+            for k, v in item.items():
+                key = str(k).lower().strip()
+                if key in {"text", "value", "label", "name", "feature", "description"}:
+                    if isinstance(v, str):
+                        add_text(v)
+        elif isinstance(item, list):
+            for sub in item:
+                if isinstance(sub, str):
+                    add_text(sub)
+                elif isinstance(sub, dict):
+                    for k, v in sub.items():
+                        key = str(k).lower().strip()
+                        if key in {"text", "value", "label", "name", "feature", "description"}:
+                            if isinstance(v, str):
+                                add_text(v)
+
+    cleaned = dedupe_preserve_order(cleaned)
+
+    # Remove very short junk lines.
+    cleaned = [x for x in cleaned if len(x) >= 3]
+
+    return cleaned[:max_features]
+
+
+def _looks_like_good_title(text):
+    text = _normalize_walgreens_text(text)
+    if not text:
+        return False
+    if len(text) < 8:
+        return False
+
+    lowered = text.lower()
+    bad_exact = {
+        "walgreens",
+        "product",
+        "details",
+        "shop",
+        "home",
+    }
+    if lowered in bad_exact:
+        return False
+
+    return True
+
+
+def _extract_walgreens_title(soup, json_candidates, html_text):
+    # 1) Visible H1.
+    h1 = soup.find("h1")
+    if h1:
+        title = _normalize_walgreens_text(h1.get_text(" ", strip=True))
+        if _looks_like_good_title(title):
+            return title, "walgreens_h1"
+
+    # 2) Common meta tags.
+    meta_candidates = [
+        ("meta[property='og:title']", "content"),
+        ("meta[name='twitter:title']", "content"),
+        ("meta[name='title']", "content"),
+    ]
+    for selector, attr in meta_candidates:
+        tag = soup.select_one(selector)
+        if tag:
+            title = _normalize_walgreens_text(tag.get(attr, ""))
+            if _looks_like_good_title(title):
+                return title, f"walgreens_{selector}"
+
+    # 3) JSON candidates.
+    possible_titles = []
+    for data in json_candidates:
+        for value in _iter_matching_values(
+            data,
+            {"name", "productname", "producttitle", "title"},
+        ):
+            if isinstance(value, str):
+                text = _normalize_walgreens_text(value)
+                if _looks_like_good_title(text):
+                    possible_titles.append(text)
+
+    if possible_titles:
+        possible_titles.sort(key=len, reverse=True)
+        return possible_titles[0], "walgreens_json"
+
+    # 4) Regex fallback.
+    regex_patterns = [
+        r'"productTitle"\s*:\s*"([^"]+)"',
+        r'"productName"\s*:\s*"([^"]+)"',
+        r'"name"\s*:\s*"([^"]+)"',
+        r'"title"\s*:\s*"([^"]+)"',
+    ]
+    for pattern in regex_patterns:
+        m = re.search(pattern, html_text or "", flags=re.IGNORECASE)
+        if m:
+            title = _normalize_walgreens_text(m.group(1))
+            if _looks_like_good_title(title):
+                return title, "walgreens_regex"
+
+    # 5) HTML <title>.
+    if soup.title:
+        title = _normalize_walgreens_text(soup.title.get_text(" ", strip=True))
+        if _looks_like_good_title(title):
+            return title, "walgreens_html_title"
+
+    return "", "walgreens_title_missing"
+
+
+def _extract_walgreens_description(soup, json_candidates, html_text):
+    # 1) JSON candidates.
+    possible_desc = []
+    for data in json_candidates:
+        for value in _iter_matching_values(
+            data,
+            {
+                "description",
+                "longdescription",
+                "shortdescription",
+                "productdescription",
+                "fulldescription",
+            },
+        ):
+            if isinstance(value, str):
+                text = _normalize_walgreens_text(value)
+                if len(text) >= 40:
+                    possible_desc.append(text)
+
+    if possible_desc:
+        possible_desc.sort(key=len, reverse=True)
+        return possible_desc[0], "walgreens_json"
+
+    # 2) Meta description.
+    meta_tag = soup.find("meta", attrs={"name": "description"})
+    if meta_tag:
+        meta_desc = _normalize_walgreens_text(meta_tag.get("content", ""))
+        if len(meta_desc) >= 40:
+            return meta_desc, "walgreens_meta_description"
+
+    # 3) Visible DOM areas likely to contain description.
+    selectors = [
+        "[data-testid*='description']",
+        "[id*='description']",
+        "[class*='description']",
+        "[id*='about']",
+        "[class*='about']",
+        "[id*='details']",
+        "[class*='details']",
+    ]
+
+    visible_desc = []
+    for selector in selectors:
+        for tag in soup.select(selector):
+            text = _normalize_walgreens_text(tag.get_text(" ", strip=True))
+            if len(text) >= 40:
+                visible_desc.append(text)
+
+    if visible_desc:
+        visible_desc.sort(key=len, reverse=True)
+        return visible_desc[0], "walgreens_dom"
+
+    # 4) Regex fallback.
+    regex_patterns = [
+        r'"longDescription"\s*:\s*"([^"]+)"',
+        r'"shortDescription"\s*:\s*"([^"]+)"',
+        r'"description"\s*:\s*"([^"]+)"',
+    ]
+    for pattern in regex_patterns:
+        m = re.search(pattern, html_text or "", flags=re.IGNORECASE)
+        if m:
+            desc = _normalize_walgreens_text(m.group(1))
+            if len(desc) >= 40:
+                return desc, "walgreens_regex"
+
+    return "", "walgreens_description_missing"
+
+
+def _extract_walgreens_features(soup, json_candidates, html_text):
+    feature_candidates = []
+
+    # 1) JSON candidates that are naturally feature lists.
+    feature_keys = {
+        "features",
+        "featurebullets",
+        "bullets",
+        "highlights",
+        "benefits",
+        "producthighlights",
+        "keyfeatures",
+        "attributehighlights",
+    }
+
+    for data in json_candidates:
+        for value in _iter_matching_values(data, feature_keys):
+            if isinstance(value, list):
+                feature_candidates.extend(value)
+            elif isinstance(value, str):
+                feature_candidates.append(value)
+            elif isinstance(value, dict):
+                feature_candidates.append(value)
+
+    normalized = _normalize_walgreens_features(feature_candidates, max_features=5)
+    if normalized:
+        return normalized, "walgreens_json"
+
+    # 2) Visible bullets under likely feature/detail sections.
+    section_keywords = {"feature", "features", "highlight", "highlights", "details", "about"}
+
+    visible_bullets = []
+
+    for section in soup.find_all(["section", "div", "article"]):
+        section_text = _normalize_walgreens_text(section.get_text(" ", strip=True)).lower()
+
+        if not any(k in section_text for k in section_keywords):
+            continue
+
+        for li in section.find_all("li"):
+            text = _normalize_walgreens_text(li.get_text(" ", strip=True))
+            if len(text) >= 3:
+                visible_bullets.append(text)
+
+    normalized = _normalize_walgreens_features(visible_bullets, max_features=5)
+    if normalized:
+        return normalized, "walgreens_dom"
+
+    # 3) Regex fallback for JSON-ish arrays.
+    regex_patterns = [
+        r'"features"\s*:\s*(\[[^\]]+\])',
+        r'"featureBullets"\s*:\s*(\[[^\]]+\])',
+        r'"highlights"\s*:\s*(\[[^\]]+\])',
+        r'"keyFeatures"\s*:\s*(\[[^\]]+\])',
+        r'"bullets"\s*:\s*(\[[^\]]+\])',
+    ]
+
+    for pattern in regex_patterns:
+        m = re.search(pattern, html_text or "", flags=re.IGNORECASE | re.DOTALL)
+        if not m:
+            continue
+
+        raw = m.group(1)
+        parsed = _safe_json_loads(raw)
+        if isinstance(parsed, list):
+            normalized = _normalize_walgreens_features(parsed, max_features=5)
+            if normalized:
+                return normalized, "walgreens_regex"
+
+    return [], "walgreens_features_missing"
+
+
+def extract_walgreens_images_from_html(html_text):
+    if not html_text:
+        return []
+
+    soup = BeautifulSoup(html_text, "html.parser")
+    json_candidates = _extract_json_candidates_from_html(html_text, soup)
+
+    image_urls = []
+
+    def maybe_add_url(url):
+        if not url:
+            return
+
+        url = html.unescape(str(url).strip())
+
+        if url.startswith("//"):
+            url = "https:" + url
+
+        if not re.match(r"^https?://", url, flags=re.IGNORECASE):
+            return
+
+        lowered = url.lower()
+
+        bad_tokens = [
+            "sprite",
+            "icon",
+            "logo",
+            "placeholder",
+            "spacer",
+            "data:image",
+            ".svg",
+        ]
+        if any(tok in lowered for tok in bad_tokens):
+            return
+
+        if any(ext in lowered for ext in [".jpg", ".jpeg", ".png", ".webp", ".avif"]):
+            image_urls.append(url)
+
+    # 1) JSON image values.
+    for data in json_candidates:
+        for value in _iter_matching_values(
+            data,
+            {"image", "images", "imageurl", "media", "mediagallery", "assets"},
+        ):
+            if isinstance(value, str):
+                maybe_add_url(value)
+            elif isinstance(value, list):
+                for item in value:
+                    if isinstance(item, str):
+                        maybe_add_url(item)
+                    elif isinstance(item, dict):
+                        for k in ["url", "src", "image", "imageUrl", "large", "original"]:
+                            if k in item:
+                                maybe_add_url(item.get(k))
+            elif isinstance(value, dict):
+                for k in ["url", "src", "image", "imageUrl", "large", "original"]:
+                    if k in value:
+                        maybe_add_url(value.get(k))
+
+    # 2) Meta image.
+    for selector in [
+        "meta[property='og:image']",
+        "meta[name='twitter:image']",
+    ]:
+        tag = soup.select_one(selector)
+        if tag:
+            maybe_add_url(tag.get("content", ""))
+
+    # 3) Visible product/gallery images.
+    for img in soup.find_all("img"):
+        src = img.get("src") or img.get("data-src") or img.get("data-zoom-image") or ""
+        maybe_add_url(src)
+
+    # 4) Regex fallback on raw HTML.
+    regex_urls = re.findall(
+        r'https?://[^"\']+\.(?:jpg|jpeg|png|webp|avif)(?:\?[^"\']*)?',
+        html_text,
+        flags=re.IGNORECASE,
+    )
+    for url in regex_urls:
+        maybe_add_url(url)
+
+    image_urls = dedupe_preserve_order(image_urls)
+    return image_urls[:8]
+
+
+def extract_walgreens_text_from_html(html_text, retail_url="", target_rpc=""):
+    debug = {
+        "Title Path": "",
+        "Description Path": "",
+        "Features Path": "",
+        "Source Used": "walgreens",
+    }
+
+    if not html_text:
+        return {
+            "title": "",
+            "description": "",
+            "features": [],
+            "debug": debug,
+        }
+
+    soup = BeautifulSoup(html_text, "html.parser")
+    json_candidates = _extract_json_candidates_from_html(html_text, soup)
+
+    title, title_path = _extract_walgreens_title(soup, json_candidates, html_text)
+    description, desc_path = _extract_walgreens_description(soup, json_candidates, html_text)
+    features, feature_path = _extract_walgreens_features(soup, json_candidates, html_text)
+
+    debug["Title Path"] = title_path
+    debug["Description Path"] = desc_path
+    debug["Features Path"] = feature_path
+
+    return {
+        "title": title,
+        "description": description,
+        "features": features[:5],
+        "debug": debug,
+    }
+
+
+@st.cache_data(show_spinner=False)
+def get_walgreens_bundle(retail_url, target_rpc=""):
+    html_text = get_html(retail_url)
+    return {
+        "text": extract_walgreens_text_from_html(
+            html_text,
+            retail_url=retail_url,
+            target_rpc=target_rpc,
+        ),
+        "images": extract_walgreens_images_from_html(html_text),
+    }
+
+
+def get_retailer_bundle(retailer_name, retail_url, target_rpc=""):
+    retailer = str(retailer_name or "").strip().lower()
+
+    if retailer == "walgreens":
+        return get_walgreens_bundle(retail_url, target_rpc)
+
+    # Default path stays CVS.
+    return get_cvs_bundle(retail_url, target_rpc)
+    
 # =========================================
 # QUALITY HELPERS
 # =========================================
@@ -2104,11 +2612,12 @@ def process_row(row):
             cvs_rpc=cvs_rpc,
         )
 
+
         # IMPORTANT:
         # Do NOT create a nested thread pool here.
         # The outer batch executor already parallelizes rows.
         s_bundle = get_salsify_bundle(salsify_url)
-        r_bundle = get_cvs_bundle(retail_url, target_sku)
+        r_bundle = get_retailer_bundle(retailer_name, retail_url, target_sku)
 
         s_text = s_bundle["text"]
         s_images = s_bundle["images"]
@@ -2615,7 +3124,11 @@ if uploaded_file and st.session_state.processing_done:
                 cvs_rpc=current_rpc,
             )
 
-            r_bundle = get_cvs_bundle(retail_url, target_rpc=current_target_sku)
+            r_bundle = get_retailer_bundle(
+                retailer_name,
+                retail_url,
+                current_target_sku,
+            )
             r_text = r_bundle["text"] or {}
             r_images = r_bundle["images"]
 
