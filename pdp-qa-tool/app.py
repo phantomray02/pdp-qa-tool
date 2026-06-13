@@ -2219,7 +2219,6 @@ def _safe_json_loads(text):
     except Exception:
         return None
 
-
 def _decode_walgreens_json_string(raw_value):
     """
     Decodes Walgreens JSON-like fragments such as:
@@ -2267,20 +2266,28 @@ def _normalize_walgreens_text(value):
 
     return normalize_space(value)
 
-
 def get_walgreens_product_id_from_url(retail_url):
+    """
+    Supports Walgreens product URLs like:
+    - /ID=300432791-product
+    - /ID=prod6153586-product
+    - ?productId=300432791
+    - ?productId=prod6153586
+    """
     if not retail_url:
         return ""
 
     retail_url = str(retail_url or "").strip()
 
-    m = re.search(r"/ID=(\d+)-product", retail_url, flags=re.IGNORECASE)
-    if m:
-        return m.group(1)
+    patterns = [
+        r"/ID=([A-Za-z0-9]+)-product",
+        r"[?&]productId=([A-Za-z0-9]+)",
+    ]
 
-    m = re.search(r"[?&]productId=(\d+)", retail_url, flags=re.IGNORECASE)
-    if m:
-        return m.group(1)
+    for pattern in patterns:
+        m = re.search(pattern, retail_url, flags=re.IGNORECASE)
+        if m:
+            return m.group(1)
 
     return ""
 
@@ -2302,14 +2309,28 @@ def fetch_json_with_timeout(url, timeout_seconds):
 
 def get_walgreens_product_api_payload(product_id):
     """
-    Walgreens source exposes a lighter product endpoint:
-    /productapi/v1/products?productId={prodId}
+    Walgreens lighter product endpoint.
     """
     if not product_id:
         return None
 
     api_url = f"https://www.walgreens.com/productapi/v1/products?productId={product_id}"
     return fetch_json_with_timeout(api_url, WALGREENS_API_TIMEOUT)
+
+
+def get_walgreens_prod_desc_url(product_id):
+    if not product_id:
+        return ""
+    return f"https://www.walgreens.com/store/store/prodDesc.jsp?id={product_id}"
+
+
+def get_walgreens_prod_desc_html(product_id):
+    """
+    Lightweight Walgreens copy endpoint.
+    Often more reliable than the full PDP HTML for prod... items.
+    """
+    url = get_walgreens_prod_desc_url(product_id)
+    return fetch_html_with_timeout(url, WALGREENS_REQUEST_TIMEOUT)
 
 
 def walk_json(obj):
@@ -2330,6 +2351,56 @@ def find_first_dict_with_keys(obj, required_keys):
             return node
 
     return {}
+
+
+def _safe_json_loads(text):
+    try:
+        return json.loads(text)
+    except Exception:
+        return None
+
+
+def _decode_walgreens_json_string(raw_value):
+    if not raw_value:
+        return ""
+
+    raw_value = str(raw_value)
+
+    try:
+        decoded = json.loads(f'"{raw_value}"')
+    except Exception:
+        decoded = raw_value
+        decoded = decoded.replace('\\"', '"')
+        decoded = decoded.replace("\\/", "/")
+
+    return html.unescape(decoded).strip()
+
+
+def _normalize_walgreens_text(value):
+    if not value:
+        return ""
+
+    value = str(value)
+    value = html.unescape(value)
+
+    value = value.replace("\\u003c", "<")
+    value = value.replace("\\u003e", ">")
+    value = value.replace("\\u0026", "&")
+    value = value.replace("\\n", " ")
+    value = value.replace("\\/", "/")
+    value = value.replace('\\"', '"')
+
+    value = re.sub(
+        r"<script\b[^>]*>.*?</script>",
+        " ",
+        value,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    if "<" in value and ">" in value:
+        value = BeautifulSoup(value, "html.parser").get_text(" ", strip=True)
+
+    return normalize_space(value)
 
 
 def format_walgreens_title_from_parts(raw_title="", size_count="", primary_attr=""):
@@ -2370,8 +2441,13 @@ def format_walgreens_title_from_parts(raw_title="", size_count="", primary_attr=
 
 def _extract_walgreens_feature_items_from_raw_product_desc(desc_html):
     """
-    Parse Walgreens feature bullets from the raw productDesc HTML string.
-    Split on raw <LI> markers because Walgreens productDesc markup can be malformed.
+    Parse Walgreens feature bullets from raw productDesc HTML.
+
+    Walgreens productDesc often has malformed LI markup like:
+        <LI>Feature 1
+        <LI>Feature 2
+        <LI>Feature 3
+    so we split on raw <LI> markers instead of trusting BeautifulSoup nesting.
     """
     if not desc_html:
         return []
@@ -2594,6 +2670,98 @@ def build_walgreens_bundle_from_api_payload(payload):
     }
 
 
+def build_walgreens_title_from_url_slug(retail_url, description_html=""):
+    """
+    Fallback title builder for prodDesc.jsp route.
+
+    Example:
+    /store/c/depend-adult-incontinence-underwear-for-men,-disposable,-maximum-large/ID=prod6376552-product
+    ->
+    Depend Adult Incontinence Underwear For Men, Disposable, Maximum Large
+
+    Then append count if we can find it in the "WHAT'S INCLUDED" text.
+    """
+    retail_url = str(retail_url or "").strip()
+
+    slug_match = re.search(
+        r"/store/c/([^/]+)/ID=[A-Za-z0-9]+-product",
+        retail_url,
+        flags=re.IGNORECASE,
+    )
+
+    if not slug_match:
+        return ""
+
+    slug = slug_match.group(1)
+
+    title = slug.replace("-", " ")
+    title = title.replace(" ,", ",")
+    title = html.unescape(title)
+    title = normalize_space(title)
+
+    # Mild title-case cleanup.
+    title = " ".join(word.capitalize() if word.islower() else word for word in title.split())
+
+    desc_text = BeautifulSoup(str(description_html or ""), "html.parser").get_text(" ", strip=True)
+    desc_text = normalize_space(desc_text)
+
+    count_match = re.search(r"\b(\d+)\s+count\b", desc_text, flags=re.IGNORECASE)
+    if count_match:
+        count_val = count_match.group(1)
+        title = f"{title}, {count_val}.0 ea"
+
+    return normalize_space(title)
+
+
+def build_walgreens_bundle_from_prod_desc_fragment(product_id, retail_url=""):
+    """
+    Fallback path for prod... Walgreens items.
+    Uses the lightweight prodDesc.jsp endpoint for description/features.
+    """
+    empty = {
+        "text": {
+            "title": "",
+            "description": "",
+            "features": [],
+            "debug": {
+                "Title Path": "walgreens_prodDesc_missing",
+                "Description Path": "walgreens_prodDesc_missing",
+                "Features Path": "walgreens_prodDesc_missing",
+                "Source Used": "walgreens_prodDesc_fragment",
+            },
+        },
+        "images": [],
+    }
+
+    if not product_id:
+        return empty
+
+    fragment_html = get_walgreens_prod_desc_html(product_id)
+    if not fragment_html:
+        return empty
+
+    description, features = extract_walgreens_copy_from_product_desc_html(fragment_html)
+    title = build_walgreens_title_from_url_slug(
+        retail_url=retail_url,
+        description_html=fragment_html,
+    )
+
+    return {
+        "text": {
+            "title": title,
+            "description": description,
+            "features": features[:5],
+            "debug": {
+                "Title Path": "walgreens_prodDesc_url_slug_fallback" if title else "walgreens_prodDesc_title_missing",
+                "Description Path": "walgreens_prodDesc_fragment" if description else "walgreens_prodDesc_description_missing",
+                "Features Path": "walgreens_prodDesc_fragment" if features else "walgreens_prodDesc_features_missing",
+                "Source Used": "walgreens_prodDesc_fragment",
+            },
+        },
+        "images": [],
+    }
+
+
 def _extract_walgreens_title_from_source(html_text):
     if not html_text:
         return "", "walgreens_title_missing"
@@ -2764,11 +2932,30 @@ def extract_walgreens_images_from_html(html_text):
 def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
     """
     Walgreens strategy:
-    1) Try the lighter product API first.
-    2) If API fails, fall back to live HTML extraction.
+    1) For prod... items, try the lightweight prodDesc.jsp fragment first.
+    2) Then try the lighter product API.
+    3) If that fails, fall back to full PDP HTML.
     """
     product_id = get_walgreens_product_id_from_url(retail_url)
+    product_id_lc = str(product_id or "").lower()
 
+    # 1) prod... items often work better through prodDesc.jsp
+    if product_id_lc.startswith("prod"):
+        fragment_bundle = build_walgreens_bundle_from_prod_desc_fragment(
+            product_id,
+            retail_url=retail_url,
+        )
+
+        has_fragment_copy = (
+            fragment_bundle["text"].get("title")
+            or fragment_bundle["text"].get("description")
+            or fragment_bundle["text"].get("features")
+        )
+
+        if has_fragment_copy:
+            return fragment_bundle
+
+    # 2) API-first path
     api_payload = get_walgreens_product_api_payload(product_id)
     api_bundle = build_walgreens_bundle_from_api_payload(api_payload)
 
@@ -2782,6 +2969,22 @@ def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
     if has_api_copy:
         return api_bundle
 
+    # 3) Try prodDesc fragment even for numeric IDs if API didn't help
+    fragment_bundle = build_walgreens_bundle_from_prod_desc_fragment(
+        product_id,
+        retail_url=retail_url,
+    )
+
+    has_fragment_copy = (
+        fragment_bundle["text"].get("title")
+        or fragment_bundle["text"].get("description")
+        or fragment_bundle["text"].get("features")
+    )
+
+    if has_fragment_copy:
+        return fragment_bundle
+
+    # 4) Last fallback: full PDP HTML
     html_text = get_walgreens_html(retail_url)
 
     return {
@@ -2891,7 +3094,6 @@ def clean_walgreens_title(text):
     text = normalize_space(text)
 
     return text
-
 
 def finalize_retailer_copy(retailer_name, r_text):
     retailer = str(retailer_name or "").strip().lower()
