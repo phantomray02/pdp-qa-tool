@@ -2643,32 +2643,8 @@ if uploaded_file and st.session_state.processing_done:
                     r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else ""
                     slot_score = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
 
-                    with img1:
-                        if s_url:
-                            st.image(s_url, use_container_width=True)
-                        else:
-                            st.markdown(
-                                equal_feature_block("Missing", min_height=IMG_BOX_HEIGHT),
-                                unsafe_allow_html=True,
-                            )
-
-                    with img2:
-                        if r_url:
-                            st.image(r_url, use_container_width=True)
-                        else:
-                            st.markdown(
-                                equal_feature_block("Missing", min_height=IMG_BOX_HEIGHT),
-                                unsafe_allow_html=True,
-                            )
-
-                    with score_col:
-                        st.markdown(
-                            f"<div style='min-height:{IMG_BOX_HEIGHT}px; display:flex; align-items:center; justify-content:flex-start; text-align:left; margin:0; padding:0;'>{score_text_html(slot_score)}</div>",
-                            unsafe_allow_html=True,
-                        )
-
                     st.markdown(
-                        f"<div style='height:{IMG_SPACE_PX}px;'></div>",
+                        image_compare_row_html(s_url, r_url, slot_score),
                         unsafe_allow_html=True,
                     )
                     
