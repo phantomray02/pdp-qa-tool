@@ -94,7 +94,7 @@ COPY_LINE_HEIGHT = 1.20
 SECTION_VERTICAL_GAP = 15
 
 # Use one shared spacing value so the image area feels mathematically even.
-IMG_SPACE_PX = 2
+IMG_SPACE_PX = 1
 IMG_BOX_HEIGHT = 100
 IMG_SCORE_WIDTH_PX = 118
 
