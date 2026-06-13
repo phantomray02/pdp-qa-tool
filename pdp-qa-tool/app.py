@@ -3192,6 +3192,134 @@ if use_manual_html_override:
     )
 
 # =========================================
+# FILE / INPUT HELPERS (RE-ADD ABOVE FILE + PROCESSING)
+# =========================================
+def read_uploaded_file_from_bytes(file_bytes, file_name):
+    if not file_bytes:
+        raise EmptyDataError("Uploaded file is empty.")
+
+    if isinstance(file_bytes, bytes) and len(file_bytes.strip()) == 0:
+        raise EmptyDataError("Uploaded file is empty.")
+
+    file_name = str(file_name or "").lower().strip()
+
+    if file_name.endswith(".xlsx"):
+        xls = pd.ExcelFile(BytesIO(file_bytes), engine="openpyxl")
+        frames = []
+
+        for sheet_name in xls.sheet_names:
+            sheet_df = pd.read_excel(
+                BytesIO(file_bytes),
+                sheet_name=sheet_name,
+                engine="openpyxl",
+            )
+
+            if sheet_df is None or sheet_df.empty:
+                continue
+
+            sheet_df = sheet_df.copy()
+            sheet_df["retailer"] = str(sheet_name).strip()
+            frames.append(sheet_df)
+
+        if not frames:
+            raise EmptyDataError("No readable sheets found in uploaded Excel file.")
+
+        return pd.concat(frames, ignore_index=True)
+
+    last_error = None
+    for encoding in ["utf-8-sig", "utf-8", "latin1"]:
+        try:
+            return pd.read_csv(BytesIO(file_bytes), encoding=encoding)
+        except Exception as e:
+            last_error = e
+
+    raise last_error if last_error else EmptyDataError("Could not parse uploaded file.")
+
+
+def infer_retailer_name_from_url(url):
+    if pd.isna(url):
+        return "Retailer"
+
+    url = str(url or "").strip().lower()
+
+    if not url:
+        return "Retailer"
+    if "cvs.com" in url:
+        return "CVS"
+    if "walgreens.com" in url:
+        return "Walgreens"
+    if "walmart.com" in url:
+        return "Walmart"
+    if "target.com" in url:
+        return "Target"
+    if "kroger.com" in url:
+        return "Kroger"
+    if "samsclub.com" in url or "sam's club" in url:
+        return "Sam's Club"
+    if "amazon.com" in url:
+        return "Amazon"
+
+    return "Retailer"
+
+
+def prepare_input_df(df):
+    df = df.copy()
+    df.columns = [str(c).strip().lower() for c in df.columns]
+
+    # Safe one-to-one renames.
+    df.rename(
+        columns={
+            "salsify url": "salsify_url",
+            "retail url": "retail_url",
+            "sku id": "sku",
+            "product sku": "sku",
+            "retailer name": "retailer",
+            "retailer_name": "retailer",
+        },
+        inplace=True,
+    )
+
+    # Build one normalized retailer_rpc column without creating duplicate names.
+    rpc_candidates = []
+    for rpc_col in ["retailer_rpc", "cvs rpc", "walgreens rpc"]:
+        if rpc_col in df.columns:
+            rpc_candidates.append(
+                df[rpc_col]
+                .replace("#N/A", "")
+                .fillna("")
+                .astype(str)
+                .str.strip()
+            )
+
+    if rpc_candidates:
+        retailer_rpc = rpc_candidates[0].copy()
+        for series in rpc_candidates[1:]:
+            retailer_rpc = retailer_rpc.where(retailer_rpc != "", series)
+        df["retailer_rpc"] = retailer_rpc
+    else:
+        df["retailer_rpc"] = ""
+
+    # Drop retailer-specific RPC source columns after combining.
+    for rpc_col in ["cvs rpc", "walgreens rpc"]:
+        if rpc_col in df.columns:
+            df.drop(columns=[rpc_col], inplace=True)
+
+    # Ensure required working columns exist.
+    for col in ["sku", "salsify_url", "retail_url", "brand", "retailer_rpc"]:
+        if col not in df.columns:
+            df[col] = ""
+
+    # Clean standard text columns safely.
+    for col in ["sku", "salsify_url", "retail_url", "brand", "retailer_rpc"]:
+        df[col] = (
+            df[col]
+            .replace("#N/A", "")
+            .fillna("")
+            .astype(str)
+            .str.strip()
+        )
+
+# =========================================
 # FILE + PROCESSING
 # =========================================
 if uploaded_file:
