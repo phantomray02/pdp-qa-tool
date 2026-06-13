@@ -609,7 +609,89 @@ def get_html(url):
 
     return ""
 
+# =========================================
+# HTML / DOM DEBUG HELPERS
+# =========================================
+def html_to_debug_textblob(html_text):
+    if not html_text:
+        return ""
 
+    raw = html.unescape(html_text or "")
+    text = BeautifulSoup(raw, "html.parser").get_text("\n", strip=True)
+    text = text.replace("\r", "\n")
+    text = re.sub(r"\n{2,}", "\n", text)
+    return text.strip()
+
+
+def html_to_prettified_dom(html_text):
+    if not html_text:
+        return ""
+
+    try:
+        raw = html.unescape(html_text or "")
+        soup = BeautifulSoup(raw, "html.parser")
+        return soup.prettify()
+    except Exception:
+        return html_text or ""
+
+
+def preview_between_markers(text, start_marker="", end_marker=""):
+    """
+    Returns a preview slice between start_marker and end_marker.
+    Uses case-insensitive literal matching.
+    """
+    source = str(text or "")
+
+    result = {
+        "preview": "",
+        "start_found": False,
+        "end_found": False,
+        "start_index": -1,
+        "end_index": -1,
+    }
+
+    if not source:
+        return result
+
+    working = source
+    start_idx_global = 0
+
+    if start_marker:
+        start_match = re.search(re.escape(start_marker), source, flags=re.IGNORECASE)
+        if not start_match:
+            return result
+
+        result["start_found"] = True
+        result["start_index"] = start_match.start()
+        start_idx_global = start_match.start()
+        working = source[start_idx_global:]
+    else:
+        result["start_found"] = True
+        result["start_index"] = 0
+        working = source
+
+    if end_marker:
+        end_match = re.search(re.escape(end_marker), working, flags=re.IGNORECASE)
+        if end_match:
+            result["end_found"] = True
+            result["end_index"] = start_idx_global + end_match.start()
+            result["preview"] = working[:end_match.start()].strip()
+            return result
+
+    result["preview"] = working.strip()
+    return result
+
+
+@st.cache_data(show_spinner=False)
+def get_debug_views_for_url(url):
+    html_text = get_html(url)
+
+    return {
+        "raw_html": html_text or "",
+        "dom_text": html_to_debug_textblob(html_text),
+        "prettified_dom": html_to_prettified_dom(html_text),
+    }
+    
 # =========================================
 # SALSIFY PARSERS
 # =========================================
@@ -3065,6 +3147,24 @@ st.markdown("## 🔎 QA Viewer Controls")
 show_only_issues = st.checkbox("❌ Show ONLY Issues", key="show_issues")
 hide_good = st.checkbox("✅ Hide Strong Matches (80%+)", key="hide_good")
 
+st.markdown("### 🧪 Debug Controls")
+
+show_html_debugger = st.checkbox(
+    "Show Raw HTML / DOM Debugger in Full Visual QA",
+    key="show_html_debugger",
+)
+
+debugger_source = st.selectbox(
+    "Debugger Source",
+    ["Retailer page", "Salsify page"],
+    key="debugger_source",
+)
+
+debug_only_sku = st.text_input(
+    "Debug only this SKU. Leave blank to show debugger for all visible rows.",
+    key="debug_only_sku",
+).strip()
+
 # =========================================
 # FILE + PROCESSING
 # =========================================
@@ -3382,6 +3482,97 @@ if uploaded_file and st.session_state.processing_done:
             )
             r_text = r_bundle["text"] or {}
             r_images = r_bundle["images"]
+
+            # =========================================
+            # HTML / DOM DEBUGGER
+            # =========================================
+            show_debugger_for_this_row = show_html_debugger and (
+                not debug_only_sku or str(sku).strip() == debug_only_sku
+            )
+
+            if show_debugger_for_this_row:
+                debug_url = retail_url if debugger_source == "Retailer page" else salsify_url
+                debug_label = retailer_name if debugger_source == "Retailer page" else "Salsify"
+
+                with st.expander(f"🧪 HTML / DOM Debugger — {debug_label} — SKU {sku}", expanded=False):
+                    if not debug_url or str(debug_url).strip().lower() in {"", "n/a", "#n/a", "na", "nan", "none"}:
+                        st.warning("No usable URL available for this debugger view.")
+                    else:
+                        debug_views = get_debug_views_for_url(debug_url)
+
+                        st.caption(f"Source URL: {debug_url}")
+
+                        tab_raw, tab_dom_text, tab_dom_pretty, tab_marker = st.tabs(
+                            ["Raw HTML", "DOM Text", "Prettified DOM", "Marker Test"]
+                        )
+
+                        with tab_raw:
+                            st.text_area(
+                                f"raw_html_{sku}_{debugger_source}",
+                                debug_views["raw_html"],
+                                height=500,
+                            )
+
+                        with tab_dom_text:
+                            st.text_area(
+                                f"dom_text_{sku}_{debugger_source}",
+                                debug_views["dom_text"],
+                                height=500,
+                            )
+
+                        with tab_dom_pretty:
+                            st.text_area(
+                                f"pretty_dom_{sku}_{debugger_source}",
+                                debug_views["prettified_dom"],
+                                height=500,
+                            )
+
+                        with tab_marker:
+                            marker_source = st.radio(
+                                "Marker source",
+                                ["DOM Text", "Raw HTML"],
+                                key=f"marker_source_{sku}_{debugger_source}",
+                                horizontal=True,
+                            )
+
+                            start_marker = st.text_input(
+                                "Start marker",
+                                key=f"start_marker_{sku}_{debugger_source}",
+                            )
+
+                            end_marker = st.text_input(
+                                "End marker",
+                                key=f"end_marker_{sku}_{debugger_source}",
+                            )
+
+                            source_text = (
+                                debug_views["dom_text"]
+                                if marker_source == "DOM Text"
+                                else debug_views["raw_html"]
+                            )
+
+                            marker_preview = preview_between_markers(
+                                source_text,
+                                start_marker=start_marker,
+                                end_marker=end_marker,
+                            )
+
+                            st.write("### Marker Match Status")
+                            st.write(
+                                {
+                                    "start_found": marker_preview["start_found"],
+                                    "end_found": marker_preview["end_found"],
+                                    "start_index": marker_preview["start_index"],
+                                    "end_index": marker_preview["end_index"],
+                                }
+                            )
+
+                            st.write("### Extracted Preview")
+                            st.text_area(
+                                f"marker_preview_{sku}_{debugger_source}",
+                                marker_preview["preview"],
+                                height=350,
+                            )
 
             r_text["description"] = clean_cvs_text(r_text.get("description", ""))
             r_text["features"] = normalize_cvs_features(r_text.get("features", []))
