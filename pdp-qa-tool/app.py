@@ -88,10 +88,10 @@ thread_local = threading.local()
 # =========================================
 # VISUAL LAYOUT SETTINGS
 # =========================================
-SECTION_HEADER_SIZE = 50
+SECTION_HEADER_SIZE = 75
 COPY_TEXT_SIZE = 40
 COPY_LINE_HEIGHT = 1.20
-SECTION_VERTICAL_GAP = 10
+SECTION_VERTICAL_GAP = 15
 
 # Use one shared spacing value so the image area feels mathematically even.
 IMG_SPACE_PX = 0
