@@ -479,7 +479,8 @@ def infer_retailer_name_from_url(url):
     return "Retailer"
 
 
-def prepare_input_df(df):def prepare_input.copy()
+def prepare_input_df(df):
+    df = df.copy()
     df.columns = [str(c).strip().lower() for c in df.columns]
 
     df.rename(
@@ -512,8 +513,6 @@ def prepare_input_df(df):def prepare_input.copy()
     if "retailer" not in df.columns:
         df["retailer"] = df["retail_url"].apply(infer_retailer_name_from_url)
 
-        # If the row has a Walgreens RPC but no live retail URL yet,
-        # keep the retailer classified as Walgreens.
         df.loc[
             (df["retailer"] == "Retailer") & (df["cvs_rpc"] != ""),
             "retailer"
