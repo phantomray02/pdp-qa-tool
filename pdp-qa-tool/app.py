@@ -2301,14 +2301,118 @@ def _extract_walgreens_copy_block_from_textblob(html_text):
 
     return description, features, path
 
+def _extract_walgreens_copy_from_dom(soup):
+    """
+    DOM-first Walgreens copy extractor based on the product description accordion.
+
+    Targets structures like:
+    - div[data-testid="inner-div"][id*="description"]
+    - div[id*="product_description_content"]
+    - div#product_description
+
+    Returns:
+        description, features, debug_path
+    """
+    container_candidates = []
+
+    # Most specific first.
+    selectors = [
+        "div#product_description",
+        "div[id*='product_description_content'] div#product_description",
+        "div[id*='product_description_content']",
+        "div[data-testid='inner-div'][id*='description'] div#product_description",
+        "div[data-testid='inner-div'][id*='description']",
+    ]
+
+    seen_ids = set()
+
+    for selector in selectors:
+        for tag in soup.select(selector):
+            tag_id = id(tag)
+            if tag_id in seen_ids:
+                continue
+            seen_ids.add(tag_id)
+            container_candidates.append((selector, tag))
+
+    for selector, container in container_candidates:
+        # Prefer the inner product_description block if it exists inside a broader container.
+        inner = container.select_one("div#product_description")
+        if inner:
+            container = inner
+
+        # Pull description paragraphs.
+        p_texts = []
+        for p in container.find_all("p"):
+            text = _normalize_walgreens_text(p.get_text(" ", strip=True))
+            if not text:
+                continue
+
+            # Skip junk / utility copy.
+            if text.lower() == "description":
+                continue
+            if re.search(r"^made in usa\b", text, flags=re.IGNORECASE):
+                continue
+            if re.search(r"^\d+\.\s*to use:", text, flags=re.IGNORECASE):
+                continue
+            if re.search(r"^\d+\.\s*to dispose:", text, flags=re.IGNORECASE):
+                continue
+            if re.search(r"walgreens does not represent or warrant", text, flags=re.IGNORECASE):
+                continue
+
+            p_texts.append(text)
+
+        # Pull feature bullets.
+        li_texts = []
+        for li in container.find_all("li"):
+            text = _normalize_walgreens_text(li.get_text(" ", strip=True))
+            if not text:
+                continue
+
+            if re.search(r"^made in usa\b", text, flags=re.IGNORECASE):
+                continue
+            if re.search(r"^\d+\.\s*to use:", text, flags=re.IGNORECASE):
+                continue
+            if re.search(r"^\d+\.\s*to dispose:", text, flags=re.IGNORECASE):
+                continue
+            if re.search(r"walgreens does not represent or warrant", text, flags=re.IGNORECASE):
+                continue
+
+            li_texts.append(text)
+
+        description = " ".join(p_texts).strip()
+        features = _normalize_walgreens_features(li_texts, max_features=5)
+
+        # If there are no <li> tags, try to split out feature-style lines from free text.
+        if not features:
+            text_lines = []
+            raw_text = container.get_text("\n", strip=True)
+            for line in raw_text.splitlines():
+                clean_line = _normalize_walgreens_text(line)
+                if not clean_line:
+                    continue
+                text_lines.append(clean_line)
+
+            bullet_pattern = re.compile(r"^[A-Z0-9][A-Z0-9\s&/\-\(\)\+',\.]{2,}:\s+.+$")
+            inferred_features = [x for x in text_lines if bullet_pattern.match(x)]
+            features = _normalize_walgreens_features(inferred_features, max_features=5)
+
+        if description or features:
+            return description, features, f"walgreens_dom_container::{selector}"
+
+    return "", [], "walgreens_dom_container_missing"
 
 def _extract_walgreens_description(soup, json_candidates, html_text):
-    # 1) CVS-style bounded block from page text first.
+    # 1) DOM-first extraction based on the actual description accordion.
+    dom_description, dom_features, dom_path = _extract_walgreens_copy_from_dom(soup)
+    if dom_description and len(dom_description) >= 40:
+        return dom_description, dom_path
+
+    # 2) CVS-style bounded textblob fallback.
     description, _, path = _extract_walgreens_copy_block_from_textblob(html_text)
     if description and len(description) >= 40:
         return description, path
 
-    # 2) JSON candidates.
+    # 3) JSON candidates.
     possible_desc = []
     for data in json_candidates:
         for value in _iter_matching_values(
@@ -2330,14 +2434,14 @@ def _extract_walgreens_description(soup, json_candidates, html_text):
         possible_desc.sort(key=len, reverse=True)
         return possible_desc[0], "walgreens_json"
 
-    # 3) Meta description.
+    # 4) Meta description.
     meta_tag = soup.find("meta", attrs={"name": "description"})
     if meta_tag:
         meta_desc = _normalize_walgreens_text(meta_tag.get("content", ""))
         if len(meta_desc) >= 40:
             return meta_desc, "walgreens_meta_description"
 
-    # 4) Visible DOM areas.
+    # 5) Visible DOM fallback.
     selectors = [
         "[data-testid*='description']",
         "[id*='description']",
@@ -2359,7 +2463,7 @@ def _extract_walgreens_description(soup, json_candidates, html_text):
         visible_desc.sort(key=len, reverse=True)
         return visible_desc[0], "walgreens_dom"
 
-    # 5) Regex fallback.
+    # 6) Regex fallback.
     regex_patterns = [
         r'"longDescription"\s*:\s*"([^"]+)"',
         r'"shortDescription"\s*:\s*"([^"]+)"',
@@ -2376,14 +2480,19 @@ def _extract_walgreens_description(soup, json_candidates, html_text):
 
 
 def _extract_walgreens_features(soup, json_candidates, html_text):
-    # 1) CVS-style bounded block first.
+    # 1) DOM-first extraction based on the actual description accordion.
+    dom_description, dom_features, dom_path = _extract_walgreens_copy_from_dom(soup)
+    if dom_features:
+        return dom_features, dom_path + "::features"
+
+    # 2) CVS-style bounded textblob fallback.
     _, features, path = _extract_walgreens_copy_block_from_textblob(html_text)
     if features:
         return features, path + "_features"
 
     feature_candidates = []
 
-    # 2) JSON candidates.
+    # 3) JSON candidates.
     feature_keys = {
         "features",
         "featurebullets",
@@ -2408,9 +2517,8 @@ def _extract_walgreens_features(soup, json_candidates, html_text):
     if normalized:
         return normalized, "walgreens_json"
 
-    # 3) Visible bullets.
+    # 4) Visible bullet fallback.
     section_keywords = {"feature", "features", "highlight", "highlights", "details", "about"}
-
     visible_bullets = []
 
     for section in soup.find_all(["section", "div", "article"]):
@@ -2428,7 +2536,7 @@ def _extract_walgreens_features(soup, json_candidates, html_text):
     if normalized:
         return normalized, "walgreens_dom"
 
-    # 4) Regex fallback arrays.
+    # 5) Regex fallback arrays.
     regex_patterns = [
         r'"features"\s*:\s*(\[[^\]]+\])',
         r'"featureBullets"\s*:\s*(\[[^\]]+\])',
