@@ -2248,7 +2248,7 @@ def _normalize_walgreens_text(value):
     value = value.replace("\\/", "/")
     value = value.replace('\\"', '"')
 
-    # Remove script tags if present.
+    # Remove scripts if present.
     value = re.sub(
         r"<script\b[^>]*>.*?</script>",
         " ",
@@ -2263,87 +2263,88 @@ def _normalize_walgreens_text(value):
     return value
 
 
-def _extract_json_candidates_from_html(html_text, soup):
-    candidates = []
+def get_walgreens_product_id_from_url(retail_url):
+    if not retail_url:
+        return ""
 
-    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
-        raw = script.string or script.get_text(" ", strip=True) or ""
-        raw = raw.strip()
-        if not raw:
-            continue
+    retail_url = str(retail_url or "").strip()
 
-        parsed = _safe_json_loads(raw)
-        if parsed is not None:
-            candidates.append(parsed)
+    # Typical Walgreens PDP format:
+    # /store/c/.../ID=300432791-product
+    m = re.search(r'/ID=(\d+)-product', retail_url, flags=re.IGNORECASE)
+    if m:
+        return m.group(1)
 
-    regex_patterns = [
-        r'window\.__NEXT_DATA__\s*=\s*(\{.*?\})\s*;',
-        r'window\.__PRELOADED_STATE__\s*=\s*(\{.*?\})\s*;',
-        r'window\.__INITIAL_STATE__\s*=\s*(\{.*?\})\s*;',
-        r'window\.__APP_INITIAL_STATE__\s*=\s*(\{.*?\})\s*;',
-    ]
+    # Fallback if productId appears in query.
+    m = re.search(r'[?&]productId=(\d+)', retail_url, flags=re.IGNORECASE)
+    if m:
+        return m.group(1)
 
-    for pattern in regex_patterns:
-        for m in re.finditer(pattern, html_text or "", flags=re.DOTALL):
-            raw = m.group(1).strip()
-            parsed = _safe_json_loads(raw)
-            if parsed is not None:
-                candidates.append(parsed)
-
-    return candidates
+    return ""
 
 
-def _extract_walgreens_title_from_source(html_text):
+def fetch_json_with_timeout(url, timeout_seconds):
+    if not url:
+        return None
+
+    try:
+        session = get_session()
+        r = session.get(url, timeout=timeout_seconds, allow_redirects=True)
+        if r.status_code == 200:
+            return r.json()
+    except Exception:
+        pass
+
+    return None
+
+
+def get_walgreens_product_api_payload(product_id):
     """
-    Walgreens title rule for this item:
-    - use productInfo.title
-    - remove trailing color token like Grey
-    - append sizeCount
+    Walgreens source exposes a lighter product endpoint:
+    /productapi/v1/products?productId={prodId}
+    """
+    if not product_id:
+        return None
 
+    api_url = f"https://www.walgreens.com/productapi/v1/products?productId={product_id}"
+    return fetch_json_with_timeout(api_url, WALGREENS_API_TIMEOUT)
+
+
+def walk_json(obj):
+    if isinstance(obj, dict):
+        yield obj
+        for v in obj.values():
+            yield from walk_json(v)
+    elif isinstance(obj, list):
+        for item in obj:
+            yield from walk_json(item)
+
+
+def find_first_dict_with_keys(obj, required_keys):
+    required_keys = set(required_keys)
+
+    for node in walk_json(obj):
+        if isinstance(node, dict) and required_keys.issubset(set(node.keys())):
+            return node
+
+    return {}
+
+
+def format_walgreens_title_from_parts(raw_title="", size_count="", primary_attr=""):
+    """
     Example:
-    Depend Adult Incontinence Underwear for Men Extra-Large Grey
-    + 15.0 ea
-    =>
-    Depend Adult Incontinence Underwear for Men Extra-Large, 15.0 ea
+    raw_title   = "Depend Adult Incontinence Underwear for Men Extra-Large Grey"
+    size_count  = "15.0 ea"
+    primary_attr= "Grey"
+
+    result      = "Depend Adult Incontinence Underwear for Men Extra-Large, 15.0 ea"
     """
-    if not html_text:
-        return "", "walgreens_title_missing"
+    raw_title = _normalize_walgreens_text(raw_title)
+    size_count = _normalize_walgreens_text(size_count)
+    primary_attr = _normalize_walgreens_text(primary_attr)
 
-    title_match = re.search(
-        r'"productInfo"\s*:\s*\{.*?"title"\s*:\s*"((?:\\.|[^"\\])*)"',
-        html_text,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
+    title_clean = raw_title.strip()
 
-    size_match = re.search(
-        r'"sizeCount"\s*:\s*"((?:\\.|[^"\\])*)"',
-        html_text,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-
-    primary_attr_match = re.search(
-        r'"primaryAttribute"\s*:\s*"((?:\\.|[^"\\])*)"',
-        html_text,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-
-    if not title_match:
-        return "", "walgreens_productInfo_title_missing"
-
-    raw_title = title_match.group(1)
-    title = _decode_walgreens_json_string(raw_title)
-
-    size_count = ""
-    if size_match:
-        size_count = _decode_walgreens_json_string(size_match.group(1))
-
-    primary_attr = ""
-    if primary_attr_match:
-        primary_attr = _decode_walgreens_json_string(primary_attr_match.group(1))
-
-    title_clean = title.strip()
-
-    # Prefer removing the actual primary attribute if it matches the trailing token.
     if primary_attr and title_clean.lower().endswith((" " + primary_attr).lower()):
         title_clean = title_clean[: -(len(primary_attr) + 1)].rstrip(" ,-/")
     else:
@@ -2367,35 +2368,7 @@ def _extract_walgreens_title_from_source(html_text):
                 title_clean = title_clean[: -len(color)].rstrip(" ,-/")
                 break
 
-    if size_count:
-        final_title = f"{title_clean}, {size_count}"
-        return final_title, "walgreens_productInfo_title_plus_sizeCount"
-
-    return title_clean, "walgreens_productInfo_title_only"
-
-
-def _extract_walgreens_product_desc_block(html_text):
-    """
-    Pulls productDesc from:
-    prodDetails.section[].description.productDesc
-    """
-    if not html_text:
-        return "", "walgreens_productDesc_missing"
-
-    desc_match = re.search(
-        r'"productDesc"\s*:\s*"((?:\\.|[^"\\])*)"',
-        html_text,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-
-    if not desc_match:
-        return "", "walgreens_productDesc_missing"
-
-    raw_desc = desc_match.group(1)
-    desc_html = _decode_walgreens_json_string(raw_desc)
-    return desc_html, "walgreens_productDesc_found"
-
-        def _extract_walgreens_feature_items_from_raw_product_desc(desc_html):
+    _extract_walgreens_feature_items_from_raw_product_desc(desc_html):    if size_count:
     """
     Parse Walgreens feature bullets from the raw productDesc HTML string.
 
@@ -2442,12 +2415,12 @@ def _extract_walgreens_product_desc_block(html_text):
         chunk = re.sub(r"<br\s*/?>", " ", chunk, flags=re.IGNORECASE)
 
         text = BeautifulSoup(chunk, "html.parser").get_text(" ", strip=True)
-        text = clean_walgreens_text(text)
+        text = _normalize_walgreens_text(text)
 
         if not text:
             continue
 
-        # Stop / skip utility copy if it leaks.
+        # Skip utility copy if it leaks through.
         if re.search(r"^Made in USA\b", text, flags=re.IGNORECASE):
             continue
         if re.search(r"^\d+\.\s*To Use:", text, flags=re.IGNORECASE):
@@ -2462,25 +2435,24 @@ def _extract_walgreens_product_desc_block(html_text):
     features = dedupe_preserve_order(features)
     return features[:5]
 
-def _extract_walgreens_description_and_features_from_product_desc(html_text):
+
+def extract_walgreens_copy_from_product_desc_html(product_desc_html):
     """
-    Walgreens source structure for this item:
-    - productDesc contains paragraph first
-    - then UL / LI features
+    productDesc structure for this Walgreens item:
+    - paragraph first
+    - then UL / LI bullets
     - then Made in USA / To Use / To Dispose text
 
     We want:
     - description = ONLY the paragraph text before <UL>
     - features = each LI item split from raw LI markers
     """
-    desc_html, source_path = _extract_walgreens_product_desc_block(html_text)
+    if not product_desc_html:
+        return "", []
 
-    if not desc_html:
-        return "", [], source_path
+    working = str(product_desc_html)
 
-    working = str(desc_html)
-
-    # Remove any scripts completely.
+    # Remove scripts completely.
     working = re.sub(
         r"<script\b[^>]*>.*?</script>",
         " ",
@@ -2488,167 +2460,19 @@ def _extract_walgreens_description_and_features_from_product_desc(html_text):
         flags=re.IGNORECASE | re.DOTALL,
     )
 
-    # DESCRIPTION:
-    # Only take the content before the first <UL>.
+    # Only take content before the first <UL> for the description.
     before_ul = re.split(r"<ul[^>]*>", working, maxsplit=1, flags=re.IGNORECASE)[0]
 
     before_ul = re.sub(r"<br\s*/?>", " ", before_ul, flags=re.IGNORECASE)
     before_ul = re.sub(r"</p\s*>\s*<p[^>]*>", " ", before_ul, flags=re.IGNORECASE)
 
     description_text = BeautifulSoup(before_ul, "html.parser").get_text(" ", strip=True)
-    description_text = clean_walgreens_text(description_text)
+    description_text = _normalize_walgreens_text(description_text)
 
-    # FEATURES:
-    # Split from raw LI tags so malformed Walgreens list markup doesn't cascade bullets.
+    # Split features from raw LI markers.
     feature_items = _extract_walgreens_feature_items_from_raw_product_desc(working)
 
-    return (
-        description_text,
-        feature_items,
-        "walgreens_productDesc_preUL_description_and_rawLI_features",
-    )
-
-def extract_walgreens_images_from_html(html_text):
-    """
-    Direct-source Walgreens image extraction:
-    - productImageUrl
-    - zoomImageUrl
-    - filmStripUrl large/zoom images
-    """
-    if not html_text:
-        return []
-
-    image_urls = []
-
-    def maybe_add_url(url):
-        if not url:
-            return
-
-        url = html.unescape(str(url).strip())
-        if url.startswith("//"):
-            url = "https:" + url
-
-        if not re.match(r"^https?://", url, flags=re.IGNORECASE):
-            return
-
-        lowered = url.lower()
-        if not any(ext in lowered for ext in [".jpg", ".jpeg", ".png", ".webp", ".avif"]):
-            return
-
-        bad_tokens = [
-            "sprite",
-            "icon",
-            "logo",
-            "placeholder",
-            "spacer",
-            "data:image",
-            ".svg",
-        ]
-        if any(tok in lowered for tok in bad_tokens):
-            return
-
-        image_urls.append(url)
-
-    # 1) Main image fields.
-    for field_name in ["productImageUrl", "zoomImageUrl", "metaImage"]:
-        for m in re.finditer(
-            rf'"{field_name}"\s*:\s*"((?:\\.|[^"\\])*)"',
-            html_text,
-            flags=re.IGNORECASE | re.DOTALL,
-        ):
-            maybe_add_url(_decode_walgreens_json_string(m.group(1)))
-
-    # 2) filmStripUrl images.
-    strip_patterns = [
-        r'"largeImageUrl\d+"\s*:\s*"((?:\\.|[^"\\])*)"',
-        r'"zoomImageUrl\d+"\s*:\s*"((?:\\.|[^"\\])*)"',
-        r'"stripUrl\d+"\s*:\s*"((?:\\.|[^"\\])*)"',
-    ]
-    for pattern in strip_patterns:
-        for m in re.finditer(pattern, html_text, flags=re.IGNORECASE | re.DOTALL):
-            maybe_add_url(_decode_walgreens_json_string(m.group(1)))
-
-    # 3) Meta image fallback.
-    soup = BeautifulSoup(html_text, "html.parser")
-    for selector in [
-        "meta[property='og:image']",
-        "meta[name='twitter:image']",
-    ]:
-        tag = soup.select_one(selector)
-        if tag:
-            maybe_add_url(tag.get("content", ""))
-
-    image_urls = dedupe_preserve_order(image_urls)
-    return image_urls[:8]
-
-
-def extract_walgreens_text_from_html(html_text, retail_url="", target_rpc=""):
-    debug = {
-        "Title Path": "",
-        "Description Path": "",
-        "Features Path": "",
-        "Source Used": "walgreens",
-    }
-
-    if not html_text:
-        return {
-            "title": "",
-            "description": "",
-            "features": [],
-            "debug": debug,
-        }
-
-    title, title_path = _extract_walgreens_title_from_source(html_text)
-    description, features, copy_path = _extract_walgreens_description_and_features_from_product_desc(html_text)
-
-    debug["Title Path"] = title_path
-    debug["Description Path"] = copy_path if description else "walgreens_description_missing"
-    debug["Features Path"] = copy_path if features else "walgreens_features_missing"
-
-    return {
-        "title": title,
-        "description": description,
-        "features": features[:5],
-        "debug": debug,
-    }
-
-
-@st.cache_data(show_spinner=False)
-
-def format_walgreens_title_from_parts(raw_title="", size_count="", primary_attr=""):
-    raw_title = _normalize_walgreens_text(raw_title)
-    size_count = _normalize_walgreens_text(size_count)
-    primary_attr = _normalize_walgreens_text(primary_attr)
-
-    title_clean = raw_title.strip()
-
-    if primary_attr and title_clean.lower().endswith((" " + primary_attr).lower()):
-        title_clean = title_clean[: -(len(primary_attr) + 1)].rstrip(" ,-/")
-    else:
-        trailing_colors = [
-            " Grey",
-            " Gray",
-            " Black",
-            " White",
-            " Pink",
-            " Blue",
-            " Green",
-            " Red",
-            " Brown",
-            " Beige",
-            " Purple",
-            " Yellow",
-            " Orange",
-        ]
-        for color in trailing_colors:
-            if title_clean.lower().endswith(color.lower()):
-                title_clean = title_clean[: -len(color)].rstrip(" ,-/")
-                break
-
-    if size_count:
-        return f"{title_clean}, {size_count}"
-
-    return title_clean
+    return description_text, feature_items
 
 
 def extract_walgreens_copy_from_product_sections(section_list):
@@ -2665,44 +2489,7 @@ def extract_walgreens_copy_from_product_sections(section_list):
         desc_obj = section.get("description", {})
         if isinstance(desc_obj, dict) and desc_obj.get("productDesc"):
             desc_html = _decode_walgreens_json_string(desc_obj.get("productDesc", ""))
-
-            desc_html = re.sub(
-                r"<script\b[^>]*>.*?</script>",
-                " ",
-                desc_html,
-                flags=re.IGNORECASE | re.DOTALL,
-            )
-
-            soup = BeautifulSoup(desc_html, "html.parser")
-
-            description_parts = []
-            for p in soup.find_all("p"):
-                text = _normalize_walgreens_text(p.get_text(" ", strip=True))
-                if not text:
-                    continue
-                if text.lower() == "made in usa":
-                    break
-                if re.search(r"^\d+\.\s*To Use:", text, flags=re.IGNORECASE):
-                    break
-                if re.search(r"^\d+\.\s*To Dispose:", text, flags=re.IGNORECASE):
-                    break
-                description_parts.append(text)
-
-            description = " ".join(description_parts).strip()
-
-            for li in soup.find_all("li"):
-                text = _normalize_walgreens_text(li.get_text(" ", strip=True))
-                if not text:
-                    continue
-                if text.lower() == "made in usa":
-                    break
-                if re.search(r"^\d+\.\s*To Use:", text, flags=re.IGNORECASE):
-                    break
-                if re.search(r"^\d+\.\s*To Dispose:", text, flags=re.IGNORECASE):
-                    break
-                features.append(text)
-
-            features = dedupe_preserve_order(features)[:5]
+            description, features = extract_walgreens_copy_from_product_desc_html(desc_html)
             break
 
     return description, features
@@ -2826,20 +2613,194 @@ def build_walgreens_bundle_from_api_payload(payload):
             "features": features[:5],
             "debug": {
                 "Title Path": "walgreens_api_productInfo_title_plus_sizeCount",
-                "Description Path": "walgreens_api_prodDetails_section_description_productDesc" if description else "walgreens_api_description_missing",
-                "Features Path": "walgreens_api_prodDetails_section_description_productDesc" if features else "walgreens_api_features_missing",
+                "Description Path": "walgreens_api_prodDetails_section_description_productDesc_preUL" if description else "walgreens_api_description_missing",
+                "Features Path": "walgreens_api_prodDetails_section_description_productDesc_rawLI" if features else "walgreens_api_features_missing",
                 "Source Used": "walgreens_api",
             },
         },
         "images": images,
     }
-    
+
+
+def _extract_walgreens_title_from_source(html_text):
+    if not html_text:
+        return "", "walgreens_title_missing"
+
+    title_match = re.search(
+        r'"productInfo"\s*:\s*\{.*?"title"\s*:\s*"((?:\\.|[^"\\])*)"',
+        html_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    size_match = re.search(
+        r'"sizeCount"\s*:\s*"((?:\\.|[^"\\])*)"',
+        html_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    primary_attr_match = re.search(
+        r'"primaryAttribute"\s*:\s*"((?:\\.|[^"\\])*)"',
+        html_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    if not title_match:
+        return "", "walgreens_productInfo_title_missing"
+
+    raw_title = _decode_walgreens_json_string(title_match.group(1))
+    size_count = _decode_walgreens_json_string(size_match.group(1)) if size_match else ""
+    primary_attr = _decode_walgreens_json_string(primary_attr_match.group(1)) if primary_attr_match else ""
+
+    final_title = format_walgreens_title_from_parts(
+        raw_title=raw_title,
+        size_count=size_count,
+        primary_attr=primary_attr,
+    )
+
+    return final_title, "walgreens_productInfo_title_plus_sizeCount"
+
+
+def _extract_walgreens_product_desc_block(html_text):
+    if not html_text:
+        return "", "walgreens_productDesc_missing"
+
+    desc_match = re.search(
+        r'"productDesc"\s*:\s*"((?:\\.|[^"\\])*)"',
+        html_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    if not desc_match:
+        return "", "walgreens_productDesc_missing"
+
+    raw_desc = desc_match.group(1)
+    desc_html = _decode_walgreens_json_string(raw_desc)
+    return desc_html, "walgreens_productDesc_found"
+
+
+def _extract_walgreens_description_and_features_from_product_desc(html_text):
+    desc_html, source_path = _extract_walgreens_product_desc_block(html_text)
+
+    if not desc_html:
+        return "", [], source_path
+
+    description_text, feature_items = extract_walgreens_copy_from_product_desc_html(desc_html)
+
+    return (
+        description_text,
+        feature_items,
+        "walgreens_productDesc_preUL_description_and_rawLI_features",
+    )
+
+
+def extract_walgreens_text_from_html(html_text, retail_url="", target_rpc=""):
+    debug = {
+        "Title Path": "",
+        "Description Path": "",
+        "Features Path": "",
+        "Source Used": "walgreens_html",
+    }
+
+    if not html_text:
+        return {
+            "title": "",
+            "description": "",
+            "features": [],
+            "debug": debug,
+        }
+
+    title, title_path = _extract_walgreens_title_from_source(html_text)
+    description, features, copy_path = _extract_walgreens_description_and_features_from_product_desc(html_text)
+
+    debug["Title Path"] = title_path
+    debug["Description Path"] = copy_path if description else "walgreens_description_missing"
+    debug["Features Path"] = copy_path if features else "walgreens_features_missing"
+
+    return {
+        "title": title,
+        "description": description,
+        "features": features[:5],
+        "debug": debug,
+    }
+
+
+def extract_walgreens_images_from_html(html_text):
+    """
+    HTML fallback image extraction if API path fails.
+    """
+    if not html_text:
+        return []
+
+    image_urls = []
+
+    def maybe_add_url(url):
+        if not url:
+            return
+
+        url = html.unescape(str(url).strip())
+
+        if url.startswith("//"):
+            url = "https:" + url
+
+        if not re.match(r"^https?://", url, flags=re.IGNORECASE):
+            return
+
+        lowered = url.lower()
+        if not any(ext in lowered for ext in [".jpg", ".jpeg", ".png", ".webp", ".avif"]):
+            return
+
+        bad_tokens = [
+            "sprite",
+            "icon",
+            "logo",
+            "placeholder",
+            "spacer",
+            "data:image",
+            ".svg",
+        ]
+        if any(tok in lowered for tok in bad_tokens):
+            return
+
+        image_urls.append(url)
+
+    # Direct product image fields in raw HTML.
+    for field_name in ["productImageUrl", "zoomImageUrl", "metaImage"]:
+        for m in re.finditer(
+            rf'"{field_name}"\s*:\s*"((?:\\.|[^"\\])*)"',
+            html_text,
+            flags=re.IGNORECASE | re.DOTALL,
+        ):
+            maybe_add_url(_decode_walgreens_json_string(m.group(1)))
+
+    # filmStripUrl images.
+    strip_patterns = [
+        r'"largeImageUrl\d+"\s*:\s*"((?:\\.|[^"\\])*)"',
+        r'"zoomImageUrl\d+"\s*:\s*"((?:\\.|[^"\\])*)"',
+        r'"stripUrl\d+"\s*:\s*"((?:\\.|[^"\\])*)"',
+    ]
+    for pattern in strip_patterns:
+        for m in re.finditer(pattern, html_text, flags=re.IGNORECASE | re.DOTALL):
+            maybe_add_url(_decode_walgreens_json_string(m.group(1)))
+
+    # Meta fallback.
+    soup = BeautifulSoup(html_text, "html.parser")
+    for selector in [
+        "meta[property='og:image']",
+        "meta[name='twitter:image']",
+    ]:
+        tag = soup.select_one(selector)
+        if tag:
+            maybe_add_url(tag.get("content", ""))
+
+    image_urls = dedupe_preserve_order(image_urls)
+    return image_urls[:8]
+
+
 def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
     """
     Walgreens strategy:
     1) Try the lighter product API first.
     2) If API fails, fall back to live HTML extraction.
-    3) Keep CVS untouched.
     """
     product_id = get_walgreens_product_id_from_url(retail_url)
 
@@ -2878,7 +2839,9 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku=""):
 
     # Default path stays CVS.
     return get_cvs_bundle(retail_url, target_rpc)
+        return f"{title_clean}, {size_count}"
 
+    return title_clean
 
 # =========================================
 # RETAILER-SPECIFIC FINAL COPY CLEANUP
