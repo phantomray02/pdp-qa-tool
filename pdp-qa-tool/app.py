@@ -453,7 +453,13 @@ def read_uploaded_csv_from_bytes(file_bytes):
 
 
 def infer_retailer_name_from_url(url):
-    url = (url or "").lower()
+    if pd.isna(url):
+        return "Retailer"
+
+    url = str(url or "").strip().lower()
+
+    if not url:
+        return "Retailer"
 
     if "cvs.com" in url:
         return "CVS"
@@ -475,7 +481,7 @@ def infer_retailer_name_from_url(url):
 
 def prepare_input_df(df):
     df = df.copy()
-    df.columns = [c.strip().lower() for c in df.columns]
+    df.columns = [str(c).strip().lower() for c in df.columns]
 
     df.rename(
         columns={
@@ -483,6 +489,7 @@ def prepare_input_df(df):
             "retail url": "retail_url",
             "sku id": "sku",
             "product sku": "sku",
+            "walgreens rpc": "cvs_rpc",   # internal alias only
             "cvs rpc": "cvs_rpc",
             "retailer name": "retailer",
             "retailer_name": "retailer",
@@ -490,27 +497,106 @@ def prepare_input_df(df):
         inplace=True,
     )
 
-    if "brand" not in df.columns and len(df.columns) >= 5:
-        df.rename(columns={df.columns[4]: "brand"}, inplace=True)
+    for col in ["sku", "salsify_url", "retail_url", "brand", "cvs_rpc"]:
+        if col not in df.columns:
+            df[col] = ""
 
-    required = ["sku", "salsify_url", "retail_url"]
-    missing = [c for c in required if c not in df.columns]
-    if missing:
-        raise ValueError(f"Missing required columns: {missing}")
+    for col in ["sku", "salsify_url", "retail_url", "brand", "cvs_rpc"]:
+        df[col] = (
+            df[col]
+            .replace("#N/A", "")
+            .fillna("")
+            .astype(str)
+            .str.strip()
+        )
 
     if "retailer" not in df.columns:
         df["retailer"] = df["retail_url"].apply(infer_retailer_name_from_url)
+        df.loc[
+            (df["retailer"] == "Retailer") & (df["cvs_rpc"] != ""),
+            "retailer"
+        ] = "Walgreens"
     else:
-        df["retailer"] = df["retailer"].fillna("").astype(str).str.strip()
+        df["retailer"] = (
+            df["retailer"]
+            .replace("#N/A", "")
+            .fillna("")
+            .astype(str)
+            .str.strip()
+        )
         inferred = df["retail_url"].apply(infer_retailer_name_from_url)
         df["retailer"] = df["retailer"].where(df["retailer"] != "", inferred)
-
-    if "cvs_rpc" not in df.columns:
-        df["cvs_rpc"] = ""
+        df.loc[
+            (df["retailer"] == "Retailer") & (df["cvs_rpc"] != ""),
+            "retailer"
+        ] = "Walgreens"
 
     return df
+    
+    retail_url = row.get("retail_url", "")
+    salsify_url = row.get("salsify_url", "")
+    cvs_rpc = row.get("cvs_rpc") or row.get("CVS RPC") or ""
+    retailer_name = row.get("retailer", "") or infer_retailer_name_from_url(retail_url)
+        salsify_url = str(salsify_url or "").strip()
+        retail_url = str(retail_url or "").strip()
 
+        status_notes = []
 
+        if not salsify_url:
+            status_notes.append("Missing Salsify URL")
+        if not retail_url:
+            status_notes.append("Missing Retail URL")
+
+        if status_notes:
+            note = " | ".join(status_notes)
+
+            return {
+                "summary": {
+                    "SKU": row.get("sku", ""),
+                    "Retailer": retailer_name,
+                    "CVS RPC": cvs_rpc,
+                    "Brand": row.get("brand", ""),
+                    "Salsify URL": salsify_url,
+                    "Retail URL": retail_url,
+                    "Title %": 0,
+                    "Description %": 0,
+                    "Feature %": 0,
+                    "Image Match %": 0,
+                    "Overall %": 0,
+                    "Status": note,
+                },
+                "detail": {
+                    "SKU": row.get("sku", ""),
+                    "Retailer": retailer_name,
+                    "CVS RPC": cvs_rpc,
+                    "Brand": row.get("brand", ""),
+                    "Salsify URL": salsify_url,
+                    "Retail URL": retail_url,
+                    "Title %": 0,
+                    "Description %": 0,
+                    "Feature %": 0,
+                    "Image Match %": 0,
+                    "Overall %": 0,
+                    "Status": note,
+                    "Salsify Title": "",
+                    "CVS Title": "",
+                    "Salsify Description": "",
+                    "CVS Description": "",
+                    "CVS Features": "",
+                    "Salsify Images": "",
+                    "CVS Images": "",
+                },
+                "debug": {
+                    "SKU": row.get("sku", ""),
+                    "Retailer": retailer_name,
+                    "CVS RPC": cvs_rpc,
+                    "Brand": row.get("brand", ""),
+                    "Retail URL": retail_url,
+                    "Salsify URL": salsify_url,
+                    "Status": note,
+                },
+            }    
+            
 def clear_in_memory_caches():
     html_cache.clear()
     image_hash_cache.clear()
