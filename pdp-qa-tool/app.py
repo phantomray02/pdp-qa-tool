@@ -793,6 +793,68 @@ def get_debug_views_for_url(url):
         "dom_text": html_to_debug_textblob(html_text),
         "prettified_dom": html_to_prettified_dom(html_text),
     }
+
+def build_debug_views_from_html(html_text):
+    html_text = str(html_text or "")
+    return {
+        "raw_html": html_text,
+        "dom_text": html_to_debug_textblob(html_text),
+        "prettified_dom": html_to_prettified_dom(html_text),
+    }
+
+
+def get_uploaded_text_file_bytes(uploaded_text_file):
+    if uploaded_text_file is None:
+        return ""
+
+    try:
+        raw = uploaded_text_file.getvalue()
+        if isinstance(raw, bytes):
+            for encoding in ["utf-8", "utf-8-sig", "latin1"]:
+                try:
+                    return raw.decode(encoding)
+                except Exception:
+                    pass
+        return str(raw)
+    except Exception:
+        return ""
+
+
+def resolve_debug_views(
+    debug_url,
+    retailer_name="",
+    use_manual_html_override=False,
+    manual_html_text="",
+    manual_html_file=None,
+):
+    """
+    If manual override is provided, use that instead of live fetch.
+    Otherwise use the live fetch debugger.
+    """
+    manual_text = str(manual_html_text or "").strip()
+    uploaded_text = get_uploaded_text_file_bytes(manual_html_file).strip()
+
+    if use_manual_html_override:
+        chosen_html = manual_text or uploaded_text
+        if chosen_html:
+            views = build_debug_views_from_html(chosen_html)
+            return {
+                "mode": "manual_html_override",
+                "requested_url": str(debug_url or ""),
+                "final_url": "manual_html_override",
+                "status_code": "MANUAL",
+                "reason": "Manual HTML override",
+                "content_type": "text/html",
+                "content_length_header": str(len(chosen_html)),
+                "text_length": len(chosen_html),
+                "history": [],
+                "error": "",
+                "response_headers": {},
+                **views,
+            }
+
+    # Fallback to live fetch.
+    return fetch_url_debug(debug_url, retailer_name=retailer_name)
     
 # =========================================
 # SALSIFY PARSERS
@@ -3266,6 +3328,27 @@ debug_only_sku = st.text_input(
     key="debug_only_sku",
 ).strip()
 
+use_manual_html_override = st.checkbox(
+    "Use manual HTML override for debugger",
+    key="use_manual_html_override",
+)
+
+manual_html_file = None
+manual_html_text = ""
+
+if use_manual_html_override:
+    manual_html_file = st.file_uploader(
+        "Upload HTML file for debugger only",
+        type=["html", "txt"],
+        key="manual_html_file",
+    )
+
+    manual_html_text = st.text_area(
+        "Or paste raw HTML / copied DOM here for debugger only",
+        height=180,
+        key="manual_html_text",
+    )
+
 # =========================================
 # FILE + PROCESSING
 # =========================================
@@ -3599,11 +3682,13 @@ if uploaded_file and st.session_state.processing_done:
                     if not debug_url or str(debug_url).strip().lower() in {"", "n/a", "#n/a", "na", "nan", "none"}:
                         st.warning("No usable URL available for this debugger view.")
                     else:
-                        debug_fetch = fetch_url_debug(
-                            debug_url,
+                        debug_fetch = resolve_debug_views(
+                            debug_url=debug_url,
                             retailer_name=retailer_name if debugger_source == "Retailer page" else "salsify",
+                            use_manual_html_override=use_manual_html_override,
+                            manual_html_text=manual_html_text,
+                            manual_html_file=manual_html_file,
                         )
-
                         st.caption(f"Requested URL: {debug_fetch['requested_url']}")
                         if debug_fetch["final_url"]:
                             st.caption(f"Final URL: {debug_fetch['final_url']}")
@@ -3615,9 +3700,11 @@ if uploaded_file and st.session_state.processing_done:
                         meta_cols[3].metric("Text Length", str(debug_fetch["text_length"]))
                         meta_cols[4].metric("Redirects", str(len(debug_fetch["history"])))
 
-                        if debug_fetch["error"]:
+                        if debug_fetch["mode"] == "manual_html_override":
+                            st.success("Using manual HTML override for debugger.")
+                        elif debug_fetch["error"]:
                             st.error(f"Fetch error: {debug_fetch['error']}")
-
+                            
                         if debug_fetch["history"]:
                             st.write("### Redirect History")
                             st.json(debug_fetch["history"])
