@@ -98,7 +98,9 @@ IMG_SPACE_PX = 12
 IMG_BOX_HEIGHT = 132
 IMG_SCORE_WIDTH_PX = 118
 
+TITLE_TO_DESCRIPTION_GAP_PX = 125
 DESCRIPTION_TO_FEATURES_GAP_PX = 125
+
 
 def get_session():
     if not hasattr(thread_local, "session"):
@@ -2564,6 +2566,11 @@ if uploaded_file and st.session_state.processing_done:
                         + "</div>",
                         unsafe_allow_html=True,
                     )
+                    
+                st.markdown(
+                    f"<div style='height:{TITLE_TO_DESCRIPTION_GAP_PX}px;'></div>",
+                    unsafe_allow_html=True,
+                )
 
                 st.markdown(section_header_html("Description", desc_score), unsafe_allow_html=True)
                 d1, d2 = st.columns(2, gap="small")
