@@ -16,7 +16,8 @@ import requests
 import streamlit as st
 import streamlit.components.v1 as components
 from bs4 import BeautifulSoup
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
+import warnings
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
 from pandas.errors import EmptyDataError
@@ -72,22 +73,23 @@ WALGREENS_API_TIMEOUT = 10
 # =========================================
 # PERFORMANCE SETTINGS
 # =========================================
-BATCH_SIZE = 16
-MAX_WORKERS = 6
-UI_UPDATE_EVERY = 4
+# Lower these for Streamlit Cloud stability.
+BATCH_SIZE = 8
+MAX_WORKERS = 3
+UI_UPDATE_EVERY = 2
 
 # Faster image compare via tiny difference hash.
 IMAGE_HASH_WIDTH = 9
 IMAGE_HASH_HEIGHT = 8
 
 # Keep caches smaller to prevent Streamlit Cloud memory pressure.
-HTML_CACHE_MAX = 80
-IMAGE_HASH_CACHE_MAX = 300
+HTML_CACHE_MAX = 60
+IMAGE_HASH_CACHE_MAX = 120
 
-html_cache = {}
-image_hash_cache = {}
-
-thread_local = threading.local()
+# Hard image safety limits.
+MAX_IMAGE_BYTES = 12 * 1024 * 1024
+MAX_SAFE_IMAGE_PIXELS = 50_000_000
+MAX_IMAGE_SLOTS_TO_COMPARE = 5
 
 # =========================================
 # VISUAL LAYOUT SETTINGS
@@ -3183,14 +3185,50 @@ def get_image_dhash(url):
 
     try:
         session = get_session()
-        r = session.get(url, timeout=IMAGE_TIMEOUT)
+
+        # Stream the response so we can stop early if the file is too large.
+        r = session.get(url, timeout=IMAGE_TIMEOUT, stream=True)
         if r.status_code != 200:
             return None
-        if "image" not in r.headers.get("Content-Type", ""):
+
+        content_type = str(r.headers.get("Content-Type", "") or "")
+        if "image" not in content_type.lower():
             return None
 
-        img = Image.open(BytesIO(r.content))
-        img = img.convert("L").resize((IMAGE_HASH_WIDTH, IMAGE_HASH_HEIGHT))
+        content_length = str(r.headers.get("Content-Length", "") or "").strip()
+        if content_length.isdigit() and int(content_length) > MAX_IMAGE_BYTES:
+            return None
+
+        image_bytes = bytearray()
+
+        for chunk in r.iter_content(chunk_size=65536):
+            if not chunk:
+                continue
+
+            image_bytes.extend(chunk)
+
+            if len(image_bytes) > MAX_IMAGE_BYTES:
+                return None
+
+        if not image_bytes:
+            return None
+
+        bio = BytesIO(image_bytes)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+
+            img = Image.open(bio)
+
+            width, height = img.size
+            if width * height > MAX_SAFE_IMAGE_PIXELS:
+                return None
+
+            img.load()
+
+        img = img.convert("L")
+        img.thumbnail((256, 256))
+        img = img.resize((IMAGE_HASH_WIDTH, IMAGE_HASH_HEIGHT))
 
         bits = []
         for y in range(IMAGE_HASH_HEIGHT):
@@ -3204,16 +3242,16 @@ def get_image_dhash(url):
             h = (h << 1) | bit
 
         image_hash_cache[url] = h
-
         while len(image_hash_cache) > IMAGE_HASH_CACHE_MAX:
             image_hash_cache.pop(next(iter(image_hash_cache)))
 
         return h
 
+    except (Image.DecompressionBombWarning, UnidentifiedImageError, OSError, ValueError):
+        return None
     except Exception:
         return None
-
-
+        
 def hamming_distance(a, b):
     return bin(a ^ b).count("1")
 
@@ -3373,7 +3411,7 @@ def process_row(row):
 
         img_scores = []
         image_position_scores = {}
-        max_img_positions = max(len(s_images), len(r_images))
+        max_img_positions = min(max(len(s_images), len(r_images)), MAX_IMAGE_SLOTS_TO_COMPARE)
 
         for i in range(max_img_positions):
             s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else None
@@ -3951,7 +3989,7 @@ if uploaded_file and st.session_state.processing_done:
             copy_avg_score = int((title_score + desc_score + avg_feature_score) / 3)
 
             img_scores = []
-            max_images = max(len(s_images), len(r_images))
+            max_images = min(max(len(s_images), len(r_images)), MAX_IMAGE_SLOTS_TO_COMPARE)
 
             for i in range(max_images):
                 s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else None
