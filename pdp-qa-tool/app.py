@@ -504,7 +504,8 @@ def infer_retailer_name_from_url(url):
 
 
 def prepare_input_df(df):
-    df.columns = [str(c).strip().lower() for c in df.columns]    df = df.copy()
+    df = df.copy()
+    df.columns = [str(c).strip().lower() for c in df.columns]
 
     df.rename(
         columns={
@@ -2338,7 +2339,7 @@ if uploaded_file:
             st.session_state.report_filename = None
             clear_in_memory_caches()
             
-        df = read_uploaded_file_from_bytes(file_bytes, uploaded_file.name)_bytes)
+        ddf = read_uploaded_file_from_bytes(file_bytes, uploaded_file.name)
         df = prepare_input_df(df)
         
         all_retailers = sorted(df["retailer"].dropna().astype(str).unique().tolist()) if "retailer" in df.columns else ["CVS"]
@@ -2552,7 +2553,11 @@ if uploaded_file and st.session_state.processing_done:
             st.error("Uploaded CSV data is missing from session state.")
             st.stop()
 
-        df = read_uploaded_csv_from_bytes(st.session_state.uploaded_file_bytes)
+        df = read_uploaded_file_from_bytes(
+            st.session_state.uploaded_file_bytes,
+            uploaded_file.name,
+        )
+
         df = prepare_input_df(df)
 
         if st.session_state.selected_retailer not in ["All", "-- Select Retailer --"] and "retailer" in df.columns:
@@ -2577,7 +2582,7 @@ if uploaded_file and st.session_state.processing_done:
             s_text = s_bundle["text"]
             s_images = s_bundle["images"]
 
-            current_rpc = row.get("cvs_rpc") or row.get("CVS RPC") or ""
+            current_rpc = row.get("retailer_rpc", "")
             current_target_sku = get_target_sku_from_inputs(
                 retail_url=retail_url,
                 cvs_rpc=current_rpc,
