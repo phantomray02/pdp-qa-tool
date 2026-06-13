@@ -7,6 +7,10 @@ import json
 import time
 import hashlib
 import traceback
+import threading
+import base64
+import warnings
+
 from io import BytesIO
 from difflib import SequenceMatcher
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -15,15 +19,15 @@ import pandas as pd
 import requests
 import streamlit as st
 import streamlit.components.v1 as components
+
 from bs4 import BeautifulSoup
 from PIL import Image, UnidentifiedImageError
-import warnings
+
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
 from pandas.errors import EmptyDataError
-import threading
 from requests.adapters import HTTPAdapter
-import base64
+
 
 # =========================================
 # APP SETUP
@@ -32,32 +36,23 @@ st.set_page_config(layout="wide")
 st.title("PDP QA Tool ✅")
 
 st.markdown(
-    "<style>"
-    "div[data-testid='stFileUploader'] > section {"
-    "background:#232733;"
-    "border:1px solid #2f3442;"
-    "border-radius:10px;"
-    "padding:10px;"
-    "}"
-    "div[data-testid='stDownloadButton'] > button {"
-    "width:100%;"
-    "min-height:56px;"
-    "border-radius:10px;"
-    "border:1px solid #2f3442;"
-    "background:#232733;"
-    "color:white;"
-    "font-weight:700;"
-    "}"
-    "div[data-testid='stDownloadButton'] > button:hover {"
-    "border-color:#4EA1FF;"
-    "color:white;"
-    "}"
-    "</style>",
+    """
+    <style>
+    .block-container {
+        padding-top: 1rem;
+        padding-bottom: 2rem;
+    }
+    </style>
+    """,
     unsafe_allow_html=True,
 )
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0 Safari/537.36"
+    ),
     "Accept-Language": "en-US,en;q=0.9",
     "Connection": "keep-alive",
 }
@@ -65,10 +60,12 @@ HEADERS = {
 REQUEST_TIMEOUT = 6
 IMAGE_TIMEOUT = 2.5
 MAX_CACHE = 400
+
 # Retailer-specific fetch tuning
 WALGREENS_REQUEST_TIMEOUT = 18
 WALGREENS_DEBUG_TIMEOUT = 25
 WALGREENS_API_TIMEOUT = 10
+
 
 # =========================================
 # PERFORMANCE SETTINGS
@@ -90,6 +87,15 @@ IMAGE_HASH_CACHE_MAX = 120
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
 MAX_SAFE_IMAGE_PIXELS = 50_000_000
 MAX_IMAGE_SLOTS_TO_COMPARE = 5
+
+
+# =========================================
+# GLOBAL CACHES / THREAD STATE
+# =========================================
+html_cache = {}
+image_hash_cache = {}
+thread_local = threading.local()
+
 
 # =========================================
 # VISUAL LAYOUT SETTINGS
@@ -122,473 +128,18 @@ def get_session():
         thread_local.session = session
     return thread_local.session
 
-# =========================================
-# GENERIC HELPERS
-# =========================================
-def normalize_space(text):
-    text = str(text or "")
-    text = html.unescape(text)
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
 
-
-def normalize_text(text):
-    if not isinstance(text, str):
-        return ""
-    return re.sub(r"[^a-z0-9\s]", "", text.lower())
-
-
-def dedupe_preserve_order(items):
-    seen = set()
-    out = []
-    for item in items:
-        item = normalize_space(item)
-        if item and item not in seen:
-            seen.add(item)
-            out.append(item)
-    return out
-
-
-def keyword_score(a, b):
-    return int(SequenceMatcher(None, normalize_text(a), normalize_text(b)).ratio() * 100)
-
-
-def description_similarity_score(a, b):
-    a_norm = normalize_text(a)
-    b_norm = normalize_text(b)
-
-    if not a_norm and not b_norm:
-        return 100
-
-    if a_norm == b_norm:
-        return 100
-
-    return int(SequenceMatcher(None, a_norm, b_norm).ratio() * 100)
-
-def html_escape_text(text):
-    return html.escape(str(text or ""))
-
-
-def equal_height_block(text, min_height=210):
-    safe_text = html_escape_text(text or "Missing")
-    return (
-        f"<div style=\""
-        f"width:100%;"
-        f"min-height:{min_height}px;"
-        f"padding:0;"
-        f"margin:0;"
-        f"background:transparent;"
-        f"color:#FFFFFF;"
-        f"white-space:pre-wrap;"
-        f"line-height:{COPY_LINE_HEIGHT};"
-        f"font-size:{COPY_TEXT_SIZE}px;"
-        f"font-weight:500;"
-        f"text-indent:0;"
-        f"overflow-wrap:anywhere;"
-        f"word-break:break-word;"
-        f"\">{safe_text}</div>"
-    )
-
-
-def equal_feature_block(text, min_height=90):
-    safe_text = html_escape_text(text or "Missing")
-    return (
-        f"<div style=\""
-        f"width:100%;"
-        f"min-height:{min_height}px;"
-        f"padding:0;"
-        f"margin:0;"
-        f"background:transparent;"
-        f"color:#FFFFFF;"
-        f"white-space:pre-wrap;"
-        f"line-height:{COPY_LINE_HEIGHT};"
-        f"font-size:{COPY_TEXT_SIZE}px;"
-        f"font-weight:500;"
-        f"text-indent:0;"
-        f"overflow-wrap:anywhere;"
-        f"word-break:break-word;"
-        f"\">{safe_text}</div>"
-    )
-
-
-def score_text_html(score):
-    if score >= 80:
-        color = "#4CAF50"
-        label = "Strong"
-    elif score >= 50:
-        color = "#FFC107"
-        label = "Review"
-    else:
-        color = "#F44336"
-        label = "Poor"
-
-    return f"<span style='color:{color}; font-weight:900; font-size:22px;'>{score}% ({label})</span>"
-
-
-def section_header_html(label, score):
-    safe_label = html_escape_text(label or "")
-    return (
-        f"<div style=\""
-        f"display:flex;"
-        f"justify-content:space-between;"
-        f"align-items:flex-end;"
-        f"gap:12px;"
-        f"margin-top:{SECTION_VERTICAL_GAP}px;"
-        f"margin-bottom:{SECTION_VERTICAL_GAP}px;"
-        f"\">"
-        f"<div style=\"font-size:{SECTION_HEADER_SIZE}px; font-weight:900; color:#FFFFFF; line-height:1.0;\">"
-        f"{safe_label}"
-        f"</div>"
-        f"<div style=\"line-height:1.0;\">{score_text_html(score)}</div>"
-        f"</div>"
-    )
-
-
-def avg_score_bar_html(label, score):
-    if score >= 80:
-        color = "#2E7D32"
-    elif score >= 50:
-        color = "#F9A825"
-    else:
-        color = "#C62828"
-
-    safe_label = html_escape_text(label or "")
-    return (
-        f"<div style=\""
-        f"background-color:{color};"
-        f"padding:6px 10px;"
-        f"border-radius:4px;"
-        f"color:white;"
-        f"font-weight:900;"
-        f"font-size:19px;"
-        f"margin-top:2px;"
-        f"margin-bottom:{IMG_SPACE_PX}px;"
-        f"display:flex;"
-        f"justify-content:space-between;"
-        f"align-items:center;"
-        f"gap:10px;"
-        f"\">"
-        f"<span>{safe_label}</span>"
-        f"<span style=\"color:#FFFFFF; font-weight:900; font-size:20px;\">{score}%</span>"
-        f"</div>"
-    )
-
-
-def column_header_link_html(label, item_number, href):
-    safe_label = html_escape_text(label or "")
-    safe_item = html_escape_text(item_number or "")
-    safe_href = html.escape(str(href or ""), quote=True)
-
-    if safe_href and safe_item:
-        item_html = (
-            f"<a href=\"{safe_href}\" target=\"_blank\" "
-            f"style=\"color:#3EA6FF; text-decoration:none; font-weight:900;\">"
-            f"{safe_item}</a>"
-        )
-    else:
-        item_html = f"<span style=\"color:#3EA6FF; font-weight:900;\">{safe_item or 'Missing'}</span>"
-
-    return (
-        f"<div style=\""
-        f"text-align:left;"
-        f"margin-top:0;"
-        f"margin-bottom:2px;"
-        f"font-size:28px;"
-        f"font-weight:900;"
-        f"color:#FFFFFF;"
-        f"line-height:1.05;"
-        f"\">"
-        f"{safe_label}: {item_html}"
-        f"</div>"
-    )
-
-
-def image_header_html(label):
-    safe_label = html_escape_text(label or "")
-    return (
-        f"<div style=\""
-        f"text-align:left;"
-        f"margin-top:0;"
-        f"margin-bottom:2px;"
-        f"font-size:28px;"
-        f"font-weight:900;"
-        f"color:#FFFFFF;"
-        f"line-height:1.05;"
-        f"\">"
-        f"{safe_label}"
-        f"</div>"
-    )
-
-
-def image_compare_cell_html(url):
-    if url:
-        safe_url = html.escape(str(url), quote=True)
-        return (
-            f"<div style=\""
-            f"width:100%;"
-            f"margin:0;"
-            f"padding:0;"
-            f"display:flex;"
-            f"align-items:flex-start;"
-            f"justify-content:center;"
-            f"overflow:hidden;"
-            f"\">"
-            f"<img src=\"{safe_url}\" style=\"display:block; width:100%; height:auto; object-fit:contain;\" />"
-            f"</div>"
-        )
-
-    return (
-        f"<div style=\""
-        f"width:100%;"
-        f"min-height:80px;"
-        f"display:flex;"
-        f"align-items:center;"
-        f"justify-content:center;"
-        f"margin:0;"
-        f"padding:0;"
-        f"color:#C62828;"
-        f"font-size:16px;"
-        f"font-weight:700;"
-        f"\">"
-        f"Missing"
-        f"</div>"
-    )
-
-def image_compare_row_html(s_url, r_url, score):
-    return (
-        f"<div style=\""
-        f"display:grid;"
-        f"grid-template-columns:minmax(0,1fr) minmax(0,1fr) {IMG_SCORE_WIDTH_PX}px;"
-        f"column-gap:8px;"
-        f"align-items:start;"
-        f"margin:0 0 {IMG_SPACE_PX}px 0;"
-        f"padding:0;"
-        f"\">"
-        f"<div style=\"margin:0; padding:0;\">"
-        f"{image_compare_cell_html(s_url)}"
-        f"</div>"
-        f"<div style=\"margin:0; padding:0;\">"
-        f"{image_compare_cell_html(r_url)}"
-        f"</div>"
-        f"<div style=\""
-        f"display:flex;"
-        f"align-items:flex-start;"
-        f"justify-content:flex-start;"
-        f"text-align:left;"
-        f"margin:0;"
-        f"padding-top:4px;"
-        f"\">"
-        f"{score_text_html(score)}"
-        f"</div>"
-        f"</div>"
-    )
-
-def image_tile_html(label, url, box_height=170):
-    safe_label = html.escape(label)
-
-    if url:
-        safe_url = html.escape(url, quote=True)
-        return f'''<div style="border:1px solid #E0E0E0;border-radius:8px;background:#FFFFFF;padding:8px;">
-<div style="font-size:45px;font-weight:600;margin-bottom:6px;">{safe_label}</div>
-<div style="height:{box_height}px;display:flex;align-items:center;justify-content:center;background:#FAFAFA;border-radius:6px;overflow:hidden;">
-<img src="{safe_url}" style="max-width:100%;max-height:{box_height}px;object-fit:contain;" />
-</div>
-</div>'''
-    else:
-        return f'''<div style="border:1px solid #E0E0E0;border-radius:8px;background:#FFFFFF;padding:8px;">
-<div style="font-size:45px;font-weight:600;margin-bottom:6px;">{safe_label}</div>
-<div style="height:{box_height}px;display:flex;align-items:center;justify-content:center;background:#FAFAFA;border-radius:6px;color:#C62828;font-size:14px;font-weight:600;">
-❌ Missing
-</div>
-</div>'''
-
-
-def image_slot_block_html(slot_num, s_url, r_url, score, retailer_name="CVS", box_height=170):
-    if score >= 80:
-        score_color = "#2E7D32"
-    elif score >= 50:
-        score_color = "#F9A825"
-    else:
-        score_color = "#C62828"
-
-    return f'''<div style="border:1px solid #DADADA;border-radius:10px;padding:10px;margin-bottom:12px;background:#FCFCFC;">
-<div style="font-weight:700;margin-bottom:10px;color:{score_color};">Image Slot {slot_num} — {score}%</div>
-<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
-{image_tile_html("Salsify", s_url, box_height=box_height)}
-{image_tile_html(retailer_name, r_url, box_height=box_height)}
-</div>
-</div>'''
-
-
-def build_image_panel_html(s_images, r_images, max_images, retailer_name="CVS", box_height=170):
-    blocks = []
-
-    for i in range(max_images):
-        s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else ""
-        r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else ""
-        score = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
-
-        blocks.append(
-            image_slot_block_html(
-                slot_num=i + 1,
-                s_url=s_url,
-                r_url=r_url,
-                score=score,
-                retailer_name=retailer_name,
-                box_height=box_height,
-            )
-        )
-
-    return f'''<div style="padding-right:4px;">{"".join(blocks)}</div>'''
-
-
-def read_uploaded_file_from_bytes(file_bytes, file_name):
-    if not file_bytes:
-        raise EmptyDataError("Uploaded file is empty.")
-    if len(file_bytes.strip()) == 0:
-        raise EmptyDataError("Uploaded file is empty.")
-
-    file_name = str(file_name or "").lower().strip()
-
-    if file_name.endswith(".xlsx"):
-        xls = pd.ExcelFile(BytesIO(file_bytes), engine="openpyxl")
-        frames = []
-
-        for sheet_name in xls.sheet_names:
-            sheet_df = pd.read_excel(
-                BytesIO(file_bytes),
-                sheet_name=sheet_name,
-                engine="openpyxl",
-            )
-
-            if sheet_df is None or sheet_df.empty:
-                continue
-
-            sheet_df = sheet_df.copy()
-            sheet_df["retailer"] = str(sheet_name).strip()
-            frames.append(sheet_df)
-
-        if not frames:
-            raise EmptyDataError("No readable sheets found in uploaded Excel file.")
-
-        return pd.concat(frames, ignore_index=True)
-
-    last_error = None
-    for encoding in ["utf-8-sig", "utf-8", "latin1"]:
-        try:
-            return pd.read_csv(BytesIO(file_bytes), encoding=encoding)
-        except Exception as e:
-            last_error = e
-
-    raise last_error if last_error else EmptyDataError("Could not parse uploaded file.")
-
-def infer_retailer_name_from_url(url):
-    if pd.isna(url):
-        return "Retailer"
-
-    url = str(url or "").strip().lower()
-
-    if not url:
-        return "Retailer"
-
-    if "cvs.com" in url:
-        return "CVS"
-    if "walmart.com" in url:
-        return "Walmart"
-    if "target.com" in url:
-        return "Target"
-    if "kroger.com" in url:
-        return "Kroger"
-    if "samsclub.com" in url or "sam's club" in url:
-        return "Sam's Club"
-    if "walgreens.com" in url:
-        return "Walgreens"
-    if "amazon.com" in url:
-        return "Amazon"
-
-    return "Retailer"
-
-
-def prepare_input_df(df):
-    df = df.copy()
-    df.columns = [str(c).strip().lower() for c in df.columns]
-
-    # Rename only safe one-to-one columns first.
-    df.rename(
-        columns={
-            "salsify url": "salsify_url",
-            "retail url": "retail_url",
-            "sku id": "sku",
-            "product sku": "sku",
-            "retailer name": "retailer",
-            "retailer_name": "retailer",
-        },
-        inplace=True,
-    )
-
-    # Build one normalized retailer_rpc column without creating duplicate column names.
-    rpc_candidates = []
-    for rpc_col in ["retailer_rpc", "cvs rpc", "walgreens rpc"]:
-        if rpc_col in df.columns:
-            rpc_candidates.append(
-                df[rpc_col]
-                .replace("#N/A", "")
-                .fillna("")
-                .astype(str)
-                .str.strip()
-            )
-
-    if rpc_candidates:
-        retailer_rpc = rpc_candidates[0].copy()
-        for series in rpc_candidates[1:]:
-            retailer_rpc = retailer_rpc.where(retailer_rpc != "", series)
-        df["retailer_rpc"] = retailer_rpc
-    else:
-        df["retailer_rpc"] = ""
-
-    # Remove original retailer-specific rpc columns after combining.
-    for rpc_col in ["cvs rpc", "walgreens rpc"]:
-        if rpc_col in df.columns:
-            df.drop(columns=[rpc_col], inplace=True)
-
-    # Ensure required working columns exist.
-    for col in ["sku", "salsify_url", "retail_url", "brand", "retailer_rpc"]:
-        if col not in df.columns:
-            df[col] = ""
-
-    # Clean standard text columns safely.
-    for col in ["sku", "salsify_url", "retail_url", "brand", "retailer_rpc"]:
-        df[col] = (
-            df[col]
-            .replace("#N/A", "")
-            .fillna("")
-            .astype(str)
-            .str.strip()
-        )
-
-    # Normalize retailer column.
-    if "retailer" not in df.columns:
-        df["retailer"] = df["retail_url"].apply(infer_retailer_name_from_url)
-    else:
-        df["retailer"] = (
-            df["retailer"]
-            .replace("#N/A", "")
-            .fillna("")
-            .astype(str)
-            .str.strip()
-        )
-
-    required = ["sku", "salsify_url", "retail_url"]
-    missing = [c for c in required if c not in df.columns]
-    if missing:
-        raise ValueError(f"Missing required columns: {missing}")
-
-    return df
-    
 def clear_in_memory_caches():
+    global html_cache, image_hash_cache
+
+    if not isinstance(html_cache, dict):
+        html_cache = {}
+    if not isinstance(image_hash_cache, dict):
+        image_hash_cache = {}
+
     html_cache.clear()
     image_hash_cache.clear()
-
+    
 # =========================================
 # HTML FETCH
 # =========================================
