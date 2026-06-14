@@ -2548,11 +2548,11 @@ def extract_walgreens_copy_from_product_sections(section_list):
 
 def extract_walgreens_images_from_product_info(product_info):
     """
-    Walgreens image strategy:
-    1) Prefer stripUrlX (100px) from filmStripUrl.
-    2) Fall back to metaImage (often 220px).
-    3) Then largeImageUrlX (450px).
-    4) Then productImageUrl / zoomImageUrl (usually 900px).
+    Walgreens image strategy for visual QA:
+    1) Prefer largeImageUrlX (450px) from filmStripUrl.
+    2) Then productImageUrl / zoomImageUrl (usually 900px).
+    3) Then metaImage (often 220px).
+    4) Then stripUrlX (100px) only as a last resort.
     5) Dedupe by image family so one image slot is returned once.
     """
     if not isinstance(product_info, dict):
@@ -2566,21 +2566,24 @@ def extract_walgreens_images_from_product_info(product_info):
             if not isinstance(item, dict):
                 continue
 
-            for k, v in item.items():
-                if "stripurl" in k.lower():
-                    _add_walgreens_image_candidate(candidates, v, source_priority=1)
-
+            # Best source for visual QA: 450px.
             for k, v in item.items():
                 if "largeimageurl" in k.lower():
-                    _add_walgreens_image_candidate(candidates, v, source_priority=3)
+                    _add_walgreens_image_candidate(candidates, v, source_priority=1)
 
+            # Next best: 900px.
             for k, v in item.items():
                 if "zoomimageurl" in k.lower():
+                    _add_walgreens_image_candidate(candidates, v, source_priority=2)
+
+            # Lowest-res fallback only.
+            for k, v in item.items():
+                if "stripurl" in k.lower():
                     _add_walgreens_image_candidate(candidates, v, source_priority=4)
 
-    _add_walgreens_image_candidate(candidates, product_info.get("metaImage", ""), source_priority=2)
-    _add_walgreens_image_candidate(candidates, product_info.get("productImageUrl", ""), source_priority=4)
-    _add_walgreens_image_candidate(candidates, product_info.get("zoomImageUrl", ""), source_priority=4)
+    _add_walgreens_image_candidate(candidates, product_info.get("productImageUrl", ""), source_priority=2)
+    _add_walgreens_image_candidate(candidates, product_info.get("zoomImageUrl", ""), source_priority=2)
+    _add_walgreens_image_candidate(candidates, product_info.get("metaImage", ""), source_priority=3)
 
     ordered = sorted(
         candidates.values(),
@@ -2644,15 +2647,18 @@ def _walgreens_image_family_key(url):
 
 
 def _walgreens_image_size_rank(url):
+    """
+    Prefer 450px for visual QA, then 900px, then 220px, then 100px.
+    """
     url = str(url or "").lower()
 
-    if "/100." in url or "_100." in url:
-        return 1
-    if "/220." in url or "_220." in url:
-        return 2
     if "/450." in url or "_450." in url:
-        return 3
+        return 1
     if "/900." in url or "_900." in url:
+        return 2
+    if "/220." in url or "_220." in url:
+        return 3
+    if "/100." in url or "_100." in url:
         return 4
 
     return 99
@@ -2961,34 +2967,38 @@ def extract_walgreens_images_from_html(html_text):
 
     candidates = {}
 
-    for m in re.finditer(
-        r'"stripUrl\d+"\s*:\s*"((?:\\.|[^"\\])*)"',
-        html_text,
-        flags=re.IGNORECASE | re.DOTALL,
-    ):
-        _add_walgreens_image_candidate(candidates, _decode_walgreens_json_string(m.group(1)), source_priority=1)
-
-    for m in re.finditer(
-        r'"metaImage"\s*:\s*"((?:\\.|[^"\\])*)"',
-        html_text,
-        flags=re.IGNORECASE | re.DOTALL,
-    ):
-        _add_walgreens_image_candidate(candidates, _decode_walgreens_json_string(m.group(1)), source_priority=2)
-
+    # Prefer 450px large images first.
     for m in re.finditer(
         r'"largeImageUrl\d+"\s*:\s*"((?:\\.|[^"\\])*)"',
         html_text,
         flags=re.IGNORECASE | re.DOTALL,
     ):
-        _add_walgreens_image_candidate(candidates, _decode_walgreens_json_string(m.group(1)), source_priority=3)
+        _add_walgreens_image_candidate(candidates, _decode_walgreens_json_string(m.group(1)), source_priority=1)
 
+    # Then 900px product-level/zoom images.
     for field_name in ["productImageUrl", "zoomImageUrl"]:
         for m in re.finditer(
             rf'"{field_name}"\s*:\s*"((?:\\.|[^"\\])*)"',
             html_text,
             flags=re.IGNORECASE | re.DOTALL,
         ):
-            _add_walgreens_image_candidate(candidates, _decode_walgreens_json_string(m.group(1)), source_priority=4)
+            _add_walgreens_image_candidate(candidates, _decode_walgreens_json_string(m.group(1)), source_priority=2)
+
+    # Then 220px meta image.
+    for m in re.finditer(
+        r'"metaImage"\s*:\s*"((?:\\.|[^"\\])*)"',
+        html_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    ):
+        _add_walgreens_image_candidate(candidates, _decode_walgreens_json_string(m.group(1)), source_priority=3)
+
+    # Last resort: 100px strip images.
+    for m in re.finditer(
+        r'"stripUrl\d+"\s*:\s*"((?:\\.|[^"\\])*)"',
+        html_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    ):
+        _add_walgreens_image_candidate(candidates, _decode_walgreens_json_string(m.group(1)), source_priority=4)
 
     soup = BeautifulSoup(html_text, "html.parser")
     for selector in [
