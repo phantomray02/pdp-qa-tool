@@ -2421,14 +2421,43 @@ def format_walgreens_title_from_parts(raw_title="", size_count="", primary_attr=
     return title_clean
 
 
+def _find_walgreens_feature_block_start(desc_html):
+    """
+    Walgreens live productDesc generally switches from description to features at:
+    <br/>
+<UL>
+<LI>
+
+    Be tolerant of case, whitespace, missing newlines, and malformed HTML.
+    """
+    if not desc_html:
+        return None
+
+    working = str(desc_html)
+    patterns = [
+        r"<br\s*/?>\s*<ul[^>]*>\s*<li[^>]*>",
+        r"<ul[^>]*>\s*<li[^>]*>",
+        r"<li[^>]*>",
+    ]
+
+    for pattern in patterns:
+        m = re.search(pattern, working, flags=re.IGNORECASE | re.DOTALL)
+        if m:
+            return m.start(), m.end()
+
+    return None
+
+
 def _extract_walgreens_feature_items_from_raw_product_desc(desc_html):
     """
-    Parse Walgreens feature bullets from the raw productDesc HTML string.
+    Walgreens live features start at a block like:
+    <br/>
+<UL>
+<LI>
 
-    Strategy:
-    1) Prefer real LI tags.
-    2) If LI markup is weak/malformed, fall back to splitting cleaned text.
-    3) Strip utility/footer copy such as directions, disposal, legal-ish tail.
+    Each feature separation point is another <LI> marker, and the last feature may
+    be the only one with a closing </LI>. So we split on raw <LI> markers and stop
+    each chunk at the next <LI>, a closing </UL>, or the end of the string.
     """
     if not desc_html:
         return []
@@ -2441,46 +2470,65 @@ def _extract_walgreens_feature_items_from_raw_product_desc(desc_html):
         flags=re.IGNORECASE | re.DOTALL,
     )
 
-    soup = BeautifulSoup(working, "html.parser")
+    start_info = _find_walgreens_feature_block_start(working)
+    if not start_info:
+        return []
+
+    _, feature_start = start_info
+    feature_html = working[feature_start:]
+
+    li_markers = list(re.finditer(r"<li[^>]*>", feature_html, flags=re.IGNORECASE))
     features = []
 
-    for li in soup.find_all("li"):
-        text = li.get_text(" ", strip=True)
-        text = _normalize_walgreens_text(text)
-        text = strip_walgreens_utility_tail(text)
+    if not li_markers:
+        return []
 
-        if not text:
+    for i, marker in enumerate(li_markers):
+        start = marker.end()
+        end_candidates = []
+
+        if i + 1 < len(li_markers):
+            end_candidates.append(li_markers[i + 1].start())
+
+        ul_close = re.search(r"</ul\s*>", feature_html[start:], flags=re.IGNORECASE)
+        if ul_close:
+            end_candidates.append(start + ul_close.start())
+
+        li_close = re.search(r"</li\s*>", feature_html[start:], flags=re.IGNORECASE)
+        if li_close:
+            end_candidates.append(start + li_close.start())
+
+        end = min(end_candidates) if end_candidates else len(feature_html)
+        chunk = feature_html[start:end]
+
+        chunk = re.sub(r"</li\s*>", " ", chunk, flags=re.IGNORECASE)
+        chunk = re.sub(r"<br\s*/?>", " ", chunk, flags=re.IGNORECASE)
+        chunk = re.sub(r"</?ul[^>]*>", " ", chunk, flags=re.IGNORECASE)
+
+        feature_text = BeautifulSoup(chunk, "html.parser").get_text(" ", strip=True)
+        feature_text = _normalize_walgreens_text(feature_text)
+        feature_text = strip_walgreens_utility_tail(feature_text)
+
+        if not feature_text:
             continue
-        if is_walgreens_utility_feature(text):
+        if is_walgreens_utility_feature(feature_text):
             continue
 
-        features.append(text)
+        features.append(feature_text)
 
-    features = dedupe_preserve_order(features)
-    if features:
-        return features[:5]
-
-    ul = soup.find("ul")
-    if ul:
-        ul_text = _normalize_walgreens_text(ul.get_text(" | ", strip=True))
-        fallback_parts = split_walgreens_feature_fallback_text(ul_text)
-        if fallback_parts:
-            return fallback_parts[:5]
-
-    whole_text = _normalize_walgreens_text(soup.get_text(" ", strip=True))
-    fallback_parts = split_walgreens_feature_fallback_text(whole_text)
-    return fallback_parts[:5]
+    return dedupe_preserve_order(features)[:5]
 
 def extract_walgreens_copy_from_product_desc_html(product_desc_html):
     """
-    productDesc structure usually looks like:
-    - marketing paragraph first
-    - then UL / LI bullets
-    - then utility tail (Made in USA, directions, disposal, scripts)
+    Walgreens live description starts inside:
+    {"description":{"productDesc":"<p> ...
 
-    We want:
-    - description = marketing paragraph only
-    - features = LI bullets only (cleaned)
+    and ends right before the feature block that looks like:
+    )<br/>
+<UL>
+<LI>
+
+    The weird code &#34; should decode to a normal quote character via html.unescape.
     """
     if not product_desc_html:
         return "", []
@@ -2493,37 +2541,29 @@ def extract_walgreens_copy_from_product_desc_html(product_desc_html):
         flags=re.IGNORECASE | re.DOTALL,
     )
 
-    soup = BeautifulSoup(working, "html.parser")
-    first_ul = soup.find("ul")
-
-    if first_ul:
-        desc_parts = []
-        for child in soup.contents:
-            if child == first_ul:
-                break
-            if getattr(child, "name", None) == "ul":
-                break
-
-            if hasattr(child, "get_text"):
-                child_text = child.get_text(" ", strip=True)
-            else:
-                child_text = str(child).strip()
-
-            child_text = _normalize_walgreens_text(child_text)
-            child_text = strip_walgreens_utility_tail(child_text)
-
-            if child_text:
-                desc_parts.append(child_text)
-
-        description_text = normalize_space(" ".join(desc_parts))
+    start_info = _find_walgreens_feature_block_start(working)
+    if start_info:
+        desc_html = working[:start_info[0]]
     else:
-        description_text = _normalize_walgreens_text(soup.get_text(" ", strip=True))
-        description_text = strip_walgreens_utility_tail(description_text)
+        desc_html = working
+
+    # Trim the trailing <br/> that usually sits right before the UL.
+    desc_html = re.sub(r"(?:<br\s*/?>\s*)+$", " ", desc_html, flags=re.IGNORECASE)
+
+    # Prefer the paragraph body if present.
+    p_match = re.search(r"<p[^>]*>(.*?)$", desc_html, flags=re.IGNORECASE | re.DOTALL)
+    if p_match:
+        desc_html = p_match.group(1)
+
+    description_text = BeautifulSoup(desc_html, "html.parser").get_text(" ", strip=True)
+    description_text = _normalize_walgreens_text(description_text)
+    description_text = strip_walgreens_utility_tail(description_text)
+
+    # Clean one common malformed trailing extra parenthesis seen on Walgreens.
+    description_text = re.sub(r"\)\)$", ")", description_text).strip()
+    description_text = normalize_space(description_text)
 
     feature_items = _extract_walgreens_feature_items_from_raw_product_desc(working)
-    description_text = strip_walgreens_utility_tail(description_text)
-    description_text = _normalize_walgreens_text(description_text)
-
     return description_text, feature_items
 
 def extract_walgreens_copy_from_product_sections(section_list):
@@ -3436,7 +3476,9 @@ def finalize_retailer_copy(retailer_name, r_text):
     if retailer == "walgreens":
         out["title"] = clean_walgreens_title(out.get("title", ""))
         out["description"] = clean_walgreens_text(out.get("description", ""))
-        out["features"] = normalize_walgreens_features_final(out.get("features", []), max_features=5)
+        out["features"] = dedupe_preserve_order(
+            [clean_walgreens_text(x) for x in (out.get("features", []) or []) if clean_walgreens_text(x)]
+        )[:5]
         return out
 
     # Default path remains CVS.
@@ -3444,7 +3486,7 @@ def finalize_retailer_copy(retailer_name, r_text):
     out["description"] = clean_cvs_text(out.get("description", ""))
     out["features"] = normalize_cvs_features(out.get("features", []))
     return out
-    
+
 # =========================================
 # QUALITY HELPERS
 # =========================================
