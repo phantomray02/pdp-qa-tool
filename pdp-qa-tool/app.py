@@ -171,8 +171,9 @@ def description_similarity_score(a, b):
     b_norm = normalize_text(b)
 
     if not a_norm and not b_norm:
-        return 100
-
+        return 0
+    if not a_norm or not b_norm:
+        return 0
     if a_norm == b_norm:
         return 100
 
@@ -686,6 +687,23 @@ def get_walgreens_product_id_from_url(retail_url):
 
     return ""
 
+
+def get_walgreens_sku_id_from_url(retail_url):
+    """
+    Extracts selected skuId from Walgreens variant/querystring PDPs such as:
+    .../ID=300447053-product?skuId=400632972
+    .../ID=300465880-product?skuId=sku6275345
+    """
+    if not retail_url:
+        return ""
+
+    retail_url = str(retail_url or "").strip()
+
+    m = re.search(r"[?&]skuId=([A-Za-z0-9_-]+)", retail_url, flags=re.IGNORECASE)
+    if m:
+        return m.group(1)
+
+    return ""
 
 def fetch_json_with_timeout(url, timeout_seconds):
     if not url:
@@ -2406,13 +2424,16 @@ def format_walgreens_title_from_parts(raw_title="", size_count="", primary_attr=
 def _extract_walgreens_feature_items_from_raw_product_desc(desc_html):
     """
     Parse Walgreens feature bullets from the raw productDesc HTML string.
-    Split on raw <LI> markers because Walgreens productDesc markup can be malformed.
+
+    Strategy:
+    1) Prefer real LI tags.
+    2) If LI markup is weak/malformed, fall back to splitting cleaned text.
+    3) Strip utility/footer copy such as directions, disposal, legal-ish tail.
     """
     if not desc_html:
         return []
 
     working = str(desc_html)
-
     working = re.sub(
         r"<script\b[^>]*>.*?</script>",
         " ",
@@ -2420,60 +2441,51 @@ def _extract_walgreens_feature_items_from_raw_product_desc(desc_html):
         flags=re.IGNORECASE | re.DOTALL,
     )
 
-    ul_match = re.search(r"<ul[^>]*>(.*?)</ul>", working, flags=re.IGNORECASE | re.DOTALL)
-    if not ul_match:
-        return []
-
-    ul_html = ul_match.group(1)
-
-    li_markers = list(re.finditer(r"<li[^>]*>", ul_html, flags=re.IGNORECASE))
-    if not li_markers:
-        return []
-
+    soup = BeautifulSoup(working, "html.parser")
     features = []
 
-    for i, marker in enumerate(li_markers):
-        start = marker.end()
-        end = li_markers[i + 1].start() if i + 1 < len(li_markers) else len(ul_html)
-
-        chunk = ul_html[start:end]
-        chunk = re.sub(r"</li\s*>", " ", chunk, flags=re.IGNORECASE)
-        chunk = re.sub(r"<br\s*/?>", " ", chunk, flags=re.IGNORECASE)
-
-        text = BeautifulSoup(chunk, "html.parser").get_text(" ", strip=True)
+    for li in soup.find_all("li"):
+        text = li.get_text(" ", strip=True)
         text = _normalize_walgreens_text(text)
+        text = strip_walgreens_utility_tail(text)
 
         if not text:
             continue
-        if re.search(r"^Made in USA\b", text, flags=re.IGNORECASE):
-            continue
-        if re.search(r"^\d+\.\s*To Use:", text, flags=re.IGNORECASE):
-            continue
-        if re.search(r"^\d+\.\s*To Dispose:", text, flags=re.IGNORECASE):
-            continue
-        if re.search(r"Walgreens does not represent or warrant", text, flags=re.IGNORECASE):
+        if is_walgreens_utility_feature(text):
             continue
 
         features.append(text)
 
-    return dedupe_preserve_order(features)[:5]
+    features = dedupe_preserve_order(features)
+    if features:
+        return features[:5]
 
+    ul = soup.find("ul")
+    if ul:
+        ul_text = _normalize_walgreens_text(ul.get_text(" | ", strip=True))
+        fallback_parts = split_walgreens_feature_fallback_text(ul_text)
+        if fallback_parts:
+            return fallback_parts[:5]
+
+    whole_text = _normalize_walgreens_text(soup.get_text(" ", strip=True))
+    fallback_parts = split_walgreens_feature_fallback_text(whole_text)
+    return fallback_parts[:5]
 
 def extract_walgreens_copy_from_product_desc_html(product_desc_html):
     """
-    productDesc structure:
-    - paragraph first
+    productDesc structure usually looks like:
+    - marketing paragraph first
     - then UL / LI bullets
+    - then utility tail (Made in USA, directions, disposal, scripts)
 
     We want:
-    - description = ONLY content before the first <UL>
-    - features = LI items split from raw LI markers
+    - description = marketing paragraph only
+    - features = LI bullets only (cleaned)
     """
     if not product_desc_html:
         return "", []
 
     working = str(product_desc_html)
-
     working = re.sub(
         r"<script\b[^>]*>.*?</script>",
         " ",
@@ -2481,17 +2493,38 @@ def extract_walgreens_copy_from_product_desc_html(product_desc_html):
         flags=re.IGNORECASE | re.DOTALL,
     )
 
-    before_ul = re.split(r"<ul[^>]*>", working, maxsplit=1, flags=re.IGNORECASE)[0]
-    before_ul = re.sub(r"<br\s*/?>", " ", before_ul, flags=re.IGNORECASE)
-    before_ul = re.sub(r"</p\s*>\s*<p[^>]*>", " ", before_ul, flags=re.IGNORECASE)
+    soup = BeautifulSoup(working, "html.parser")
+    first_ul = soup.find("ul")
 
-    description_text = BeautifulSoup(before_ul, "html.parser").get_text(" ", strip=True)
-    description_text = _normalize_walgreens_text(description_text)
+    if first_ul:
+        desc_parts = []
+        for child in soup.contents:
+            if child == first_ul:
+                break
+            if getattr(child, "name", None) == "ul":
+                break
+
+            if hasattr(child, "get_text"):
+                child_text = child.get_text(" ", strip=True)
+            else:
+                child_text = str(child).strip()
+
+            child_text = _normalize_walgreens_text(child_text)
+            child_text = strip_walgreens_utility_tail(child_text)
+
+            if child_text:
+                desc_parts.append(child_text)
+
+        description_text = normalize_space(" ".join(desc_parts))
+    else:
+        description_text = _normalize_walgreens_text(soup.get_text(" ", strip=True))
+        description_text = strip_walgreens_utility_tail(description_text)
 
     feature_items = _extract_walgreens_feature_items_from_raw_product_desc(working)
+    description_text = strip_walgreens_utility_tail(description_text)
+    description_text = _normalize_walgreens_text(description_text)
 
     return description_text, feature_items
-
 
 def extract_walgreens_copy_from_product_sections(section_list):
     description = ""
@@ -2508,10 +2541,10 @@ def extract_walgreens_copy_from_product_sections(section_list):
         if isinstance(desc_obj, dict) and desc_obj.get("productDesc"):
             desc_html = _decode_walgreens_json_string(desc_obj.get("productDesc", ""))
             description, features = extract_walgreens_copy_from_product_desc_html(desc_html)
-            break
+            if description or features:
+                break
 
     return description, features
-
 
 def extract_walgreens_images_from_product_info(product_info):
     image_urls = []
@@ -2897,14 +2930,78 @@ def extract_walgreens_images_from_html(html_text):
 def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
     """
     Walgreens strategy:
-    1) For prod... items, try the lightweight prodDesc.jsp fragment first.
-    2) Then try the lighter product API.
-    3) If that fails, fall back to full PDP HTML.
+    1) If the URL is a search-results page, do not trust API-first logic.
+    2) If the URL contains a selected skuId variant, prefer full HTML first,
+       because productId-only API calls can miss the exact selected variant copy.
+    3) For prod... items, try prodDesc.jsp fragment first.
+    4) Then try the product API.
+    5) Then try prodDesc.jsp again as fallback.
+    6) Finally fall back to full PDP HTML.
     """
+    retail_url = str(retail_url or "").strip()
+    retail_url_lc = retail_url.lower()
+
     product_id = get_walgreens_product_id_from_url(retail_url)
     product_id_lc = str(product_id or "").lower()
+    selected_sku_id = get_walgreens_sku_id_from_url(retail_url)
 
-    # 1) prod... items often work better through prodDesc.jsp
+    if "/search/results.jsp" in retail_url_lc:
+        html_text = get_walgreens_html(retail_url)
+        html_bundle = {
+            "text": extract_walgreens_text_from_html(
+                html_text,
+                retail_url=retail_url,
+                target_rpc=target_rpc,
+            ),
+            "images": extract_walgreens_images_from_html(html_text),
+        }
+
+        has_html_copy = (
+            html_bundle["text"].get("title")
+            or html_bundle["text"].get("description")
+            or html_bundle["text"].get("features")
+            or html_bundle.get("images")
+        )
+
+        if has_html_copy:
+            return html_bundle
+
+        return {
+            "text": {
+                "title": "",
+                "description": "",
+                "features": [],
+                "debug": {
+                    "Title Path": "walgreens_search_results_url_not_pdp",
+                    "Description Path": "walgreens_search_results_url_not_pdp",
+                    "Features Path": "walgreens_search_results_url_not_pdp",
+                    "Source Used": "walgreens_search_results_url_not_pdp",
+                },
+            },
+            "images": [],
+        }
+
+    if selected_sku_id:
+        html_text = get_walgreens_html(retail_url)
+        html_bundle = {
+            "text": extract_walgreens_text_from_html(
+                html_text,
+                retail_url=retail_url,
+                target_rpc=target_rpc,
+            ),
+            "images": extract_walgreens_images_from_html(html_text),
+        }
+
+        has_html_copy = (
+            html_bundle["text"].get("title")
+            or html_bundle["text"].get("description")
+            or html_bundle["text"].get("features")
+            or html_bundle.get("images")
+        )
+
+        if has_html_copy:
+            return html_bundle
+
     if product_id_lc.startswith("prod"):
         fragment_bundle = build_walgreens_bundle_from_prod_desc_fragment(
             product_id,
@@ -2920,7 +3017,6 @@ def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
         if has_fragment_copy:
             return fragment_bundle
 
-    # 2) API-first path
     api_payload = get_walgreens_product_api_payload(product_id)
     api_bundle = build_walgreens_bundle_from_api_payload(api_payload)
 
@@ -2934,7 +3030,6 @@ def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
     if has_api_copy:
         return api_bundle
 
-    # 3) Try prodDesc fragment even for numeric IDs if API didn't help
     fragment_bundle = build_walgreens_bundle_from_prod_desc_fragment(
         product_id,
         retail_url=retail_url,
@@ -2949,7 +3044,6 @@ def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
     if has_fragment_copy:
         return fragment_bundle
 
-    # 4) Last fallback: full PDP HTML
     html_text = get_walgreens_html(retail_url)
 
     return {
@@ -2973,19 +3067,125 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku=""):
 # =========================================
 # RETAILER-SPECIFIC FINAL COPY CLEANUP
 # =========================================
+def strip_walgreens_utility_tail(text):
+    """
+    Removes non-marketing utility/footer copy that should not live
+    in the final description/features.
+    """
+    text = str(text or "")
+
+    stop_markers = [
+        "Directions for Use:",
+        "Direction for Use:",
+        "To Use:",
+        "To Dispose:",
+        "How to Use:",
+        "How To Use:",
+        "Directions:",
+        "Do not flush.",
+        "Do Not Flush.",
+        "Made in USA",
+        "Made In USA",
+        "©",
+        "Walgreens does not represent or warrant",
+    ]
+
+    cut_index = len(text)
+    lowered = text.lower()
+
+    for marker in stop_markers:
+        idx = lowered.find(marker.lower())
+        if idx != -1:
+            cut_index = min(cut_index, idx)
+
+    text = text[:cut_index].strip()
+    return normalize_space(text)
+
+
+def is_walgreens_utility_feature(text):
+    text = normalize_space(text)
+
+    if not text:
+        return True
+
+    bad_starts = [
+        "Directions for Use",
+        "Direction for Use",
+        "To Use",
+        "To Dispose",
+        "How to Use",
+        "How To Use",
+        "Directions",
+        "Made in USA",
+        "Made In USA",
+        "Do not flush",
+        "Do Not Flush",
+        "©",
+    ]
+
+    bad_contains = [
+        "Walgreens does not represent or warrant",
+        "consult your doctor",
+        "keep this plastic bag away",
+        "do not use this bag",
+    ]
+
+    for prefix in bad_starts:
+        if text.lower().startswith(prefix.lower()):
+            return True
+
+    for token in bad_contains:
+        if token.lower() in text.lower():
+            return True
+
+    return False
+
+
+def split_walgreens_feature_fallback_text(text):
+    """
+    If Walgreens gives weak/malformed LI tags, fall back to splitting on
+    strong separators or uppercase lead-ins.
+    """
+    text = normalize_space(text)
+
+    if not text:
+        return []
+
+    if " | " in text:
+        parts = [x.strip() for x in text.split(" | ")]
+    elif "•" in text:
+        parts = [x.strip() for x in text.split("•")]
+    else:
+        parts = re.split(
+            r"(?=(?:WHAT'S INCLUDED|ALL DAY PROTECTION|UNDERWEAR-LIKE COMFORT|UP TO ZERO ODOR|UNCOMPROMISED COMFORT|UNBEATABLE PROTECTION|ODOR CONTROL|DRYNESS|ACTIVE FIT|INSTANT ABSORPTION|FRESHSENSE|GUSHPROTECT ZONE|GRAVITY CORE|NIGHTDEFENSE|LEAKSHIELD)[\s\-])",
+            text,
+            flags=re.IGNORECASE,
+        )
+
+    cleaned = []
+    for part in parts:
+        part = strip_walgreens_utility_tail(part)
+        part = normalize_space(part)
+        if not part:
+            continue
+        if is_walgreens_utility_feature(part):
+            continue
+        cleaned.append(part)
+
+    return dedupe_preserve_order(cleaned)
+
 def clean_walgreens_text(text):
     if not text:
         return ""
 
     text = str(text)
     text = html.unescape(text)
-
-    text = text.replace("\\u003c", "<")
-    text = text.replace("\\u003e", ">")
-    text = text.replace("\\u0026", "&")
-    text = text.replace("\\n", " ")
-    text = text.replace("\\/", "/")
-    text = text.replace('\\"', '"')
+    text = text.replace("\u003c", "<")
+    text = text.replace("\u003e", ">")
+    text = text.replace("\u0026", "&")
+    text = text.replace("\n", " ")
+    text = text.replace("\/", "/")
+    text = text.replace('\"', '"')
 
     text = re.sub(
         r"<script\b[^>]*>.*?</script>",
@@ -2998,18 +3198,25 @@ def clean_walgreens_text(text):
         text = BeautifulSoup(text, "html.parser").get_text(" ", strip=True)
 
     text = normalize_space(text)
+    text = strip_walgreens_utility_tail(text)
 
     stop_patterns = [
         r"\bMade in USA\b.*$",
-        r"\b1\.\s*To Use:.*$",
-        r"\b2\.\s*To Dispose:.*$",
-        r"Walgreens does not represent or warrant.*$",
+        r"\bMade In USA\b.*$",
+        r"\bDirections for Use:.*$",
+        r"\bDirection for Use:.*$",
+        r"\bTo Use:.*$",
+        r"\bTo Dispose:.*$",
+        r"\bHow to Use:.*$",
+        r"\bDo not flush\b.*$",
+        r"\bDo Not Flush\b.*$",
+        r"\bWalgreens does not represent or warrant.*$",
     ]
+
     for pattern in stop_patterns:
         text = re.sub(pattern, "", text, flags=re.IGNORECASE | re.DOTALL).strip()
 
     return normalize_space(text)
-
 
 def normalize_walgreens_features_final(items, max_features=5):
     cleaned = []
@@ -3025,24 +3232,36 @@ def normalize_walgreens_features_final(items, max_features=5):
             continue
 
         text = clean_walgreens_text(item)
+        text = strip_walgreens_utility_tail(text)
 
         if not text:
             continue
-
-        if re.search(r"^Made in USA\b", text, flags=re.IGNORECASE):
-            continue
-        if re.search(r"^\d+\.\s*To Use:", text, flags=re.IGNORECASE):
-            continue
-        if re.search(r"^\d+\.\s*To Dispose:", text, flags=re.IGNORECASE):
-            continue
-        if re.search(r"Walgreens does not represent or warrant", text, flags=re.IGNORECASE):
+        if is_walgreens_utility_feature(text):
             continue
 
         cleaned.append(text)
 
     cleaned = dedupe_preserve_order(cleaned)
-    return cleaned[:max_features]
 
+    expanded = []
+    for item in cleaned:
+        parts = split_walgreens_feature_fallback_text(item)
+        if parts:
+            expanded.extend(parts)
+        else:
+            expanded.append(item)
+
+    expanded = dedupe_preserve_order([normalize_space(x) for x in expanded if normalize_space(x)])
+
+    out = []
+    for item in expanded:
+        if not item:
+            continue
+        if is_walgreens_utility_feature(item):
+            continue
+        out.append(item)
+
+    return dedupe_preserve_order(out)[:max_features]
 
 def clean_walgreens_title(text):
     if not text:
