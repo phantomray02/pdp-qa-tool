@@ -601,7 +601,7 @@ def prepare_input_df(df):
     return df
     
 def clear_in_memory_caches():
-    global html_cache, image_hash_cache, walgreens_api_cache
+    global html_cache, image_hash_cache, walgreens_api_cache, walgreens_api_cache
 
     if "html_cache" not in globals() or not isinstance(globals().get("html_cache"), dict):
         html_cache = {}
@@ -610,6 +610,9 @@ def clear_in_memory_caches():
 
     html_cache.clear()
     image_hash_cache.clear()
+    if "walgreens_api_cache" not in globals() or not isinstance(globals().get("walgreens_api_cache"), dict):
+        walgreens_api_cache = {}
+    walgreens_api_cache.clear()
     if "walgreens_api_cache" not in globals() or not isinstance(globals().get("walgreens_api_cache"), dict):
         walgreens_api_cache = {}
     walgreens_api_cache.clear()
@@ -661,7 +664,7 @@ def fetch_html_with_timeout(url, timeout_seconds):
 def get_walgreens_html(url):
     """
     Walgreens-specific fetch path with a longer timeout and shared HTML cache.
-    This keeps repeated Walgreens loads much faster across batch + visual review.
+    This avoids refetching the same PDP across batch processing + visual review.
     """
     global html_cache
     if "html_cache" not in globals() or not isinstance(globals().get("html_cache"), dict):
@@ -747,7 +750,7 @@ def get_walgreens_product_api_payload(product_id):
     Walgreens source exposes a lighter product endpoint:
     /productapi/v1/products?productId={prodId}
 
-    Cache API payloads in memory so repeated visual review is much faster.
+    Cache API payloads so repeated runs and visual mode are faster.
     """
     global walgreens_api_cache
     if "walgreens_api_cache" not in globals() or not isinstance(globals().get("walgreens_api_cache"), dict):
@@ -2568,13 +2571,14 @@ def _extract_walgreens_feature_items_from_raw_product_desc(desc_html):
 def extract_walgreens_copy_from_product_desc_html(product_desc_html):
     """
     Walgreens live description starts inside productDesc paragraph HTML and ends
-    right before the feature block that looks like <br/>
+    right before the feature block that looks like:
+    <br/>
 <UL>
-<LI>.
+<LI>
 
     Improvement:
-    - join all useful paragraph/text nodes before the UL instead of trusting only the
-      first <p> tag, because some Walgreens rows put a short label paragraph first.
+    - join all useful text nodes before the UL instead of trusting only the first <p>
+      tag, because some Walgreens rows place a short label paragraph first.
     """
     if not product_desc_html:
         return "", []
@@ -2594,18 +2598,17 @@ def extract_walgreens_copy_from_product_desc_html(product_desc_html):
     soup = BeautifulSoup(desc_html, "html.parser")
     desc_parts = []
 
-    if soup.body:
-        candidates = list(soup.body.children)
-    else:
-        candidates = list(soup.children)
-
+    candidates = list(soup.body.children) if soup.body else list(soup.children)
     for node in candidates:
-        if getattr(node, "name", None) in {"ul", "ol", "script", "style"}:
+        node_name = getattr(node, "name", None)
+        if node_name in {"ul", "ol", "script", "style"}:
             continue
+
         if hasattr(node, "get_text"):
             node_text = node.get_text(" ", strip=True)
         else:
             node_text = str(node).strip()
+
         node_text = _normalize_walgreens_text(node_text)
         node_text = strip_walgreens_utility_tail(node_text)
         if not node_text:
@@ -3223,20 +3226,27 @@ def _walgreens_bundle_is_rich_enough(bundle):
 
     bundle_text = bundle.get("text", {}) or {}
     title = clean_walgreens_title(bundle_text.get("title", ""))
-    description = clean_walgreens_text(bundle_text.get("description", ""))
-    features = _walgreens_clean_feature_list(bundle_text.get("features", []), max_features=5)
-
-    feature_count = len(features)
-    feature_chars = sum(len(x) for x in features)
-    desc_len = len(description)
+    description = bundle_text.get("description", "")
+    features = bundle_text.get("features", []) or []
 
     return bool(
-        title and (
-            desc_len >= 180
-            or feature_count >= 4
-            or (feature_count >= 3 and feature_chars >= 180)
-            or (desc_len >= 90 and feature_count >= 2)
-        )
+        title
+        and _walgreens_description_is_rich_enough(description)
+        and _walgreens_features_are_rich_enough(features)
+    )
+
+def _walgreens_description_is_rich_enough(value):
+    value = clean_walgreens_text(value)
+    return len(value) >= 140
+
+
+def _walgreens_features_are_rich_enough(values):
+    cleaned = _walgreens_clean_feature_list(values, max_features=5)
+    feature_count = len(cleaned)
+    feature_chars = sum(len(x) for x in cleaned)
+    return bool(
+        feature_count >= 4
+        or (feature_count >= 3 and feature_chars >= 220)
     )
 
 
@@ -3244,10 +3254,11 @@ def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
     """
     Faster Walgreens strategy:
     1) Build live HTML bundle first.
-    2) If HTML already looks rich enough, return it immediately.
+    2) If HTML already looks rich enough on BOTH description and features, return it.
     3) Only call API / prodDesc fallback when HTML copy is weak.
 
-    This keeps the richer live-copy behavior while cutting load time materially.
+    This keeps the speed gains without regressing rows whose HTML description is okay
+    but whose feature pull still needs API / fragment help.
     """
     retail_url = str(retail_url or "").strip()
     retail_url_lc = retail_url.lower()
@@ -3266,7 +3277,7 @@ def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
             "images": extract_walgreens_images_from_html(html_text),
         }
 
-    # Search result URLs should never trust API-first logic.
+    # Search results URLs should never trust API-first logic.
     if "/search/results.jsp" in retail_url_lc:
         html_bundle = build_html_bundle()
         if _walgreens_has_copy_or_images(html_bundle):
@@ -3288,7 +3299,7 @@ def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
 
     html_bundle = build_html_bundle()
 
-    # Fast path: if live HTML already looks rich, trust it and skip slower fallbacks.
+    # Fast path only when both description and features look complete.
     if _walgreens_bundle_is_rich_enough(html_bundle):
         return html_bundle
 
@@ -3316,7 +3327,7 @@ def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
             return merged_bundle
         return html_bundle if _walgreens_has_copy_or_images(html_bundle) else fragment_bundle
 
-    # Standard PDP: only merge with API because HTML looked weak.
+    # Standard PDP: merge HTML + API because HTML looked weak.
     api_payload = get_walgreens_product_api_payload(product_id)
     api_bundle = build_walgreens_bundle_from_api_payload(api_payload)
     merged_bundle = merge_walgreens_bundles_prefer_richer_copy(html_bundle, api_bundle)
@@ -4452,6 +4463,7 @@ if uploaded_file and st.session_state.processing_done:
 
             img_scores = []
             max_images = min(max(len(s_images), len(r_images)), MAX_IMAGE_SLOTS_TO_COMPARE)
+            max_images_to_score = min(max(len(s_images), len(r_images)), MAX_IMAGE_SLOTS_TO_SCORE)
             max_images_to_score = min(max(len(s_images), len(r_images)), MAX_IMAGE_SLOTS_TO_SCORE)
 
             for i in range(max_images):
