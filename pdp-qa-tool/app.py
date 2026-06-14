@@ -90,6 +90,7 @@ IMAGE_HASH_CACHE_MAX = 120
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
 MAX_SAFE_IMAGE_PIXELS = 50_000_000
 MAX_IMAGE_SLOTS_TO_COMPARE = 20
+MAX_IMAGE_SLOTS_TO_SCORE = 5
 
 html_cache = {}
 image_hash_cache = {}
@@ -600,7 +601,7 @@ def prepare_input_df(df):
     return df
     
 def clear_in_memory_caches():
-    global html_cache, image_hash_cache
+    global html_cache, image_hash_cache, walgreens_api_cache
 
     if "html_cache" not in globals() or not isinstance(globals().get("html_cache"), dict):
         html_cache = {}
@@ -609,6 +610,9 @@ def clear_in_memory_caches():
 
     html_cache.clear()
     image_hash_cache.clear()
+    if "walgreens_api_cache" not in globals() or not isinstance(globals().get("walgreens_api_cache"), dict):
+        walgreens_api_cache = {}
+    walgreens_api_cache.clear()
 
 # =========================================
 # HTML FETCH
@@ -656,10 +660,28 @@ def fetch_html_with_timeout(url, timeout_seconds):
 
 def get_walgreens_html(url):
     """
-    Walgreens-specific fetch path with a longer timeout.
-    Keeps CVS untouched.
+    Walgreens-specific fetch path with a longer timeout and shared HTML cache.
+    This keeps repeated Walgreens loads much faster across batch + visual review.
     """
-    return fetch_html_with_timeout(url, WALGREENS_REQUEST_TIMEOUT)
+    global html_cache
+    if "html_cache" not in globals() or not isinstance(globals().get("html_cache"), dict):
+        html_cache = {}
+
+    url = str(url or "").strip()
+    if not url:
+        return ""
+
+    cache_key = f"walgreens::{url}"
+    if cache_key in html_cache:
+        html_cache[cache_key] = html_cache.pop(cache_key)
+        return html_cache[cache_key]
+
+    html_text = fetch_html_with_timeout(url, WALGREENS_REQUEST_TIMEOUT)
+    if html_text:
+        html_cache[cache_key] = html_text
+        while len(html_cache) > HTML_CACHE_MAX:
+            html_cache.pop(next(iter(html_cache)))
+    return html_text
 
 def get_walgreens_product_id_from_url(retail_url):
     """
@@ -722,16 +744,31 @@ def fetch_json_with_timeout(url, timeout_seconds):
 
 def get_walgreens_product_api_payload(product_id):
     """
-    Walgreens source exposes:
+    Walgreens source exposes a lighter product endpoint:
     /productapi/v1/products?productId={prodId}
-    This is a much lighter request than loading the entire PDP HTML.
+
+    Cache API payloads in memory so repeated visual review is much faster.
     """
+    global walgreens_api_cache
+    if "walgreens_api_cache" not in globals() or not isinstance(globals().get("walgreens_api_cache"), dict):
+        walgreens_api_cache = {}
+
+    product_id = str(product_id or "").strip()
     if not product_id:
         return None
 
-    api_url = f"https://www.walgreens.com/productapi/v1/products?productId={product_id}"
-    return fetch_json_with_timeout(api_url, WALGREENS_API_TIMEOUT)
+    cache_key = f"productapi::{product_id}"
+    if cache_key in walgreens_api_cache:
+        walgreens_api_cache[cache_key] = walgreens_api_cache.pop(cache_key)
+        return walgreens_api_cache[cache_key]
 
+    api_url = f"https://www.walgreens.com/productapi/v1/products?productId={product_id}"
+    payload = fetch_json_with_timeout(api_url, WALGREENS_API_TIMEOUT)
+    if payload is not None:
+        walgreens_api_cache[cache_key] = payload
+        while len(walgreens_api_cache) > HTML_CACHE_MAX:
+            walgreens_api_cache.pop(next(iter(walgreens_api_cache)))
+    return payload
 
 def walk_json(obj):
     if isinstance(obj, dict):
@@ -2531,12 +2568,13 @@ def _extract_walgreens_feature_items_from_raw_product_desc(desc_html):
 def extract_walgreens_copy_from_product_desc_html(product_desc_html):
     """
     Walgreens live description starts inside productDesc paragraph HTML and ends
-    right before the feature block that looks like:
-    <br/>
+    right before the feature block that looks like <br/>
 <UL>
-<LI>
+<LI>.
 
-    The weird code &#34; decodes to a normal quote via html.unescape.
+    Improvement:
+    - join all useful paragraph/text nodes before the UL instead of trusting only the
+      first <p> tag, because some Walgreens rows put a short label paragraph first.
     """
     if not product_desc_html:
         return "", []
@@ -2551,22 +2589,33 @@ def extract_walgreens_copy_from_product_desc_html(product_desc_html):
 
     start_info = _find_walgreens_feature_block_start(working)
     desc_html = working[:start_info[0]] if start_info else working
-
-    # Trim the trailing <br/> that usually sits right before the UL.
     desc_html = re.sub(r"(?:<br\s*/?>\s*)+$", " ", desc_html, flags=re.IGNORECASE)
 
-    # Prefer the first paragraph body if present.
     soup = BeautifulSoup(desc_html, "html.parser")
-    p_tag = soup.find('p')
-    if p_tag:
-        desc_text = p_tag.get_text(' ', strip=True)
-    else:
-        desc_text = soup.get_text(' ', strip=True)
+    desc_parts = []
 
-    description_text = _normalize_walgreens_text(desc_text)
-    description_text = strip_walgreens_utility_tail(description_text)
+    if soup.body:
+        candidates = list(soup.body.children)
+    else:
+        candidates = list(soup.children)
+
+    for node in candidates:
+        if getattr(node, "name", None) in {"ul", "ol", "script", "style"}:
+            continue
+        if hasattr(node, "get_text"):
+            node_text = node.get_text(" ", strip=True)
+        else:
+            node_text = str(node).strip()
+        node_text = _normalize_walgreens_text(node_text)
+        node_text = strip_walgreens_utility_tail(node_text)
+        if not node_text:
+            continue
+        if node_text.lower() in {"description", "details", "overview", "features"}:
+            continue
+        desc_parts.append(node_text)
+
+    description_text = normalize_space(" ".join(desc_parts))
     description_text = re.sub(r"\)\)$", ")", description_text).strip()
-    description_text = normalize_space(description_text)
 
     feature_items = _extract_walgreens_feature_items_from_raw_product_desc(working)
     return description_text, feature_items
@@ -3163,16 +3212,42 @@ def merge_walgreens_bundles_prefer_richer_copy(*bundles):
     return merged
 
 
+def _walgreens_description_richness_tuple(value):
+    value = clean_walgreens_text(value)
+    return (len(value), value)
+
+
+def _walgreens_bundle_is_rich_enough(bundle):
+    if not isinstance(bundle, dict):
+        return False
+
+    bundle_text = bundle.get("text", {}) or {}
+    title = clean_walgreens_title(bundle_text.get("title", ""))
+    description = clean_walgreens_text(bundle_text.get("description", ""))
+    features = _walgreens_clean_feature_list(bundle_text.get("features", []), max_features=5)
+
+    feature_count = len(features)
+    feature_chars = sum(len(x) for x in features)
+    desc_len = len(description)
+
+    return bool(
+        title and (
+            desc_len >= 180
+            or feature_count >= 4
+            or (feature_count >= 3 and feature_chars >= 180)
+            or (desc_len >= 90 and feature_count >= 2)
+        )
+    )
+
+
 def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
     """
-    Walgreens strategy:
-    1) Search results URLs stay HTML-only.
-    2) skuId-selected variant URLs still prefer full HTML first.
-    3) prod... items merge HTML + prodDesc fragment + API and keep the richest copy.
-    4) standard PDP items merge full HTML + API and keep the richest copy.
+    Faster Walgreens strategy:
+    1) Build live HTML bundle first.
+    2) If HTML already looks rich enough, return it immediately.
+    3) Only call API / prodDesc fallback when HTML copy is weak.
 
-    This is intentionally live-PDP friendly. The goal is to reflect what is live on
-    Walgreens, not just the first source path that returns something.
+    This keeps the richer live-copy behavior while cutting load time materially.
     """
     retail_url = str(retail_url or "").strip()
     retail_url_lc = retail_url.lower()
@@ -3191,7 +3266,7 @@ def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
             "images": extract_walgreens_images_from_html(html_text),
         }
 
-    # Search results pages should never trust API-first logic.
+    # Search result URLs should never trust API-first logic.
     if "/search/results.jsp" in retail_url_lc:
         html_bundle = build_html_bundle()
         if _walgreens_has_copy_or_images(html_bundle):
@@ -3211,27 +3286,27 @@ def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
             "images": [],
         }
 
-    # skuId-selected variant URLs should still prefer full HTML first.
-    if selected_sku_id:
-        html_bundle = build_html_bundle()
-        if _walgreens_has_copy_or_images(html_bundle):
-            return html_bundle
+    html_bundle = build_html_bundle()
 
+    # Fast path: if live HTML already looks rich, trust it and skip slower fallbacks.
+    if _walgreens_bundle_is_rich_enough(html_bundle):
+        return html_bundle
+
+    # skuId-selected variant URLs: only merge fallback sources when HTML is weak.
+    if selected_sku_id:
         api_payload = get_walgreens_product_api_payload(product_id)
         api_bundle = build_walgreens_bundle_from_api_payload(api_payload)
         merged_bundle = merge_walgreens_bundles_prefer_richer_copy(html_bundle, api_bundle)
         return merged_bundle if _walgreens_has_copy_or_images(merged_bundle) else html_bundle
 
-    # prod... items can have useful fragment/API fallbacks, but live HTML should win if richer.
+    # prod... items can still benefit from fragment/API fallback when HTML is weak.
     if product_id_lc.startswith("prod"):
-        html_bundle = build_html_bundle()
         fragment_bundle = build_walgreens_bundle_from_prod_desc_fragment(
             product_id,
             retail_url=retail_url,
         )
         api_payload = get_walgreens_product_api_payload(product_id)
         api_bundle = build_walgreens_bundle_from_api_payload(api_payload)
-
         merged_bundle = merge_walgreens_bundles_prefer_richer_copy(
             html_bundle,
             fragment_bundle,
@@ -3241,15 +3316,12 @@ def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
             return merged_bundle
         return html_bundle if _walgreens_has_copy_or_images(html_bundle) else fragment_bundle
 
-    # Standard live PDPs: merge HTML + API and keep the richer copy.
-    html_bundle = build_html_bundle()
+    # Standard PDP: only merge with API because HTML looked weak.
     api_payload = get_walgreens_product_api_payload(product_id)
     api_bundle = build_walgreens_bundle_from_api_payload(api_payload)
     merged_bundle = merge_walgreens_bundles_prefer_richer_copy(html_bundle, api_bundle)
-
     if _walgreens_has_copy_or_images(merged_bundle):
         return merged_bundle
-
     return html_bundle if _walgreens_has_copy_or_images(html_bundle) else api_bundle
 
 def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku=""):
@@ -3340,11 +3412,10 @@ def is_walgreens_utility_feature(text):
 
 def split_walgreens_feature_fallback_text(text):
     """
-    If Walgreens gives weak/malformed LI tags, fall back to splitting on
-    strong separators or uppercase lead-ins.
+    If Walgreens gives weak/malformed LI tags, fall back to splitting on strong
+    uppercase lead-ins used across Depend, Huggies, Poise, Kotex, Pull-Ups, etc.
     """
     text = normalize_space(text)
-
     if not text:
         return []
 
@@ -3353,11 +3424,19 @@ def split_walgreens_feature_fallback_text(text):
     elif "•" in text:
         parts = [x.strip() for x in text.split("•")]
     else:
-        parts = re.split(
-            r"(?=(?:WHAT'S INCLUDED|ALL DAY PROTECTION|UNDERWEAR-LIKE COMFORT|UP TO ZERO ODOR|UNCOMPROMISED COMFORT|UNBEATABLE PROTECTION|ODOR CONTROL|DRYNESS|ACTIVE FIT|INSTANT ABSORPTION|FRESHSENSE|GUSHPROTECT ZONE|GRAVITY CORE|NIGHTDEFENSE|LEAKSHIELD)[\s\-])",
-            text,
-            flags=re.IGNORECASE,
+        heading_pattern = (
+            r"(?=(?:"
+            r"WHAT'S INCLUDED|ALL DAY PROTECTION|UNDERWEAR-LIKE COMFORT|UP TO ZERO ODOR|UNCOMPROMISED COMFORT|"
+            r"UNBEATABLE PROTECTION|ODOR CONTROL|DRYNESS|ACTIVE FIT|INSTANT ABSORPTION|FRESHSENSE|GUSHPROTECT ZONE|"
+            r"GRAVITY CORE|NIGHTDEFENSE|LEAKSHIELD|DESIGNED FOR MEN|SECURE FIT|FOR LARGE BLADDER LEAKS|"
+            r"DEPEND SHIELDS|DEPEND FRESH PROTECTION|OUTSTANDING ABSORBENCY|FRONT AND BACK BLOWOUT BLOCKER|"
+            r"UP TO 100% LEAKPROOF|LUXURY SOFTNESS|FASTABSORB SYSTEM|99% WATER|DERMATOLOGIST TESTED|"
+            r"NATIONAL ECZEMA ASSOCIATION SEAL OF ACCEPTANCE|THICK AND ABSORBENT|COMPACT COMFORT, POWERFUL PROTECTION|"
+            r"#1 COMPACT TAMPON BRAND|GYNECOLOGIST-TESTED|THIN AND SOFT|ALL-NIGHT DRYNESS|NEW! 60% WIDER BACK|"
+            r"CLEAN SHIELD|DOUBLE GRIP STRIPS|GENTLEABSORB|QUICKSORB PROTECTION|HYPOALLERGENIC)"
+            r"[\s:\-])"
         )
+        parts = re.split(heading_pattern, text, flags=re.IGNORECASE)
 
     cleaned = []
     for part in parts:
@@ -3368,7 +3447,6 @@ def split_walgreens_feature_fallback_text(text):
         if is_walgreens_utility_feature(part):
             continue
         cleaned.append(part)
-
     return dedupe_preserve_order(cleaned)
 
 def clean_walgreens_text(text):
@@ -3483,9 +3561,7 @@ def finalize_retailer_copy(retailer_name, r_text):
     if retailer == "walgreens":
         out["title"] = clean_walgreens_title(out.get("title", ""))
         out["description"] = clean_walgreens_text(out.get("description", ""))
-        out["features"] = dedupe_preserve_order(
-            [clean_walgreens_text(x) for x in (out.get("features", []) or []) if clean_walgreens_text(x)]
-        )[:5]
+        out["features"] = normalize_walgreens_features_final(out.get("features", []), max_features=5)
         return out
 
     out["title"] = normalize_space(out.get("title", ""))
@@ -3796,7 +3872,7 @@ def process_row(row):
 
         img_scores = []
         image_position_scores = {}
-        max_img_positions = min(max(len(s_images), len(r_images)), MAX_IMAGE_SLOTS_TO_COMPARE)
+        max_img_positions = min(max(len(s_images), len(r_images)), MAX_IMAGE_SLOTS_TO_SCORE)
 
         for i in range(max_img_positions):
             s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else None
@@ -4376,6 +4452,7 @@ if uploaded_file and st.session_state.processing_done:
 
             img_scores = []
             max_images = min(max(len(s_images), len(r_images)), MAX_IMAGE_SLOTS_TO_COMPARE)
+            max_images_to_score = min(max(len(s_images), len(r_images)), MAX_IMAGE_SLOTS_TO_SCORE)
 
             for i in range(max_images):
                 s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else None
@@ -4502,7 +4579,7 @@ if uploaded_file and st.session_state.processing_done:
                 for i in range(max_images):
                     s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else ""
                     r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else ""
-                    slot_score = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
+                    slot_score = compare_images_visually(s_url, r_url) if (s_url and r_url and i < MAX_IMAGE_SLOTS_TO_SCORE) else 0
 
                     st.markdown(
                         image_compare_row_html(s_url, r_url, slot_score),
