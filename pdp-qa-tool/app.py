@@ -3042,27 +3042,147 @@ def extract_walgreens_images_from_html(html_text):
 
     return ordered_urls[:MAX_IMAGE_SLOTS_TO_COMPARE]
 
+def _walgreens_has_copy_or_images(bundle):
+    if not isinstance(bundle, dict):
+        return False
+
+    bundle_text = bundle.get("text", {}) or {}
+    bundle_images = bundle.get("images", []) or []
+
+    return bool(
+        bundle_text.get("title")
+        or bundle_text.get("description")
+        or bundle_text.get("features")
+        or bundle_images
+    )
+
+
+def _walgreens_clean_feature_list(values, max_features=5):
+    if not values:
+        return []
+
+    if isinstance(values, str):
+        values = [values]
+
+    cleaned = []
+    for value in values:
+        value = clean_walgreens_text(value)
+        if not value:
+            continue
+        if is_walgreens_utility_feature(value):
+            continue
+        cleaned.append(value)
+
+    return dedupe_preserve_order(cleaned)[:max_features]
+
+
+def _walgreens_feature_richness_tuple(values):
+    cleaned = _walgreens_clean_feature_list(values, max_features=5)
+    return (len(cleaned), sum(len(x) for x in cleaned))
+
+
+def _prefer_richer_walgreens_text_value(primary_value, secondary_value):
+    primary_value = clean_walgreens_text(primary_value)
+    secondary_value = clean_walgreens_text(secondary_value)
+
+    primary_tuple = (len(primary_value), primary_value)
+    secondary_tuple = (len(secondary_value), secondary_value)
+
+    return secondary_value if secondary_tuple > primary_tuple else primary_value
+
+
+def merge_walgreens_bundles_prefer_richer_copy(*bundles):
+    """
+    Merge multiple Walgreens bundle candidates and keep the richest live copy.
+
+    Why this exists:
+    - Walgreens HTML often reflects what is actually live on the PDP.
+    - Walgreens API / prodDesc fragment can still be useful fallbacks.
+    - Some rows were under-pulling copy because only one source path was trusted.
+
+    Rules:
+    - Prefer the longest useful title.
+    - Prefer the longest useful description.
+    - Prefer the feature set with the most non-empty bullets; tie-break by total text length.
+    - Prefer the first non-empty image set in the order passed in.
+    - Carry forward merged debug/source notes.
+    """
+    merged = {
+        "text": {
+            "title": "",
+            "description": "",
+            "features": [],
+            "debug": {},
+        },
+        "images": [],
+    }
+
+    source_used_parts = []
+
+    for bundle in bundles:
+        if not isinstance(bundle, dict):
+            continue
+
+        bundle_text = bundle.get("text", {}) or {}
+        bundle_images = bundle.get("images", []) or []
+        bundle_debug = bundle_text.get("debug", {}) or {}
+
+        merged["text"]["title"] = _prefer_richer_walgreens_text_value(
+            merged["text"].get("title", ""),
+            bundle_text.get("title", ""),
+        )
+        merged["text"]["description"] = _prefer_richer_walgreens_text_value(
+            merged["text"].get("description", ""),
+            bundle_text.get("description", ""),
+        )
+
+        current_features = merged["text"].get("features", []) or []
+        new_features = bundle_text.get("features", []) or []
+        if _walgreens_feature_richness_tuple(new_features) > _walgreens_feature_richness_tuple(current_features):
+            merged["text"]["features"] = _walgreens_clean_feature_list(new_features, max_features=5)
+
+        if not merged.get("images") and bundle_images:
+            merged["images"] = [x for x in bundle_images if x]
+
+        for k, v in bundle_debug.items():
+            if v and not merged["text"]["debug"].get(k):
+                merged["text"]["debug"][k] = v
+
+        source_used = str(bundle_debug.get("Source Used", "") or "").strip()
+        if source_used and source_used not in source_used_parts:
+            source_used_parts.append(source_used)
+
+    if source_used_parts:
+        merged["text"]["debug"]["Source Used"] = " | ".join(source_used_parts)
+
+    merged["text"]["features"] = _walgreens_clean_feature_list(
+        merged["text"].get("features", []),
+        max_features=5,
+    )
+
+    return merged
+
+
 def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
     """
     Walgreens strategy:
-    1) If the URL is a search-results page, do not trust API-first logic.
-    2) If the URL contains a selected skuId variant, prefer full HTML first,
-       because productId-only API calls can miss the exact selected variant copy.
-    3) For prod... items, try prodDesc.jsp fragment first.
-    4) Then try the product API.
-    5) Then try prodDesc.jsp again as fallback.
-    6) Finally fall back to full PDP HTML.
+    1) Search results URLs stay HTML-only.
+    2) skuId-selected variant URLs still prefer full HTML first.
+    3) prod... items merge HTML + prodDesc fragment + API and keep the richest copy.
+    4) standard PDP items merge full HTML + API and keep the richest copy.
+
+    This is intentionally live-PDP friendly. The goal is to reflect what is live on
+    Walgreens, not just the first source path that returns something.
     """
     retail_url = str(retail_url or "").strip()
     retail_url_lc = retail_url.lower()
-
     product_id = get_walgreens_product_id_from_url(retail_url)
     product_id_lc = str(product_id or "").lower()
     selected_sku_id = get_walgreens_sku_id_from_url(retail_url)
 
-    if "/search/results.jsp" in retail_url_lc:
+    def build_html_bundle():
         html_text = get_walgreens_html(retail_url)
-        html_bundle = {
+        return {
             "text": extract_walgreens_text_from_html(
                 html_text,
                 retail_url=retail_url,
@@ -3071,16 +3191,11 @@ def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
             "images": extract_walgreens_images_from_html(html_text),
         }
 
-        has_html_copy = (
-            html_bundle["text"].get("title")
-            or html_bundle["text"].get("description")
-            or html_bundle["text"].get("features")
-            or html_bundle.get("images")
-        )
-
-        if has_html_copy:
+    # Search results pages should never trust API-first logic.
+    if "/search/results.jsp" in retail_url_lc:
+        html_bundle = build_html_bundle()
+        if _walgreens_has_copy_or_images(html_bundle):
             return html_bundle
-
         return {
             "text": {
                 "title": "",
@@ -3096,79 +3211,46 @@ def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
             "images": [],
         }
 
+    # skuId-selected variant URLs should still prefer full HTML first.
     if selected_sku_id:
-        html_text = get_walgreens_html(retail_url)
-        html_bundle = {
-            "text": extract_walgreens_text_from_html(
-                html_text,
-                retail_url=retail_url,
-                target_rpc=target_rpc,
-            ),
-            "images": extract_walgreens_images_from_html(html_text),
-        }
-
-        has_html_copy = (
-            html_bundle["text"].get("title")
-            or html_bundle["text"].get("description")
-            or html_bundle["text"].get("features")
-            or html_bundle.get("images")
-        )
-
-        if has_html_copy:
+        html_bundle = build_html_bundle()
+        if _walgreens_has_copy_or_images(html_bundle):
             return html_bundle
 
+        api_payload = get_walgreens_product_api_payload(product_id)
+        api_bundle = build_walgreens_bundle_from_api_payload(api_payload)
+        merged_bundle = merge_walgreens_bundles_prefer_richer_copy(html_bundle, api_bundle)
+        return merged_bundle if _walgreens_has_copy_or_images(merged_bundle) else html_bundle
+
+    # prod... items can have useful fragment/API fallbacks, but live HTML should win if richer.
     if product_id_lc.startswith("prod"):
+        html_bundle = build_html_bundle()
         fragment_bundle = build_walgreens_bundle_from_prod_desc_fragment(
             product_id,
             retail_url=retail_url,
         )
+        api_payload = get_walgreens_product_api_payload(product_id)
+        api_bundle = build_walgreens_bundle_from_api_payload(api_payload)
 
-        has_fragment_copy = (
-            fragment_bundle["text"].get("title")
-            or fragment_bundle["text"].get("description")
-            or fragment_bundle["text"].get("features")
+        merged_bundle = merge_walgreens_bundles_prefer_richer_copy(
+            html_bundle,
+            fragment_bundle,
+            api_bundle,
         )
+        if _walgreens_has_copy_or_images(merged_bundle):
+            return merged_bundle
+        return html_bundle if _walgreens_has_copy_or_images(html_bundle) else fragment_bundle
 
-        if has_fragment_copy:
-            return fragment_bundle
-
+    # Standard live PDPs: merge HTML + API and keep the richer copy.
+    html_bundle = build_html_bundle()
     api_payload = get_walgreens_product_api_payload(product_id)
     api_bundle = build_walgreens_bundle_from_api_payload(api_payload)
+    merged_bundle = merge_walgreens_bundles_prefer_richer_copy(html_bundle, api_bundle)
 
-    has_api_copy = (
-        api_bundle["text"].get("title")
-        or api_bundle["text"].get("description")
-        or api_bundle["text"].get("features")
-        or api_bundle.get("images")
-    )
+    if _walgreens_has_copy_or_images(merged_bundle):
+        return merged_bundle
 
-    if has_api_copy:
-        return api_bundle
-
-    fragment_bundle = build_walgreens_bundle_from_prod_desc_fragment(
-        product_id,
-        retail_url=retail_url,
-    )
-
-    has_fragment_copy = (
-        fragment_bundle["text"].get("title")
-        or fragment_bundle["text"].get("description")
-        or fragment_bundle["text"].get("features")
-    )
-
-    if has_fragment_copy:
-        return fragment_bundle
-
-    html_text = get_walgreens_html(retail_url)
-
-    return {
-        "text": extract_walgreens_text_from_html(
-            html_text,
-            retail_url=retail_url,
-            target_rpc=target_rpc,
-        ),
-        "images": extract_walgreens_images_from_html(html_text),
-    }
+    return html_bundle if _walgreens_has_copy_or_images(html_bundle) else api_bundle
 
 def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku=""):
     retailer = str(retailer_name or "").strip().lower()
