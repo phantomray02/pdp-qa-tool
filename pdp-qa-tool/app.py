@@ -2547,54 +2547,147 @@ def extract_walgreens_copy_from_product_sections(section_list):
     return description, features
 
 def extract_walgreens_images_from_product_info(product_info):
-    image_urls = []
-
-    def maybe_add_url(url):
-        if not url:
-            return
-
-        url = html.unescape(str(url).strip())
-
-        if url.startswith("//"):
-            url = "https:" + url
-
-        if not re.match(r"^https?://", url, flags=re.IGNORECASE):
-            return
-
-        lowered = url.lower()
-        if not any(ext in lowered for ext in [".jpg", ".jpeg", ".png", ".webp", ".avif"]):
-            return
-
-        bad_tokens = [
-            "sprite",
-            "icon",
-            "logo",
-            "placeholder",
-            "spacer",
-            "data:image",
-            ".svg",
-        ]
-        if any(tok in lowered for tok in bad_tokens):
-            return
-
-        image_urls.append(url)
-
+    """
+    Walgreens image strategy:
+    1) Prefer stripUrlX (100px) from filmStripUrl.
+    2) Fall back to metaImage (often 220px).
+    3) Then largeImageUrlX (450px).
+    4) Then productImageUrl / zoomImageUrl (usually 900px).
+    5) Dedupe by image family so one image slot is returned once.
+    """
     if not isinstance(product_info, dict):
         return []
 
-    for field_name in ["productImageUrl", "zoomImageUrl", "metaImage"]:
-        maybe_add_url(product_info.get(field_name, ""))
+    candidates = {}
 
     filmstrip = product_info.get("filmStripUrl", [])
     if isinstance(filmstrip, list):
         for item in filmstrip:
             if not isinstance(item, dict):
                 continue
-            for k, v in item.items():
-                if any(token in k.lower() for token in ["largeimageurl", "zoomimageurl", "stripurl"]):
-                    maybe_add_url(v)
 
-    return dedupe_preserve_order(image_urls)[:8]
+            for k, v in item.items():
+                if "stripurl" in k.lower():
+                    _add_walgreens_image_candidate(candidates, v, source_priority=1)
+
+            for k, v in item.items():
+                if "largeimageurl" in k.lower():
+                    _add_walgreens_image_candidate(candidates, v, source_priority=3)
+
+            for k, v in item.items():
+                if "zoomimageurl" in k.lower():
+                    _add_walgreens_image_candidate(candidates, v, source_priority=4)
+
+    _add_walgreens_image_candidate(candidates, product_info.get("metaImage", ""), source_priority=2)
+    _add_walgreens_image_candidate(candidates, product_info.get("productImageUrl", ""), source_priority=4)
+    _add_walgreens_image_candidate(candidates, product_info.get("zoomImageUrl", ""), source_priority=4)
+
+    ordered = sorted(
+        candidates.values(),
+        key=lambda x: (x["source_priority"], x["size_rank"], x["url"]),
+    )
+
+    return [x["url"] for x in ordered[:8]]
+
+def _absolutize_walgreens_image_url(url):
+    if not url:
+        return ""
+
+    url = html.unescape(str(url).strip())
+
+    if url.startswith("//"):
+        url = "https:" + url
+
+    if not re.match(r"^https?://", url, flags=re.IGNORECASE):
+        return ""
+
+    lowered = url.lower()
+    if not any(ext in lowered for ext in [".jpg", ".jpeg", ".png", ".webp", ".avif"]):
+        return ""
+
+    bad_tokens = [
+        "sprite",
+        "icon",
+        "logo",
+        "placeholder",
+        "spacer",
+        "data:image",
+        ".svg",
+    ]
+    if any(tok in lowered for tok in bad_tokens):
+        return ""
+
+    return url
+
+
+def _walgreens_image_family_key(url):
+    """
+    Normalize Walgreens image URLs so the same asset family collapses to one key,
+    regardless of 100 / 220 / 450 / 900 size or image slot suffix.
+    """
+    url = _absolutize_walgreens_image_url(url)
+    if not url:
+        return ""
+
+    lowered = url.lower().split("?", 1)[0]
+    m = re.search(r"/prodimg/([^/]+)/([^/]+)$", lowered)
+    if not m:
+        return lowered
+
+    product_folder = m.group(1)
+    filename = m.group(2)
+    filename = re.sub(r"\.(jpg|jpeg|png|webp|avif)$", "", filename, flags=re.IGNORECASE)
+    filename = re.sub(r"_(100|220|450|900)$", "", filename, flags=re.IGNORECASE)
+    filename = re.sub(r"^(100|220|450|900)$", "main", filename, flags=re.IGNORECASE)
+
+    return f"{product_folder}/{filename}"
+
+
+def _walgreens_image_size_rank(url):
+    url = str(url or "").lower()
+
+    if "/100." in url or "_100." in url:
+        return 1
+    if "/220." in url or "_220." in url:
+        return 2
+    if "/450." in url or "_450." in url:
+        return 3
+    if "/900." in url or "_900." in url:
+        return 4
+
+    return 99
+
+
+def _add_walgreens_image_candidate(candidates, url, source_priority=99):
+    """
+    Keep only one best URL per image family.
+    Lower source_priority wins.
+    Lower image size rank wins.
+    """
+    url = _absolutize_walgreens_image_url(url)
+    if not url:
+        return
+
+    family_key = _walgreens_image_family_key(url)
+    if not family_key:
+        return
+
+    candidate = {
+        "url": url,
+        "source_priority": source_priority,
+        "size_rank": _walgreens_image_size_rank(url),
+    }
+
+    current = candidates.get(family_key)
+    if current is None:
+        candidates[family_key] = candidate
+        return
+
+    current_tuple = (current["source_priority"], current["size_rank"], current["url"])
+    new_tuple = (candidate["source_priority"], candidate["size_rank"], candidate["url"])
+
+    if new_tuple < current_tuple:
+        candidates[family_key] = candidate
 
 
 def build_walgreens_bundle_from_api_payload(payload):
@@ -2866,54 +2959,36 @@ def extract_walgreens_images_from_html(html_text):
     if not html_text:
         return []
 
-    image_urls = []
+    candidates = {}
 
-    def maybe_add_url(url):
-        if not url:
-            return
+    for m in re.finditer(
+        r'"stripUrl\d+"\s*:\s*"((?:\\.|[^"\\])*)"',
+        html_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    ):
+        _add_walgreens_image_candidate(candidates, _decode_walgreens_json_string(m.group(1)), source_priority=1)
 
-        url = html.unescape(str(url).strip())
+    for m in re.finditer(
+        r'"metaImage"\s*:\s*"((?:\\.|[^"\\])*)"',
+        html_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    ):
+        _add_walgreens_image_candidate(candidates, _decode_walgreens_json_string(m.group(1)), source_priority=2)
 
-        if url.startswith("//"):
-            url = "https:" + url
+    for m in re.finditer(
+        r'"largeImageUrl\d+"\s*:\s*"((?:\\.|[^"\\])*)"',
+        html_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    ):
+        _add_walgreens_image_candidate(candidates, _decode_walgreens_json_string(m.group(1)), source_priority=3)
 
-        if not re.match(r"^https?://", url, flags=re.IGNORECASE):
-            return
-
-        lowered = url.lower()
-        if not any(ext in lowered for ext in [".jpg", ".jpeg", ".png", ".webp", ".avif"]):
-            return
-
-        bad_tokens = [
-            "sprite",
-            "icon",
-            "logo",
-            "placeholder",
-            "spacer",
-            "data:image",
-            ".svg",
-        ]
-        if any(tok in lowered for tok in bad_tokens):
-            return
-
-        image_urls.append(url)
-
-    for field_name in ["productImageUrl", "zoomImageUrl", "metaImage"]:
+    for field_name in ["productImageUrl", "zoomImageUrl"]:
         for m in re.finditer(
             rf'"{field_name}"\s*:\s*"((?:\\.|[^"\\])*)"',
             html_text,
             flags=re.IGNORECASE | re.DOTALL,
         ):
-            maybe_add_url(_decode_walgreens_json_string(m.group(1)))
-
-    strip_patterns = [
-        r'"largeImageUrl\d+"\s*:\s*"((?:\\.|[^"\\])*)"',
-        r'"zoomImageUrl\d+"\s*:\s*"((?:\\.|[^"\\])*)"',
-        r'"stripUrl\d+"\s*:\s*"((?:\\.|[^"\\])*)"',
-    ]
-    for pattern in strip_patterns:
-        for m in re.finditer(pattern, html_text, flags=re.IGNORECASE | re.DOTALL):
-            maybe_add_url(_decode_walgreens_json_string(m.group(1)))
+            _add_walgreens_image_candidate(candidates, _decode_walgreens_json_string(m.group(1)), source_priority=4)
 
     soup = BeautifulSoup(html_text, "html.parser")
     for selector in [
@@ -2922,10 +2997,14 @@ def extract_walgreens_images_from_html(html_text):
     ]:
         tag = soup.select_one(selector)
         if tag:
-            maybe_add_url(tag.get("content", ""))
+            _add_walgreens_image_candidate(candidates, tag.get("content", ""), source_priority=5)
 
-    return dedupe_preserve_order(image_urls)[:8]
+    ordered = sorted(
+        candidates.values(),
+        key=lambda x: (x["source_priority"], x["size_rank"], x["url"]),
+    )
 
+    return [x["url"] for x in ordered[:8]]
 
 def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
     """
