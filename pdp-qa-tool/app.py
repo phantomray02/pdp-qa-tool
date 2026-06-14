@@ -2423,12 +2423,14 @@ def format_walgreens_title_from_parts(raw_title="", size_count="", primary_attr=
 
 def _extract_walgreens_feature_items_from_raw_product_desc(desc_html):
     """
-    Parse Walgreens feature bullets from the raw productDesc HTML string.
+    Parse Walgreens feature bullets from raw productDesc HTML.
 
-    Strategy:
-    1) Prefer real LI tags.
-    2) If LI markup is weak/malformed, fall back to splitting cleaned text.
-    3) Strip utility/footer copy such as directions, disposal, legal-ish tail.
+    Priority:
+    1) Scan raw <LI> markers anywhere in the HTML, even if the UL/LI HTML is malformed.
+    2) Fall back to BeautifulSoup LI tags.
+    3) Fall back to UL text only when strong separators are present.
+
+    Do NOT split the whole paragraph body into pseudo-features.
     """
     if not desc_html:
         return []
@@ -2441,25 +2443,60 @@ def _extract_walgreens_feature_items_from_raw_product_desc(desc_html):
         flags=re.IGNORECASE | re.DOTALL,
     )
 
+    raw_features = []
+
+    # 1) Raw LI marker parsing across the whole block.
+    li_markers = list(re.finditer(r"<li[^>]*>", working, flags=re.IGNORECASE))
+    if li_markers:
+        for i, marker in enumerate(li_markers):
+            start = marker.end()
+            end_candidates = []
+            if i + 1 < len(li_markers):
+                end_candidates.append(li_markers[i + 1].start())
+
+            ul_close = re.search(r"</ul\s*>", working[start:], flags=re.IGNORECASE)
+            if ul_close:
+                end_candidates.append(start + ul_close.start())
+
+            p_close = re.search(r"</p\s*>", working[start:], flags=re.IGNORECASE)
+            if p_close:
+                end_candidates.append(start + p_close.start())
+
+            end = min(end_candidates) if end_candidates else len(working)
+            chunk = working[start:end]
+            chunk = re.sub(r"</li\s*>", " ", chunk, flags=re.IGNORECASE)
+            chunk = re.sub(r"<br\s*/?>", " ", chunk, flags=re.IGNORECASE)
+            item_text = BeautifulSoup(chunk, "html.parser").get_text(" ", strip=True)
+            item_text = _normalize_walgreens_text(item_text)
+            item_text = strip_walgreens_utility_tail(item_text)
+            if not item_text:
+                continue
+            if is_walgreens_utility_feature(item_text):
+                continue
+            raw_features.append(item_text)
+
+        raw_features = dedupe_preserve_order(raw_features)
+        if raw_features:
+            return raw_features[:5]
+
+    # 2) BeautifulSoup LI fallback.
     soup = BeautifulSoup(working, "html.parser")
-    features = []
-
+    soup_features = []
     for li in soup.find_all("li"):
-        text = li.get_text(" ", strip=True)
-        text = _normalize_walgreens_text(text)
-        text = strip_walgreens_utility_tail(text)
-
-        if not text:
+        item_text = li.get_text(" ", strip=True)
+        item_text = _normalize_walgreens_text(item_text)
+        item_text = strip_walgreens_utility_tail(item_text)
+        if not item_text:
             continue
-        if is_walgreens_utility_feature(text):
+        if is_walgreens_utility_feature(item_text):
             continue
+        soup_features.append(item_text)
 
-        features.append(text)
+    soup_features = dedupe_preserve_order(soup_features)
+    if soup_features:
+        return soup_features[:5]
 
-    features = dedupe_preserve_order(features)
-    if features:
-        return features[:5]
-
+    # 3) UL text fallback only.
     ul = soup.find("ul")
     if ul:
         ul_text = _normalize_walgreens_text(ul.get_text(" | ", strip=True))
@@ -2467,17 +2504,12 @@ def _extract_walgreens_feature_items_from_raw_product_desc(desc_html):
         if fallback_parts:
             return fallback_parts[:5]
 
-    whole_text = _normalize_walgreens_text(soup.get_text(" ", strip=True))
-    fallback_parts = split_walgreens_feature_fallback_text(whole_text)
-    return fallback_parts[:5]
+    return []
 
 def extract_walgreens_copy_from_product_desc_html(product_desc_html):
     """
-    Walgreens productDesc often contains invalid HTML where the marketing paragraph,
-    <br>, and <ul><li> bullets are all packed into a single <p> block.
-
-    To avoid pulling bullets into the description, split the raw HTML at the first
-    <ul> marker before parsing the description side.
+    Walgreens productDesc often mixes a marketing paragraph, <br>, and malformed
+    bullet HTML inside one block. Keep Description paragraph-only and Features list-only.
     """
     if not product_desc_html:
         return "", []
@@ -2490,23 +2522,52 @@ def extract_walgreens_copy_from_product_desc_html(product_desc_html):
         flags=re.IGNORECASE | re.DOTALL,
     )
 
-    # Split before the first UL so description stays paragraph-only.
+    # Description should stop before the first UL or LI marker.
+    split_positions = []
     ul_match = re.search(r"<ul\b", working, flags=re.IGNORECASE)
     if ul_match:
-        desc_html = working[:ul_match.start()]
-    else:
-        desc_html = working
+        split_positions.append(ul_match.start())
+    li_match = re.search(r"<li\b", working, flags=re.IGNORECASE)
+    if li_match:
+        split_positions.append(li_match.start())
 
-    # Remove trailing <br> tags that often sit right before the UL.
+    desc_html = working[:min(split_positions)] if split_positions else working
     desc_html = re.sub(r"(?:<br\s*/?>\s*)+$", " ", desc_html, flags=re.IGNORECASE)
 
-    desc_text = BeautifulSoup(desc_html, "html.parser").get_text(" ", strip=True)
-    description_text = _normalize_walgreens_text(desc_text)
-    description_text = strip_walgreens_utility_tail(description_text)
-    description_text = normalize_space(description_text)
+    # Prefer just the first paragraph-like chunk.
+    paragraph_bits = []
+    soup = BeautifulSoup(desc_html, "html.parser")
+    p_tags = soup.find_all("p")
+    if p_tags:
+        for p in p_tags:
+            txt = p.get_text(" ", strip=True)
+            txt = _normalize_walgreens_text(txt)
+            txt = strip_walgreens_utility_tail(txt)
+            if txt:
+                paragraph_bits.append(txt)
+                break
+    else:
+        txt = soup.get_text(" ", strip=True)
+        txt = _normalize_walgreens_text(txt)
+        txt = strip_walgreens_utility_tail(txt)
+        if txt:
+            paragraph_bits.append(txt)
+
+    description_text = normalize_space(" ".join(paragraph_bits))
 
     feature_items = _extract_walgreens_feature_items_from_raw_product_desc(working)
     feature_items = coerce_feature_list(feature_items, max_features=5)
+
+    # If feature text leaked into the description, trim at the first feature heading.
+    for feat in feature_items:
+        if not feat:
+            continue
+        lead = normalize_space(feat.split(":", 1)[0])
+        if len(lead) >= 8:
+            idx = description_text.lower().find(lead.lower())
+            if idx > 0:
+                description_text = normalize_space(description_text[:idx])
+                break
 
     return description_text, feature_items
 
@@ -3293,7 +3354,6 @@ def clean_walgreens_text(text):
 
 def normalize_walgreens_features_final(items, max_features=5):
     cleaned = []
-
     if not items:
         return []
 
@@ -3303,38 +3363,37 @@ def normalize_walgreens_features_final(items, max_features=5):
     for item in items:
         if not item:
             continue
-
-        text = clean_walgreens_text(item)
-        text = strip_walgreens_utility_tail(text)
-
-        if not text:
+        feature_text = clean_walgreens_text(item)
+        feature_text = strip_walgreens_utility_tail(feature_text)
+        if not feature_text:
             continue
-        if is_walgreens_utility_feature(text):
+        if is_walgreens_utility_feature(feature_text):
             continue
-
-        cleaned.append(text)
+        cleaned.append(feature_text)
 
     cleaned = dedupe_preserve_order(cleaned)
 
-    expanded = []
+    final = []
     for item in cleaned:
-        parts = split_walgreens_feature_fallback_text(item)
-        if parts:
-            expanded.extend(parts)
+        # Keep each LI-derived feature intact unless there is an explicit separator.
+        if " | " in item or "•" in item:
+            parts = split_walgreens_feature_fallback_text(item)
+            final.extend(parts if parts else [item])
         else:
-            expanded.append(item)
-
-    expanded = dedupe_preserve_order([normalize_space(x) for x in expanded if normalize_space(x)])
+            final.append(item)
 
     out = []
-    for item in expanded:
+    for item in dedupe_preserve_order(final):
         if not item:
             continue
         if is_walgreens_utility_feature(item):
             continue
+        if len(item) > 320:
+            # Oversized spillover usually means malformed concatenation; skip it.
+            continue
         out.append(item)
 
-    return dedupe_preserve_order(out)[:max_features]
+    return out[:max_features]
 
 def clean_walgreens_title(text):
     if not text:
@@ -3376,7 +3435,6 @@ def coerce_feature_list(value, max_features=5):
 
     return dedupe_preserve_order(cleaned)[:max_features]
 
-
 def finalize_retailer_copy(retailer_name, r_text):
     retailer = str(retailer_name or "").strip().lower()
     out = dict(r_text or {})
@@ -3390,7 +3448,6 @@ def finalize_retailer_copy(retailer_name, r_text):
         )
         return out
 
-    # Default path remains CVS.
     out["title"] = normalize_space(out.get("title", ""))
     out["description"] = clean_cvs_text(out.get("description", ""))
     out["features"] = coerce_feature_list(normalize_cvs_features(out.get("features", [])), max_features=5)
@@ -3573,6 +3630,67 @@ def compare_images_visually(s_url, r_url):
 # =========================================
 # PROCESS ROW
 # =========================================
+def align_retailer_images_to_salsify(s_images, retailer_images, max_slots=8, min_match_score=35):
+    """
+    Reorder retailer images to best match Salsify slot order.
+
+    This is especially useful for Walgreens, where the filmstrip order can include
+    extra legal/back panels that do not line up with Salsify's canonical sequence.
+    """
+    retailer_images = [str(x).strip() for x in (retailer_images or []) if str(x).strip()]
+    if not retailer_images:
+        return []
+
+    salsify_urls = []
+    for img in (s_images or []):
+        if isinstance(img, dict):
+            salsify_urls.append(str(img.get("url", "") or "").strip())
+        else:
+            salsify_urls.append(str(img or "").strip())
+
+    if not any(salsify_urls):
+        return retailer_images[:max_slots]
+
+    unmatched = list(range(len(retailer_images)))
+    aligned = []
+
+    for s_url in salsify_urls[:max_slots]:
+        if not s_url:
+            aligned.append("")
+            continue
+
+        best_idx = None
+        best_score = -1
+        for idx in unmatched:
+            r_url = retailer_images[idx]
+            score = compare_images_visually(s_url, r_url) if r_url else 0
+            if score > best_score:
+                best_score = score
+                best_idx = idx
+
+        if best_idx is not None and best_score >= min_match_score:
+            aligned.append(retailer_images[best_idx])
+            unmatched.remove(best_idx)
+        else:
+            aligned.append("")
+
+    # Append any unmatched retailer images after the matched sequence, preserving original order.
+    for idx in unmatched:
+        aligned.append(retailer_images[idx])
+
+    seen = set()
+    out = []
+    for url in aligned:
+        if not url:
+            out.append("")
+            continue
+        if url in seen:
+            continue
+        seen.add(url)
+        out.append(url)
+
+    return out[:max_slots]
+
 def process_row(row):
     try:
         retail_url = row.get("retail_url", "")
@@ -3666,7 +3784,8 @@ def process_row(row):
         s_images = s_bundle["images"]
 
         r_text = r_bundle["text"] or {}
-        r_images = r_bundle["images"]
+        r_images_raw = r_bundle["images"]
+        r_images = align_retailer_images_to_salsify(s_images, r_images_raw, max_slots=8)
 
         r_text = finalize_retailer_copy(retailer_name, r_text)
         debug_data = r_text.get("debug", {})
@@ -4247,7 +4366,8 @@ if uploaded_file and st.session_state.processing_done:
             )
         
             r_text = r_bundle["text"] or {}
-            r_images = r_bundle["images"]
+            r_images_raw = r_bundle["images"]
+            r_images = align_retailer_images_to_salsify(s_images, r_images_raw, max_slots=8)
 
             # Retailer-specific final cleanup
             r_text = finalize_retailer_copy(retailer_name, r_text)
@@ -4423,3 +4543,4 @@ if uploaded_file and st.session_state.processing_done:
         st.error("🔥 CRITICAL APP ERROR")
         st.text(str(e))
         st.text(traceback.format_exc())
+        
