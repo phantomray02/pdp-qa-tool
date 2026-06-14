@@ -2428,7 +2428,9 @@ def _find_walgreens_feature_block_start(desc_html):
 <UL>
 <LI>
 
-    Be tolerant of case, whitespace, missing newlines, and malformed HTML.
+    Return the start index of the whole feature block and the end index of the
+    first <LI> opening tag so callers can either trim at the block start or begin
+    parsing right after the first LI marker.
     """
     if not desc_html:
         return None
@@ -2443,9 +2445,16 @@ def _find_walgreens_feature_block_start(desc_html):
     for pattern in patterns:
         m = re.search(pattern, working, flags=re.IGNORECASE | re.DOTALL)
         if m:
-            return m.start(), m.end()
+            li_open = re.search(r"<li[^>]*>", m.group(0), flags=re.IGNORECASE)
+            li_end = m.start() + li_open.end() if li_open else m.end()
+            return m.start(), li_end
 
     return None
+
+
+def _is_walgreens_450_image(url):
+    url = str(url or '').lower().split('?', 1)[0]
+    return url.endswith('/450.jpg') or url.endswith('_450.jpg')
 
 
 def _extract_walgreens_feature_items_from_raw_product_desc(desc_html):
@@ -2455,9 +2464,11 @@ def _extract_walgreens_feature_items_from_raw_product_desc(desc_html):
 <UL>
 <LI>
 
-    Each feature separation point is another <LI> marker, and the last feature may
-    be the only one with a closing </LI>. So we split on raw <LI> markers and stop
-    each chunk at the next <LI>, a closing </UL>, or the end of the string.
+    Separation points are repeated <LI> markers. The last bullet may be the only
+    one with a closing </LI>, so split on raw <LI> markers and stop each chunk at
+    the next <LI>, a closing </UL>, or the end of the string.
+
+    IMPORTANT: include the very first feature immediately after the first <LI>.
     """
     if not desc_html:
         return []
@@ -2474,14 +2485,14 @@ def _extract_walgreens_feature_items_from_raw_product_desc(desc_html):
     if not start_info:
         return []
 
-    _, feature_start = start_info
-    feature_html = working[feature_start:]
+    feature_block_start, _first_li_end = start_info
+    feature_html = working[feature_block_start:]
 
     li_markers = list(re.finditer(r"<li[^>]*>", feature_html, flags=re.IGNORECASE))
-    features = []
-
     if not li_markers:
         return []
+
+    features = []
 
     for i, marker in enumerate(li_markers):
         start = marker.end()
@@ -2500,7 +2511,6 @@ def _extract_walgreens_feature_items_from_raw_product_desc(desc_html):
 
         end = min(end_candidates) if end_candidates else len(feature_html)
         chunk = feature_html[start:end]
-
         chunk = re.sub(r"</li\s*>", " ", chunk, flags=re.IGNORECASE)
         chunk = re.sub(r"<br\s*/?>", " ", chunk, flags=re.IGNORECASE)
         chunk = re.sub(r"</?ul[^>]*>", " ", chunk, flags=re.IGNORECASE)
@@ -2520,15 +2530,13 @@ def _extract_walgreens_feature_items_from_raw_product_desc(desc_html):
 
 def extract_walgreens_copy_from_product_desc_html(product_desc_html):
     """
-    Walgreens live description starts inside:
-    {"description":{"productDesc":"<p> ...
-
-    and ends right before the feature block that looks like:
-    )<br/>
+    Walgreens live description starts inside productDesc paragraph HTML and ends
+    right before the feature block that looks like:
+    <br/>
 <UL>
 <LI>
 
-    The weird code &#34; should decode to a normal quote character via html.unescape.
+    The weird code &#34; decodes to a normal quote via html.unescape.
     """
     if not product_desc_html:
         return "", []
@@ -2542,24 +2550,21 @@ def extract_walgreens_copy_from_product_desc_html(product_desc_html):
     )
 
     start_info = _find_walgreens_feature_block_start(working)
-    if start_info:
-        desc_html = working[:start_info[0]]
-    else:
-        desc_html = working
+    desc_html = working[:start_info[0]] if start_info else working
 
     # Trim the trailing <br/> that usually sits right before the UL.
     desc_html = re.sub(r"(?:<br\s*/?>\s*)+$", " ", desc_html, flags=re.IGNORECASE)
 
-    # Prefer the paragraph body if present.
-    p_match = re.search(r"<p[^>]*>(.*?)$", desc_html, flags=re.IGNORECASE | re.DOTALL)
-    if p_match:
-        desc_html = p_match.group(1)
+    # Prefer the first paragraph body if present.
+    soup = BeautifulSoup(desc_html, "html.parser")
+    p_tag = soup.find('p')
+    if p_tag:
+        desc_text = p_tag.get_text(' ', strip=True)
+    else:
+        desc_text = soup.get_text(' ', strip=True)
 
-    description_text = BeautifulSoup(desc_html, "html.parser").get_text(" ", strip=True)
-    description_text = _normalize_walgreens_text(description_text)
+    description_text = _normalize_walgreens_text(desc_text)
     description_text = strip_walgreens_utility_tail(description_text)
-
-    # Clean one common malformed trailing extra parenthesis seen on Walgreens.
     description_text = re.sub(r"\)\)$", ")", description_text).strip()
     description_text = normalize_space(description_text)
 
@@ -2599,45 +2604,28 @@ def _extract_walgreens_slot_num_from_key(key):
 
 def _choose_best_walgreens_slot_image_from_dict(item):
     """
-    Keep Walgreens site order, but inside each slot choose the best visible size
-    for QA: 450 first, then 900, then 220/meta, then 100.
+    Pull only Walgreens images that contain 450 in the live URL.
+    Prefer /450.jpg and then /n_450.jpg style URLs in the exact site order.
     """
     if not isinstance(item, dict):
         return ""
 
+    # Prefer explicit 450 image keys first.
     for k, v in item.items():
-        if "largeimageurl" in str(k).lower():
+        if 'largeimageurl' in str(k).lower():
             url = _absolutize_walgreens_image_url(v)
-            if url:
+            if url and _is_walgreens_450_image(url):
                 return url
 
-    for k, v in item.items():
-        if "zoomimageurl" in str(k).lower():
-            url = _absolutize_walgreens_image_url(v)
-            if url:
-                return url
-
-    for k, v in item.items():
-        if "stripurl" in str(k).lower():
-            url = _absolutize_walgreens_image_url(v)
-            if url:
-                return url
-
+    # Do not fall back to 900 / 100. User only wants 450 images.
     return ""
-
 
 def extract_walgreens_images_from_product_info(product_info):
     """
-    Pull all live Walgreens images in Walgreens site order.
+    Pull all live Walgreens images in Walgreens site order, but only keep image URLs
+    that contain 450 in the path (e.g. /450.jpg, /2_450.jpg, /3_450.jpg).
 
-    Important: do NOT reorder to match Salsify here. The user wants to see what is
-    live on Walgreens, even when Salsify image sequencing differs.
-
-    Strategy:
-    - preserve filmStripUrl order exactly as Walgreens provides it
-    - choose one best image per slot (450 first, then 900, then 100)
-    - append product-level fallbacks only if they are not already present
-    - keep all available live images up to MAX_IMAGE_SLOTS_TO_COMPARE
+    Do NOT append 900 / 100 / meta fallbacks.
     """
     if not isinstance(product_info, dict):
         return []
@@ -2652,17 +2640,6 @@ def extract_walgreens_images_from_product_info(product_info):
             if chosen_url and chosen_url not in seen:
                 ordered_urls.append(chosen_url)
                 seen.add(chosen_url)
-
-    # Append product-level fallbacks only when not already represented.
-    for fallback_url in [
-        product_info.get("productImageUrl", ""),
-        product_info.get("zoomImageUrl", ""),
-        product_info.get("metaImage", ""),
-    ]:
-        fallback_url = _absolutize_walgreens_image_url(fallback_url)
-        if fallback_url and fallback_url not in seen:
-            ordered_urls.append(fallback_url)
-            seen.add(fallback_url)
 
     return ordered_urls[:MAX_IMAGE_SLOTS_TO_COMPARE]
 
@@ -3042,75 +3019,23 @@ def extract_walgreens_images_from_html(html_text):
     slot_candidates = {}
     seen = set()
 
-    def maybe_store(slot_num, url, priority):
+    def maybe_store(slot_num, url):
         url = _absolutize_walgreens_image_url(url)
-        if not url:
+        if not url or not _is_walgreens_450_image(url):
             return
-        current = slot_candidates.get(slot_num)
-        candidate = {
-            "url": url,
-            "priority": priority,
-            "size_rank": _walgreens_image_size_rank(url),
-        }
-        if current is None:
-            slot_candidates[slot_num] = candidate
-            return
-        current_tuple = (current["priority"], current["size_rank"], current["url"])
-        new_tuple = (candidate["priority"], candidate["size_rank"], candidate["url"])
-        if new_tuple < current_tuple:
-            slot_candidates[slot_num] = candidate
+        slot_candidates[slot_num] = url
 
-    # Preserve Walgreens slot order from numbered keys.
+    # Preserve Walgreens slot order from numbered 450 image keys only.
     for m in re.finditer(
         r'"largeImageUrl(\d+)"\s*:\s*"((?:\\.|[^"\\])*)"',
         html_text,
         flags=re.IGNORECASE | re.DOTALL,
     ):
-        maybe_store(int(m.group(1)), _decode_walgreens_json_string(m.group(2)), 1)
-
-    for m in re.finditer(
-        r'"zoomImageUrl(\d+)"\s*:\s*"((?:\\.|[^"\\])*)"',
-        html_text,
-        flags=re.IGNORECASE | re.DOTALL,
-    ):
-        maybe_store(int(m.group(1)), _decode_walgreens_json_string(m.group(2)), 2)
-
-    for m in re.finditer(
-        r'"stripUrl(\d+)"\s*:\s*"((?:\\.|[^"\\])*)"',
-        html_text,
-        flags=re.IGNORECASE | re.DOTALL,
-    ):
-        maybe_store(int(m.group(1)), _decode_walgreens_json_string(m.group(2)), 4)
+        maybe_store(int(m.group(1)), _decode_walgreens_json_string(m.group(2)))
 
     ordered_urls = []
     for slot_num in sorted(slot_candidates.keys()):
-        url = slot_candidates[slot_num]["url"]
-        if url and url not in seen:
-            ordered_urls.append(url)
-            seen.add(url)
-
-    # Append product-level fallbacks only if not already present.
-    fallback_candidates = []
-    for field_name in ["productImageUrl", "zoomImageUrl", "metaImage"]:
-        for m in re.finditer(
-            rf'"{field_name}"\s*:\s*"((?:\\.|[^"\\])*)"',
-            html_text,
-            flags=re.IGNORECASE | re.DOTALL,
-        ):
-            fallback_candidates.append(_decode_walgreens_json_string(m.group(1)))
-
-    soup = BeautifulSoup(html_text, "html.parser")
-    for selector in ["meta[property='og:image']", "meta[name='twitter:image']"]:
-        tag = soup.select_one(selector)
-        if tag:
-            fallback_candidates.append(tag.get("content", ""))
-
-    fallback_candidates = sorted(
-        [_absolutize_walgreens_image_url(x) for x in fallback_candidates if _absolutize_walgreens_image_url(x)],
-        key=lambda x: (_walgreens_image_size_rank(x), x),
-    )
-
-    for url in fallback_candidates:
+        url = slot_candidates[slot_num]
         if url and url not in seen:
             ordered_urls.append(url)
             seen.add(url)
@@ -3481,7 +3406,6 @@ def finalize_retailer_copy(retailer_name, r_text):
         )[:5]
         return out
 
-    # Default path remains CVS.
     out["title"] = normalize_space(out.get("title", ""))
     out["description"] = clean_cvs_text(out.get("description", ""))
     out["features"] = normalize_cvs_features(out.get("features", []))
