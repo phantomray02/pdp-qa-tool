@@ -100,18 +100,18 @@ thread_local = threading.local()
 # =========================================
 # VISUAL LAYOUT SETTINGS
 # =========================================
-SECTION_HEADER_SIZE = 50
-COPY_TEXT_SIZE = 35
-COPY_LINE_HEIGHT = 1.20
-SECTION_VERTICAL_GAP = 15
+SECTION_HEADER_SIZE = 24
+COPY_TEXT_SIZE = 15
+COPY_LINE_HEIGHT = 1.28
+SECTION_VERTICAL_GAP = 8
 
 # Use one shared spacing value so the image area feels mathematically even.
-IMG_SPACE_PX = 0
-IMG_BOX_HEIGHT = 145
-IMG_SCORE_WIDTH_PX = 100
+IMG_SPACE_PX = 4
+IMG_BOX_HEIGHT = 104
+IMG_SCORE_WIDTH_PX = 72
 
-TITLE_TO_DESCRIPTION_GAP_PX = 125
-DESCRIPTION_TO_FEATURES_GAP_PX = 125
+TITLE_TO_DESCRIPTION_GAP_PX = 28
+DESCRIPTION_TO_FEATURES_GAP_PX = 28
 
 
 def get_session():
@@ -184,7 +184,7 @@ def html_escape_text(text):
     return html.escape(str(text or ""))
 
 
-def equal_height_block(text, min_height=210):
+def equal_height_block(text, min_height=150):
     safe_text = html_escape_text(text or "Missing")
     return (
         f"<div style=\""
@@ -205,7 +205,7 @@ def equal_height_block(text, min_height=210):
     )
 
 
-def equal_feature_block(text, min_height=90):
+def equal_feature_block(text, min_height=40):
     safe_text = html_escape_text(text or "Missing")
     return (
         f"<div style=\""
@@ -435,7 +435,7 @@ def image_slot_block_html(slot_num, s_url, r_url, score, retailer_name="CVS", bo
 </div>'''
 
 
-def build_image_panel_html(s_images, r_images, max_images, retailer_name="CVS", box_height=170):
+def build_image_panel_html(s_images, r_images, max_images, retailer_name="CVS", box_height=110):
     blocks = []
 
     for i in range(max_images):
@@ -4394,6 +4394,7 @@ if uploaded_file and st.session_state.processing_done:
 
         visual_df.drop(columns=["retail_url_clean"], inplace=True, errors="ignore")
 
+        st.markdown("<style>.block-container{max-width:1700px;padding-top:1rem;padding-bottom:1rem;} img{max-width:100%;height:auto;}</style>", unsafe_allow_html=True)
         st.markdown("## 👁️ Full Visual QA Review")
 
         if hidden_count > 0:
@@ -4504,7 +4505,7 @@ if uploaded_file and st.session_state.processing_done:
                 with t1:
                     st.markdown(
                         "<div style='width:100%; overflow:hidden; padding-left:0; margin-left:0;'>"
-                        + equal_height_block(s_title or "Missing", min_height=88)
+                        + equal_height_block(s_title or "Missing", min_height=56)
                         + "</div>",
                         unsafe_allow_html=True,
                     )
@@ -4512,7 +4513,7 @@ if uploaded_file and st.session_state.processing_done:
                 with t2:
                     st.markdown(
                         "<div style='width:100%; overflow:hidden; padding-left:0; margin-left:0;'>"
-                        + equal_height_block(r_title or "Missing", min_height=88)
+                        + equal_height_block(r_title or "Missing", min_height=56)
                         + "</div>",
                         unsafe_allow_html=True,
                     )
@@ -4528,7 +4529,7 @@ if uploaded_file and st.session_state.processing_done:
                 with d1:
                     st.markdown(
                         "<div style='width:100%; overflow:hidden; padding-left:0; margin-left:0;'>"
-                        + equal_height_block(s_desc or "Missing", min_height=250)
+                        + equal_height_block(s_desc or "Missing", min_height=150)
                         + "</div>",
                         unsafe_allow_html=True,
                     )
@@ -4536,7 +4537,7 @@ if uploaded_file and st.session_state.processing_done:
                 with d2:
                     st.markdown(
                         "<div style='width:100%; overflow:hidden; padding-left:0; margin-left:0;'>"
-                        + equal_height_block(r_desc or "Missing", min_height=250)
+                        + equal_height_block(r_desc or "Missing", min_height=150)
                         + "</div>",
                         unsafe_allow_html=True,
                     )
@@ -4555,7 +4556,7 @@ if uploaded_file and st.session_state.processing_done:
                     with f1:
                         st.markdown(
                             "<div style='width:100%; overflow:hidden; padding-left:0; margin-left:0;'>"
-                            + equal_feature_block(s_val or "Missing", min_height=54)
+                            + equal_feature_block(s_val or "Missing", min_height=40)
                             + "</div>",
                             unsafe_allow_html=True,
                         )
@@ -4563,7 +4564,7 @@ if uploaded_file and st.session_state.processing_done:
                     with f2:
                         st.markdown(
                             "<div style='width:100%; overflow:hidden; padding-left:0; margin-left:0;'>"
-                            + equal_feature_block(r_val or "Missing", min_height=54)
+                            + equal_feature_block(r_val or "Missing", min_height=40)
                             + "</div>",
                             unsafe_allow_html=True,
                         )
