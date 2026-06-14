@@ -2640,6 +2640,138 @@ def extract_walgreens_copy_from_product_sections(section_list):
 
     return description, features
 
+def _walgreens_text_richness_tuple(value):
+    value = clean_walgreens_text(value)
+    useful = 0
+    if len(value) >= 120:
+        useful += 2
+    elif len(value) >= 60:
+        useful += 1
+    if re.search(r"\b(count|ct|pack|roll|pads?|wipes?|diapers?|underwear|absorb|protection|odor|soft|dry|hours?)\b", value, flags=re.IGNORECASE):
+        useful += 1
+    return (useful, len(value), value)
+
+
+def _walgreens_choose_richer_description(primary_value, secondary_value):
+    primary_value = clean_walgreens_text(primary_value)
+    secondary_value = clean_walgreens_text(secondary_value)
+    if _walgreens_text_richness_tuple(secondary_value) > _walgreens_text_richness_tuple(primary_value):
+        return secondary_value
+    return primary_value
+
+
+def _collect_jsonld_description_candidates(soup):
+    candidates = []
+    for script in soup.find_all('script', attrs={'type': 'application/ld+json'}):
+        raw = (script.string or script.get_text(' ', strip=True) or '').strip()
+        if not raw:
+            continue
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            continue
+        nodes = payload if isinstance(payload, list) else [payload]
+        while nodes:
+            node = nodes.pop(0)
+            if isinstance(node, dict):
+                desc = node.get('description', '')
+                if isinstance(desc, str) and desc.strip():
+                    candidates.append(desc)
+                for value in node.values():
+                    if isinstance(value, (dict, list)):
+                        nodes.append(value)
+            elif isinstance(node, list):
+                nodes.extend(node)
+    return candidates
+
+
+def _collect_heading_following_copy(soup):
+    desc_candidates = []
+    feature_lists = []
+    heading_pattern = re.compile(r'(description|details|overview|about this product|about the product|product details|why we love|benefits|features)', re.IGNORECASE)
+    for tag in soup.find_all(['h1', 'h2', 'h3', 'h4', 'strong', 'b', 'span', 'div', 'p']):
+        heading_text = normalize_space(tag.get_text(' ', strip=True))
+        if not heading_text or len(heading_text) > 80:
+            continue
+        if not heading_pattern.search(heading_text):
+            continue
+        collected_desc = []
+        collected_features = []
+        sibling = tag.next_sibling
+        sibling_steps = 0
+        while sibling is not None and sibling_steps < 10:
+            sibling_steps += 1
+            sibling_name = getattr(sibling, 'name', None)
+            if sibling_name in {'h1', 'h2', 'h3', 'h4'}:
+                break
+            sibling_text = ''
+            if hasattr(sibling, 'get_text'):
+                sibling_text = normalize_space(sibling.get_text(' ', strip=True))
+            else:
+                sibling_text = normalize_space(str(sibling))
+            sibling_text = clean_walgreens_text(sibling_text)
+            if sibling_name in {'ul', 'ol'}:
+                li_values = [clean_walgreens_text(li.get_text(' ', strip=True)) for li in sibling.find_all('li')]
+                li_values = [v for v in li_values if v and not is_walgreens_utility_feature(v)]
+                if li_values:
+                    collected_features.extend(li_values)
+            elif sibling_name == 'li':
+                if sibling_text and not is_walgreens_utility_feature(sibling_text):
+                    collected_features.append(sibling_text)
+            else:
+                if sibling_text and sibling_text.lower() not in {'description', 'details', 'overview', 'features'}:
+                    collected_desc.append(sibling_text)
+            sibling = getattr(sibling, 'next_sibling', None)
+        if collected_desc:
+            desc_candidates.append(' '.join(collected_desc))
+        if collected_features:
+            feature_lists.append(collected_features)
+    return desc_candidates, feature_lists
+
+
+def extract_walgreens_copy_from_meta_and_jsonld(html_text):
+    if not html_text:
+        return '', []
+    soup = BeautifulSoup(html_text, 'html.parser')
+
+    desc_candidates = []
+    meta_selectors = [
+        {'name': 'description'},
+        {'property': 'og:description'},
+        {'name': 'twitter:description'},
+        {'itemprop': 'description'},
+    ]
+    for attrs in meta_selectors:
+        meta = soup.find('meta', attrs=attrs)
+        if meta and meta.get('content'):
+            desc_candidates.append(meta.get('content', ''))
+
+    desc_candidates.extend(_collect_jsonld_description_candidates(soup))
+    heading_desc_candidates, heading_feature_lists = _collect_heading_following_copy(soup)
+    desc_candidates.extend(heading_desc_candidates)
+
+    best_description = ''
+    for candidate in desc_candidates:
+        best_description = _walgreens_choose_richer_description(best_description, candidate)
+
+    feature_lists = []
+    all_li = []
+    for li in soup.find_all('li'):
+        li_text = clean_walgreens_text(li.get_text(' ', strip=True))
+        if li_text and not is_walgreens_utility_feature(li_text):
+            all_li.append(li_text)
+    if all_li:
+        feature_lists.append(all_li)
+    feature_lists.extend(heading_feature_lists)
+
+    best_features = []
+    for feature_values in feature_lists:
+        cleaned = normalize_walgreens_features_final(feature_values, max_features=5)
+        if _walgreens_feature_richness_tuple(cleaned) > _walgreens_feature_richness_tuple(best_features):
+            best_features = cleaned
+
+    return best_description, best_features
+
 def _extract_walgreens_slot_num_from_key(key):
     key = str(key or "")
     m = re.search(r"(\d+)$", key)
@@ -2914,6 +3046,7 @@ def build_walgreens_bundle_from_prod_desc_fragment(product_id, retail_url=""):
     """
     Fallback path for prod... Walgreens items.
     Uses the lightweight prodDesc.jsp endpoint for description/features.
+    Also runs the same meta/jsonld fallback extractor against the fragment HTML.
     """
     empty = {
         "text": {
@@ -2938,6 +3071,13 @@ def build_walgreens_bundle_from_prod_desc_fragment(product_id, retail_url=""):
         return empty
 
     description, features = extract_walgreens_copy_from_product_desc_html(fragment_html)
+    fallback_description, fallback_features = extract_walgreens_copy_from_meta_and_jsonld(fragment_html)
+    description = _walgreens_choose_richer_description(description, fallback_description)
+    features = normalize_walgreens_features_final(features, max_features=5)
+    fallback_features = normalize_walgreens_features_final(fallback_features, max_features=5)
+    if _walgreens_feature_richness_tuple(fallback_features) > _walgreens_feature_richness_tuple(features):
+        features = fallback_features
+
     title = build_walgreens_title_from_url_slug(
         retail_url=retail_url,
         description_html=fragment_html,
@@ -2957,7 +3097,6 @@ def build_walgreens_bundle_from_prod_desc_fragment(product_id, retail_url=""):
         },
         "images": [],
     }
-
 
 def _extract_walgreens_title_from_source(html_text):
     if not html_text:
@@ -3048,18 +3187,38 @@ def extract_walgreens_text_from_html(html_text, retail_url="", target_rpc=""):
 
     title, title_path = _extract_walgreens_title_from_source(html_text)
     description, features, copy_path = _extract_walgreens_description_and_features_from_product_desc(html_text)
+    fallback_description, fallback_features = extract_walgreens_copy_from_meta_and_jsonld(html_text)
+
+    chosen_description = _walgreens_choose_richer_description(description, fallback_description)
+    chosen_features = normalize_walgreens_features_final(features, max_features=5)
+    fallback_features = normalize_walgreens_features_final(fallback_features, max_features=5)
+    if _walgreens_feature_richness_tuple(fallback_features) > _walgreens_feature_richness_tuple(chosen_features):
+        chosen_features = fallback_features
 
     debug["Title Path"] = title_path
-    debug["Description Path"] = copy_path if description else "walgreens_description_missing"
-    debug["Features Path"] = copy_path if features else "walgreens_features_missing"
+    if chosen_description == description and description:
+        debug["Description Path"] = copy_path
+    elif chosen_description:
+        debug["Description Path"] = "walgreens_meta_jsonld_fallback"
+        debug["Source Used"] = "walgreens_html | walgreens_meta_jsonld_fallback"
+    else:
+        debug["Description Path"] = "walgreens_description_missing"
+
+    if chosen_features == normalize_walgreens_features_final(features, max_features=5) and chosen_features:
+        debug["Features Path"] = copy_path
+    elif chosen_features:
+        debug["Features Path"] = "walgreens_meta_jsonld_fallback"
+        if "walgreens_meta_jsonld_fallback" not in str(debug.get("Source Used", "")):
+            debug["Source Used"] = "walgreens_html | walgreens_meta_jsonld_fallback"
+    else:
+        debug["Features Path"] = "walgreens_features_missing"
 
     return {
         "title": title,
-        "description": description,
-        "features": features[:5],
+        "description": chosen_description,
+        "features": chosen_features[:5],
         "debug": debug,
     }
-
 
 def extract_walgreens_images_from_html(html_text):
     if not html_text:
@@ -3248,15 +3407,14 @@ def _walgreens_features_are_rich_enough(values):
 
 
 @st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False)
 def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
     """
     Walgreens strategy:
     1) Build live HTML bundle first.
     2) If HTML already looks rich enough on BOTH description and features, return it.
     3) If HTML is weak, merge in API + prodDesc fallback for any valid productId.
-
-    This keeps strong live rows fast while recovering weak-copy rows that still need
-    the lightweight product endpoint and/or prodDesc fragment.
+    4) If the merged result is still weak, prefer the richer field-level combination.
     """
     retail_url = str(retail_url or "").strip()
     retail_url_lc = retail_url.lower()
@@ -3298,31 +3456,43 @@ def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
         return html_bundle
 
     candidate_bundles = [html_bundle]
-
     if product_id:
         api_payload = get_walgreens_product_api_payload(product_id)
         api_bundle = build_walgreens_bundle_from_api_payload(api_payload)
         if _walgreens_has_copy_or_images(api_bundle):
             candidate_bundles.append(api_bundle)
-
-        fragment_bundle = build_walgreens_bundle_from_prod_desc_fragment(
-            product_id,
-            retail_url=retail_url,
-        )
+        fragment_bundle = build_walgreens_bundle_from_prod_desc_fragment(product_id, retail_url=retail_url)
         if _walgreens_has_copy_or_images(fragment_bundle):
             candidate_bundles.append(fragment_bundle)
 
     merged_bundle = merge_walgreens_bundles_prefer_richer_copy(*candidate_bundles)
+    if _walgreens_bundle_is_rich_enough(merged_bundle):
+        return merged_bundle
+
+    # If still weak, force the richest field-by-field merge one more time.
+    if len(candidate_bundles) > 1:
+        html_text = html_bundle.get("text", {}) or {}
+        merged_text = merged_bundle.get("text", {}) or {}
+        merged_text["description"] = _walgreens_choose_richer_description(
+            html_text.get("description", ""),
+            merged_text.get("description", ""),
+        )
+        html_features = normalize_walgreens_features_final(html_text.get("features", []), max_features=5)
+        merged_features = normalize_walgreens_features_final(merged_text.get("features", []), max_features=5)
+        if _walgreens_feature_richness_tuple(html_features) > _walgreens_feature_richness_tuple(merged_features):
+            merged_text["features"] = html_features
+        else:
+            merged_text["features"] = merged_features
+        merged_bundle["text"] = merged_text
+
     if _walgreens_has_copy_or_images(merged_bundle):
         return merged_bundle
 
     if selected_sku_id and len(candidate_bundles) > 1:
         return candidate_bundles[1]
-
     for bundle in candidate_bundles:
         if _walgreens_has_copy_or_images(bundle):
             return bundle
-
     return html_bundle
 
 def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku=""):
