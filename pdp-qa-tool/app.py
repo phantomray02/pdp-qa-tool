@@ -3617,9 +3617,7 @@ def strip_walgreens_utility_tail(text):
         if idx != -1:
             cut_index = min(cut_index, idx)
 
-    text = text[:cut_index].strip()
-
-    # Remove cross-sell / promo-style copy that sometimes sneaks into live Walgreens copy.
+    text =ell / promo-style copy that sometimes sneaks into live Walgreens copy.    text = text[:cut_index].strip()
     text = re.sub(
         r"\bAlso check out our\b.*$",
         "",
@@ -3768,25 +3766,21 @@ def _looks_like_walgreens_feature_fragment(text):
 
     lower = text.lower()
 
-    # Common broken endings that clearly need continuation.
     if lower.endswith((" of", " for", " with", " to", " your", " our")):
         return True
 
     if text.endswith(":"):
         return True
 
-    # Example: "DEPEND FRESH PROTECTION: 15 count of"
     if re.match(
         r'^[A-Z0-9&/\-\s\(\)\'"\.]+:\s*\d+\s+count\s+of\s*$',
         text
     ):
         return True
 
-    # Very short uppercase header-like fragments.
-    if len(text) <= 42 and re.match(r"^[A-Z0-9&/\-\s\(\)\'\":,.]+$", text):
+    if len(text) <= 42 and re.match(r'^[A-Z0-9&/\-\s\(\)\'":,.]+$', text):
         return True
 
-    # Short phrases that are obviously incomplete.
     if len(text) <= 60 and text.count(" ") <= 8:
         if any(lower.endswith(x) for x in [" of", " for", " with", " to"]):
             return True
@@ -3828,7 +3822,6 @@ def _looks_like_walgreens_feature_continuation(text):
     if text.startswith("(") or text.startswith("*"):
         return True
 
-    # Continuation often starts with a normal sentence after a broken header.
     if re.match(r"^[A-Z][a-z]", text):
         return True
 
@@ -3932,8 +3925,6 @@ def clean_walgreens_title(text):
     text = clean_walgreens_text(text)
     text = normalize_space(text)
 
-    # The title builder should already have constructed:
-    # "Depend Adult Incontinence Underwear for Men Extra-Large, 15.0 ea"
     text = re.sub(r"\s+,", ",", text)
     text = re.sub(r",\s*,", ", ", text)
     text = normalize_space(text)
