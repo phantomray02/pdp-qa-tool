@@ -3193,7 +3193,18 @@ def build_walgreens_bundle_from_api_payload(payload):
         "images": images,
     }
 
+def get_walgreens_prod_desc_url(product_id):
+    if not product_id:
+        return ""
+    return f"https://www.walgreens.com/store/store/prodDesc.jsp?id={product_id}"
 
+def get_walgreens_prod_desc_html(product_id):
+    """
+    Lightweight Walgreens copy endpoint. Often more reliable than the full PDP HTML for prod... items.
+    """
+    url = get_walgreens_prod_desc_url(product_id)
+    return fetch_html_with_timeout(url, WALGREENS_REQUEST_TIMEOUT)
+    
 def get_walgreens_prod_desc_html(product_id):
     """
     Lightweight Walgreens copy endpoint.
