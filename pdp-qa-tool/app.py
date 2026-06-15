@@ -3745,6 +3745,8 @@ def strip_walgreens_description_tail(text):
 def strip_walgreens_utility_tail(text):
     """
     Removes non-marketing utility/footer copy that should not live in the final description/features.
+    IMPORTANT:
+    Do NOT remove 'Also check out our ...' cross-sell copy anymore.
     """
     text = str(text or "")
 
@@ -3777,15 +3779,8 @@ def strip_walgreens_utility_tail(text):
 
     text = text[:cut_index].strip()
 
-    # Remove cross-sell / promo-style copy that sometimes sneaks into live Walgreens copy.
-    text = re.sub(
-        r"\bAlso check out our\b.*$",
-        "",
-        text,
-        flags=re.IGNORECASE | re.DOTALL,
-    ).strip()
-
     return normalize_space(text)
+    
 def is_walgreens_utility_feature(text):
     text = normalize_space(text)
     if not text:
@@ -4163,18 +4158,17 @@ def split_walgreens_description_into_features(description_text, existing_feature
 def finalize_salsify_copy_for_retailer(retailer_name, s_text):
     """
     Normalize Salsify copy for retailer-specific comparison only.
-    For Walgreens, strip the cross-sell tail from description so the
-    comparison matches the cleaner Walgreens description.
+    For Walgreens, do NOT strip 'Also check out our ...' anymore.
     """
     retailer = str(retailer_name or "").strip().lower()
     out = dict(s_text or {})
 
     if retailer == "walgreens":
         out["title"] = normalize_space(out.get("title", ""))
-        out["description"] = strip_walgreens_utility_tail(out.get("description", ""))
+        out["description"] = normalize_space(out.get("description", ""))
         return out
 
-    return out   
+    return out
     
 def finalize_retailer_copy(retailer_name, r_text):
     retailer = str(retailer_name or "").strip().lower()
@@ -4406,7 +4400,7 @@ def get_visual_row_payload(salsify_url, retailer_name, retail_url, current_targe
         sku=sku,
     )
 
-    s_text = finalize_salsify_copy_for_retailer(retailer_name, s_bundle["text"] or {})
+    s_text = s_bundle["text"]
     r_text = finalize_retailer_copy(retailer_name, r_bundle["text"] or {})
 
     return {
@@ -4510,10 +4504,8 @@ def process_row(row):
         if str(retailer_name).strip().lower() == "walgreens":
             print("WAGS SOURCE:", (r_bundle.get("text", {}) or {}).get("debug", {}).get("Source Used", ""))
 
-        s_text = finalize_salsify_copy_for_retailer(
-            retailer_name,
-            s_bundle["text"] or {},
-        )
+        s_text = s_bundle["text"]
+
         s_images = s_bundle["images"]
         
         r_text = finalize_retailer_copy(
