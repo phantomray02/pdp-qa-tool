@@ -74,8 +74,8 @@ WALGREENS_API_TIMEOUT = 10
 # PERFORMANCE SETTINGS
 # =========================================
 # Lower these for Streamlit Cloud stability.
-BATCH_SIZE = 8
-MAX_WORKERS = 3
+BATCH_SIZE = 16
+MAX_WORKERS = 6
 UI_UPDATE_EVERY = 2
 
 # Faster image compare via tiny difference hash.
@@ -94,6 +94,8 @@ MAX_IMAGE_SLOTS_TO_SCORE = 5
 
 html_cache = {}
 image_hash_cache = {}
+image_compare_cache = {}
+IMAGE_COMPARE_CACHE_MAX = 600
 
 thread_local = threading.local()
 
@@ -601,15 +603,18 @@ def prepare_input_df(df):
     return df
     
 def clear_in_memory_caches():
-    global html_cache, image_hash_cache, walgreens_api_cache
+    global html_cache, image_hash_cache, image_compare_cache, walgreens_api_cache
 
     if "html_cache" not in globals() or not isinstance(globals().get("html_cache"), dict):
         html_cache = {}
     if "image_hash_cache" not in globals() or not isinstance(globals().get("image_hash_cache"), dict):
         image_hash_cache = {}
+    if "image_compare_cache" not in globals() or not isinstance(globals().get("image_compare_cache"), dict):
+        image_compare_cache = {}
 
     html_cache.clear()
     image_hash_cache.clear()
+    image_compare_cache.clear()
     if "walgreens_api_cache" not in globals() or not isinstance(globals().get("walgreens_api_cache"), dict):
         walgreens_api_cache = {}
     walgreens_api_cache.clear()
@@ -3889,30 +3894,61 @@ def hamming_distance(a, b):
 
 
 def compare_images_visually(s_url, r_url):
+    global image_compare_cache
+
+    if "image_compare_cache" not in globals() or not isinstance(globals().get("image_compare_cache"), dict):
+        image_compare_cache = {}
+
     if not s_url or not r_url:
         return 0
+
+    cache_key = (str(s_url), str(r_url))
+    if cache_key in image_compare_cache:
+        return image_compare_cache[cache_key]
 
     s_hash = get_image_dhash(s_url)
     r_hash = get_image_dhash(r_url)
 
     if s_hash is None or r_hash is None:
-        return 0
-
-    dist = hamming_distance(s_hash, r_hash)
-
-    if dist <= 2:
-        return 100
-    elif dist <= 6:
-        return 90
-    elif dist <= 10:
-        return 75
-    elif dist <= 16:
-        return 60
-    elif dist <= 22:
-        return 45
+        score = 0
     else:
-        return 25
+        dist = hamming_distance(s_hash, r_hash)
 
+        if dist <= 2:
+            score = 100
+        elif dist <= 6:
+            score = 90
+        elif dist <= 10:
+            score = 75
+        elif dist <= 16:
+            score = 60
+        elif dist <= 22:
+            score = 45
+        else:
+            score = 25
+
+    image_compare_cache[cache_key] = score
+    while len(image_compare_cache) > IMAGE_COMPARE_CACHE_MAX:
+        image_compare_cache.pop(next(iter(image_compare_cache)))
+
+    return score
+
+
+@st.cache_data(show_spinner=False)
+def get_visual_row_payload(salsify_url, retailer_name, retail_url, current_target_sku="", sku=""):
+    s_bundle = get_salsify_bundle(salsify_url)
+    r_bundle = get_retailer_bundle(
+        retailer_name,
+        retail_url,
+        current_target_sku,
+        sku=sku,
+    )
+    return {
+        "s_text": s_bundle["text"],
+        "s_images": s_bundle["images"],
+        "r_text": finalize_retailer_copy(retailer_name, r_bundle["text"] or {}),
+        "r_images": r_bundle["images"],
+    }
 
 # =========================================
 # PROCESS ROW
@@ -4208,6 +4244,8 @@ if "report_bytes" not in st.session_state:
     st.session_state.report_bytes = None
 if "report_filename" not in st.session_state:
     st.session_state.report_filename = None
+if "report_batch_key" not in st.session_state:
+    st.session_state.report_batch_key = ""
 
 # =========================================
 # TOP UPLOAD + DOWNLOAD UI
@@ -4261,6 +4299,7 @@ if uploaded_file:
             st.session_state.auto_download_done = False
             st.session_state.report_bytes = None
             st.session_state.report_filename = None
+            st.session_state.report_batch_key = ""
             clear_in_memory_caches()
             st.cache_data.clear()
 
@@ -4315,6 +4354,7 @@ if uploaded_file:
                 st.session_state.completed_batch_key = ""
                 st.session_state.selected_brand_visual = "All"
                 st.session_state.auto_download_done = False
+                st.session_state.report_batch_key = ""
 
     except EmptyDataError:
         st.error("🔥 CRITICAL APP ERROR")
@@ -4461,39 +4501,41 @@ if (
     and st.session_state.completed_batch_key == current_batch_key
     and st.session_state.summary_rows
 ):
-    summary_df = pd.DataFrame(st.session_state.summary_rows)
-    detail_df = pd.DataFrame(st.session_state.export_rows)
-    debug_df = pd.DataFrame(st.session_state.debug_rows)
+    if st.session_state.report_batch_key != current_batch_key:
+        summary_df = pd.DataFrame(st.session_state.summary_rows)
+        detail_df = pd.DataFrame(st.session_state.export_rows)
+        debug_df = pd.DataFrame(st.session_state.debug_rows)
 
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        summary_df.to_excel(writer, index=False, sheet_name="Summary")
-        detail_df.to_excel(writer, index=False, sheet_name="Details")
-        debug_df.to_excel(writer, index=False, sheet_name="Debug")
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            summary_df.to_excel(writer, index=False, sheet_name="Summary")
+            detail_df.to_excel(writer, index=False, sheet_name="Details")
+            debug_df.to_excel(writer, index=False, sheet_name="Debug")
 
-        wb = writer.book
-        ws = wb["Summary"]
-        green = PatternFill(start_color="C6EFCE", fill_type="solid")
-        yellow = PatternFill(start_color="FFEB9C", fill_type="solid")
-        red = PatternFill(start_color="FFC7CE", fill_type="solid")
+            wb = writer.book
+            ws = wb["Summary"]
+            green = PatternFill(start_color="C6EFCE", fill_type="solid")
+            yellow = PatternFill(start_color="FFEB9C", fill_type="solid")
+            red = PatternFill(start_color="FFC7CE", fill_type="solid")
 
-        for row in ws.iter_rows(min_row=2):
-            for cell in row:
-                if isinstance(cell.value, (int, float)):
-                    if cell.value >= 80:
-                        cell.fill = green
-                    elif cell.value >= 50:
-                        cell.fill = yellow
-                    else:
-                        cell.fill = red
+            for row in ws.iter_rows(min_row=2):
+                for cell in row:
+                    if isinstance(cell.value, (int, float)):
+                        if cell.value >= 80:
+                            cell.fill = green
+                        elif cell.value >= 50:
+                            cell.fill = yellow
+                        else:
+                            cell.fill = red
 
-    output.seek(0)
-    safe_retailer = re.sub(r"[^A-Za-z0-9_-]+", "_", str(selected_retailer or "retailer"))
-    report_filename = f"pdp_qa_results_{safe_retailer}_all_brands.xlsx"
-    report_bytes = output.getvalue()
+        output.seek(0)
+        safe_retailer = re.sub(r"[^A-Za-z0-9_-]+", "_", str(selected_retailer or "retailer"))
+        report_filename = f"pdp_qa_results_{safe_retailer}_all_brands.xlsx"
+        report_bytes = output.getvalue()
 
-    st.session_state.report_bytes = report_bytes
-    st.session_state.report_filename = report_filename
+        st.session_state.report_bytes = report_bytes
+        st.session_state.report_filename = report_filename
+        st.session_state.report_batch_key = current_batch_key
 
     if (
         not st.session_state.auto_download_done
@@ -4570,23 +4612,22 @@ if (
             salsify_url = row.get("salsify_url", "")
             retailer_name = row.get("retailer", "") or infer_retailer_name_from_url(retail_url)
 
-            s_bundle = get_salsify_bundle(salsify_url)
-            s_text = s_bundle["text"]
-            s_images = s_bundle["images"]
-
             current_rpc = row.get("retailer_rpc", "")
             current_target_sku = get_target_sku_from_inputs(
                 retail_url=retail_url,
                 cvs_rpc=current_rpc,
             )
-            r_bundle = get_retailer_bundle(
+            visual_payload = get_visual_row_payload(
+                salsify_url,
                 retailer_name,
                 retail_url,
                 current_target_sku,
                 sku=sku,
             )
-            r_text = finalize_retailer_copy(retailer_name, r_bundle["text"] or {})
-            r_images = r_bundle["images"]
+            s_text = visual_payload["s_text"]
+            s_images = visual_payload["s_images"]
+            r_text = visual_payload["r_text"]
+            r_images = visual_payload["r_images"]
 
             s_title = s_text.get("title") or ""
             r_title = r_text.get("title") or ""
