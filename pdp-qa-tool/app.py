@@ -4160,6 +4160,22 @@ def split_walgreens_description_into_features(description_text, existing_feature
 
     return trimmed_description, cleaned_features[:max_features]
     
+def finalize_salsify_copy_for_retailer(retailer_name, s_text):
+    """
+    Normalize Salsify copy for retailer-specific comparison only.
+    For Walgreens, strip the cross-sell tail from description so the
+    comparison matches the cleaner Walgreens description.
+    """
+    retailer = str(retailer_name or "").strip().lower()
+    out = dict(s_text or {})
+
+    if retailer == "walgreens":
+        out["title"] = normalize_space(out.get("title", ""))
+        out["description"] = strip_walgreens_utility_tail(out.get("description", ""))
+        return out
+
+    return out   
+    
 def finalize_retailer_copy(retailer_name, r_text):
     retailer = str(retailer_name or "").strip().lower()
     out = dict(r_text or {})
@@ -4389,10 +4405,14 @@ def get_visual_row_payload(salsify_url, retailer_name, retail_url, current_targe
         current_target_sku,
         sku=sku,
     )
+
+    s_text = finalize_salsify_copy_for_retailer(retailer_name, s_bundle["text"] or {})
+    r_text = finalize_retailer_copy(retailer_name, r_bundle["text"] or {})
+
     return {
-        "s_text": s_bundle["text"],
+        "s_text": s_text,
         "s_images": s_bundle["images"],
-        "r_text": finalize_retailer_copy(retailer_name, r_bundle["text"] or {}),
+        "r_text": r_text,
         "r_images": r_bundle["images"],
     }
 
@@ -4490,13 +4510,18 @@ def process_row(row):
         if str(retailer_name).strip().lower() == "walgreens":
             print("WAGS SOURCE:", (r_bundle.get("text", {}) or {}).get("debug", {}).get("Source Used", ""))
 
-        s_text = s_bundle["text"]
+        s_text = finalize_salsify_copy_for_retailer(
+            retailer_name,
+            s_bundle["text"] or {},
+        )
         s_images = s_bundle["images"]
-
-        r_text = r_bundle["text"] or {}
+        
+        r_text = finalize_retailer_copy(
+            retailer_name,
+            r_bundle["text"] or {},
+        )
         r_images = r_bundle["images"]
-
-        r_text = finalize_retailer_copy(retailer_name, r_text)
+        
         debug_data = r_text.get("debug", {})
 
         title_score = keyword_score(s_text.get("title", ""), r_text.get("title", ""))
