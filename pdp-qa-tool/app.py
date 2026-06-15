@@ -3528,7 +3528,7 @@ def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
         }
 
     html_bundle = build_html_bundle()
-    if _walgreens_bundle_is_rich_enough(html_bundle):
+    if _walgreens_has_copy_or_images(html_bundle):
         return html_bundle
 
     candidate_bundles = [html_bundle]
@@ -4150,21 +4150,7 @@ def process_row(row):
 
         img_scores = []
         image_position_scores = {}
-        max_img_positions = min(max(len(s_images), len(r_images)), MAX_IMAGE_SLOTS_TO_SCORE)
-
-        for i in range(max_img_positions):
-            s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else None
-            r_url = r_images[i] if i < len(r_images) else None
-
-            sc = 0
-            if s_url and r_url:
-                sc = compare_images_visually(s_url, r_url)
-                if sc > 0:
-                    img_scores.append(sc)
-
-            image_position_scores[f"Image {i + 1} %"] = sc
-
-        avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
+        avg_img_score = 0
         overall = int((title_score + desc_score + avg_feature_score + avg_img_score) / 4)
 
         return {
@@ -4725,16 +4711,8 @@ if (
 
             img_scores = []
             max_images = min(max(len(s_images), len(r_images)), MAX_IMAGE_SLOTS_TO_COMPARE)
-            max_images_to_score = min(max(len(s_images), len(r_images)), MAX_IMAGE_SLOTS_TO_SCORE)
-            for i in range(max_images_to_score):
-                s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else None
-                r_url = r_images[i] if i < len(r_images) else None
-                if s_url and r_url:
-                    sc = compare_images_visually(s_url, r_url)
-                    if sc > 0:
-                        img_scores.append(sc)
-
-            avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
+            max_images_to_score = 0
+            avg_img_score = 0
             overall_score = int((title_score + desc_score + avg_feature_score + avg_img_score) / 4)
 
             if show_only_issues and overall_score >= 80:
@@ -4816,7 +4794,7 @@ if (
                 for i in range(max_images):
                     s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else ""
                     r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else ""
-                    slot_score = compare_images_visually(s_url, r_url) if (s_url and r_url and i < MAX_IMAGE_SLOTS_TO_SCORE) else 0
+                    slot_score = 0
                     st.markdown(
                         image_compare_row_html(s_url, r_url, slot_score),
                         unsafe_allow_html=True,
