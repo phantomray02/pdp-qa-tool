@@ -2492,7 +2492,41 @@ def _find_walgreens_feature_block_start(desc_html):
             return m.start(), li_end
 
     return None
+def _truncate_walgreens_copy_at_hard_stop(text):
+    """
+    Hard-stop Walgreens copy before utility / legal / disposal sections.
+    This keeps only the real description + bullets and drops anything after,
+    such as Made in USA, Do not flush, or Walgreens disclaimer text.
+    """
+    if not text:
+        return ""
 
+    working = str(text)
+    lower = working.lower()
+    stop_markers = [
+        "Made in USA",
+        "Made In USA",
+        "Do not flush",
+        "Do Not Flush",
+        "Directions for Use:",
+        "Direction for Use:",
+        "To Use:",
+        "To Dispose:",
+        "How to Use:",
+        "How To Use:",
+        "Walgreens does not represent or warrant",
+        "We recommend that you not rely solely on the information presented",
+        "On occasion, manufacturers may improve or change their product formulas",
+        "The food and drug administration has not intended to diagnose, treat, cure, or prevent any disease",
+    ]
+
+    cut_index = len(working)
+    for marker in stop_markers:
+        idx = lower.find(marker.lower())
+        if idx != -1:
+            cut_index = min(cut_index, idx)
+
+    return working[:cut_index].strip()
 
 def _is_walgreens_450_image(url):
     url = str(url or '').lower().split('?', 1)[0]
@@ -2502,14 +2536,10 @@ def _is_walgreens_450_image(url):
 def _extract_walgreens_feature_items_from_raw_product_desc(desc_html):
     """
     Walgreens live features start at a block like:
-    <br/>
-<UL>
-<LI>
-
-    Separation points are repeated <LI> markers. The last bullet may be the only
-    one with a closing </LI>, so split on raw <LI> markers and stop each chunk at
-    the next <LI>, a closing </UL>, or the end of the string.
-
+    <UL><LI>...
+    Separation points are repeated <LI> markers.
+    The last bullet may be the only one with a closing </LI>, so split on raw <LI>
+    markers and stop each chunk at the next <LI>, a closing </UL>, or the end of the string.
     IMPORTANT: include the very first feature immediately after the first <LI>.
     """
     if not desc_html:
@@ -2517,11 +2547,11 @@ def _extract_walgreens_feature_items_from_raw_product_desc(desc_html):
 
     working = str(desc_html)
     working = re.sub(
-        r"<script\b[^>]*>.*?</script>",
-        " ",
-        working,
-        flags=re.IGNORECASE | re.DOTALL,
+        r"<script\b[^>]*>.*?</script>", " ", working, flags=re.IGNORECASE | re.DOTALL,
     )
+
+    # NEW: hard-stop before utility / legal / disposal text.
+    working = _truncate_walgreens_copy_at_hard_stop(working)
 
     start_info = _find_walgreens_feature_block_start(working)
     if not start_info:
@@ -2535,7 +2565,6 @@ def _extract_walgreens_feature_items_from_raw_product_desc(desc_html):
         return []
 
     features = []
-
     for i, marker in enumerate(li_markers):
         start = marker.end()
         end_candidates = []
@@ -2543,19 +2572,19 @@ def _extract_walgreens_feature_items_from_raw_product_desc(desc_html):
         if i + 1 < len(li_markers):
             end_candidates.append(li_markers[i + 1].start())
 
-        ul_close = re.search(r"</ul\s*>", feature_html[start:], flags=re.IGNORECASE)
+        ul_close = re.search(r"</ul>", feature_html[start:], flags=re.IGNORECASE)
         if ul_close:
             end_candidates.append(start + ul_close.start())
 
-        li_close = re.search(r"</li\s*>", feature_html[start:], flags=re.IGNORECASE)
+        li_close = re.search(r"</li>", feature_html[start:], flags=re.IGNORECASE)
         if li_close:
             end_candidates.append(start + li_close.start())
 
         end = min(end_candidates) if end_candidates else len(feature_html)
         chunk = feature_html[start:end]
-        chunk = re.sub(r"</li\s*>", " ", chunk, flags=re.IGNORECASE)
-        chunk = re.sub(r"<br\s*/?>", " ", chunk, flags=re.IGNORECASE)
-        chunk = re.sub(r"</?ul[^>]*>", " ", chunk, flags=re.IGNORECASE)
+        chunk = re.sub(r"<br[^>]*>", " ", chunk, flags=re.IGNORECASE)
+        chunk = re.sub(r"</p>", " ", chunk, flags=re.IGNORECASE)
+        chunk = re.sub(r"[^>]*>", " ", chunk, flags=re.IGNORECASE)
 
         feature_text = BeautifulSoup(chunk, "html.parser").get_text(" ", strip=True)
         feature_text = _normalize_walgreens_text(feature_text)
@@ -2572,30 +2601,28 @@ def _extract_walgreens_feature_items_from_raw_product_desc(desc_html):
 
 def extract_walgreens_copy_from_product_desc_html(product_desc_html):
     """
-    Walgreens live description starts inside productDesc paragraph HTML and ends
-    right before the feature block that looks like:
-    <br/>
-<UL>
-<LI>
-
+    Walgreens live description starts inside productDesc paragraph HTML and ends right before the feature block that looks like:
+    <UL><LI>...
     Improvement:
-    - join all useful text nodes before the UL instead of trusting only the first <p>
-      tag, because some Walgreens rows place a short label paragraph first.
+    - join all useful text nodes before the UL instead of trusting only the first <br> tag,
+      because some Walgreens rows place a short label paragraph first.
+    - hard-stop before utility / legal / disposal blocks such as Made in USA, Do not flush,
+      or Walgreens disclaimer text.
     """
     if not product_desc_html:
         return "", []
 
     working = str(product_desc_html)
     working = re.sub(
-        r"<script\b[^>]*>.*?</script>",
-        " ",
-        working,
-        flags=re.IGNORECASE | re.DOTALL,
+        r"<script\b[^>]*>.*?</script>", " ", working, flags=re.IGNORECASE | re.DOTALL,
     )
+
+    # NEW: hard-stop before utility / legal / disposal text.
+    working = _truncate_walgreens_copy_at_hard_stop(working)
 
     start_info = _find_walgreens_feature_block_start(working)
     desc_html = working[:start_info[0]] if start_info else working
-    desc_html = re.sub(r"(?:<br\s*/?>\s*)+$", " ", desc_html, flags=re.IGNORECASE)
+    desc_html = re.sub(r"(?:\\s*)+$", " ", desc_html, flags=re.IGNORECASE)
 
     soup = BeautifulSoup(desc_html, "html.parser")
     desc_parts = []
@@ -2613,10 +2640,12 @@ def extract_walgreens_copy_from_product_desc_html(product_desc_html):
 
         node_text = _normalize_walgreens_text(node_text)
         node_text = strip_walgreens_utility_tail(node_text)
+
         if not node_text:
             continue
         if node_text.lower() in {"description", "details", "overview", "features"}:
             continue
+
         desc_parts.append(node_text)
 
     description_text = normalize_space(" ".join(desc_parts))
@@ -3519,7 +3548,7 @@ def strip_walgreens_utility_tail(text):
     """
     text = str(text or "")
 
-    stop_markers = [
+stop_markers = [
         "Directions for Use:",
         "Direction for Use:",
         "To Use:",
@@ -3533,6 +3562,9 @@ def strip_walgreens_utility_tail(text):
         "Made In USA",
         "©",
         "Walgreens does not represent or warrant",
+        "We recommend that you not rely solely on the information presented",
+        "On occasion, manufacturers may improve or change their product formulas",
+        "the food and drug administration has not intended to diagnose, treat, cure, or prevent any disease",
     ]
 
     cut_index = len(text)
