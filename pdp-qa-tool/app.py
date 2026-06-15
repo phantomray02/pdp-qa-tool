@@ -3486,10 +3486,11 @@ def _walgreens_features_are_rich_enough(values):
 def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
     """
     Walgreens extraction order:
-    1. Try live HTML first.
-    2. If HTML is empty/weak, try structured API bundle.
-    3. If API still fails, try prodDesc fragment bundle.
-    4. Do NOT merge competing bundles together.
+    1. Pull live HTML bundle first.
+    2. If live HTML already has rich enough copy, use it.
+    3. Otherwise also pull API + prodDesc fragment.
+    4. Merge all available bundles and keep the richest copy.
+    5. Keep the first non-empty image set in the order passed in.
     """
 
     retail_url = str(retail_url or "").strip()
@@ -3507,7 +3508,7 @@ def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
             "images": extract_walgreens_images_from_html(html_text),
         }
 
-    # Search-results pages are not PDPs.
+    # Search results pages are not PDPs.
     if "/search/results.jsp" in retail_url_lc:
         html_bundle = build_html_bundle()
         if _walgreens_has_copy_or_images(html_bundle):
@@ -3527,27 +3528,42 @@ def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
             "images": [],
         }
 
-    # 1. HTML first
+    candidate_bundles = []
+
+    # 1. Live HTML first.
     html_bundle = build_html_bundle()
     if _walgreens_has_copy_or_images(html_bundle):
-        return html_bundle
+        # If HTML already has strong enough copy, trust live page first.
+        if _walgreens_bundle_is_rich_enough(html_bundle):
+            return html_bundle
+        candidate_bundles.append(html_bundle)
 
-    # 2. Structured API fallback
+    # 2. Structured API fallback.
     if product_id:
         api_payload = get_walgreens_product_api_payload(product_id)
         api_bundle = build_walgreens_bundle_from_api_payload(api_payload)
         if _walgreens_has_copy_or_images(api_bundle):
-            return api_bundle
+            if _walgreens_bundle_is_rich_enough(api_bundle):
+                return api_bundle
+            candidate_bundles.append(api_bundle)
 
-        # 3. prodDesc fragment fallback
+        # 3. prodDesc fragment fallback.
         fragment_bundle = build_walgreens_bundle_from_prod_desc_fragment(
             product_id,
             retail_url=retail_url,
         )
         if _walgreens_has_copy_or_images(fragment_bundle):
-            return fragment_bundle
+            if _walgreens_bundle_is_rich_enough(fragment_bundle):
+                return fragment_bundle
+            candidate_bundles.append(fragment_bundle)
 
-    # Final fallback
+    # 4. Merge available candidates and prefer richer copy.
+    if candidate_bundles:
+        merged_bundle = merge_walgreens_bundles_prefer_richer_copy(*candidate_bundles)
+        if _walgreens_has_copy_or_images(merged_bundle):
+            return merged_bundle
+
+    # Final fallback.
     return html_bundle
 
 def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku=""):
