@@ -3674,7 +3674,7 @@ def split_walgreens_feature_fallback_text(text):
             r"NATIONAL ECZEMA ASSOCIATION SEAL OF ACCEPTANCE|THICK AND ABSORBENT|COMPACT COMFORT, POWERFUL PROTECTION|"
             r"#1 COMPACT TAMPON BRAND|GYNECOLOGIST-TESTED|THIN AND SOFT|ALL-NIGHT DRYNESS|NEW! 60% WIDER BACK|"
             r"CLEAN SHIELD|DOUBLE GRIP STRIPS|GENTLEABSORB|QUICKSORB PROTECTION|HYPOALLERGENIC)"
-            r"[\s:\-])"
+            r"\s*[:\-])"
         )
         parts = re.split(heading_pattern, text, flags=re.IGNORECASE)
 
@@ -3747,7 +3747,7 @@ def _looks_like_walgreens_feature_fragment(text):
 
     lower = text.lower()
 
-    if lower.endswith((" of", " for", " with", " to", " your", " our")):
+    if lower.endswith((" of", " for", " with", " to", " your", " our", " an")):
         return True
 
     if text.endswith(":"):
