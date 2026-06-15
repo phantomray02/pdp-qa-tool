@@ -3585,7 +3585,8 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku=""):
 # =========================================
 def strip_walgreens_utility_tail(text):
     """
-    Removes non-marketing utility/footer copy that should not live in the final description/features.
+    Removes non-marketing utility/footer copy that should not live in the final
+    description/features.
     """
     text = str(text or "")
 
@@ -3610,17 +3611,27 @@ def strip_walgreens_utility_tail(text):
 
     cut_index = len(text)
     lowered = text.lower()
+
     for marker in stop_markers:
         idx = lowered.find(marker.lower())
         if idx != -1:
             cut_index = min(cut_index, idx)
 
     text = text[:cut_index].strip()
+
+    # Remove cross-sell / promo-style copy that sometimes sneaks into live Walgreens copy.
+    text = re.sub(
+        r"\bAlso check out our\b.*$",
+        "",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    ).strip()
+
     return normalize_space(text)
+
 
 def is_walgreens_utility_feature(text):
     text = normalize_space(text)
-
     if not text:
         return True
 
@@ -3644,6 +3655,9 @@ def is_walgreens_utility_feature(text):
         "consult your doctor",
         "keep this plastic bag away",
         "do not use this bag",
+        "do not flush",
+        "to dispose",
+        "to use",
     ]
 
     for prefix in bad_starts:
@@ -3694,7 +3708,9 @@ def split_walgreens_feature_fallback_text(text):
         if is_walgreens_utility_feature(part):
             continue
         cleaned.append(part)
+
     return dedupe_preserve_order(cleaned)
+
 
 def clean_walgreens_text(text):
     if not text:
@@ -3702,12 +3718,12 @@ def clean_walgreens_text(text):
 
     text = str(text)
     text = html.unescape(text)
-    text = text.replace("\u003c", "<")
-    text = text.replace("\u003e", ">")
-    text = text.replace("\u0026", "&")
-    text = text.replace("\n", " ")
-    text = text.replace("\/", "/")
-    text = text.replace('\"', '"')
+    text = text.replace("\\u003c", "<")
+    text = text.replace("\\u003e", ">")
+    text = text.replace("\\u0026", "&")
+    text = text.replace("\\n", " ")
+    text = text.replace("\\/", "/")
+    text = text.replace('\\"', '"')
 
     text = re.sub(
         r"<script\b[^>]*>.*?</script>",
@@ -3740,6 +3756,124 @@ def clean_walgreens_text(text):
 
     return normalize_space(text)
 
+
+def _looks_like_walgreens_feature_fragment(text):
+    """
+    Detect short/incomplete feature fragments that should be merged
+    with the next line/bullet.
+    """
+    text = normalize_space(text)
+    if not text:
+        return False
+
+    lower = text.lower()
+
+    # Common broken endings that clearly need continuation.
+    if lower.endswith((" of", " for", " with", " to", " your", " our")):
+        return True
+
+    if text.endswith(":"):
+        return True
+
+    # Example: "DEPEND FRESH PROTECTION: 15 count of"
+    if re.match(
+        r'^[A-Z0-9&/\-\s\(\)\'"\.]+:\s*\d+\s+count\s+of\s*$',
+        text
+    ):
+        return True
+
+    # Very short uppercase header-like fragments.
+    if len(text) <= 42 and re.match(r"^[A-Z0-9&/\-\s\(\)\'\":,.]+$", text):
+        return True
+
+    # Short phrases that are obviously incomplete.
+    if len(text) <= 60 and text.count(" ") <= 8:
+        if any(lower.endswith(x) for x in [" of", " for", " with", " to"]):
+            return True
+
+    return False
+
+
+def _looks_like_walgreens_feature_continuation(text):
+    """
+    Detect feature lines that are really the continuation of the previous fragment.
+    """
+    text = normalize_space(text)
+    if not text:
+        return False
+
+    brand_starts = (
+        "Depend",
+        "Goodnites",
+        "Huggies",
+        "Poise",
+        "Kotex",
+        "Pull-Ups",
+        "Pull Ups",
+        "Scott",
+        "Kleenex",
+        "Cottonelle",
+        "U by Kotex",
+        "U By Kotex",
+        "Thinx",
+        "Viva",
+    )
+
+    if text.startswith(brand_starts):
+        return True
+
+    if text[:1].islower():
+        return True
+
+    if text.startswith("(") or text.startswith("*"):
+        return True
+
+    # Continuation often starts with a normal sentence after a broken header.
+    if re.match(r"^[A-Z][a-z]", text):
+        return True
+
+    return False
+
+
+def merge_walgreens_feature_fragments(items, max_features=5):
+    """
+    Merge adjacent Walgreens feature fragments like:
+
+    'DEPEND FRESH PROTECTION: 15 count of'
+    'Depend Fresh Protection Incontinence Underwear for Men, size extra-large (44-54" waist)'
+
+    into one clean bullet.
+    """
+    cleaned_items = [
+        clean_walgreens_text(x)
+        for x in (items or [])
+        if clean_walgreens_text(x)
+    ]
+
+    merged = []
+    i = 0
+
+    while i < len(cleaned_items):
+        current = normalize_space(cleaned_items[i])
+
+        if not current or is_walgreens_utility_feature(current):
+            i += 1
+            continue
+
+        if i + 1 < len(cleaned_items):
+            nxt = normalize_space(cleaned_items[i + 1])
+
+            if nxt and not is_walgreens_utility_feature(nxt):
+                if _looks_like_walgreens_feature_fragment(current) and _looks_like_walgreens_feature_continuation(nxt):
+                    current = normalize_space(f"{current} {nxt}")
+                    i += 1
+
+        merged.append(current)
+        i += 1
+
+    return dedupe_preserve_order(merged[:max_features])
+
+
 def normalize_walgreens_features_final(items, max_features=5):
     cleaned = []
 
@@ -3758,6 +3892,7 @@ def normalize_walgreens_features_final(items, max_features=5):
 
         if not text:
             continue
+
         if is_walgreens_utility_feature(text):
             continue
 
@@ -3773,10 +3908,14 @@ def normalize_walgreens_features_final(items, max_features=5):
         else:
             expanded.append(item)
 
-    expanded = dedupe_preserve_order([normalize_space(x) for x in expanded if normalize_space(x)])
+    expanded = dedupe_preserve_order(
+        [normalize_space(x) for x in expanded if normalize_space(x)]
+    )
+
+    merged = merge_walgreens_feature_fragments(expanded, max_features=max_features)
 
     out = []
-    for item in expanded:
+    for item in merged:
         if not item:
             continue
         if is_walgreens_utility_feature(item):
@@ -3784,6 +3923,7 @@ def normalize_walgreens_features_final(items, max_features=5):
         out.append(item)
 
     return dedupe_preserve_order(out)[:max_features]
+
 
 def clean_walgreens_title(text):
     if not text:
