@@ -4090,18 +4090,67 @@ def clean_walgreens_title(text):
 
     return text
 
+def split_walgreens_description_into_features(description_text, existing_features=None, max_features=5):
+    """
+    If Walgreens description contains feature-style headings like:
+    DEPEND FRESH PROTECTION:
+    OUTSTANDING ABSORBENCY:
+    ODOR CONTROL:
+    split those out into feature bullets when the dedicated feature list is empty.
+    """
+    description_text = clean_walgreens_text(description_text)
+    existing_features = normalize_walgreens_features_final(existing_features or [], max_features=max_features)
 
+    # If real features already exist, keep them.
+    if existing_features:
+        return description_text, existing_features
+
+    if not description_text:
+        return "", []
+
+    # Use the existing Walgreens fallback splitter that already knows the heading patterns.
+    feature_candidates = split_walgreens_feature_fallback_text(description_text)
+    feature_candidates = normalize_walgreens_features_final(feature_candidates, max_features=max_features)
+
+    # If we did not find meaningful feature candidates, leave description untouched.
+    if not feature_candidates:
+        return description_text, []
+
+    # Try to trim description before the first detected feature block.
+    first_feature = feature_candidates[0]
+    split_index = description_text.find(first_feature)
+
+    if split_index > 0:
+        trimmed_description = normalize_space(description_text[:split_index])
+    else:
+        trimmed_description = description_text
+
+    return trimmed_description, feature_candidates[:max_features]
+    
 def finalize_retailer_copy(retailer_name, r_text):
     retailer = str(retailer_name or "").strip().lower()
     out = dict(r_text or {})
 
     if retailer == "walgreens":
         out["title"] = clean_walgreens_title(out.get("title", ""))
-        out["description"] = strip_walgreens_description_tail(out.get("description", ""))
-        out["features"] = normalize_walgreens_features_final(
+    
+        cleaned_description = strip_walgreens_description_tail(out.get("description", ""))
+        cleaned_features = normalize_walgreens_features_final(
             out.get("features", []),
             max_features=5,
         )
+    
+        # NEW:
+        # If Walgreens description contains feature-style headings but features are empty,
+        # split them out of description and populate the feature list.
+        cleaned_description, cleaned_features = split_walgreens_description_into_features(
+            cleaned_description,
+            cleaned_features,
+            max_features=5,
+        )
+    
+        out["description"] = cleaned_description
+        out["features"] = cleaned_features
         return out
 
     out["title"] = normalize_space(out.get("title", ""))
