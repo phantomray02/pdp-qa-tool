@@ -3617,7 +3617,9 @@ def strip_walgreens_utility_tail(text):
         if idx != -1:
             cut_index = min(cut_index, idx)
 
-    text =ell / promo-style copy that sometimes sneaks into live Walgreens copy.    text = text[:cut_index].strip()
+    text = text[:cut_index].strip()
+
+    # Remove cross-sell / promo-style copy that sometimes sneaks into live Walgreens copy.
     text = re.sub(
         r"\bAlso check out our\b.*$",
         "",
@@ -3773,12 +3775,12 @@ def _looks_like_walgreens_feature_fragment(text):
         return True
 
     if re.match(
-        r'^[A-Z0-9&/\-\s\(\)\'"\.]+:\s*\d+\s+count\s+of\s*$',
+        r"^[A-Z0-9&/\-\s\(\)'\"\.]+:\s*\d+\s+count\s+of\s*$",
         text
     ):
         return True
 
-    if len(text) <= 42 and re.match(r'^[A-Z0-9&/\-\s\(\)\'":,.]+$', text):
+    if len(text) <= 42 and re.match(r"^[A-Z0-9&/\-\s\(\)'\":,.]+$", text):
         return True
 
     if len(text) <= 60 and text.count(" ") <= 8:
@@ -3939,7 +3941,10 @@ def finalize_retailer_copy(retailer_name, r_text):
     if retailer == "walgreens":
         out["title"] = clean_walgreens_title(out.get("title", ""))
         out["description"] = clean_walgreens_text(out.get("description", ""))
-        out["features"] = normalize_walgreens_features_final(out.get("features", []), max_features=5)
+        out["features"] = normalize_walgreens_features_final(
+            out.get("features", []),
+            max_features=5,
+        )
         return out
 
     out["title"] = normalize_space(out.get("title", ""))
