@@ -3744,8 +3744,7 @@ def strip_walgreens_description_tail(text):
 
 def strip_walgreens_utility_tail(text):
     """
-    Removes non-marketing utility/footer copy that should not live in the final
-    description/features.
+    Removes non-marketing utility/footer copy that should not live in the final description/features.
     """
     text = str(text or "")
 
@@ -3786,7 +3785,7 @@ def strip_walgreens_utility_tail(text):
         flags=re.IGNORECASE | re.DOTALL,
     ).strip()
 
-
+    return normalize_space(text)
 def is_walgreens_utility_feature(text):
     text = normalize_space(text)
     if not text:
@@ -4096,10 +4095,16 @@ def split_walgreens_description_into_features(description_text, existing_feature
     DEPEND FRESH PROTECTION:
     OUTSTANDING ABSORBENCY:
     ODOR CONTROL:
-    split those out into feature bullets when the dedicated feature list is empty.
+    DRYNESS:
+    ACTIVE FIT:
+    split those out into feature bullets when the dedicated feature list is empty,
+    and keep only the intro paragraph as description.
     """
     description_text = clean_walgreens_text(description_text)
-    existing_features = normalize_walgreens_features_final(existing_features or [], max_features=max_features)
+    existing_features = normalize_walgreens_features_final(
+        existing_features or [],
+        max_features=max_features,
+    )
 
     # If real features already exist, keep them.
     if existing_features:
@@ -4108,24 +4113,52 @@ def split_walgreens_description_into_features(description_text, existing_feature
     if not description_text:
         return "", []
 
-    # Use the existing Walgreens fallback splitter that already knows the heading patterns.
-    feature_candidates = split_walgreens_feature_fallback_text(description_text)
-    feature_candidates = normalize_walgreens_features_final(feature_candidates, max_features=max_features)
+    # Strong heading list used to identify feature-style sections inside description text.
+    heading_pattern = re.compile(
+        r"(?=(?:"
+        r"WHAT'S INCLUDED|ALL DAY PROTECTION|UNDERWEAR-LIKE COMFORT|UP TO ZERO ODOR|UNCOMPROMISED COMFORT|"
+        r"UNBEATABLE PROTECTION|ODOR CONTROL|DRYNESS|ACTIVE FIT|INSTANT ABSORPTION|FRESHSENSE|GUSHPROTECT ZONE|"
+        r"GRAVITY CORE|NIGHTDEFENSE|LEAKSHIELD|DESIGNED FOR MEN|SECURE FIT|FOR LARGE BLADDER LEAKS|"
+        r"DEPEND SHIELDS|DEPEND FRESH PROTECTION|OUTSTANDING ABSORBENCY|FRONT AND BACK BLOWOUT BLOCKER|"
+        r"UP TO 100% LEAKPROOF|LUXURY SOFTNESS|FASTABSORB SYSTEM|99% WATER|DERMATOLOGIST TESTED|"
+        r"NATIONAL ECZEMA ASSOCIATION SEAL OF ACCEPTANCE|THICK AND ABSORBENT|COMPACT COMFORT, POWERFUL PROTECTION|"
+        r"#1 COMPACT TAMPON BRAND|GYNECOLOGIST-TESTED|THIN AND SOFT|ALL-NIGHT DRYNESS|NEW! 60% WIDER BACK|"
+        r"CLEAN SHIELD|DOUBLE GRIP STRIPS|GENTLEABSORB|QUICKSORB PROTECTION|HYPOALLERGENIC"
+        r")\s*[:\-])",
+        flags=re.IGNORECASE,
+    )
 
-    # If we did not find meaningful feature candidates, leave description untouched.
-    if not feature_candidates:
+    matches = list(heading_pattern.finditer(description_text))
+
+    # No feature-style headings found.
+    if not matches:
         return description_text, []
 
-    # Try to trim description before the first detected feature block.
-    first_feature = feature_candidates[0]
-    split_index = description_text.find(first_feature)
+    # Description = everything before the first heading.
+    first_start = matches[0].start()
+    trimmed_description = normalize_space(description_text[:first_start])
 
-    if split_index > 0:
-        trimmed_description = normalize_space(description_text[:split_index])
-    else:
-        trimmed_description = description_text
+    # Features = each heading section up to the next heading.
+    raw_features = []
+    for i, match in enumerate(matches):
+        start = match.start()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(description_text)
+        chunk = normalize_space(description_text[start:end])
+        chunk = strip_walgreens_utility_tail(chunk)
 
-    return trimmed_description, feature_candidates[:max_features]
+        if not chunk:
+            continue
+        if is_walgreens_utility_feature(chunk):
+            continue
+
+        raw_features.append(chunk)
+
+    cleaned_features = normalize_walgreens_features_final(
+        raw_features,
+        max_features=max_features,
+    )
+
+    return trimmed_description, cleaned_features[:max_features]
     
 def finalize_retailer_copy(retailer_name, r_text):
     retailer = str(retailer_name or "").strip().lower()
