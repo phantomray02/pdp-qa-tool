@@ -3484,75 +3484,71 @@ def _walgreens_features_are_rich_enough(values):
 
 @st.cache_data(show_spinner=False)
 def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
+    """
+    Walgreens extraction order:
+    1. Try live HTML first.
+    2. If HTML is empty/weak, try structured API bundle.
+    3. If API still fails, try prodDesc fragment bundle.
+    4. Do NOT merge competing bundles together.
+    """
 
     retail_url = str(retail_url or "").strip()
-
+    retail_url_lc = retail_url.lower()
     product_id = get_walgreens_product_id_from_url(retail_url)
-    selected_sku_id = get_walgreens_sku_id_from_url(retail_url)
 
-    # ✅ STEP 1: API FIRST (SKU-LOCKED)
+    def build_html_bundle():
+        html_text = get_walgreens_html(retail_url)
+        return {
+            "text": extract_walgreens_text_from_html(
+                html_text,
+                retail_url=retail_url,
+                target_rpc=target_rpc,
+            ),
+            "images": extract_walgreens_images_from_html(html_text),
+        }
+
+    # Search-results pages are not PDPs.
+    if "/search/results.jsp" in retail_url_lc:
+        html_bundle = build_html_bundle()
+        if _walgreens_has_copy_or_images(html_bundle):
+            return html_bundle
+        return {
+            "text": {
+                "title": "",
+                "description": "",
+                "features": [],
+                "debug": {
+                    "Title Path": "walgreens_search_results_url_not_pdp",
+                    "Description Path": "walgreens_search_results_url_not_pdp",
+                    "Features Path": "walgreens_search_results_url_not_pdp",
+                    "Source Used": "walgreens_search_results_url_not_pdp",
+                },
+            },
+            "images": [],
+        }
+
+    # 1. HTML first
+    html_bundle = build_html_bundle()
+    if _walgreens_has_copy_or_images(html_bundle):
+        return html_bundle
+
+    # 2. Structured API fallback
     if product_id:
-        payload = get_walgreens_product_api_payload(product_id)
+        api_payload = get_walgreens_product_api_payload(product_id)
+        api_bundle = build_walgreens_bundle_from_api_payload(api_payload)
+        if _walgreens_has_copy_or_images(api_bundle):
+            return api_bundle
 
-        if payload:
-            for node in walk_json(payload):
-
-                if not isinstance(node, dict):
-                    continue
-
-                # ✅ CRITICAL: SKU LOCK
-                if selected_sku_id and str(node.get("skuId", "")).strip() != selected_sku_id:
-                    continue
-
-                features = node.get("vendorDetailsBullets")
-                description = node.get("vendorDetailsParagraph")
-                title = node.get("name")
-
-                if isinstance(features, list) and features:
-                    return {
-                        "text": {
-                            "title": normalize_space(title or ""),
-                            "description": normalize_space(description or ""),
-                            "features": normalize_walgreens_features_final(features, 5),
-                            "debug": {
-                                "Source Used": "walgreens_api_sku_locked"
-                            }
-                        },
-                        "images": []
-                    }
-
-    # ✅ STEP 2: PRODUCT-LEVEL API fallback
-    if product_id:
-        payload = get_walgreens_product_api_payload(product_id)
-
-        if payload:
-            for node in walk_json(payload):
-                features = node.get("vendorDetailsBullets")
-
-                if isinstance(features, list) and features:
-                    return {
-                        "text": {
-                            "title": normalize_space(node.get("name", "")),
-                            "description": normalize_space(node.get("vendorDetailsParagraph", "")),
-                            "features": normalize_walgreens_features_final(features, 5),
-                            "debug": {
-                                "Source Used": "walgreens_api_product_level"
-                            }
-                        },
-                        "images": []
-                    }
-
-    # ✅ STEP 3: HTML fallback ONLY
-    html_text = get_walgreens_html(retail_url)
-
-    return {
-        "text": extract_walgreens_text_from_html(
-            html_text,
+        # 3. prodDesc fragment fallback
+        fragment_bundle = build_walgreens_bundle_from_prod_desc_fragment(
+            product_id,
             retail_url=retail_url,
-            target_rpc=target_rpc,
-        ),
-        "images": extract_walgreens_images_from_html(html_text),
-    }
+        )
+        if _walgreens_has_copy_or_images(fragment_bundle):
+            return fragment_bundle
+
+    # Final fallback
+    return html_bundle
 
 def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku=""):
     retailer = str(retailer_name or "").strip().lower()
@@ -4231,6 +4227,8 @@ def process_row(row):
             target_sku,
             sku=row.get("sku", ""),
         )
+        if str(retailer_name).strip().lower() == "walgreens":
+            print("WAGS SOURCE:", (r_bundle.get("text", {}) or {}).get("debug", {}).get("Source Used", ""))
 
         s_text = s_bundle["text"]
         s_images = s_bundle["images"]
