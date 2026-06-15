@@ -4861,6 +4861,7 @@ show_only_issues = st.checkbox("❌ Show ONLY Issues", key="show_issues")
 hide_good = st.checkbox("✅ Hide Strong Matches (80%+)", key="hide_good")
 show_below_90_only = st.checkbox("🔎 Show Only Scores Below 90%", key="show_below_90_only")
 
+
 st.markdown("### 🧪 Debug Controls")
 show_html_debugger = st.checkbox(
     "Show Raw HTML / DOM Debugger in Full Visual QA",
@@ -5248,8 +5249,6 @@ if (
                 
                 avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
                 overall_score = int((title_score + desc_score + avg_feature_score + avg_img_score) / 4)
-                
-                    st.markdown(f"<div style='height:{IMG_SPACE_PX}px'></div>", unsafe_allow_html=True)
 
             if show_html_debugger:
                 should_render_debugger = (not debug_only_sku) or (str(sku).strip() == str(debug_only_sku).strip())
