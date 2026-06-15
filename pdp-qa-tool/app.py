@@ -4406,11 +4406,8 @@ def build_image_score_fields(s_images, r_images, max_slots=MAX_IMAGE_SLOTS_TO_SC
     if slots_to_score <= 0:
         return 0, {}
 
-    avg_img_score, image_position_scores = build_image_score_fields(
-        s_images,
-        r_images,
-        max_slots=MAX_IMAGE_SLOTS_TO_SCORE,
-    )
+    img_scores = []
+    image_position_scores = {}
 
     for i in range(slots_to_score):
         s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else ""
@@ -4423,7 +4420,7 @@ def build_image_score_fields(s_images, r_images, max_slots=MAX_IMAGE_SLOTS_TO_SC
 
     avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
     return avg_img_score, image_position_scores
-
+    
 @st.cache_data(show_spinner=False)
 def get_visual_row_payload(salsify_url, retailer_name, retail_url, current_target_sku="", sku=""):
     s_bundle = get_salsify_bundle(salsify_url)
@@ -4862,6 +4859,7 @@ if uploaded_file:
 st.markdown("## 🔎 QA Viewer Controls")
 show_only_issues = st.checkbox("❌ Show ONLY Issues", key="show_issues")
 hide_good = st.checkbox("✅ Hide Strong Matches (80%+)", key="hide_good")
+show_below_90_only = st.checkbox("🔎 Show Only Scores Below 90%", key="show_below_90_only")
 
 st.markdown("### 🧪 Debug Controls")
 show_html_debugger = st.checkbox(
@@ -5140,16 +5138,23 @@ if (
 
             avg_feature_score = int(sum(feature_scores) / len(feature_scores)) if feature_scores else 0
             copy_avg_score = int((title_score + desc_score + avg_feature_score) / 3)
-
-            img_scores = []
+            
             max_images = min(max(len(s_images), len(r_images)), MAX_IMAGE_SLOTS_TO_COMPARE)
-            max_images_to_score = 0
-            avg_img_score = 0
+            
+            # Compute image score before applying row filters.
+            avg_img_score, _image_position_scores = build_image_score_fields(
+                s_images,
+                r_images,
+                max_slots=MAX_IMAGE_SLOTS_TO_SCORE,
+            )
+            
             overall_score = int((title_score + desc_score + avg_feature_score + avg_img_score) / 4)
-
+            
             if show_only_issues and overall_score >= 80:
                 continue
             if hide_good and overall_score >= 80:
+                continue
+            if show_below_90_only and overall_score >= 90:
                 continue
 
             left, right = st.columns([2.72, 0.95], gap="small")
