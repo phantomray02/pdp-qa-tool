@@ -4388,7 +4388,41 @@ def compare_images_visually(s_url, r_url):
         image_compare_cache.pop(next(iter(image_compare_cache)))
 
     return score
+    
+def build_image_score_fields(s_images, r_images, max_slots=MAX_IMAGE_SLOTS_TO_SCORE):
+    """
+    Build per-slot image scores and an average image score.
 
+    Rules:
+    - Compare image slots in order.
+    - Score = 0 if one side is missing.
+    - Only score up to max_slots.
+    """
+    s_images = s_images or []
+    r_images = r_images or []
+
+    slots_to_score = min(max(len(s_images), len(r_images)), max_slots)
+
+    if slots_to_score <= 0:
+        return 0, {}
+
+    avg_img_score, image_position_scores = build_image_score_fields(
+        s_images,
+        r_images,
+        max_slots=MAX_IMAGE_SLOTS_TO_SCORE,
+    )
+
+    for i in range(slots_to_score):
+        s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else ""
+        r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else ""
+
+        score = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
+
+        img_scores.append(score)
+        image_position_scores[f"Image {i + 1} %"] = score
+
+    avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
+    return avg_img_score, image_position_scores
 
 @st.cache_data(show_spinner=False)
 def get_visual_row_payload(salsify_url, retailer_name, retail_url, current_target_sku="", sku=""):
@@ -4542,9 +4576,12 @@ def process_row(row):
 
         avg_feature_score = int(sum(feature_scores) / len(feature_scores)) if feature_scores else 0
 
-        img_scores = []
-        image_position_scores = {}
-        avg_img_score = 0
+        avg_img_score, image_position_scores = build_image_score_fields(
+            s_images,
+            r_images,
+            max_slots=MAX_IMAGE_SLOTS_TO_SCORE,
+        )
+        
         overall = int((title_score + desc_score + avg_feature_score + avg_img_score) / 4)
 
         return {
@@ -4604,6 +4641,7 @@ def process_row(row):
                 "matchedDynamicMediaUrl": debug_data.get("matchedDynamicMediaUrl", ""),
                 "matchedVariantUrl": debug_data.get("matchedVariantUrl", ""),
                 "matchedNearbyImage": debug_data.get("matchedNearbyImage", ""),
+                **image_position_scores,
             },
             "debug": {
                 "SKU": row.get("sku", ""),
@@ -5185,14 +5223,27 @@ if (
                     avg_score_bar_html("Images — Avg", avg_img_score),
                     unsafe_allow_html=True,
                 )
+
+                img_scores = []
+                max_images_to_score = min(max_images, MAX_IMAGE_SLOTS_TO_SCORE)
+                
                 for i in range(max_images):
                     s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else ""
                     r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else ""
-                    slot_score = 0
+                
+                    slot_score = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
+                
+                    if i < max_images_to_score:
+                        img_scores.append(slot_score)
+                
                     st.markdown(
                         image_compare_row_html(s_url, r_url, slot_score),
                         unsafe_allow_html=True,
                     )
+                
+                avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
+                overall_score = int((title_score + desc_score + avg_feature_score + avg_img_score) / 4)
+                
                     st.markdown(f"<div style='height:{IMG_SPACE_PX}px'></div>", unsafe_allow_html=True)
 
             if show_html_debugger:
