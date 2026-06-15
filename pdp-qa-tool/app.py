@@ -2527,7 +2527,44 @@ def _truncate_walgreens_copy_at_hard_stop(text):
             cut_index = min(cut_index, idx)
 
     return working[:cut_index].strip()
+    
+def _truncate_walgreens_copy_at_hard_stop(text):
+    """
+    Hard-stop Walgreens copy before utility / legal / disposal sections.
+    This keeps only the real description + bullets and drops anything after,
+    such as Made in USA, Do not flush, or Walgreens disclaimer text.
+    """
+    if not text:
+        return ""
 
+    working = str(text)
+    lower = working.lower()
+
+    stop_markers = [
+        "Made in USA",
+        "Made In USA",
+        "Do not flush",
+        "Do Not Flush",
+        "Directions for Use:",
+        "Direction for Use:",
+        "To Use:",
+        "To Dispose:",
+        "How to Use:",
+        "How To Use:",
+        "Walgreens does not represent or warrant",
+        "We recommend that you not rely solely on the information presented",
+        "On occasion, manufacturers may improve or change their product formulas",
+        "The food and drug administration has not intended to diagnose, treat, cure, or prevent any disease",
+    ]
+
+    cut_index = len(working)
+    for marker in stop_markers:
+        idx = lower.find(marker.lower())
+        if idx != -1:
+            cut_index = min(cut_index, idx)
+
+    return working[:cut_index].strip()
+    
 def _is_walgreens_450_image(url):
     url = str(url or '').lower().split('?', 1)[0]
     return url.endswith('/450.jpg') or url.endswith('_450.jpg')
@@ -2547,7 +2584,10 @@ def _extract_walgreens_feature_items_from_raw_product_desc(desc_html):
 
     working = str(desc_html)
     working = re.sub(
-        r"<script\b[^>]*>.*?</script>", " ", working, flags=re.IGNORECASE | re.DOTALL,
+        r"<script\b[^>]*>.*?</script>",
+        " ",
+        working,
+        flags=re.IGNORECASE | re.DOTALL,
     )
 
     # NEW: hard-stop before utility / legal / disposal text.
@@ -2584,7 +2624,6 @@ def _extract_walgreens_feature_items_from_raw_product_desc(desc_html):
         chunk = feature_html[start:end]
         chunk = re.sub(r"<br[^>]*>", " ", chunk, flags=re.IGNORECASE)
         chunk = re.sub(r"</p>", " ", chunk, flags=re.IGNORECASE)
-        chunk = re.sub(r"[^>]*>", " ", chunk, flags=re.IGNORECASE)
 
         feature_text = BeautifulSoup(chunk, "html.parser").get_text(" ", strip=True)
         feature_text = _normalize_walgreens_text(feature_text)
@@ -2614,7 +2653,10 @@ def extract_walgreens_copy_from_product_desc_html(product_desc_html):
 
     working = str(product_desc_html)
     working = re.sub(
-        r"<script\b[^>]*>.*?</script>", " ", working, flags=re.IGNORECASE | re.DOTALL,
+        r"<script\b[^>]*>.*?</script>",
+        " ",
+        working,
+        flags=re.IGNORECASE | re.DOTALL,
     )
 
     # NEW: hard-stop before utility / legal / disposal text.
@@ -2622,7 +2664,7 @@ def extract_walgreens_copy_from_product_desc_html(product_desc_html):
 
     start_info = _find_walgreens_feature_block_start(working)
     desc_html = working[:start_info[0]] if start_info else working
-    desc_html = re.sub(r"(?:\\s*)+$", " ", desc_html, flags=re.IGNORECASE)
+    desc_html = re.sub(r"(?:\s*)+$", " ", desc_html, flags=re.IGNORECASE)
 
     soup = BeautifulSoup(desc_html, "html.parser")
     desc_parts = []
@@ -3543,12 +3585,11 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku=""):
 # =========================================
 def strip_walgreens_utility_tail(text):
     """
-    Removes non-marketing utility/footer copy that should not live
-    in the final description/features.
+    Removes non-marketing utility/footer copy that should not live in the final description/features.
     """
     text = str(text or "")
 
-stop_markers = [
+    stop_markers = [
         "Directions for Use:",
         "Direction for Use:",
         "To Use:",
@@ -3569,7 +3610,6 @@ stop_markers = [
 
     cut_index = len(text)
     lowered = text.lower()
-
     for marker in stop_markers:
         idx = lowered.find(marker.lower())
         if idx != -1:
@@ -3577,7 +3617,6 @@ stop_markers = [
 
     text = text[:cut_index].strip()
     return normalize_space(text)
-
 
 def is_walgreens_utility_feature(text):
     text = normalize_space(text)
