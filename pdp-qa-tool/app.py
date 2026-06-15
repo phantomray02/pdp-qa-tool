@@ -3552,16 +3552,50 @@ def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
 
 def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku=""):
     retailer = str(retailer_name or "").strip().lower()
-
     if retailer == "walgreens":
         return get_walgreens_bundle(retail_url, target_rpc, sku=sku)
-
     # Default path stays CVS.
     return get_cvs_bundle(retail_url, target_rpc)
 
 # =========================================
 # RETAILER-SPECIFIC FINAL COPY CLEANUP
 # =========================================
+def strip_walgreens_description_tail(text):
+    """
+    Keep live Walgreens marketing description exactly as shown on site,
+    but still remove true legal / utility footer sections.
+    """
+    text = str(text or "")
+    stop_markers = [
+        "Directions for Use:",
+        "Direction for Use:",
+        "To Use:",
+        "To Dispose:",
+        "How to Use:",
+        "How To Use:",
+        "Directions:",
+        "Do not flush.",
+        "Do Not Flush.",
+        "Made in USA",
+        "Made In USA",
+        "©",
+        "Walgreens does not represent or warrant",
+        "We recommend that you not rely solely on the information presented",
+        "On occasion, manufacturers may improve or change their product formulas",
+        "the food and drug administration has not intended to diagnose, treat, cure, or prevent any disease",
+    ]
+
+    cut_index = len(text)
+    lowered = text.lower()
+
+    for marker in stop_markers:
+        idx = lowered.find(marker.lower())
+        if idx != -1:
+            cut_index = min(cut_index, idx)
+
+    text = text[:cut_index].strip()
+    return normalize_space(text)
+
 def strip_walgreens_utility_tail(text):
     """
     Removes non-marketing utility/footer copy that should not live in the final
@@ -3605,8 +3639,6 @@ def strip_walgreens_utility_tail(text):
         text,
         flags=re.IGNORECASE | re.DOTALL,
     ).strip()
-
-    return normalize_space(text)
 
 
 def is_walgreens_utility_feature(text):
@@ -3715,7 +3747,7 @@ def clean_walgreens_text(text):
         text = BeautifulSoup(text, "html.parser").get_text(" ", strip=True)
 
     text = normalize_space(text)
-    text = strip_walgreens_utility_tail(text)
+    text = strip_walgreens_description_tail(text)
 
     stop_patterns = [
         r"\bMade in USA\b.*$",
@@ -3919,7 +3951,7 @@ def finalize_retailer_copy(retailer_name, r_text):
 
     if retailer == "walgreens":
         out["title"] = clean_walgreens_title(out.get("title", ""))
-        out["description"] = clean_walgreens_text(out.get("description", ""))
+        out["description"] = strip_walgreens_description_tail(out.get("description", ""))
         out["features"] = normalize_walgreens_features_final(
             out.get("features", []),
             max_features=5,
