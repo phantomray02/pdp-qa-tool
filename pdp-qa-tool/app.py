@@ -3003,7 +3003,98 @@ def _add_walgreens_image_candidate(candidates, url, source_priority=99):
     if new_tuple < current_tuple:
         candidates[family_key] = candidate
 
+def _collect_walgreens_api_copy_candidates(payload):
+    """
+    Walk the full Walgreens API payload and collect any likely
+    description / feature-bearing fields.
+    """
+    desc_candidates = []
+    feature_candidates = []
 
+    if not payload:
+        return desc_candidates, feature_candidates
+
+    likely_desc_keys = {
+        "productDesc",
+        "description",
+        "longDescription",
+        "marketingDescription",
+        "productDescription",
+        "copy",
+        "details",
+    }
+
+    likely_feature_keys = {
+        "features",
+        "bullets",
+        "bulletPoints",
+        "highlights",
+        "benefits",
+        "featureBullets",
+        "vendorDetailsBullets",
+    }
+
+    for node in walk_json(payload):
+        if not isinstance(node, dict):
+            continue
+
+        for key, value in node.items():
+            key_str = str(key or "").strip()
+
+            # Description-like keys.
+            if key_str in likely_desc_keys:
+                if isinstance(value, str) and value.strip():
+                    desc_candidates.append(value)
+                elif isinstance(value, dict):
+                    for sub_k, sub_v in value.items():
+                        if isinstance(sub_v, str) and sub_v.strip():
+                            desc_candidates.append(sub_v)
+
+            # Feature-like keys.
+            if key_str in likely_feature_keys:
+                if isinstance(value, list):
+                    feature_candidates.append(value)
+                elif isinstance(value, str) and value.strip():
+                    feature_candidates.append([value])
+                elif isinstance(value, dict):
+                    sub_items = []
+                    for sub_k, sub_v in value.items():
+                        if isinstance(sub_v, str) and sub_v.strip():
+                            sub_items.append(sub_v)
+                        elif isinstance(sub_v, list):
+                            sub_items.extend(
+                                [x for x in sub_v if isinstance(x, str) and x.strip()]
+                            )
+                    if sub_items:
+                        feature_candidates.append(sub_items)
+
+    return desc_candidates, feature_candidates
+
+def _extract_best_walgreens_copy_from_api_payload(payload):
+    """
+    Flexible fallback extractor for Walgreens API payloads when
+    prodDetails.section does not contain usable copy.
+    """
+    best_description = ""
+    best_features = []
+
+    desc_candidates, feature_candidates = _collect_walgreens_api_copy_candidates(payload)
+
+    for candidate in desc_candidates:
+        candidate_clean = clean_walgreens_text(candidate)
+        candidate_clean = strip_walgreens_description_tail(candidate_clean)
+        best_description = _walgreens_choose_richer_description(
+            best_description,
+            candidate_clean,
+        )
+
+    for candidate_list in feature_candidates:
+        cleaned = normalize_walgreens_features_final(candidate_list, max_features=5)
+        if _walgreens_feature_richness_tuple(cleaned) > _walgreens_feature_richness_tuple(best_features):
+            best_features = cleaned
+
+    return best_description, best_features
+    
 def build_walgreens_bundle_from_api_payload(payload):
     empty = {
         "text": {
@@ -3036,6 +3127,7 @@ def build_walgreens_bundle_from_api_payload(payload):
 
     if not product_info:
         product_info = find_first_dict_with_keys(root, {"title", "sizeCount"})
+
     if not prod_details:
         prod_details = find_first_dict_with_keys(root, {"section"})
 
@@ -3049,8 +3141,37 @@ def build_walgreens_bundle_from_api_payload(payload):
         primary_attr=primary_attr,
     )
 
+    # First try the original structured path.
     section_list = prod_details.get("section", []) if isinstance(prod_details, dict) else []
     description, features = extract_walgreens_copy_from_product_sections(section_list)
+
+    desc_path = (
+        "walgreens_api_prodDetails_section_description_productDesc_preUL"
+        if description else
+        "walgreens_api_description_missing"
+    )
+    feat_path = (
+        "walgreens_api_prodDetails_section_description_productDesc_rawLI"
+        if features else
+        "walgreens_api_features_missing"
+    )
+    source_used = "walgreens_api"
+
+    # New fallback: scan the full API payload if original path is empty/weak.
+    if not description or not features:
+        payload_description, payload_features = _extract_best_walgreens_copy_from_api_payload(root)
+
+        if payload_description:
+            description = _walgreens_choose_richer_description(description, payload_description)
+            desc_path = "walgreens_api_payload_fallback"
+
+        if _walgreens_feature_richness_tuple(payload_features) > _walgreens_feature_richness_tuple(features):
+            features = payload_features
+            feat_path = "walgreens_api_payload_fallback"
+
+        if payload_description or payload_features:
+            source_used = "walgreens_api | walgreens_api_payload_fallback"
+
     images = extract_walgreens_images_from_product_info(product_info)
 
     return {
@@ -3059,20 +3180,18 @@ def build_walgreens_bundle_from_api_payload(payload):
             "description": description,
             "features": features[:5],
             "debug": {
-                "Title Path": "walgreens_api_productInfo_title_plus_sizeCount",
-                "Description Path": "walgreens_api_prodDetails_section_description_productDesc_preUL" if description else "walgreens_api_description_missing",
-                "Features Path": "walgreens_api_prodDetails_section_description_productDesc_rawLI" if features else "walgreens_api_features_missing",
-                "Source Used": "walgreens_api",
+                "Title Path": (
+                    "walgreens_api_productInfo_title_plus_sizeCount"
+                    if final_title else
+                    "walgreens_api_title_missing"
+                ),
+                "Description Path": desc_path,
+                "Features Path": feat_path,
+                "Source Used": source_used,
             },
         },
         "images": images,
     }
-
-
-def get_walgreens_prod_desc_url(product_id):
-    if not product_id:
-        return ""
-    return f"https://www.walgreens.com/store/store/prodDesc.jsp?id={product_id}"
 
 
 def get_walgreens_prod_desc_html(product_id):
