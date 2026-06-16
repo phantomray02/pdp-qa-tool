@@ -536,7 +536,7 @@ def prepare_input_df(df):
     # Normalize incoming column names.
     df.columns = [str(c).strip().lower() for c in df.columns]
 
-    # Rename only safe one-to-one columns first.
+    # Rename safe one-to-one columns first.
     df.rename(
         columns={
             "salsify url": "salsify_url",
@@ -545,12 +545,15 @@ def prepare_input_df(df):
             "product sku": "sku",
             "retailer name": "retailer",
             "retailer_name": "retailer",
+            "copy source code": "copy_source_code",
+            "source code": "copy_source_code",
+            "html source": "copy_source_code",
+            "page source": "copy_source_code",
         },
         inplace=True,
     )
 
-    # Build one normalized retailer_rpc column without creating duplicate names.
-    # Supports CVS, Walgreens, and Sam's Club uploads.
+    # Build one normalized retailer_rpc column.
     rpc_candidates = []
 
     for rpc_col in [
@@ -577,7 +580,7 @@ def prepare_input_df(df):
     else:
         df["retailer_rpc"] = ""
 
-    # Remove original retailer-specific rpc columns after combining.
+    # Drop retailer-specific RPC columns after combining.
     for rpc_col in [
         "cvs rpc",
         "walgreens rpc",
@@ -587,12 +590,26 @@ def prepare_input_df(df):
             df.drop(columns=[rpc_col], inplace=True)
 
     # Ensure required working columns exist.
-    for col in ["sku", "salsify_url", "retail_url", "brand", "retailer_rpc"]:
+    for col in [
+        "sku",
+        "salsify_url",
+        "retail_url",
+        "brand",
+        "retailer_rpc",
+        "copy_source_code",
+    ]:
         if col not in df.columns:
             df[col] = ""
 
     # Clean standard text columns safely.
-    for col in ["sku", "salsify_url", "retail_url", "brand", "retailer_rpc"]:
+    for col in [
+        "sku",
+        "salsify_url",
+        "retail_url",
+        "brand",
+        "retailer_rpc",
+        "copy_source_code",
+    ]:
         df[col] = (
             df[col]
             .replace("#N/A", "")
@@ -602,8 +619,6 @@ def prepare_input_df(df):
         )
 
     # Normalize retailer column.
-    # If uploaded Excel has multiple sheets, read_uploaded_file_from_bytes()
-    # already stamps the sheet name into df["retailer"].
     if "retailer" not in df.columns:
         df["retailer"] = df["retail_url"].apply(infer_retailer_name_from_url)
     else:
@@ -615,7 +630,6 @@ def prepare_input_df(df):
             .str.strip()
         )
 
-    # Required minimum columns.
     required = ["sku", "salsify_url", "retail_url"]
     missing = [c for c in required if c not in df.columns]
     if missing:
@@ -3748,7 +3762,32 @@ def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
 
     # Final fallback.
     return html_bundle
+    
+def is_sams_robot_page(html_text):
+    """
+    Detect Sam's Club anti-bot / challenge pages so we do not accidentally
+    parse footer/help links as product copy.
+    """
+    if not html_text:
+        return False
 
+    text = str(html_text or "").lower()
+
+    robot_markers = [
+        "let us know you're not a robot",
+        "let us know you’re not a robot",
+        "verify you are human",
+        "verify you're human",
+        "verify you’re human",
+        "press and hold",
+        "press & hold",
+        "captcha",
+        "/akam/",
+        "challenge-platform",
+        "bot protection",
+    ]
+
+    return any(marker in text for marker in robot_markers)
 # =========================================
 # SAM'S CLUB PARSERS
 # =========================================
@@ -4236,6 +4275,237 @@ def extract_sams_text_from_html(html_text, retail_url="", target_rpc=""):
             "debug": debug,
         }
 
+    # IMPORTANT:
+    # If this is a robot/challenge page, do NOT parse h1/li/meta fallback content,
+    # because that is what creates junk like:
+    # "Let us know you're not a robot"
+    # "Help center", "Terms", "Privacy", etc.
+    if is_sams_robot_page(html_text):
+        debug["Title Path"] = "sams_robot_page_blocked"
+        debug["Description Path"] = "sams_robot_page_blocked"
+        debug["Features Path"] = "sams_robot_page_blocked"
+        debug["Source Used"] = "sams_robot_page_blocked"
+        return {
+            "title": "",
+            "description": "",
+            "features": [],
+            "debug": debug,
+        }
+
+    soup = BeautifulSoup(html_text, "html.parser")
+
+    # -----------------------------------------
+    # FIRST: use exact raw source extraction
+    # -----------------------------------------
+    copy_result = extract_sams_copy_from_source(html_text)
+
+    title = clean_sams_title(copy_result.get("title", ""))
+    description = clean_sams_text(copy_result.get("description", ""))
+    features = normalize_sams_features_final(
+        copy_result.get("features", []),
+        max_features=5,
+    )
+
+    src_debug = copy_result.get("debug", {}) or {}
+
+    # -----------------------------------------
+    # TITLE FALLBACKS
+    # -----------------------------------------
+    if title:
+        debug["Title Path"] = src_debug.get("Title Path", "sams_name_personalizable")
+    else:
+        h1 = soup.find("h1")
+        if h1:
+            title = clean_sams_title(h1.get_text(" ", strip=True))
+            debug["Title Path"] = "h1"
+
+        if not title:
+            og_title = soup.find("meta", attrs={"property": "og:title"})
+            if og_title and og_title.get("content"):
+                title = clean_sams_title(og_title.get("content"))
+                debug["Title Path"] = "og:title"
+
+        if not title and soup.title:
+            title = clean_sams_title(soup.title.get_text(" ", strip=True))
+            debug["Title Path"] = "html_title"
+
+        if not title:
+            title = clean_sams_title(build_sams_title_from_url_slug(retail_url))
+            debug["Title Path"] = (
+                "retail_url_slug_fallback" if title else "sams_title_missing"
+            )
+
+    # -----------------------------------------
+    # DESCRIPTION FALLBACKS
+    # -----------------------------------------
+    if description:
+        debug["Description Path"] = src_debug.get(
+            "Description Path",
+            "sams_longDescription_html",
+        )
+    else:
+        desc_candidates = []
+
+        for attrs in [
+            {"name": "description"},
+            {"property": "og:description"},
+            {"name": "twitter:description"},
+            {"itemprop": "description"},
+        ]:
+            tag = soup.find("meta", attrs=attrs)
+            if tag and tag.get("content"):
+                desc_candidates.append(tag.get("content"))
+
+        desc_candidates.extend(_collect_sams_jsonld_description_candidates(soup))
+
+        best_desc = ""
+        for candidate in desc_candidates:
+            candidate_clean = clean_sams_text(candidate)
+            if len(candidate_clean) > len(best_desc):
+                best_desc = candidate_clean
+
+        if best_desc:
+            description = best_desc
+            debug["Description Path"] = "sams_meta_jsonld_fallback"
+        else:
+            debug["Description Path"] = "sams_description_missing"
+
+    # -----------------------------------------
+    # FEATURES FALLBACKS
+    # -----------------------------------------
+    if features:
+        debug["Features Path"] = src_debug.get(
+            "Features Path",
+            "sams_shortDescription_html",
+        )
+    else:
+        # Only use li fallback on a real page, not robot page.
+        li_values = []
+        for li in soup.find_all("li"):
+            li_text = clean_sams_text(li.get_text(" ", strip=True))
+            if li_text:
+                li_values.append(li_text)
+
+        features = normalize_sams_features_final(li_values, max_features=5)
+
+        if features:
+            debug["Features Path"] = "sams_visible_li_fallback"
+        else:
+            debug["Features Path"] = "sams_features_missing"
+
+    debug["Source Used"] = "sams_html"
+
+    return {
+        "title": title,
+        "description": description,
+        "features": features[:5],
+        "debug": debug,
+    }
+
+
+    title = clean_sams_title(copy_result.get("title", ""))
+    description = clean_sams_text(copy_result.get("description", ""))
+    features = normalize_sams_features_final(
+        copy_result.get("features", []),
+        max_features=5,
+    )
+
+    src_debug = copy_result.get("debug", {}) or {}
+
+    # -----------------------------------------
+    # TITLE FALLBACKS
+    # -----------------------------------------
+    if title:
+        debug["Title Path"] = src_debug.get("Title Path", "sams_name_personalizable")
+    else:
+        h1 = soup.find("h1")
+        if h1:
+            title = clean_sams_title(h1.get_text(" ", strip=True))
+            debug["Title Path"] = "h1"
+
+        if not title:
+            og_title = soup.find("meta", attrs={"property": "og:title"})
+            if og_title and og_title.get("content"):
+                title = clean_sams_title(og_title.get("content"))
+                debug["Title Path"] = "og:title"
+
+        if not title and soup.title:
+            title = clean_sams_title(soup.title.get_text(" ", strip=True))
+            debug["Title Path"] = "html_title"
+
+        if not title:
+            title = clean_sams_title(build_sams_title_from_url_slug(retail_url))
+            debug["Title Path"] = (
+                "retail_url_slug_fallback" if title else "sams_title_missing"
+            )
+
+    # -----------------------------------------
+    # DESCRIPTION FALLBACKS
+    # -----------------------------------------
+    if description:
+        debug["Description Path"] = src_debug.get(
+            "Description Path",
+            "sams_longDescription_html",
+        )
+    else:
+        desc_candidates = []
+
+        for attrs in [
+            {"name": "description"},
+            {"property": "og:description"},
+            {"name": "twitter:description"},
+            {"itemprop": "description"},
+        ]:
+            tag = soup.find("meta", attrs=attrs)
+            if tag and tag.get("content"):
+                desc_candidates.append(tag.get("content"))
+
+        desc_candidates.extend(_collect_sams_jsonld_description_candidates(soup))
+
+        best_desc = ""
+        for candidate in desc_candidates:
+            candidate_clean = clean_sams_text(candidate)
+            if len(candidate_clean) > len(best_desc):
+                best_desc = candidate_clean
+
+        if best_desc:
+            description = best_desc
+            debug["Description Path"] = "sams_meta_jsonld_fallback"
+        else:
+            debug["Description Path"] = "sams_description_missing"
+
+    # -----------------------------------------
+    # FEATURES FALLBACKS
+    # -----------------------------------------
+    if features:
+        debug["Features Path"] = src_debug.get(
+            "Features Path",
+            "sams_shortDescription_html",
+        )
+    else:
+        # Only use li fallback on a real page, not robot page.
+        li_values = []
+        for li in soup.find_all("li"):
+            li_text = clean_sams_text(li.get_text(" ", strip=True))
+            if li_text:
+                li_values.append(li_text)
+
+        features = normalize_sams_features_final(li_values, max_features=5)
+
+        if features:
+            debug["Features Path"] = "sams_visible_li_fallback"
+        else:
+            debug["Features Path"] = "sams_features_missing"
+
+    debug["Source Used"] = "sams_html"
+
+    return {
+        "title": title,
+        "description": description,
+        "features": features[:5],
+        "debug": debug,
+    }
+
     soup = BeautifulSoup(html_text, "html.parser")
 
     # -----------------------------------------
@@ -4338,30 +4608,63 @@ def extract_sams_text_from_html(html_text, retail_url="", target_rpc=""):
     }
 
 @st.cache_data(show_spinner=False)
-def get_sams_bundle(retail_url, target_rpc="", sku=""):
+def get_sams_bundle(retail_url, target_rpc="", sku="", row_source_code=""):
     html_text = get_html(retail_url)
+    row_source_code = str(row_source_code or "").strip()
+
+    robot_blocked = is_sams_robot_page(html_text)
+
+    # Prefer provided source code for copy if live HTML is blocked.
+    text_source = html_text
+    if robot_blocked and row_source_code:
+        text_source = row_source_code
+    elif robot_blocked and not row_source_code:
+        text_source = ""
+
+    text_payload = extract_sams_text_from_html(
+        text_source,
+        retail_url=retail_url,
+        target_rpc=target_rpc,
+    )
+
+    # Preserve debug note if robot page was hit.
+    text_payload_debug = text_payload.get("debug", {}) or {}
+    if robot_blocked:
+        if row_source_code:
+            text_payload_debug["Source Used"] = "sams_row_source_code | sams_html_robot_blocked"
+        else:
+            text_payload_debug["Source Used"] = "sams_html_robot_blocked"
+
+    text_payload["debug"] = text_payload_debug
+
+    # Images still depend on real PDP HTML.
+    # If robot blocked, do NOT try to parse image/footer junk.
+    images = []
+    if not robot_blocked:
+        images = extract_sams_images_from_html(html_text)
 
     return {
-        "text": extract_sams_text_from_html(
-            html_text,
-            retail_url=retail_url,
-            target_rpc=target_rpc,
-        ),
-        "images": extract_sams_images_from_html(html_text),
+        "text": text_payload,
+        "images": images,
     }
 
-def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku=""):
+def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_source_code=""):
     retailer = str(retailer_name or "").strip().lower()
 
     if retailer == "walgreens":
         return get_walgreens_bundle(retail_url, target_rpc, sku=sku)
 
     if retailer in ["sam's club", "sams club", "samsclub"]:
-        return get_sams_bundle(retail_url, target_rpc, sku=sku)
+        return get_sams_bundle(
+            retail_url,
+            target_rpc,
+            sku=sku,
+            row_source_code=row_source_code,
+        )
 
     # Default path stays CVS.
     return get_cvs_bundle(retail_url, target_rpc)
-    
+
 # =========================================
 # RETAILER-SPECIFIC FINAL COPY CLEANUP
 # =========================================
@@ -5146,14 +5449,22 @@ def build_image_score_fields(s_images, r_images, max_slots=MAX_IMAGE_SLOTS_TO_SC
     return avg_img_score, image_position_scores
     
 @st.cache_data(show_spinner=False)
-@st.cache_data(show_spinner=False)
-def get_visual_row_payload(salsify_url, retailer_name, retail_url, current_target_sku="", sku=""):
+def get_visual_row_payload(
+    salsify_url,
+    retailer_name,
+    retail_url,
+    current_target_sku="",
+    sku="",
+    row_source_code="",
+):
     s_bundle = get_salsify_bundle(salsify_url)
+
     r_bundle = get_retailer_bundle(
         retailer_name,
         retail_url,
-        current_target_sku,
-        sku=sku,
+        target_sku,
+        sku=row.get("sku", ""),
+        row_source_code=row_source_code,
     )
 
     s_images = align_salsify_images_for_retailer(
@@ -5163,6 +5474,7 @@ def get_visual_row_payload(salsify_url, retailer_name, retail_url, current_targe
     )
 
     r_images = r_bundle["images"] or []
+
     if str(retailer_name or "").strip().lower() == "walgreens":
         r_images = r_images[:6]
 
@@ -5172,6 +5484,7 @@ def get_visual_row_payload(salsify_url, retailer_name, retail_url, current_targe
         "r_text": finalize_retailer_copy(retailer_name, r_bundle["text"] or {}),
         "r_images": r_images,
     }
+
 # =========================================
 # PROCESS ROW
 # =========================================
@@ -5180,6 +5493,7 @@ def process_row(row):
         retail_url = row.get("retail_url", "")
         salsify_url = row.get("salsify_url", "")
         cvs_rpc = row.get("retailer_rpc", "")
+        ow_source_code = row.get("copy_source_code", "")
         retailer_name = row.get("retailer", "") or infer_retailer_name_from_url(retail_url)
 
         salsify_url = str(salsify_url or "").strip()
@@ -5319,6 +5633,7 @@ def process_row(row):
             retail_url,
             target_sku,
             sku=row.get("sku", ""),
+            row_source_code=row_source_code,
         )
         if str(retailer_name).strip().lower() == "walgreens":
             print("WAGS SOURCE:", (r_bundle.get("text", {}) or {}).get("debug", {}).get("Source Used", ""))
@@ -5905,6 +6220,7 @@ if (
                 retail_url,
                 current_target_sku,
                 sku=sku,
+                row_source_code=row.get("copy_source_code", ""),
             )
             s_text = visual_payload["s_text"]
             s_images = visual_payload["s_images"]
