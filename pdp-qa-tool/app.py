@@ -529,6 +529,7 @@ def infer_retailer_name_from_url(url):
 def prepare_input_df(df):
     df = df.copy()
     df.columns = [str(c).strip().lower() for c in df.columns]
+    df["retailer_rpc"] = df["retailer_rpc"].apply(lambda x: str(x).replace(".0", "").strip())
 
     # Rename only safe one-to-one columns first.
     df.rename(
@@ -5270,9 +5271,15 @@ if (
                 )
                 top_r.markdown(
                     column_header_link_html(retailer_name, current_target_sku or current_rpc, retail_url),
+                    clean_rpc = clean_item_number(current_target_sku or current_rpc)
+                    column_header_link_html(
+                        retailer_name,
+                        clean_rpc,
+                        retail_url
+                    )
                     unsafe_allow_html=True,
                 )
-
+                
                 st.markdown(avg_score_bar_html("Copy — Avg", copy_avg_score), unsafe_allow_html=True)
 
                 st.markdown(section_header_html("Title", title_score), unsafe_allow_html=True)
