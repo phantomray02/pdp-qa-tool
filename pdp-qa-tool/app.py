@@ -1045,7 +1045,128 @@ def resolve_debug_views(
 
     # Fallback to live fetch.
     return fetch_url_debug(debug_url, retailer_name=retailer_name)
-    
+def render_debugger_panel(
+    debug_views,
+    sku="",
+    marker_start="",
+    marker_end="",
+    marker_target="Raw HTML",
+    use_manual_html_override=False,
+):
+    requested_url = str(debug_views.get("requested_url", "") or "")
+    final_url = str(debug_views.get("final_url", "") or "")
+    status_code = str(debug_views.get("status_code", "") or "")
+    reason = str(debug_views.get("reason", "") or "")
+    text_length = int(debug_views.get("text_length", 0) or 0)
+    history = debug_views.get("history", []) or []
+    raw_html = str(debug_views.get("raw_html", "") or "")
+    dom_text = str(debug_views.get("dom_text", "") or "")
+    prettified_dom = str(debug_views.get("prettified_dom", "") or "")
+    error_text = str(debug_views.get("error", "") or "")
+    response_headers = debug_views.get("response_headers", {}) or {}
+
+    if use_manual_html_override:
+        st.success("Using manual HTML override for debugger.")
+    elif error_text:
+        st.error(f"Debugger fetch error: {error_text}")
+
+    metric_cols = st.columns(5)
+    with metric_cols[0]:
+        st.caption("Status")
+        st.markdown(f"### {status_code if status_code else 'N/A'}")
+    with metric_cols[1]:
+        st.caption("Reason")
+        st.markdown(f"### {reason if reason else 'N/A'}")
+    with metric_cols[2]:
+        st.caption("Content Length")
+        st.markdown(f"### {text_length}")
+    with metric_cols[3]:
+        st.caption("Redirects")
+        st.markdown(f"### {len(history)}")
+    with metric_cols[4]:
+        st.caption("Final URL Set")
+        st.markdown(f"### {'Yes' if final_url else 'No'}")
+
+    st.text_input(
+        "Requested URL",
+        value=requested_url,
+        key=f"debug_requested_url_{sku}",
+    )
+    st.text_input(
+        "Final URL",
+        value=final_url,
+        key=f"debug_final_url_{sku}",
+    )
+
+    if response_headers:
+        with st.expander("Response headers"):
+            st.json(response_headers)
+
+    tab_raw, tab_dom, tab_pretty, tab_marker = st.tabs(
+        ["Raw HTML", "DOM Text", "Prettified DOM", "Marker Test"]
+    )
+
+    with tab_raw:
+        st.text_area(
+            f"raw_html_{sku or 'debug'}",
+            value=raw_html,
+            height=320,
+            key=f"debug_raw_html_{sku}",
+        )
+
+    with tab_dom:
+        st.text_area(
+            f"dom_text_{sku or 'debug'}",
+            value=dom_text,
+            height=320,
+            key=f"debug_dom_text_{sku}",
+        )
+
+    with tab_pretty:
+        st.text_area(
+            f"prettified_dom_{sku or 'debug'}",
+            value=prettified_dom,
+            height=320,
+            key=f"debug_prettified_dom_{sku}",
+        )
+
+    with tab_marker:
+        marker_source_name = marker_target or "Raw HTML"
+
+        if marker_source_name == "DOM Text":
+            marker_source_text = dom_text
+        elif marker_source_name == "Prettified DOM":
+            marker_source_text = prettified_dom
+        else:
+            marker_source_text = raw_html
+
+        marker_result = preview_between_markers(
+            marker_source_text,
+            start_marker=marker_start,
+            end_marker=marker_end,
+        )
+
+        marker_cols = st.columns(4)
+        with marker_cols[0]:
+            st.caption("Start Found")
+            st.markdown(f"### {'Yes' if marker_result.get('start_found') else 'No'}")
+        with marker_cols[1]:
+            st.caption("End Found")
+            st.markdown(f"### {'Yes' if marker_result.get('end_found') else 'No'}")
+        with marker_cols[2]:
+            st.caption("Start Index")
+            st.markdown(f"### {marker_result.get('start_index', -1)}")
+        with marker_cols[3]:
+            st.caption("End Index")
+            st.markdown(f"### {marker_result.get('end_index', -1)}")
+
+        st.text_area(
+            "Marker preview",
+            value=str(marker_result.get("preview", "") or ""),
+            height=280,
+            key=f"debug_marker_preview_{sku}",
+        )
+        
 # =========================================
 # SALSIFY PARSERS
 # =========================================
@@ -5541,25 +5662,31 @@ show_below_90_only = st.checkbox("🔎 Show Only Scores Below 90%", key="show_be
 
 
 st.markdown("### 🧪 Debug Controls")
+
 show_html_debugger = st.checkbox(
     "Show Raw HTML / DOM Debugger in Full Visual QA",
     key="show_html_debugger",
 )
+
 debugger_source = st.selectbox(
     "Debugger Source",
     ["Retailer page", "Salsify page"],
     key="debugger_source",
 )
+
 debug_only_sku = st.text_input(
     "Debug only this SKU. Leave blank to show debugger for all visible rows.",
     key="debug_only_sku",
 ).strip()
+
 use_manual_html_override = st.checkbox(
     "Use manual HTML override for debugger",
     key="use_manual_html_override",
 )
+
 manual_html_file = None
 manual_html_text = ""
+
 if use_manual_html_override:
     manual_html_file = st.file_uploader(
         "Upload HTML file for debugger only",
@@ -5567,10 +5694,30 @@ if use_manual_html_override:
         key="manual_html_file",
     )
     manual_html_text = st.text_area(
-        "Or paste raw HTML / copied DOM here for debugger only",
+        "Or paste raw HTML here for debugger only",
         height=180,
         key="manual_html_text",
     )
+
+st.markdown("#### 🔬 Marker Test Controls")
+
+debug_marker_start = st.text_input(
+    "Start marker",
+    key="debug_marker_start",
+    value='"longDescription":"',
+)
+
+debug_marker_end = st.text_input(
+    "End marker",
+    key="debug_marker_end",
+    value='\\u003c/p\\u003e"',
+)
+
+debug_marker_target = st.selectbox(
+    "Marker test target",
+    ["Raw HTML", "DOM Text", "Prettified DOM"],
+    key="debug_marker_target",
+)
 
 if retailer_df is not None and st.session_state.processing_done and st.session_state.completed_batch_key == current_batch_key:
     visual_brands = sorted(retailer_df["brand"].dropna().astype(str).unique().tolist()) if "brand" in retailer_df.columns else []
@@ -5942,10 +6089,14 @@ if (
                 overall_score = int((title_score + desc_score + avg_feature_score + avg_img_score) / 4)
 
             if show_html_debugger:
-                should_render_debugger = (not debug_only_sku) or (str(sku).strip() == str(debug_only_sku).strip())
+                should_render_debugger = (not debug_only_sku) or (
+                    str(sku).strip() == str(debug_only_sku).strip()
+                )
+            
                 if should_render_debugger:
                     debug_url = retail_url if debugger_source == "Retailer page" else salsify_url
                     debug_retailer_name = retailer_name if debugger_source == "Retailer page" else "salsify"
+            
                     debug_views = resolve_debug_views(
                         debug_url,
                         retailer_name=debug_retailer_name,
@@ -5953,12 +6104,16 @@ if (
                         manual_html_text=manual_html_text,
                         manual_html_file=manual_html_file,
                     )
-                    with st.expander(f"Debug HTML / DOM — {sku}"):
-                        st.text_input("Requested URL", value=str(debug_views.get("requested_url", "")), key=f"debug_requested_url_{sku}")
-                        st.text_input("Final URL", value=str(debug_views.get("final_url", "")), key=f"debug_final_url_{sku}")
-                        st.text_area("DOM Text", value=str(debug_views.get("dom_text", "")), height=220, key=f"debug_dom_text_{sku}")
-                        st.text_area("Raw HTML", value=str(debug_views.get("raw_html", "")), height=280, key=f"debug_raw_html_{sku}")
-
+            
+                    with st.expander(f"🔎 HTML / DOM Debugger — {sku}", expanded=True):
+                        render_debugger_panel(
+                            debug_views,
+                            sku=sku,
+                            marker_start=debug_marker_start,
+                            marker_end=debug_marker_end,
+                            marker_target=debug_marker_target,
+                            use_manual_html_override=use_manual_html_override,
+                        )
             st.divider()
     except Exception as e:
         st.error("🔥 CRITICAL APP ERROR")
