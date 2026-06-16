@@ -1184,26 +1184,6 @@ def render_debugger_panel(
             key=f"debug_marker_preview_{sku}",
         )
         
- def is_debug_view_robot_page(debug_views):
-    raw_html = str(debug_views.get("raw_html", "") or "").lower()
-    final_url = str(debug_views.get("final_url", "") or "").lower()
-    requested_url = str(debug_views.get("requested_url", "") or "").lower()
-
-    combined = " ".join([raw_html, final_url, requested_url])
-
-    markers = [
-        "let us know you're not a robot",
-        "let us know you’re not a robot",
-        "let us know you're human",
-        "let us know you’re human",
-        "no robots allowed",
-        "captcha",
-        "px-captcha",
-        "/are-you-human",
-        "challenge-platform",
-    ]
-
-    return any(marker in combined for marker in markers)       
 # =========================================
 # SALSIFY PARSERS
 # =========================================
