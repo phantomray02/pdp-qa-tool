@@ -3908,22 +3908,33 @@ def extract_sams_features_from_short_description_html(short_desc_html):
 
 def extract_sams_copy_from_source(source_text):
     """
-    Pulls Sam's Club copy from the raw HTML/source blob using the patterns
-    observed in your workbook:
+    Sam's Club source extraction using exact source anchors:
 
-    :null,"longDescription":"...escaped html...","shortDescription":"...escaped html..."
+    Title:
+        start -> "name":"
+        end   -> ","personalizable"
+
+    Description:
+        start -> ,"longDescription":"
+        end   -> \u003c/p\u003e"
+
+    Features:
+        start -> "shortDescription":"\u003cul\u003e
+        then extract all \u003cli\u003e...\u003c/li\u003e items
     """
     debug = {
         "Title Path": "",
         "Description Path": "",
         "Features Path": "",
         "Source Used": "sams_raw_source",
+        "nameFound": False,
         "longDescriptionFound": False,
         "shortDescriptionFound": False,
     }
 
     if not source_text:
         return {
+            "title": "",
             "description": "",
             "features": [],
             "debug": debug,
@@ -3931,46 +3942,78 @@ def extract_sams_copy_from_source(source_text):
 
     source_text = str(source_text)
 
+    # -----------------------------------------
+    # TITLE
+    # Pattern:
+    # "name":"Poise Daily Incontinence Panty Liners, 2 Drop Very Light, 132 ct.","personalizable"
+    # -----------------------------------------
+    title = ""
+    name_match = re.search(
+        r'"name"\s*:\s*"((?:\\.|[^"\\])*)"\s*,\s*"personalizable"',
+        source_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if name_match:
+        debug["nameFound"] = True
+        title = _decode_sams_json_string(name_match.group(1))
+        title = clean_sams_title(title)
+        debug["Title Path"] = "sams_name_personalizable"
+
+    # -----------------------------------------
+    # DESCRIPTION
+    # Pattern:
+    # ,"longDescription":"\u003ch3\u003e ... \u003c/p\u003e"
+    # -----------------------------------------
+    description = ""
     long_match = re.search(
         r'"longDescription"\s*:\s*"((?:\\.|[^"\\])*)"',
         source_text,
         flags=re.IGNORECASE | re.DOTALL,
     )
 
+    if long_match:
+        debug["longDescriptionFound"] = True
+        long_html = _decode_sams_json_string(long_match.group(1))
+        description = extract_sams_description_from_long_description_html(long_html)
+        description = clean_sams_text(description)
+
+        if description:
+            debug["Description Path"] = "sams_longDescription_html"
+
+    if not description:
+        debug["Description Path"] = "sams_description_missing"
+
+    # -----------------------------------------
+    # FEATURES
+    # Pattern:
+    # "shortDescription":"\u003cul\u003e  \u003cli\u003e ... \u003c/li\u003e ... \u003c/ul
+    # -----------------------------------------
+    features = []
     short_match = re.search(
         r'"shortDescription"\s*:\s*"((?:\\.|[^"\\])*)"',
         source_text,
         flags=re.IGNORECASE | re.DOTALL,
     )
 
-    long_html = ""
-    short_html = ""
-
-    if long_match:
-        debug["longDescriptionFound"] = True
-        long_html = _decode_sams_json_string(long_match.group(1))
-
     if short_match:
         debug["shortDescriptionFound"] = True
         short_html = _decode_sams_json_string(short_match.group(1))
+        features = extract_sams_features_from_short_description_html(short_html)
+        features = normalize_sams_features_final(features, max_features=5)
 
-    description = extract_sams_description_from_long_description_html(long_html)
-    features = extract_sams_features_from_short_description_html(short_html)
+        if features:
+            debug["Features Path"] = "sams_shortDescription_html"
 
-    debug["Description Path"] = (
-        "sams_longDescription_html" if description else "sams_description_missing"
-    )
-    debug["Features Path"] = (
-        "sams_shortDescription_html" if features else "sams_features_missing"
-    )
+    if not features:
+        debug["Features Path"] = "sams_features_missing"
 
     return {
+        "title": title,
         "description": description,
         "features": features[:5],
         "debug": debug,
     }
-
-
+    
 def _collect_sams_jsonld_description_candidates(soup):
     candidates = []
 
@@ -4195,41 +4238,50 @@ def extract_sams_text_from_html(html_text, retail_url="", target_rpc=""):
 
     soup = BeautifulSoup(html_text, "html.parser")
 
-    # Title priority:
-    # 1. h1
-    # 2. og:title
-    # 3. html <title>
-    # 4. URL slug fallback
-    title = ""
-
-    h1 = soup.find("h1")
-    if h1:
-        title = clean_sams_title(h1.get_text(" ", strip=True))
-        debug["Title Path"] = "h1"
-
-    if not title:
-        og_title = soup.find("meta", attrs={"property": "og:title"})
-        if og_title and og_title.get("content"):
-            title = clean_sams_title(og_title.get("content"))
-            debug["Title Path"] = "og:title"
-
-    if not title and soup.title:
-        title = clean_sams_title(soup.title.get_text(" ", strip=True))
-        debug["Title Path"] = "html_title"
-
-    if not title:
-        title = clean_sams_title(build_sams_title_from_url_slug(retail_url))
-        debug["Title Path"] = (
-            "retail_url_slug_fallback" if title else "sams_title_missing"
-        )
-
-    # Main copy from the raw source/HTML text.
+    # -----------------------------------------
+    # FIRST: use exact raw source extraction
+    # -----------------------------------------
     copy_result = extract_sams_copy_from_source(html_text)
+
+    title = clean_sams_title(copy_result.get("title", ""))
     description = clean_sams_text(copy_result.get("description", ""))
     features = normalize_sams_features_final(copy_result.get("features", []), max_features=5)
 
-    # Fallback description from meta/jsonld if needed.
-    if not description:
+    src_debug = copy_result.get("debug", {}) or {}
+
+    # -----------------------------------------
+    # TITLE FALLBACKS
+    # -----------------------------------------
+    if title:
+        debug["Title Path"] = src_debug.get("Title Path", "sams_name_personalizable")
+    else:
+        h1 = soup.find("h1")
+        if h1:
+            title = clean_sams_title(h1.get_text(" ", strip=True))
+            debug["Title Path"] = "h1"
+
+        if not title:
+            og_title = soup.find("meta", attrs={"property": "og:title"})
+            if og_title and og_title.get("content"):
+                title = clean_sams_title(og_title.get("content"))
+                debug["Title Path"] = "og:title"
+
+        if not title and soup.title:
+            title = clean_sams_title(soup.title.get_text(" ", strip=True))
+            debug["Title Path"] = "html_title"
+
+        if not title:
+            title = clean_sams_title(build_sams_title_from_url_slug(retail_url))
+            debug["Title Path"] = (
+                "retail_url_slug_fallback" if title else "sams_title_missing"
+            )
+
+    # -----------------------------------------
+    # DESCRIPTION FALLBACKS
+    # -----------------------------------------
+    if description:
+        debug["Description Path"] = src_debug.get("Description Path", "sams_longDescription_html")
+    else:
         desc_candidates = []
 
         for attrs in [
@@ -4253,30 +4305,28 @@ def extract_sams_text_from_html(html_text, retail_url="", target_rpc=""):
         if best_desc:
             description = best_desc
             debug["Description Path"] = "sams_meta_jsonld_fallback"
+        else:
+            debug["Description Path"] = "sams_description_missing"
 
-    # If no features from shortDescription, try visible highlights list on page.
-    if not features:
+    # -----------------------------------------
+    # FEATURES FALLBACKS
+    # -----------------------------------------
+    if features:
+        debug["Features Path"] = src_debug.get("Features Path", "sams_shortDescription_html")
+    else:
         li_values = []
+
         for li in soup.find_all("li"):
             li_text = clean_sams_text(li.get_text(" ", strip=True))
             if li_text:
                 li_values.append(li_text)
 
         features = normalize_sams_features_final(li_values, max_features=5)
+
         if features:
             debug["Features Path"] = "sams_visible_li_fallback"
-
-    # Merge debug from source extractor.
-    src_debug = copy_result.get("debug", {})
-    if src_debug.get("Description Path") and not debug.get("Description Path"):
-        debug["Description Path"] = src_debug.get("Description Path", "")
-    if src_debug.get("Features Path") and not debug.get("Features Path"):
-        debug["Features Path"] = src_debug.get("Features Path", "")
-
-    if not debug.get("Description Path"):
-        debug["Description Path"] = "sams_description_missing"
-    if not debug.get("Features Path"):
-        debug["Features Path"] = "sams_features_missing"
+        else:
+            debug["Features Path"] = "sams_features_missing"
 
     debug["Source Used"] = "sams_html"
 
@@ -4286,7 +4336,6 @@ def extract_sams_text_from_html(html_text, retail_url="", target_rpc=""):
         "features": features[:5],
         "debug": debug,
     }
-
 
 @st.cache_data(show_spinner=False)
 def get_sams_bundle(retail_url, target_rpc="", sku=""):
