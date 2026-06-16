@@ -1071,18 +1071,23 @@ def render_debugger_panel(
         st.error(f"Debugger fetch error: {error_text}")
 
     metric_cols = st.columns(5)
+
     with metric_cols[0]:
         st.caption("Status")
         st.markdown(f"### {status_code if status_code else 'N/A'}")
+
     with metric_cols[1]:
         st.caption("Reason")
         st.markdown(f"### {reason if reason else 'N/A'}")
+
     with metric_cols[2]:
         st.caption("Content Length")
         st.markdown(f"### {text_length}")
+
     with metric_cols[3]:
         st.caption("Redirects")
         st.markdown(f"### {len(history)}")
+
     with metric_cols[4]:
         st.caption("Final URL Set")
         st.markdown(f"### {'Yes' if final_url else 'No'}")
@@ -1092,6 +1097,7 @@ def render_debugger_panel(
         value=requested_url,
         key=f"debug_requested_url_{sku}",
     )
+
     st.text_input(
         "Final URL",
         value=final_url,
@@ -1147,15 +1153,19 @@ def render_debugger_panel(
         )
 
         marker_cols = st.columns(4)
+
         with marker_cols[0]:
             st.caption("Start Found")
             st.markdown(f"### {'Yes' if marker_result.get('start_found') else 'No'}")
+
         with marker_cols[1]:
             st.caption("End Found")
             st.markdown(f"### {'Yes' if marker_result.get('end_found') else 'No'}")
+
         with marker_cols[2]:
             st.caption("Start Index")
             st.markdown(f"### {marker_result.get('start_index', -1)}")
+
         with marker_cols[3]:
             st.caption("End Index")
             st.markdown(f"### {marker_result.get('end_index', -1)}")
