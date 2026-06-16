@@ -6196,13 +6196,13 @@ if (
                 retail_url=retail_url,
                 cvs_rpc=current_rpc,
             )
-            visual_payload = get_visual_row_payload(visual_payload =    salsify_url,
+            
+            visual_payload = get_visual_row_payload(
+                salsify_url,
                 retailer_name,
                 retail_url,
                 current_target_sku,
                 sku=sku,
-            )
-
             )
             s_text = visual_payload["s_text"]
             s_images = visual_payload["s_images"]
