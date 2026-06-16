@@ -531,82 +531,6 @@ def infer_retailer_name_from_url(url):
 
     return "Retailer"
 
-
-def prepare_input_df(df):
-    df = df.copy()
-    df.columns = [str(c).strip().lower() for c in df.columns]
-
-    # Rename only safe one-to-one columns first.
-    df.rename(
-        columns={
-            "salsify url": "salsify_url",
-            "retail url": "retail_url",
-            "sku id": "sku",
-            "product sku": "sku",
-            "retailer name": "retailer",
-            "retailer_name": "retailer",
-        },
-        inplace=True,
-    )
-
-    # Build one normalized retailer_rpc column without creating duplicate column names.
-    rpc_candidates = []
-    for rpc_col in ["retailer_rpc", "cvs rpc", "walgreens rpc"]:
-        if rpc_col in df.columns:
-            rpc_candidates.append(
-                df[rpc_col]
-                .replace("#N/A", "")
-                .fillna("")
-                .astype(str)
-                .str.strip()
-            )
-
-    if rpc_candidates:
-        retailer_rpc = rpc_candidates[0].copy()
-        for series in rpc_candidates[1:]:
-            retailer_rpc = retailer_rpc.where(retailer_rpc != "", series)
-        df["retailer_rpc"] = retailer_rpc
-    else:
-        df["retailer_rpc"] = ""
-
-    # Remove original retailer-specific rpc columns after combining.
-    for rpc_col in ["cvs rpc", "walgreens rpc"]:
-        if rpc_col in df.columns:
-            df.drop(columns=[rpc_col], inplace=True)
-
-    # Ensure required working columns exist.
-    for col in ["sku", "salsify_url", "retail_url", "brand", "retailer_rpc"]:
-        if col not in df.columns:
-            df[col] = ""
-
-    # Clean standard text columns safely.
-    for col in ["sku", "salsify_url", "retail_url", "brand", "retailer_rpc"]:
-        df[col] = (
-            df[col]
-            .replace("#N/A", "")
-            .fillna("")
-            .astype(str)
-            .str.strip()
-        )
-
-    # Normalize retailer column.
-    if "retailer" not in df.columns:
-        df["retailer"] = df["retail_url"].apply(infer_retailer_name_from_url)
-    else:
-        df["retailer"] = (
-            df["retailer"]
-            .replace("#N/A", "")
-            .fillna("")
-            .astype(str)
-            .str.strip()
-        )
-
-    required = ["sku", "salsify_url", "retail_url"]
-    missing = [c for c in required if c not in df.columns]
-    if missing:
-        raise ValueError(f"Missing required columns: {missing}")
-
-    return df
     
 def clear_in_memory_caches():
     global html_cache, image_hash_cache, image_compare_cache, walgreens_api_cache
@@ -4297,7 +4221,7 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku=""):
 
     # Default path stays CVS.
     return get_cvs_bundle(retail_url, target_rpc)
-
+    
 # =========================================
 # RETAILER-SPECIFIC FINAL COPY CLEANUP
 # =========================================
@@ -5129,59 +5053,116 @@ def process_row(row):
             status_notes.append("Missing Retail URL")
 
         if status_notes:
-            note = " | ".join(status_notes)
+                    return {
+                        "summary": {
+                            "SKU": row.get("sku", ""),
+                            "Retailer": retailer_name,
+                            "Retailer RPC": cvs_rpc,
+                            "Brand": row.get("brand", ""),
+                            "Salsify URL": salsify_url,
+                            "Retail URL": retail_url,
+                            "Title %": title_score,
+                            "Description %": desc_score,
+                            "Feature %": avg_feature_score,
+                            "Image Match %": avg_img_score,
+                            "Overall %": overall,
+                            "Status": "",
+                            **feature_score_fields,
+                            **image_position_scores,
+                        },
+                        "detail": {
+                            "SKU": row.get("sku", ""),
+                            "Retailer": retailer_name,
+                            "Retailer RPC": cvs_rpc,
+                            "Brand": row.get("brand", ""),
+                            "Salsify URL": salsify_url,
+                            "Retail URL": retail_url,
+                            "Title %": title_score,
+                            "Description %": desc_score,
+                            "Feature %": avg_feature_score,
+                            "Image Match %": avg_img_score,
+                            "Overall %": overall,
+                            "Status": "",
+                            "Salsify Title": s_text.get("title", ""),
+                            "Retailer Title": r_text.get("title", ""),
+                            "Salsify Description": s_text.get("description", ""),
+                            "Retailer Description": r_text.get("description", ""),
+                            "Salsify Feature 1": s_text.get("feature1", ""),
+                            "Salsify Feature 2": s_text.get("feature2", ""),
+                            "Salsify Feature 3": s_text.get("feature3", ""),
+                            "Salsify Feature 4": s_text.get("feature4", ""),
+                            "Salsify Feature 5": s_text.get("feature5", ""),
+                            "Retailer Features": " | ".join(r_text.get("features", [])),
+                            "Salsify Images": " | ".join(
+                                [img.get("url", "") for img in s_images if isinstance(img, dict)]
+                            ),
+                            "Retailer Images": " | ".join(r_images),
+                            "Title Path": debug_data.get("Title Path", ""),
+                            "Description Path": debug_data.get("Description Path", ""),
+                            "Features Path": debug_data.get("Features Path", ""),
+                            "vendorDetailsBulletsRef": debug_data.get("vendorDetailsBulletsRef", ""),
+                            "vendorDetailsParagraphRef": debug_data.get("vendorDetailsParagraphRef", ""),
+                            "featuresKey": debug_data.get("featuresKey", ""),
+                            "descriptionKey": debug_data.get("descriptionKey", ""),
+                            "directVendorContentFound": debug_data.get("directVendorContentFound", False),
+                            "directVendorDetailsFound": debug_data.get("directVendorDetailsFound", False),
+                            "variantWindowMatched": debug_data.get("variantWindowMatched", False),
+                            "variantMatchScore": debug_data.get("variantMatchScore", 0),
+                            "variantMatchReason": debug_data.get("variantMatchReason", ""),
+                            "matchedDynamicMediaUrl": debug_data.get("matchedDynamicMediaUrl", ""),
+                            "matchedVariantUrl": debug_data.get("matchedVariantUrl", ""),
+                            "matchedNearbyImage": debug_data.get("matchedNearbyImage", ""),
+                            **image_position_scores,
+                        },
+                        "debug": {
+                            "SKU": row.get("sku", ""),
+                            "Retailer": retailer_name,
+                            "Retailer RPC": cvs_rpc,
+                            "Brand": row.get("brand", ""),
+                            "Retail URL": retail_url,
+                            "Salsify URL": salsify_url,
+                            "Desc Final": r_text.get("description", ""),
+                            "Desc Quality Score": r_desc_debug["quality_score"],
+                            "Desc Length": r_desc_debug["length"],
+                            "Desc Issues": ", ".join(r_desc_debug["issues"]),
+                            "Salsify Desc Quality Score": s_desc_debug["quality_score"],
+                            "Final Features": " | ".join(r_text.get("features", [])),
+                            "Title Path": debug_data.get("Title Path", ""),
+                            "Description Path": debug_data.get("Description Path", ""),
+                            "Features Path": debug_data.get("Features Path", ""),
+                            "vendorPatternFound": debug_data.get("vendorPatternFound", False),
+                            "vendorDetailsBulletsRef": debug_data.get("vendorDetailsBulletsRef", ""),
+                            "vendorDetailsParagraphRef": debug_data.get("vendorDetailsParagraphRef", ""),
+                            "featuresKey": debug_data.get("featuresKey", ""),
+                            "descriptionKey": debug_data.get("descriptionKey", ""),
+                            "featuresArrayFound": debug_data.get("featuresArrayFound", False),
+                            "descriptionBlockFound": debug_data.get("descriptionBlockFound", False),
+                            "directVendorContentFound": debug_data.get("directVendorContentFound", False),
+                            "directVendorDetailsFound": debug_data.get("directVendorDetailsFound", False),
+                            "variantWindowMatched": debug_data.get("variantWindowMatched", False),
+                            "variantMatchScore": debug_data.get("variantMatchScore", 0),
+                            "variantMatchReason": debug_data.get("variantMatchReason", ""),
+                            "matchedDynamicMediaUrl": debug_data.get("matchedDynamicMediaUrl", ""),
+                            "matchedVariantUrl": debug_data.get("matchedVariantUrl", ""),
+                            "matchedNearbyImage": debug_data.get("matchedNearbyImage", ""),
+                            "Source Used": debug_data.get("Source Used", ""),
+                            "vendorPatternExcerpt": debug_data.get("vendorPatternExcerpt", ""),
+                            "featuresArrayExcerpt": debug_data.get("featuresArrayExcerpt", ""),
+                            "descriptionBlockExcerpt": debug_data.get("descriptionBlockExcerpt", ""),
+                            "directVendorContentExcerpt": debug_data.get("directVendorContentExcerpt", ""),
+                            "rawHtmlLength": debug_data.get("rawHtmlLength", 0),
+                            "rawTextLength": debug_data.get("rawTextLength", 0),
+                            "nextjsChunkFound": debug_data.get("nextjsChunkFound", False),
+                            "rawHtmlHasSelfNextF": debug_data.get("rawHtmlHasSelfNextF", False),
+                            "rawHtmlHasVendorDetailsBullets": debug_data.get("rawHtmlHasVendorDetailsBullets", False),
+                            "rawHtmlHasVendorDetailsParagraph": debug_data.get("rawHtmlHasVendorDetailsParagraph", False),
+                            "rawTextHasVendorDetailsBullets": debug_data.get("rawTextHasVendorDetailsBullets", False),
+                            "rawTextHasVendorDetailsParagraph": debug_data.get("rawTextHasVendorDetailsParagraph", False),
+                            "rawHtmlVendorExcerpt": debug_data.get("rawHtmlVendorExcerpt", ""),
+                            "rawTextVendorExcerpt": debug_data.get("rawTextVendorExcerpt", ""),
+                        },
+                    }
 
-            return {
-                "summary": {
-                    "SKU": row.get("sku", ""),
-                    "Retailer": retailer_name,
-                    "CVS RPC": cvs_rpc,
-                    "Brand": row.get("brand", ""),
-                    "Salsify URL": salsify_url,
-                    "Retail URL": retail_url,
-                    "Title %": 0,
-                    "Description %": 0,
-                    "Feature %": 0,
-                    "Image Match %": 0,
-                    "Overall %": 0,
-                    "Status": note,
-                },
-                "detail": {
-                    "SKU": row.get("sku", ""),
-                    "Retailer": retailer_name,
-                    "CVS RPC": cvs_rpc,
-                    "Brand": row.get("brand", ""),
-                    "Salsify URL": salsify_url,
-                    "Retail URL": retail_url,
-                    "Title %": 0,
-                    "Description %": 0,
-                    "Feature %": 0,
-                    "Image Match %": 0,
-                    "Overall %": 0,
-                    "Status": note,
-                    "Salsify Title": "",
-                    "CVS Title": "",
-                    "Salsify Description": "",
-                    "CVS Description": "",
-                    "Salsify Feature 1": "",
-                    "Salsify Feature 2": "",
-                    "Salsify Feature 3": "",
-                    "Salsify Feature 4": "",
-                    "Salsify Feature 5": "",
-                    "CVS Features": "",
-                    "Salsify Images": "",
-                    "CVS Images": "",
-                },
-                "debug": {
-                    "SKU": row.get("sku", ""),
-                    "Retailer": retailer_name,
-                    "CVS RPC": cvs_rpc,
-                    "Brand": row.get("brand", ""),
-                    "Retail URL": retail_url,
-                    "Salsify URL": salsify_url,
-                    "Status": note,
-                },
-            }
 
         target_sku = get_target_sku_from_inputs(
             retail_url=retail_url,
