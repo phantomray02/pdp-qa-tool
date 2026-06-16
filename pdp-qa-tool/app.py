@@ -3788,6 +3788,8 @@ def is_sams_robot_page(html_text):
     ]
 
     return any(marker in text for marker in robot_markers)
+
+
 # =========================================
 # SAM'S CLUB PARSERS
 # =========================================
@@ -3862,10 +3864,31 @@ def normalize_sams_features_final(items, max_features=5):
     return dedupe_preserve_order(cleaned)[:max_features]
 
 
+def build_sams_title_from_url_slug(retail_url):
+    retail_url = str(retail_url or "").strip()
+    if not retail_url:
+        return ""
+
+    m = re.search(
+        r"/ip/([^/]+)/",
+        retail_url,
+        flags=re.IGNORECASE,
+    )
+    if not m:
+        return ""
+
+    slug = m.group(1)
+    title = slug.replace("-", " ")
+    title = html.unescape(title)
+    title = normalize_space(title)
+
+    return title
+
+
 def extract_sams_description_from_long_description_html(long_desc_html):
     """
     Sam's Club longDescription is escaped HTML with section headings + paragraphs.
-    We join visible text blocks in order.
+    Join visible text blocks in order.
     """
     if not long_desc_html:
         return ""
@@ -3930,7 +3953,6 @@ def extract_sams_features_from_short_description_html(short_desc_html):
     if items:
         return normalize_sams_features_final(items, max_features=5)
 
-    # Fallback if LI tags are malformed or truncated.
     fallback_text = clean_sams_text(working)
     if not fallback_text:
         return []
@@ -3945,21 +3967,74 @@ def extract_sams_features_from_short_description_html(short_desc_html):
     return normalize_sams_features_final(parts, max_features=5)
 
 
-def extract_sams_copy_from_source(source_text):
+def _extract_visible_sams_title(source_text):
     """
-    Sam's Club source extraction using exact source anchors:
+    Fallback title pattern from visible page content:
+    ## Poise Daily Incontinence Panty Liners, 2 Drop Very Light, 132 ct.
+    """
+    if not source_text:
+        return ""
 
-    Title:
-        start -> "name":"
-        end   -> ","personalizable"
+    m = re.search(r"##\s+(.+?)\n", source_text)
+    if m:
+        return clean_sams_title(m.group(1))
 
-    Description:
-        start -> ,"longDescription":"
-        end   -> \u003c/p\u003e"
+    m = re.search(
+        r"Hero image 0 of\s+(.+?),\s+0 of\s+\d+",
+        source_text,
+        flags=re.IGNORECASE,
+    )
+    if m:
+        return clean_sams_title(m.group(1))
 
-    Features:
-        start -> "shortDescription":"\u003cul\u003e
-        then extract all \u003cli\u003e...\u003c/li\u003e items
+    return ""
+
+
+def _extract_visible_sams_highlights(source_text):
+    """
+    Fallback feature pattern from visible page content:
+    ### Highlights
+    - bullet
+    - bullet
+    Read more
+    """
+    if not source_text:
+        return []
+
+    m = re.search(
+        r"###\s+Highlights\s*(.+?)\s*Read more",
+        source_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not m:
+        return []
+
+    block = m.group(1)
+    bullets = re.findall(r"-\s+(.+?)(?=\s*-\s+|$)", block, flags=re.DOTALL)
+
+    cleaned = [clean_sams_text(x) for x in bullets if clean_sams_text(x)]
+    return normalize_sams_features_final(cleaned, max_features=5)
+
+
+def extract_sams_copy_from_source(source_text, retail_url=""):
+    """
+    Sam's Club copy extraction priority:
+
+    1. JSON-like title:
+       "name":"...","personalizable"
+
+    2. JSON-like description:
+       "longDescription":"..."
+
+    3. JSON-like features:
+       "shortDescription":"..."
+
+    4. Visible page title fallback:
+       ## Product Title
+
+    5. Visible Highlights fallback:
+       ### Highlights
+       - bullet
     """
     debug = {
         "Title Path": "",
@@ -3983,10 +4058,9 @@ def extract_sams_copy_from_source(source_text):
 
     # -----------------------------------------
     # TITLE
-    # Pattern:
-    # "name":"Poise Daily Incontinence Panty Liners, 2 Drop Very Light, 132 ct.","personalizable"
     # -----------------------------------------
     title = ""
+
     name_match = re.search(
         r'"name"\s*:\s*"((?:\\.|[^"\\])*)"\s*,\s*"personalizable"',
         source_text,
@@ -3998,18 +4072,26 @@ def extract_sams_copy_from_source(source_text):
         title = clean_sams_title(title)
         debug["Title Path"] = "sams_name_personalizable"
 
+    if not title:
+        title = _extract_visible_sams_title(source_text)
+        if title:
+            debug["Title Path"] = "sams_visible_title_fallback"
+
+    if not title and retail_url:
+        title = clean_sams_title(build_sams_title_from_url_slug(retail_url))
+        if title:
+            debug["Title Path"] = "retail_url_slug_fallback"
+
     # -----------------------------------------
     # DESCRIPTION
-    # Pattern:
-    # ,"longDescription":"\u003ch3\u003e ... \u003c/p\u003e"
     # -----------------------------------------
     description = ""
+
     long_match = re.search(
         r'"longDescription"\s*:\s*"((?:\\.|[^"\\])*)"',
         source_text,
         flags=re.IGNORECASE | re.DOTALL,
     )
-
     if long_match:
         debug["longDescriptionFound"] = True
         long_html = _decode_sams_json_string(long_match.group(1))
@@ -4018,22 +4100,21 @@ def extract_sams_copy_from_source(source_text):
 
         if description:
             debug["Description Path"] = "sams_longDescription_html"
-
-    if not description:
+        else:
+            debug["Description Path"] = "sams_description_missing"
+    else:
         debug["Description Path"] = "sams_description_missing"
 
     # -----------------------------------------
     # FEATURES
-    # Pattern:
-    # "shortDescription":"\u003cul\u003e  \u003cli\u003e ... \u003c/li\u003e ... \u003c/ul
     # -----------------------------------------
     features = []
+
     short_match = re.search(
         r'"shortDescription"\s*:\s*"((?:\\.|[^"\\])*)"',
         source_text,
         flags=re.IGNORECASE | re.DOTALL,
     )
-
     if short_match:
         debug["shortDescriptionFound"] = True
         short_html = _decode_sams_json_string(short_match.group(1))
@@ -4044,7 +4125,11 @@ def extract_sams_copy_from_source(source_text):
             debug["Features Path"] = "sams_shortDescription_html"
 
     if not features:
-        debug["Features Path"] = "sams_features_missing"
+        features = _extract_visible_sams_highlights(source_text)
+        if features:
+            debug["Features Path"] = "sams_visible_highlights_fallback"
+        else:
+            debug["Features Path"] = "sams_features_missing"
 
     return {
         "title": title,
@@ -4052,209 +4137,64 @@ def extract_sams_copy_from_source(source_text):
         "features": features[:5],
         "debug": debug,
     }
-    
-def _collect_sams_jsonld_description_candidates(soup):
-    candidates = []
-
-    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
-        raw = (script.string or script.get_text(" ", strip=True) or "").strip()
-        if not raw:
-            continue
-
-        try:
-            payload = json.loads(raw)
-        except Exception:
-            continue
-
-        nodes = payload if isinstance(payload, list) else [payload]
-
-        while nodes:
-            node = nodes.pop(0)
-
-            if isinstance(node, dict):
-                desc = node.get("description", "")
-                if isinstance(desc, str) and desc.strip():
-                    candidates.append(desc)
-
-                for value in node.values():
-                    if isinstance(value, (dict, list)):
-                        nodes.append(value)
-
-            elif isinstance(node, list):
-                nodes.extend(node)
-
-    return candidates
 
 
-def _collect_sams_jsonld_images(soup):
-    images = []
+def _normalize_sams_medium_image_url(url):
+    """
+    Normalize Sam's image URLs to a clean medium-sized 450 x 450 asset.
 
-    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
-        raw = (script.string or script.get_text(" ", strip=True) or "").strip()
-        if not raw:
-            continue
-
-        try:
-            payload = json.loads(raw)
-        except Exception:
-            continue
-
-        nodes = payload if isinstance(payload, list) else [payload]
-
-        while nodes:
-            node = nodes.pop(0)
-
-            if isinstance(node, dict):
-                image_value = node.get("image", None)
-
-                if isinstance(image_value, str) and image_value.strip():
-                    images.append(image_value)
-
-                elif isinstance(image_value, list):
-                    for item in image_value:
-                        if isinstance(item, str) and item.strip():
-                            images.append(item)
-
-                for value in node.values():
-                    if isinstance(value, (dict, list)):
-                        nodes.append(value)
-
-            elif isinstance(node, list):
-                nodes.extend(node)
-
-    return images
-
-
-def build_sams_title_from_url_slug(retail_url):
-    retail_url = str(retail_url or "").strip()
-    if not retail_url:
-        return ""
-
-    m = re.search(
-        r"/ip/([^/]+)/",
-        retail_url,
-        flags=re.IGNORECASE,
-    )
-    if not m:
-        return ""
-
-    slug = m.group(1)
-    title = slug.replace("-", " ")
-    title = html.unescape(title)
-    title = normalize_space(title)
-
-    return title
-
-
-def _absolutize_sams_image_url(url):
+    Input examples in source:
+    https://i5.samsclubimages.com/asr/<asset>.jpeg?odnHeight=160&odnWidth=160&odnBg=FFFFFF
+    """
     if not url:
         return ""
 
     url = html.unescape(str(url).strip())
 
-    if url.startswith("//"):
-        url = "https:" + url
-
-    if not re.match(r"^https?://", url, flags=re.IGNORECASE):
+    m = re.search(
+        r"(https://i5\.samsclubimages\.com/asr/[^?\"'<>\\s]+\\.jpe?g)",
+        url,
+        flags=re.IGNORECASE,
+    )
+    if not m:
         return ""
 
-    lowered = url.lower()
-
-    if not any(ext in lowered for ext in [".jpg", ".jpeg", ".png", ".webp", ".avif"]):
-        return ""
-
-    bad_tokens = [
-        "sprite",
-        "icon",
-        "logo",
-        "placeholder",
-        "spacer",
-        "data:image",
-        ".svg",
-    ]
-    if any(tok in lowered for tok in bad_tokens):
-        return ""
-
-    return url
+    base = m.group(1)
+    return f"{base}?odnHeight=450&odnWidth=450&odnBg=FFFFFF"
 
 
 def extract_sams_images_from_html(html_text):
     """
-    Image extraction comes from the live Sam's Club page HTML rather than the
-    workbook source fragment. Uses broad ordered fallbacks:
-    1. JSON-LD image arrays
-    2. og:image / twitter:image
-    3. img/data-src/data-zoom-image style attributes
-    4. regex fallback on absolute image URLs
+    Pull Sam's Club image URLs directly from the page/source text.
+
+    We normalize to medium-size 450 x 450 pulls so the image compare is stable.
     """
     if not html_text:
         return []
 
     html_text = str(html_text)
-    soup = BeautifulSoup(html_text, "html.parser")
-
     urls = []
 
-    # 1. JSON-LD
-    urls.extend(_collect_sams_jsonld_images(soup))
-
-    # 2. Meta images
-    for attrs in [
-        {"property": "og:image"},
-        {"name": "twitter:image"},
-        {"itemprop": "image"},
-    ]:
-        tag = soup.find("meta", attrs=attrs)
-        if tag and tag.get("content"):
-            urls.append(tag.get("content"))
-
-    # 3. IMG-style attrs
-    img_attrs = [
-        "src",
-        "data-src",
-        "data-lazy-src",
-        "data-zoom-image",
-        "data-image",
-        "data-srcset",
-    ]
-
-    for tag in soup.find_all(["img", "source"]):
-        for attr in img_attrs:
-            val = tag.get(attr, "")
-            if not val:
-                continue
-
-            # srcset may contain comma-separated url+descriptor items.
-            if attr == "data-srcset":
-                for piece in str(val).split(","):
-                    part = piece.strip().split(" ")[0].strip()
-                    if part:
-                        urls.append(part)
-            else:
-                urls.append(val)
-
-    # 4. Regex fallback for absolute image URLs present anywhere in HTML.
-    regex_urls = re.findall(
-        r'https?://[^\\s"\']+\\.(?:jpg|jpeg|png|webp|avif)(?:\\?[^\\s"\']*)?',
+    # Direct Sam's image asset URLs from source text.
+    raw_urls = re.findall(
+        r"https://i5\.samsclubimages\.com/asr/[^\\s\"'<>]+",
         html_text,
         flags=re.IGNORECASE,
     )
-    urls.extend(regex_urls)
 
+    for raw in raw_urls:
+        clean = _normalize_sams_medium_image_url(raw)
+        if clean:
+            urls.append(clean)
+
+    # Dedupe while preserving order.
     out = []
     seen = set()
 
-    for raw in urls:
-        clean = _absolutize_sams_image_url(raw)
-        if not clean:
-            continue
-
-        # Strip query for stable compare ordering.
-        base = clean.split("?", 1)[0]
-
-        if base not in seen:
-            seen.add(base)
-            out.append(base)
+    for url in urls:
+        if url not in seen:
+            seen.add(url)
+            out.append(url)
 
     return out[:MAX_IMAGE_SLOTS_TO_COMPARE]
 
@@ -4275,359 +4215,35 @@ def extract_sams_text_from_html(html_text, retail_url="", target_rpc=""):
             "debug": debug,
         }
 
-    # IMPORTANT:
-    # If this is a robot/challenge page, do NOT parse h1/li/meta fallback content,
-    # because that is what creates junk like:
-    # "Let us know you're not a robot"
-    # "Help center", "Terms", "Privacy", etc.
+    # If Sam's returned a robot page, do not parse footer/help links.
     if is_sams_robot_page(html_text):
-        debug["Title Path"] = "sams_robot_page_blocked"
-        debug["Description Path"] = "sams_robot_page_blocked"
-        debug["Features Path"] = "sams_robot_page_blocked"
-        debug["Source Used"] = "sams_robot_page_blocked"
+        fallback_title = clean_sams_title(build_sams_title_from_url_slug(retail_url))
+
         return {
-            "title": "",
+            "title": fallback_title,
             "description": "",
             "features": [],
-            "debug": debug,
+            "debug": {
+                "Title Path": "retail_url_slug_fallback" if fallback_title else "sams_robot_page_blocked",
+                "Description Path": "sams_robot_page_blocked",
+                "Features Path": "sams_robot_page_blocked",
+                "Source Used": "sams_robot_page_blocked",
+            },
         }
 
-    soup = BeautifulSoup(html_text, "html.parser")
+    result = extract_sams_copy_from_source(html_text, retail_url=retail_url)
 
-    # -----------------------------------------
-    # FIRST: use exact raw source extraction
-    # -----------------------------------------
-    copy_result = extract_sams_copy_from_source(html_text)
+    # Force consistent debug source name for the app.
+    result_debug = result.get("debug", {}) or {}
+    result_debug["Source Used"] = "sams_html"
+    result["debug"] = result_debug
 
-    title = clean_sams_title(copy_result.get("title", ""))
-    description = clean_sams_text(copy_result.get("description", ""))
-    features = normalize_sams_features_final(
-        copy_result.get("features", []),
-        max_features=5,
-    )
+    return result
 
-    src_debug = copy_result.get("debug", {}) or {}
-
-    # -----------------------------------------
-    # TITLE FALLBACKS
-    # -----------------------------------------
-    if title:
-        debug["Title Path"] = src_debug.get("Title Path", "sams_name_personalizable")
-    else:
-        h1 = soup.find("h1")
-        if h1:
-            title = clean_sams_title(h1.get_text(" ", strip=True))
-            debug["Title Path"] = "h1"
-
-        if not title:
-            og_title = soup.find("meta", attrs={"property": "og:title"})
-            if og_title and og_title.get("content"):
-                title = clean_sams_title(og_title.get("content"))
-                debug["Title Path"] = "og:title"
-
-        if not title and soup.title:
-            title = clean_sams_title(soup.title.get_text(" ", strip=True))
-            debug["Title Path"] = "html_title"
-
-        if not title:
-            title = clean_sams_title(build_sams_title_from_url_slug(retail_url))
-            debug["Title Path"] = (
-                "retail_url_slug_fallback" if title else "sams_title_missing"
-            )
-
-    # -----------------------------------------
-    # DESCRIPTION FALLBACKS
-    # -----------------------------------------
-    if description:
-        debug["Description Path"] = src_debug.get(
-            "Description Path",
-            "sams_longDescription_html",
-        )
-    else:
-        desc_candidates = []
-
-        for attrs in [
-            {"name": "description"},
-            {"property": "og:description"},
-            {"name": "twitter:description"},
-            {"itemprop": "description"},
-        ]:
-            tag = soup.find("meta", attrs=attrs)
-            if tag and tag.get("content"):
-                desc_candidates.append(tag.get("content"))
-
-        desc_candidates.extend(_collect_sams_jsonld_description_candidates(soup))
-
-        best_desc = ""
-        for candidate in desc_candidates:
-            candidate_clean = clean_sams_text(candidate)
-            if len(candidate_clean) > len(best_desc):
-                best_desc = candidate_clean
-
-        if best_desc:
-            description = best_desc
-            debug["Description Path"] = "sams_meta_jsonld_fallback"
-        else:
-            debug["Description Path"] = "sams_description_missing"
-
-    # -----------------------------------------
-    # FEATURES FALLBACKS
-    # -----------------------------------------
-    if features:
-        debug["Features Path"] = src_debug.get(
-            "Features Path",
-            "sams_shortDescription_html",
-        )
-    else:
-        # Only use li fallback on a real page, not robot page.
-        li_values = []
-        for li in soup.find_all("li"):
-            li_text = clean_sams_text(li.get_text(" ", strip=True))
-            if li_text:
-                li_values.append(li_text)
-
-        features = normalize_sams_features_final(li_values, max_features=5)
-
-        if features:
-            debug["Features Path"] = "sams_visible_li_fallback"
-        else:
-            debug["Features Path"] = "sams_features_missing"
-
-    debug["Source Used"] = "sams_html"
-
-    return {
-        "title": title,
-        "description": description,
-        "features": features[:5],
-        "debug": debug,
-    }
-
-
-    title = clean_sams_title(copy_result.get("title", ""))
-    description = clean_sams_text(copy_result.get("description", ""))
-    features = normalize_sams_features_final(
-        copy_result.get("features", []),
-        max_features=5,
-    )
-
-    src_debug = copy_result.get("debug", {}) or {}
-
-    # -----------------------------------------
-    # TITLE FALLBACKS
-    # -----------------------------------------
-    if title:
-        debug["Title Path"] = src_debug.get("Title Path", "sams_name_personalizable")
-    else:
-        h1 = soup.find("h1")
-        if h1:
-            title = clean_sams_title(h1.get_text(" ", strip=True))
-            debug["Title Path"] = "h1"
-
-        if not title:
-            og_title = soup.find("meta", attrs={"property": "og:title"})
-            if og_title and og_title.get("content"):
-                title = clean_sams_title(og_title.get("content"))
-                debug["Title Path"] = "og:title"
-
-        if not title and soup.title:
-            title = clean_sams_title(soup.title.get_text(" ", strip=True))
-            debug["Title Path"] = "html_title"
-
-        if not title:
-            title = clean_sams_title(build_sams_title_from_url_slug(retail_url))
-            debug["Title Path"] = (
-                "retail_url_slug_fallback" if title else "sams_title_missing"
-            )
-
-    # -----------------------------------------
-    # DESCRIPTION FALLBACKS
-    # -----------------------------------------
-    if description:
-        debug["Description Path"] = src_debug.get(
-            "Description Path",
-            "sams_longDescription_html",
-        )
-    else:
-        desc_candidates = []
-
-        for attrs in [
-            {"name": "description"},
-            {"property": "og:description"},
-            {"name": "twitter:description"},
-            {"itemprop": "description"},
-        ]:
-            tag = soup.find("meta", attrs=attrs)
-            if tag and tag.get("content"):
-                desc_candidates.append(tag.get("content"))
-
-        desc_candidates.extend(_collect_sams_jsonld_description_candidates(soup))
-
-        best_desc = ""
-        for candidate in desc_candidates:
-            candidate_clean = clean_sams_text(candidate)
-            if len(candidate_clean) > len(best_desc):
-                best_desc = candidate_clean
-
-        if best_desc:
-            description = best_desc
-            debug["Description Path"] = "sams_meta_jsonld_fallback"
-        else:
-            debug["Description Path"] = "sams_description_missing"
-
-    # -----------------------------------------
-    # FEATURES FALLBACKS
-    # -----------------------------------------
-    if features:
-        debug["Features Path"] = src_debug.get(
-            "Features Path",
-            "sams_shortDescription_html",
-        )
-    else:
-        # Only use li fallback on a real page, not robot page.
-        li_values = []
-        for li in soup.find_all("li"):
-            li_text = clean_sams_text(li.get_text(" ", strip=True))
-            if li_text:
-                li_values.append(li_text)
-
-        features = normalize_sams_features_final(li_values, max_features=5)
-
-        if features:
-            debug["Features Path"] = "sams_visible_li_fallback"
-        else:
-            debug["Features Path"] = "sams_features_missing"
-
-    debug["Source Used"] = "sams_html"
-
-    return {
-        "title": title,
-        "description": description,
-        "features": features[:5],
-        "debug": debug,
-    }
-
-    soup = BeautifulSoup(html_text, "html.parser")
-
-    # -----------------------------------------
-    # FIRST: use exact raw source extraction
-    # -----------------------------------------
-    copy_result = extract_sams_copy_from_source(html_text)
-
-    title = clean_sams_title(copy_result.get("title", ""))
-    description = clean_sams_text(copy_result.get("description", ""))
-    features = normalize_sams_features_final(copy_result.get("features", []), max_features=5)
-
-    src_debug = copy_result.get("debug", {}) or {}
-
-    # -----------------------------------------
-    # TITLE FALLBACKS
-    # -----------------------------------------
-    if title:
-        debug["Title Path"] = src_debug.get("Title Path", "sams_name_personalizable")
-    else:
-        h1 = soup.find("h1")
-        if h1:
-            title = clean_sams_title(h1.get_text(" ", strip=True))
-            debug["Title Path"] = "h1"
-
-        if not title:
-            og_title = soup.find("meta", attrs={"property": "og:title"})
-            if og_title and og_title.get("content"):
-                title = clean_sams_title(og_title.get("content"))
-                debug["Title Path"] = "og:title"
-
-        if not title and soup.title:
-            title = clean_sams_title(soup.title.get_text(" ", strip=True))
-            debug["Title Path"] = "html_title"
-
-        if not title:
-            title = clean_sams_title(build_sams_title_from_url_slug(retail_url))
-            debug["Title Path"] = (
-                "retail_url_slug_fallback" if title else "sams_title_missing"
-            )
-
-    # -----------------------------------------
-    # DESCRIPTION FALLBACKS
-    # -----------------------------------------
-    if description:
-        debug["Description Path"] = src_debug.get("Description Path", "sams_longDescription_html")
-    else:
-        desc_candidates = []
-
-        for attrs in [
-            {"name": "description"},
-            {"property": "og:description"},
-            {"name": "twitter:description"},
-            {"itemprop": "description"},
-        ]:
-            tag = soup.find("meta", attrs=attrs)
-            if tag and tag.get("content"):
-                desc_candidates.append(tag.get("content"))
-
-        desc_candidates.extend(_collect_sams_jsonld_description_candidates(soup))
-
-        best_desc = ""
-        for candidate in desc_candidates:
-            candidate_clean = clean_sams_text(candidate)
-            if len(candidate_clean) > len(best_desc):
-                best_desc = candidate_clean
-
-        if best_desc:
-            description = best_desc
-            debug["Description Path"] = "sams_meta_jsonld_fallback"
-        else:
-            debug["Description Path"] = "sams_description_missing"
-
-    # -----------------------------------------
-    # FEATURES FALLBACKS
-    # -----------------------------------------
-    if features:
-        debug["Features Path"] = src_debug.get("Features Path", "sams_shortDescription_html")
-    else:
-        li_values = []
-
-        for li in soup.find_all("li"):
-            li_text = clean_sams_text(li.get_text(" ", strip=True))
-            if li_text:
-                li_values.append(li_text)
-
-        features = normalize_sams_features_final(li_values, max_features=5)
-
-        if features:
-            debug["Features Path"] = "sams_visible_li_fallback"
-        else:
-            debug["Features Path"] = "sams_features_missing"
-
-    debug["Source Used"] = "sams_html"
-
-    return {
-        "title": title,
-        "description": description,
-        "features": features[:5],
-        "debug": debug,
-    }
 
 @st.cache_data(show_spinner=False)
 def get_sams_bundle(retail_url, target_rpc="", sku=""):
     html_text = get_html(retail_url)
-
-    # If Sam's Club returns a robot/challenge page, do not parse footer/help links
-    # as product copy.
-    if is_sams_robot_page(html_text):
-        return {
-            "text": {
-                "title": clean_sams_title(build_sams_title_from_url_slug(retail_url)),
-                "description": "",
-                "features": [],
-                "debug": {
-                    "Title Path": "retail_url_slug_fallback",
-                    "Description Path": "sams_robot_page_blocked",
-                    "Features Path": "sams_robot_page_blocked",
-                    "Source Used": "sams_robot_page_blocked",
-                },
-            },
-            "images": [],
-        }
 
     return {
         "text": extract_sams_text_from_html(
@@ -4635,8 +4251,9 @@ def get_sams_bundle(retail_url, target_rpc="", sku=""):
             retail_url=retail_url,
             target_rpc=target_rpc,
         ),
-        "images": extract_sams_images_from_html(html_text),
+        "images": [] if is_sams_robot_page(html_text) else extract_sams_images_from_html(html_text),
     }
+
 
 def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku=""):
     retailer = str(retailer_name or "").strip().lower()
