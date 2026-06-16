@@ -4417,6 +4417,66 @@ def compare_images_visually(s_url, r_url):
 
     return score
     
+def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMAGE_SLOTS_TO_SCORE):
+    """
+    Build a retailer-specific Salsify comparison image list.
+
+    Walgreens rules:
+    1. online = main image
+    2. back = temporary ingredients image
+    3. atf io if present, else atf 2
+    4. next lifestyle
+    5. next lifestyle
+    6. next lifestyle
+
+    IMPORTANT:
+    - Exclude left/packaging image entirely for Walgreens.
+    - Cap Walgreens comparison at 6 images.
+    - Leave all other retailers unchanged.
+    """
+    retailer = str(retailer_name or "").strip().lower()
+    s_images = s_images or []
+
+    if retailer != "walgreens":
+        return s_images[:max_slots]
+
+    # Build a lookup by normalized name from the Salsify image bundle.
+    by_name = {}
+    for img in s_images:
+        if not isinstance(img, dict):
+            continue
+        name = str(img.get("name", "")).strip().lower()
+        if name and name not in by_name:
+            by_name[name] = img
+
+    aligned = []
+
+    def add_if_present(name):
+        img = by_name.get(name)
+        if img and img not in aligned:
+            aligned.append(img)
+
+    # 1. Main image
+    add_if_present("online")
+
+    # 2. Ingredients image placeholder for now
+    add_if_present("back")
+
+    # 3-6. Walgreens lifestyle flow
+    if "atf io" in by_name:
+        add_if_present("atf io")
+        add_if_present("atf 2")
+        add_if_present("atf 3")
+        add_if_present("atf 4")
+    else:
+        add_if_present("atf 2")
+        add_if_present("atf 3")
+        add_if_present("atf 4")
+        add_if_present("atf 5")
+
+    # Never include left/packaging for Walgreens.
+    return aligned[:6]
+    
 def build_image_score_fields(s_images, r_images, max_slots=MAX_IMAGE_SLOTS_TO_SCORE):
     """
     Build per-slot image scores and an average image score.
@@ -4450,6 +4510,7 @@ def build_image_score_fields(s_images, r_images, max_slots=MAX_IMAGE_SLOTS_TO_SC
     return avg_img_score, image_position_scores
     
 @st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False)
 def get_visual_row_payload(salsify_url, retailer_name, retail_url, current_target_sku="", sku=""):
     s_bundle = get_salsify_bundle(salsify_url)
     r_bundle = get_retailer_bundle(
@@ -4459,16 +4520,22 @@ def get_visual_row_payload(salsify_url, retailer_name, retail_url, current_targe
         sku=sku,
     )
 
-    s_text = s_bundle["text"]
-    r_text = finalize_retailer_copy(retailer_name, r_bundle["text"] or {})
+    s_images = align_salsify_images_for_retailer(
+        retailer_name,
+        s_bundle["images"],
+        max_slots=MAX_IMAGE_SLOTS_TO_SCORE,
+    )
+
+    r_images = r_bundle["images"] or []
+    if str(retailer_name or "").strip().lower() == "walgreens":
+        r_images = r_images[:6]
 
     return {
-        "s_text": s_text,
-        "s_images": s_bundle["images"],
-        "r_text": r_text,
-        "r_images": r_bundle["images"],
+        "s_text": s_bundle["text"],
+        "s_images": s_images,
+        "r_text": finalize_retailer_copy(retailer_name, r_bundle["text"] or {}),
+        "r_images": r_images,
     }
-
 # =========================================
 # PROCESS ROW
 # =========================================
@@ -4564,14 +4631,17 @@ def process_row(row):
             print("WAGS SOURCE:", (r_bundle.get("text", {}) or {}).get("debug", {}).get("Source Used", ""))
 
         s_text = s_bundle["text"]
-
-        s_images = s_bundle["images"]
+        s_images = align_salsify_images_for_retailer(
+            retailer_name,
+            s_bundle["images"],
+            max_slots=MAX_IMAGE_SLOTS_TO_SCORE,
+        )
         
         r_text = finalize_retailer_copy(
             retailer_name,
             r_bundle["text"] or {},
         )
-        r_images = r_bundle["images"]
+        r_images = (r_bundle["images"] or [])[:6] if str(retailer_name or "").strip().lower() == "walgreens" else r_bundle["images"]
         
         debug_data = r_text.get("debug", {})
 
