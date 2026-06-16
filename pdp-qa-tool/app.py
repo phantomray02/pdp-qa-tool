@@ -3734,10 +3734,567 @@ def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
     # Final fallback.
     return html_bundle
 
+# =========================================
+# SAM'S CLUB PARSERS
+# =========================================
+def _decode_sams_json_string(raw_value):
+    """
+    Decodes Sam's Club JSON-like escaped strings such as:
+    \\u003ch3\\u003eTitle\\u003c/h3\\u003e
+    """
+    if not raw_value:
+        return ""
+
+    raw_value = str(raw_value)
+
+    try:
+        decoded = json.loads(f'"{raw_value}"')
+    except Exception:
+        decoded = raw_value
+
+    decoded = decoded.replace("\\/", "/")
+    decoded = html.unescape(decoded)
+    return decoded.strip()
+
+
+def clean_sams_text(text):
+    if not text:
+        return ""
+
+    text = str(text)
+    text = html.unescape(text)
+    text = text.replace("\\u003c", "<")
+    text = text.replace("\\u003e", ">")
+    text = text.replace("\\u0026", "&")
+    text = text.replace("\\u00a0", " ")
+    text = text.replace("\\n", " ")
+    text = text.replace("\\/", "/")
+    text = text.replace('\\"', '"')
+
+    text = re.sub(
+        r"<script\b[^>]*>.*?</script>",
+        " ",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    if "<" in text and ">" in text:
+        text = BeautifulSoup(text, "html.parser").get_text(" ", strip=True)
+
+    return normalize_space(text)
+
+
+def clean_sams_title(text):
+    text = clean_sams_text(text)
+    text = re.sub(r"\s+,", ",", text)
+    text = re.sub(r",\s*,", ", ", text)
+    return normalize_space(text)
+
+
+def normalize_sams_features_final(items, max_features=5):
+    if not items:
+        return []
+
+    if isinstance(items, str):
+        items = [items]
+
+    cleaned = []
+    for item in items:
+        val = clean_sams_text(item)
+        if not val:
+            continue
+        cleaned.append(val)
+
+    return dedupe_preserve_order(cleaned)[:max_features]
+
+
+def extract_sams_description_from_long_description_html(long_desc_html):
+    """
+    Sam's Club longDescription is escaped HTML with section headings + paragraphs.
+    We join visible text blocks in order.
+    """
+    if not long_desc_html:
+        return ""
+
+    working = str(long_desc_html)
+    working = re.sub(
+        r"<script\b[^>]*>.*?</script>",
+        " ",
+        working,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    soup = BeautifulSoup(working, "html.parser")
+
+    parts = []
+    candidates = list(soup.body.children) if soup.body else list(soup.children)
+
+    for node in candidates:
+        node_name = getattr(node, "name", None)
+
+        if node_name in {"ul", "ol", "script", "style"}:
+            continue
+
+        if hasattr(node, "get_text"):
+            node_text = node.get_text(" ", strip=True)
+        else:
+            node_text = str(node).strip()
+
+        node_text = clean_sams_text(node_text)
+
+        if not node_text:
+            continue
+
+        parts.append(node_text)
+
+    return normalize_space(" ".join(parts))
+
+
+def extract_sams_features_from_short_description_html(short_desc_html):
+    """
+    Sam's Club shortDescription is usually escaped UL/LI HTML.
+    """
+    if not short_desc_html:
+        return []
+
+    working = str(short_desc_html)
+    working = re.sub(
+        r"<script\b[^>]*>.*?</script>",
+        " ",
+        working,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    soup = BeautifulSoup(working, "html.parser")
+
+    items = []
+    for li in soup.find_all("li"):
+        li_text = clean_sams_text(li.get_text(" ", strip=True))
+        if li_text:
+            items.append(li_text)
+
+    if items:
+        return normalize_sams_features_final(items, max_features=5)
+
+    # Fallback if LI tags are malformed or truncated.
+    fallback_text = clean_sams_text(working)
+    if not fallback_text:
+        return []
+
+    if " | " in fallback_text:
+        parts = [x.strip() for x in fallback_text.split(" | ")]
+    elif "•" in fallback_text:
+        parts = [x.strip() for x in fallback_text.split("•")]
+    else:
+        parts = [fallback_text]
+
+    return normalize_sams_features_final(parts, max_features=5)
+
+
+def extract_sams_copy_from_source(source_text):
+    """
+    Pulls Sam's Club copy from the raw HTML/source blob using the patterns
+    observed in your workbook:
+
+    :null,"longDescription":"...escaped html...","shortDescription":"...escaped html..."
+    """
+    debug = {
+        "Title Path": "",
+        "Description Path": "",
+        "Features Path": "",
+        "Source Used": "sams_raw_source",
+        "longDescriptionFound": False,
+        "shortDescriptionFound": False,
+    }
+
+    if not source_text:
+        return {
+            "description": "",
+            "features": [],
+            "debug": debug,
+        }
+
+    source_text = str(source_text)
+
+    long_match = re.search(
+        r'"longDescription"\s*:\s*"((?:\\.|[^"\\])*)"',
+        source_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    short_match = re.search(
+        r'"shortDescription"\s*:\s*"((?:\\.|[^"\\])*)"',
+        source_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    long_html = ""
+    short_html = ""
+
+    if long_match:
+        debug["longDescriptionFound"] = True
+        long_html = _decode_sams_json_string(long_match.group(1))
+
+    if short_match:
+        debug["shortDescriptionFound"] = True
+        short_html = _decode_sams_json_string(short_match.group(1))
+
+    description = extract_sams_description_from_long_description_html(long_html)
+    features = extract_sams_features_from_short_description_html(short_html)
+
+    debug["Description Path"] = (
+        "sams_longDescription_html" if description else "sams_description_missing"
+    )
+    debug["Features Path"] = (
+        "sams_shortDescription_html" if features else "sams_features_missing"
+    )
+
+    return {
+        "description": description,
+        "features": features[:5],
+        "debug": debug,
+    }
+
+
+def _collect_sams_jsonld_description_candidates(soup):
+    candidates = []
+
+    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        raw = (script.string or script.get_text(" ", strip=True) or "").strip()
+        if not raw:
+            continue
+
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            continue
+
+        nodes = payload if isinstance(payload, list) else [payload]
+
+        while nodes:
+            node = nodes.pop(0)
+
+            if isinstance(node, dict):
+                desc = node.get("description", "")
+                if isinstance(desc, str) and desc.strip():
+                    candidates.append(desc)
+
+                for value in node.values():
+                    if isinstance(value, (dict, list)):
+                        nodes.append(value)
+
+            elif isinstance(node, list):
+                nodes.extend(node)
+
+    return candidates
+
+
+def _collect_sams_jsonld_images(soup):
+    images = []
+
+    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        raw = (script.string or script.get_text(" ", strip=True) or "").strip()
+        if not raw:
+            continue
+
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            continue
+
+        nodes = payload if isinstance(payload, list) else [payload]
+
+        while nodes:
+            node = nodes.pop(0)
+
+            if isinstance(node, dict):
+                image_value = node.get("image", None)
+
+                if isinstance(image_value, str) and image_value.strip():
+                    images.append(image_value)
+
+                elif isinstance(image_value, list):
+                    for item in image_value:
+                        if isinstance(item, str) and item.strip():
+                            images.append(item)
+
+                for value in node.values():
+                    if isinstance(value, (dict, list)):
+                        nodes.append(value)
+
+            elif isinstance(node, list):
+                nodes.extend(node)
+
+    return images
+
+
+def build_sams_title_from_url_slug(retail_url):
+    retail_url = str(retail_url or "").strip()
+    if not retail_url:
+        return ""
+
+    m = re.search(
+        r"/ip/([^/]+)/",
+        retail_url,
+        flags=re.IGNORECASE,
+    )
+    if not m:
+        return ""
+
+    slug = m.group(1)
+    title = slug.replace("-", " ")
+    title = html.unescape(title)
+    title = normalize_space(title)
+
+    return title
+
+
+def _absolutize_sams_image_url(url):
+    if not url:
+        return ""
+
+    url = html.unescape(str(url).strip())
+
+    if url.startswith("//"):
+        url = "https:" + url
+
+    if not re.match(r"^https?://", url, flags=re.IGNORECASE):
+        return ""
+
+    lowered = url.lower()
+
+    if not any(ext in lowered for ext in [".jpg", ".jpeg", ".png", ".webp", ".avif"]):
+        return ""
+
+    bad_tokens = [
+        "sprite",
+        "icon",
+        "logo",
+        "placeholder",
+        "spacer",
+        "data:image",
+        ".svg",
+    ]
+    if any(tok in lowered for tok in bad_tokens):
+        return ""
+
+    return url
+
+
+def extract_sams_images_from_html(html_text):
+    """
+    Image extraction comes from the live Sam's Club page HTML rather than the
+    workbook source fragment. Uses broad ordered fallbacks:
+    1. JSON-LD image arrays
+    2. og:image / twitter:image
+    3. img/data-src/data-zoom-image style attributes
+    4. regex fallback on absolute image URLs
+    """
+    if not html_text:
+        return []
+
+    html_text = str(html_text)
+    soup = BeautifulSoup(html_text, "html.parser")
+
+    urls = []
+
+    # 1. JSON-LD
+    urls.extend(_collect_sams_jsonld_images(soup))
+
+    # 2. Meta images
+    for attrs in [
+        {"property": "og:image"},
+        {"name": "twitter:image"},
+        {"itemprop": "image"},
+    ]:
+        tag = soup.find("meta", attrs=attrs)
+        if tag and tag.get("content"):
+            urls.append(tag.get("content"))
+
+    # 3. IMG-style attrs
+    img_attrs = [
+        "src",
+        "data-src",
+        "data-lazy-src",
+        "data-zoom-image",
+        "data-image",
+        "data-srcset",
+    ]
+
+    for tag in soup.find_all(["img", "source"]):
+        for attr in img_attrs:
+            val = tag.get(attr, "")
+            if not val:
+                continue
+
+            # srcset may contain comma-separated url+descriptor items.
+            if attr == "data-srcset":
+                for piece in str(val).split(","):
+                    part = piece.strip().split(" ")[0].strip()
+                    if part:
+                        urls.append(part)
+            else:
+                urls.append(val)
+
+    # 4. Regex fallback for absolute image URLs present anywhere in HTML.
+    regex_urls = re.findall(
+        r'https?://[^\\s"\']+\\.(?:jpg|jpeg|png|webp|avif)(?:\\?[^\\s"\']*)?',
+        html_text,
+        flags=re.IGNORECASE,
+    )
+    urls.extend(regex_urls)
+
+    out = []
+    seen = set()
+
+    for raw in urls:
+        clean = _absolutize_sams_image_url(raw)
+        if not clean:
+            continue
+
+        # Strip query for stable compare ordering.
+        base = clean.split("?", 1)[0]
+
+        if base not in seen:
+            seen.add(base)
+            out.append(base)
+
+    return out[:MAX_IMAGE_SLOTS_TO_COMPARE]
+
+
+def extract_sams_text_from_html(html_text, retail_url="", target_rpc=""):
+    debug = {
+        "Title Path": "",
+        "Description Path": "",
+        "Features Path": "",
+        "Source Used": "sams_html",
+    }
+
+    if not html_text:
+        return {
+            "title": "",
+            "description": "",
+            "features": [],
+            "debug": debug,
+        }
+
+    soup = BeautifulSoup(html_text, "html.parser")
+
+    # Title priority:
+    # 1. h1
+    # 2. og:title
+    # 3. html <title>
+    # 4. URL slug fallback
+    title = ""
+
+    h1 = soup.find("h1")
+    if h1:
+        title = clean_sams_title(h1.get_text(" ", strip=True))
+        debug["Title Path"] = "h1"
+
+    if not title:
+        og_title = soup.find("meta", attrs={"property": "og:title"})
+        if og_title and og_title.get("content"):
+            title = clean_sams_title(og_title.get("content"))
+            debug["Title Path"] = "og:title"
+
+    if not title and soup.title:
+        title = clean_sams_title(soup.title.get_text(" ", strip=True))
+        debug["Title Path"] = "html_title"
+
+    if not title:
+        title = clean_sams_title(build_sams_title_from_url_slug(retail_url))
+        debug["Title Path"] = (
+            "retail_url_slug_fallback" if title else "sams_title_missing"
+        )
+
+    # Main copy from the raw source/HTML text.
+    copy_result = extract_sams_copy_from_source(html_text)
+    description = clean_sams_text(copy_result.get("description", ""))
+    features = normalize_sams_features_final(copy_result.get("features", []), max_features=5)
+
+    # Fallback description from meta/jsonld if needed.
+    if not description:
+        desc_candidates = []
+
+        for attrs in [
+            {"name": "description"},
+            {"property": "og:description"},
+            {"name": "twitter:description"},
+            {"itemprop": "description"},
+        ]:
+            tag = soup.find("meta", attrs=attrs)
+            if tag and tag.get("content"):
+                desc_candidates.append(tag.get("content"))
+
+        desc_candidates.extend(_collect_sams_jsonld_description_candidates(soup))
+
+        best_desc = ""
+        for candidate in desc_candidates:
+            candidate_clean = clean_sams_text(candidate)
+            if len(candidate_clean) > len(best_desc):
+                best_desc = candidate_clean
+
+        if best_desc:
+            description = best_desc
+            debug["Description Path"] = "sams_meta_jsonld_fallback"
+
+    # If no features from shortDescription, try visible highlights list on page.
+    if not features:
+        li_values = []
+        for li in soup.find_all("li"):
+            li_text = clean_sams_text(li.get_text(" ", strip=True))
+            if li_text:
+                li_values.append(li_text)
+
+        features = normalize_sams_features_final(li_values, max_features=5)
+        if features:
+            debug["Features Path"] = "sams_visible_li_fallback"
+
+    # Merge debug from source extractor.
+    src_debug = copy_result.get("debug", {})
+    if src_debug.get("Description Path") and not debug.get("Description Path"):
+        debug["Description Path"] = src_debug.get("Description Path", "")
+    if src_debug.get("Features Path") and not debug.get("Features Path"):
+        debug["Features Path"] = src_debug.get("Features Path", "")
+
+    if not debug.get("Description Path"):
+        debug["Description Path"] = "sams_description_missing"
+    if not debug.get("Features Path"):
+        debug["Features Path"] = "sams_features_missing"
+
+    debug["Source Used"] = "sams_html"
+
+    return {
+        "title": title,
+        "description": description,
+        "features": features[:5],
+        "debug": debug,
+    }
+
+
+@st.cache_data(show_spinner=False)
+def get_sams_bundle(retail_url, target_rpc="", sku=""):
+    html_text = get_html(retail_url)
+
+    return {
+        "text": extract_sams_text_from_html(
+            html_text,
+            retail_url=retail_url,
+            target_rpc=target_rpc,
+        ),
+        "images": extract_sams_images_from_html(html_text),
+    }
+
 def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku=""):
     retailer = str(retailer_name or "").strip().lower()
+
     if retailer == "walgreens":
         return get_walgreens_bundle(retail_url, target_rpc, sku=sku)
+
+    if retailer in ["sam's club", "sams club", "samsclub"]:
+        return get_sams_bundle(retail_url, target_rpc, sku=sku)
+
     # Default path stays CVS.
     return get_cvs_bundle(retail_url, target_rpc)
 
@@ -4214,31 +4771,36 @@ def finalize_retailer_copy(retailer_name, r_text):
 
     if retailer == "walgreens":
         out["title"] = clean_walgreens_title(out.get("title", ""))
-    
         cleaned_description = strip_walgreens_description_tail(out.get("description", ""))
         cleaned_features = normalize_walgreens_features_final(
             out.get("features", []),
             max_features=5,
         )
-    
-        # NEW:
-        # If Walgreens description contains feature-style headings but features are empty,
-        # split them out of description and populate the feature list.
+
         cleaned_description, cleaned_features = split_walgreens_description_into_features(
             cleaned_description,
             cleaned_features,
             max_features=5,
         )
-    
+
         out["description"] = cleaned_description
         out["features"] = cleaned_features
+        return out
+
+    if retailer in ["sam's club", "sams club", "samsclub"]:
+        out["title"] = clean_sams_title(out.get("title", ""))
+        out["description"] = clean_sams_text(out.get("description", ""))
+        out["features"] = normalize_sams_features_final(
+            out.get("features", []),
+            max_features=5,
+        )
         return out
 
     out["title"] = normalize_space(out.get("title", ""))
     out["description"] = clean_cvs_text(out.get("description", ""))
     out["features"] = normalize_cvs_features(out.get("features", []))
     return out
-
+    
 # =========================================
 # QUALITY HELPERS
 # =========================================
