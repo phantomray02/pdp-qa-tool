@@ -73,7 +73,8 @@ WALGREENS_API_TIMEOUT = 10
 # =========================================
 # PERFORMANCE SETTINGS
 # =========================================
-# Lower these for Streamlit Cloud stability.
+# Higher parallelism for faster batch processing without changing
+# copy/image extraction logic.
 BATCH_SIZE = 32
 MAX_WORKERS = 12
 UI_UPDATE_EVERY = 5
@@ -82,7 +83,7 @@ UI_UPDATE_EVERY = 5
 IMAGE_HASH_WIDTH = 9
 IMAGE_HASH_HEIGHT = 8
 
-# Keep caches smaller to prevent Streamlit Cloud memory pressure.
+# Larger caches to reduce repeat fetches during batch + visual QA.
 HTML_CACHE_MAX = 200
 IMAGE_HASH_CACHE_MAX = 300
 
@@ -120,7 +121,8 @@ def get_session():
     if not hasattr(thread_local, "session"):
         session = requests.Session()
         adapter = HTTPAdapter(
-            pool_connections=100,pool_connections_maxsize=100,
+            pool_connections=100,
+            pool_maxsize=100,
             max_retries=0,
         )
         session.mount("http://", adapter)
@@ -128,7 +130,7 @@ def get_session():
         session.headers.update(HEADERS)
         thread_local.session = session
     return thread_local.session
-
+    
 # =========================================
 # GENERIC HELPERS
 # =========================================
