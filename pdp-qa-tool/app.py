@@ -530,7 +530,9 @@ def prepare_input_df(df):
     df = df.copy()
     df.columns = [str(c).strip().lower() for c in df.columns]
     if "retailer_rpc" in df.columns:
-    df["retailer_rpc"] = df["retailer_rpc"].apply(lambda x: str(x).replace(".0", "").strip())
+    df["retailer_rpc"] = df["retailer_rpc"].apply(
+        lambda x: str(x).replace(".0", "").strip()
+    )
 
     # Rename only safe one-to-one columns first.
     df.rename(
