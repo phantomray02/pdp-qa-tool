@@ -139,6 +139,11 @@ def normalize_space(text):
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
+def clean_item_number(value):
+    if not value:
+        return ""
+    return str(value).replace(".0", "").strip()
+
 
 def normalize_text(text):
     if not isinstance(text, str):
