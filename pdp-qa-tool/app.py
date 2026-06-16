@@ -3427,6 +3427,16 @@ def extract_walgreens_text_from_html(html_text, retail_url="", target_rpc=""):
     }
 
 def extract_walgreens_images_from_html(html_text):
+    """
+    Preserve Walgreens image slot order from HTML.
+
+    IMPORTANT:
+    - Capture the unnumbered "largeImageUrl" hero image as slot 1.
+    - Then capture numbered keys like largeImageUrl1, largeImageUrl2, etc.
+    - If a hero exists, shift numbered slots by +1 so the remaining images
+      do not move up and replace the main image.
+    - Only keep 450 images.
+    """
     if not html_text:
         return []
 
@@ -3437,15 +3447,33 @@ def extract_walgreens_images_from_html(html_text):
         url = _absolutize_walgreens_image_url(url)
         if not url or not _is_walgreens_450_image(url):
             return
-        slot_candidates[slot_num] = url
+        if slot_num not in slot_candidates:
+            slot_candidates[slot_num] = url
 
-    # Preserve Walgreens slot order from numbered 450 image keys only.
+    # 1. Capture the main unnumbered hero image first.
+    hero_match = re.search(
+        r'"largeImageUrl"\s*:\s*"((?:\\\\.|[^"\\\\])*)"',
+        html_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    has_main_hero = False
+    if hero_match:
+        hero_url = _decode_walgreens_json_string(hero_match.group(1))
+        maybe_store(1, hero_url)
+        has_main_hero = 1 in slot_candidates
+
+    # 2. Capture numbered image keys.
+    # If the hero exists, shift numbered slots by +1 so slot 1 stays the hero.
     for m in re.finditer(
-        r'"largeImageUrl(\d+)"\s*:\s*"((?:\\.|[^"\\])*)"',
+        r'"largeImageUrl(\d+)"\s*:\s*"((?:\\\\.|[^"\\\\])*)"',
         html_text,
         flags=re.IGNORECASE | re.DOTALL,
     ):
-        maybe_store(int(m.group(1)), _decode_walgreens_json_string(m.group(2)))
+        raw_slot_num = int(m.group(1))
+        slot_num = raw_slot_num + 1 if has_main_hero else raw_slot_num
+        slot_url = _decode_walgreens_json_string(m.group(2))
+        maybe_store(slot_num, slot_url)
 
     ordered_urls = []
     for slot_num in sorted(slot_candidates.keys()):
