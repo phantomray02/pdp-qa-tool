@@ -4608,59 +4608,44 @@ def extract_sams_text_from_html(html_text, retail_url="", target_rpc=""):
     }
 
 @st.cache_data(show_spinner=False)
-def get_sams_bundle(retail_url, target_rpc="", sku="", row_source_code=""):
+def get_sams_bundle(retail_url, target_rpc="", sku=""):
     html_text = get_html(retail_url)
-    row_source_code = str(row_source_code or "").strip()
 
-    robot_blocked = is_sams_robot_page(html_text)
-
-    # Prefer provided source code for copy if live HTML is blocked.
-    text_source = html_text
-    if robot_blocked and row_source_code:
-        text_source = row_source_code
-    elif robot_blocked and not row_source_code:
-        text_source = ""
-
-    text_payload = extract_sams_text_from_html(
-        text_source,
-        retail_url=retail_url,
-        target_rpc=target_rpc,
-    )
-
-    # Preserve debug note if robot page was hit.
-    text_payload_debug = text_payload.get("debug", {}) or {}
-    if robot_blocked:
-        if row_source_code:
-            text_payload_debug["Source Used"] = "sams_row_source_code | sams_html_robot_blocked"
-        else:
-            text_payload_debug["Source Used"] = "sams_html_robot_blocked"
-
-    text_payload["debug"] = text_payload_debug
-
-    # Images still depend on real PDP HTML.
-    # If robot blocked, do NOT try to parse image/footer junk.
-    images = []
-    if not robot_blocked:
-        images = extract_sams_images_from_html(html_text)
+    # If Sam's Club returns a robot/challenge page, do not parse footer/help links
+    # as product copy.
+    if is_sams_robot_page(html_text):
+        return {
+            "text": {
+                "title": clean_sams_title(build_sams_title_from_url_slug(retail_url)),
+                "description": "",
+                "features": [],
+                "debug": {
+                    "Title Path": "retail_url_slug_fallback",
+                    "Description Path": "sams_robot_page_blocked",
+                    "Features Path": "sams_robot_page_blocked",
+                    "Source Used": "sams_robot_page_blocked",
+                },
+            },
+            "images": [],
+        }
 
     return {
-        "text": text_payload,
-        "images": images,
+        "text": extract_sams_text_from_html(
+            html_text,
+            retail_url=retail_url,
+            target_rpc=target_rpc,
+        ),
+        "images": extract_sams_images_from_html(html_text),
     }
 
-def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_source_code=""):
+def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku=""):
     retailer = str(retailer_name or "").strip().lower()
 
     if retailer == "walgreens":
         return get_walgreens_bundle(retail_url, target_rpc, sku=sku)
 
     if retailer in ["sam's club", "sams club", "samsclub"]:
-        return get_sams_bundle(
-            retail_url,
-            target_rpc,
-            sku=sku,
-            row_source_code=row_source_code,
-        )
+        return get_sams_bundle(retail_url, target_rpc, sku=sku)
 
     # Default path stays CVS.
     return get_cvs_bundle(retail_url, target_rpc)
@@ -5455,16 +5440,14 @@ def get_visual_row_payload(
     retail_url,
     current_target_sku="",
     sku="",
-    row_source_code="",
 ):
     s_bundle = get_salsify_bundle(salsify_url)
 
     r_bundle = get_retailer_bundle(
         retailer_name,
         retail_url,
-        target_sku,
-        sku=row.get("sku", ""),
-        row_source_code=row_source_code,
+        current_target_sku,
+        sku=sku,
     )
 
     s_images = align_salsify_images_for_retailer(
@@ -5484,7 +5467,6 @@ def get_visual_row_payload(
         "r_text": finalize_retailer_copy(retailer_name, r_bundle["text"] or {}),
         "r_images": r_images,
     }
-
 # =========================================
 # PROCESS ROW
 # =========================================
@@ -6214,13 +6196,13 @@ if (
                 retail_url=retail_url,
                 cvs_rpc=current_rpc,
             )
-            visual_payload = get_visual_row_payload(
-                salsify_url,
+            visual_payload = get_visual_row_payload(visual_payload =    salsify_url,
                 retailer_name,
                 retail_url,
                 current_target_sku,
                 sku=sku,
-                row_source_code=row.get("copy_source_code", ""),
+            )
+
             )
             s_text = visual_payload["s_text"]
             s_images = visual_payload["s_images"]
