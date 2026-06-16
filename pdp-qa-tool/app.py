@@ -5262,26 +5262,30 @@ if (
                 continue
 
             left, right = st.columns([2.72, 0.95], gap="small")
-
+            
             with left:
                 top_l, top_r = st.columns(2, gap="small")
+            
                 top_l.markdown(
                     column_header_link_html("Salsify", sku, salsify_url),
                     unsafe_allow_html=True,
                 )
-                
-            clean_rpc = clean_item_number(current_target_sku or current_rpc) or (current_target_sku or current_rpc)
             
-            top_r.markdown(
-                column_header_link_html(
-                    retailer_name,
-                    clean_rpc,
-                    retail_url
-                ),
-                unsafe_allow_html=True,
-            )
-
-                st.markdown(avg_score_bar_html("Copy — Avg", copy_avg_score), unsafe_allow_html=True)
+                clean_rpc = clean_item_number(current_target_sku or current_rpc)
+            
+                top_r.markdown(
+                    column_header_link_html(
+                        retailer_name,
+                        clean_rpc,
+                        retail_url
+                    ),
+                    unsafe_allow_html=True,
+                )
+            
+                st.markdown(
+                    avg_score_bar_html("Copy — Avg", copy_avg_score),
+                    unsafe_allow_html=True
+                )
 
                 st.markdown(section_header_html("Title", title_score), unsafe_allow_html=True)
                 t1, t2 = st.columns(2, gap="small")
