@@ -74,17 +74,17 @@ WALGREENS_API_TIMEOUT = 10
 # PERFORMANCE SETTINGS
 # =========================================
 # Lower these for Streamlit Cloud stability.
-BATCH_SIZE = 16
-MAX_WORKERS = 6
-UI_UPDATE_EVERY = 2
+BATCH_SIZE = 32
+MAX_WORKERS = 12
+UI_UPDATE_EVERY = 5
 
 # Faster image compare via tiny difference hash.
 IMAGE_HASH_WIDTH = 9
 IMAGE_HASH_HEIGHT = 8
 
 # Keep caches smaller to prevent Streamlit Cloud memory pressure.
-HTML_CACHE_MAX = 60
-IMAGE_HASH_CACHE_MAX = 120
+HTML_CACHE_MAX = 200
+IMAGE_HASH_CACHE_MAX = 300
 
 # Hard image safety limits.
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
@@ -120,8 +120,7 @@ def get_session():
     if not hasattr(thread_local, "session"):
         session = requests.Session()
         adapter = HTTPAdapter(
-            pool_connections=40,
-            pool_maxsize=40,
+            pool_connections=100,pool_connections_maxsize=100,
             max_retries=0,
         )
         session.mount("http://", adapter)
@@ -636,9 +635,9 @@ def get_html(url):
     if not url:
         return ""
 
-    if url in html_cache:
-        html_cache[url] = html_cache.pop(url)
-        return html_cache[url]
+    cached = html_cache.get(url)
+    if cached:
+        return cached
 
     try:
         session = get_session()
@@ -4680,11 +4679,14 @@ def process_row(row):
 
         avg_feature_score = int(sum(feature_scores) / len(feature_scores)) if feature_scores else 0
 
-        avg_img_score, image_position_scores = build_image_score_fields(
-            s_images,
-            r_images,
-            max_slots=MAX_IMAGE_SLOTS_TO_SCORE,
-        )
+        if max(len(s_images), len(r_images)) > 0:
+            avg_img_score, image_position_scores = build_image_score_fields(
+                s_images,
+                r_images,
+                max_slots=MAX_IMAGE_SLOTS_TO_SCORE,
+            )
+        else:
+            avg_img_score, image_position_scores = 0, {}
         
         overall = int((title_score + desc_score + avg_feature_score + avg_img_score) / 4)
 
@@ -5275,7 +5277,8 @@ if (
                     unsafe_allow_html=True,
                 )
             
-                clean_rpc = clean_item_number(current_target_sku or current_rpc)
+                raw_rpc = current_target_sku or current_rpc
+                clean_rpc = clean_item_number(raw_rpc)
             
                 top_r.markdown(
                     column_header_link_html(
