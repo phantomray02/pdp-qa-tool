@@ -1086,18 +1086,22 @@ def _parse_salsify_page(html_text):
                 return v
         return None
 
-    ordered = [find("online"), find("back"), find("left")]
-    atf_io = find("atf io")
+ordered_images = [
+    {"name": "online", "url": find("online") or ""},
+    {"name": "back", "url": find("back") or ""},
+    {"name": "left", "url": find("left") or ""},
+]
 
-    if atf_io:
-        ordered.append(atf_io)
-        for k in ["atf 2", "atf 3", "atf 4", "atf 5", "atf 6"]:
-            ordered.append(find(k))
-    else:
-        for k in ["atf 2", "atf 3", "atf 4", "atf 5", "atf 6"]:
-            ordered.append(find(k))
+atf_io = find("atf io")
+if atf_io:
+    ordered_images.append({"name": "atf io", "url": atf_io or ""})
+    for k in ["atf 2", "atf 3", "atf 4", "atf 5", "atf 6"]:
+        ordered_images.append({"name": k, "url": find(k) or ""})
+else:
+    for k in ["atf 2", "atf 3", "atf 4", "atf 5", "atf 6"]:
+        ordered_images.append({"name": k, "url": find(k) or ""})
 
-    images = [{"url": x or ""} for x in ordered[:8]]
+images = ordered_images[:8]
 
     return {
         "text": text,
