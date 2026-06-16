@@ -1086,28 +1086,28 @@ def _parse_salsify_page(html_text):
                 return v
         return None
 
-ordered_images = [
-    {"name": "online", "url": find("online") or ""},
-    {"name": "back", "url": find("back") or ""},
-    {"name": "left", "url": find("left") or ""},
-]
+    ordered_images = [
+        {"name": "online", "url": find("online") or ""},
+        {"name": "back", "url": find("back") or ""},
+        {"name": "left", "url": find("left") or ""},
+    ]
 
-atf_io = find("atf io")
-if atf_io:
-    ordered_images.append({"name": "atf io", "url": atf_io or ""})
-    for k in ["atf 2", "atf 3", "atf 4", "atf 5", "atf 6"]:
-        ordered_images.append({"name": k, "url": find(k) or ""})
-else:
-    for k in ["atf 2", "atf 3", "atf 4", "atf 5", "atf 6"]:
-        ordered_images.append({"name": k, "url": find(k) or ""})
+    atf_io = find("atf io")
+    if atf_io:
+        ordered_images.append({"name": "atf io", "url": atf_io or ""})
+        for k in ["atf 2", "atf 3", "atf 4", "atf 5", "atf 6"]:
+            ordered_images.append({"name": k, "url": find(k) or ""})
+    else:
+        for k in ["atf 2", "atf 3", "atf 4", "atf 5", "atf 6"]:
+            ordered_images.append({"name": k, "url": find(k) or ""})
 
-images = ordered_images[:8]
+    images = ordered_images[:8]
 
     return {
         "text": text,
         "images": images,
     }
-
+    
 @st.cache_data(show_spinner=False)
 def get_salsify_bundle(url):
     html_text = get_html(url)
