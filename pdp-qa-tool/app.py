@@ -530,6 +530,7 @@ def infer_retailer_name_from_url(url):
         return "Amazon"
 
     return "Retailer"
+    
 def prepare_input_df(df):
     df = df.copy()
 
@@ -545,10 +546,6 @@ def prepare_input_df(df):
             "product sku": "sku",
             "retailer name": "retailer",
             "retailer_name": "retailer",
-            "copy source code": "copy_source_code",
-            "source code": "copy_source_code",
-            "html source": "copy_source_code",
-            "page source": "copy_source_code",
         },
         inplace=True,
     )
@@ -596,7 +593,6 @@ def prepare_input_df(df):
         "retail_url",
         "brand",
         "retailer_rpc",
-        "copy_source_code",
     ]:
         if col not in df.columns:
             df[col] = ""
@@ -608,7 +604,6 @@ def prepare_input_df(df):
         "retail_url",
         "brand",
         "retailer_rpc",
-        "copy_source_code",
     ]:
         df[col] = (
             df[col]
@@ -3794,10 +3789,6 @@ def is_sams_robot_page(html_text):
 # SAM'S CLUB PARSERS
 # =========================================
 def _decode_sams_json_string(raw_value):
-    """
-    Decodes Sam's Club JSON-like escaped strings such as:
-    \\u003ch3\\u003eTitle\\u003c/h3\\u003e
-    """
     if not raw_value:
         return ""
 
@@ -3869,27 +3860,17 @@ def build_sams_title_from_url_slug(retail_url):
     if not retail_url:
         return ""
 
-    m = re.search(
-        r"/ip/([^/]+)/",
-        retail_url,
-        flags=re.IGNORECASE,
-    )
+    m = re.search(r"/ip/([^/]+)/", retail_url, flags=re.IGNORECASE)
     if not m:
         return ""
 
     slug = m.group(1)
     title = slug.replace("-", " ")
     title = html.unescape(title)
-    title = normalize_space(title)
-
-    return title
+    return clean_sams_title(title)
 
 
 def extract_sams_description_from_long_description_html(long_desc_html):
-    """
-    Sam's Club longDescription is escaped HTML with section headings + paragraphs.
-    Join visible text blocks in order.
-    """
     if not long_desc_html:
         return ""
 
@@ -3919,18 +3900,13 @@ def extract_sams_description_from_long_description_html(long_desc_html):
 
         node_text = clean_sams_text(node_text)
 
-        if not node_text:
-            continue
-
-        parts.append(node_text)
+        if node_text:
+            parts.append(node_text)
 
     return normalize_space(" ".join(parts))
 
 
 def extract_sams_features_from_short_description_html(short_desc_html):
-    """
-    Sam's Club shortDescription is usually escaped UL/LI HTML.
-    """
     if not short_desc_html:
         return []
 
@@ -3968,10 +3944,6 @@ def extract_sams_features_from_short_description_html(short_desc_html):
 
 
 def _extract_visible_sams_title(source_text):
-    """
-    Fallback title pattern from visible page content:
-    ## Poise Daily Incontinence Panty Liners, 2 Drop Very Light, 132 ct.
-    """
     if not source_text:
         return ""
 
@@ -3991,13 +3963,6 @@ def _extract_visible_sams_title(source_text):
 
 
 def _extract_visible_sams_highlights(source_text):
-    """
-    Fallback feature pattern from visible page content:
-    ### Highlights
-    - bullet
-    - bullet
-    Read more
-    """
     if not source_text:
         return []
 
@@ -4027,10 +3992,13 @@ def extract_sams_copy_from_source(source_text, retail_url=""):
        "longDescription":"..."
 
     3. JSON-like features:
-       "shortDescription":"..."
+       "shortDescription":"..." with:
+       - strict quoted pattern first
+       - relaxed pattern ending at \\u003c/ul(?:\\u003e)? second
 
     4. Visible page title fallback:
        ## Product Title
+       or Hero image alt
 
     5. Visible Highlights fallback:
        ### Highlights
@@ -4041,9 +4009,6 @@ def extract_sams_copy_from_source(source_text, retail_url=""):
         "Description Path": "",
         "Features Path": "",
         "Source Used": "sams_raw_source",
-        "nameFound": False,
-        "longDescriptionFound": False,
-        "shortDescriptionFound": False,
     }
 
     if not source_text:
@@ -4067,7 +4032,6 @@ def extract_sams_copy_from_source(source_text, retail_url=""):
         flags=re.IGNORECASE | re.DOTALL,
     )
     if name_match:
-        debug["nameFound"] = True
         title = _decode_sams_json_string(name_match.group(1))
         title = clean_sams_title(title)
         debug["Title Path"] = "sams_name_personalizable"
@@ -4078,7 +4042,7 @@ def extract_sams_copy_from_source(source_text, retail_url=""):
             debug["Title Path"] = "sams_visible_title_fallback"
 
     if not title and retail_url:
-        title = clean_sams_title(build_sams_title_from_url_slug(retail_url))
+        title = build_sams_title_from_url_slug(retail_url)
         if title:
             debug["Title Path"] = "retail_url_slug_fallback"
 
@@ -4093,7 +4057,6 @@ def extract_sams_copy_from_source(source_text, retail_url=""):
         flags=re.IGNORECASE | re.DOTALL,
     )
     if long_match:
-        debug["longDescriptionFound"] = True
         long_html = _decode_sams_json_string(long_match.group(1))
         description = extract_sams_description_from_long_description_html(long_html)
         description = clean_sams_text(description)
@@ -4110,13 +4073,13 @@ def extract_sams_copy_from_source(source_text, retail_url=""):
     # -----------------------------------------
     features = []
 
+    # strict shortDescription path
     short_match = re.search(
         r'"shortDescription"\s*:\s*"((?:\\.|[^"\\])*)"',
         source_text,
         flags=re.IGNORECASE | re.DOTALL,
     )
     if short_match:
-        debug["shortDescriptionFound"] = True
         short_html = _decode_sams_json_string(short_match.group(1))
         features = extract_sams_features_from_short_description_html(short_html)
         features = normalize_sams_features_final(features, max_features=5)
@@ -4124,6 +4087,22 @@ def extract_sams_copy_from_source(source_text, retail_url=""):
         if features:
             debug["Features Path"] = "sams_shortDescription_html"
 
+    # relaxed shortDescription path
+    if not features:
+        short_match_relaxed = re.search(
+            r'"shortDescription"\s*:\s*"(.*?\\u003c/ul(?:\\u003e)?)',
+            source_text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if short_match_relaxed:
+            short_html = _decode_sams_json_string(short_match_relaxed.group(1))
+            features = extract_sams_features_from_short_description_html(short_html)
+            features = normalize_sams_features_final(features, max_features=5)
+
+            if features:
+                debug["Features Path"] = "sams_shortDescription_relaxed_ul"
+
+    # visible Highlights fallback
     if not features:
         features = _extract_visible_sams_highlights(source_text)
         if features:
@@ -4142,9 +4121,6 @@ def extract_sams_copy_from_source(source_text, retail_url=""):
 def _normalize_sams_medium_image_url(url):
     """
     Normalize Sam's image URLs to a clean medium-sized 450 x 450 asset.
-
-    Input examples in source:
-    https://i5.samsclubimages.com/asr/<asset>.jpeg?odnHeight=160&odnWidth=160&odnBg=FFFFFF
     """
     if not url:
         return ""
@@ -4165,9 +4141,8 @@ def _normalize_sams_medium_image_url(url):
 
 def extract_sams_images_from_html(html_text):
     """
-    Pull Sam's Club image URLs directly from the page/source text.
-
-    We normalize to medium-size 450 x 450 pulls so the image compare is stable.
+    Pull Sam's Club image URLs directly from the source/page text and normalize
+    them to 450 x 450 medium assets.
     """
     if not html_text:
         return []
@@ -4175,7 +4150,6 @@ def extract_sams_images_from_html(html_text):
     html_text = str(html_text)
     urls = []
 
-    # Direct Sam's image asset URLs from source text.
     raw_urls = re.findall(
         r"https://i5\.samsclubimages\.com/asr/[^\\s\"'<>]+",
         html_text,
@@ -4187,7 +4161,6 @@ def extract_sams_images_from_html(html_text):
         if clean:
             urls.append(clean)
 
-    # Dedupe while preserving order.
     out = []
     seen = set()
 
@@ -4215,9 +4188,8 @@ def extract_sams_text_from_html(html_text, retail_url="", target_rpc=""):
             "debug": debug,
         }
 
-    # If Sam's returned a robot page, do not parse footer/help links.
     if is_sams_robot_page(html_text):
-        fallback_title = clean_sams_title(build_sams_title_from_url_slug(retail_url))
+        fallback_title = build_sams_title_from_url_slug(retail_url)
 
         return {
             "title": fallback_title,
@@ -4233,7 +4205,6 @@ def extract_sams_text_from_html(html_text, retail_url="", target_rpc=""):
 
     result = extract_sams_copy_from_source(html_text, retail_url=retail_url)
 
-    # Force consistent debug source name for the app.
     result_debug = result.get("debug", {}) or {}
     result_debug["Source Used"] = "sams_html"
     result["debug"] = result_debug
@@ -4253,8 +4224,7 @@ def get_sams_bundle(retail_url, target_rpc="", sku=""):
         ),
         "images": [] if is_sams_robot_page(html_text) else extract_sams_images_from_html(html_text),
     }
-
-
+    
 def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku=""):
     retailer = str(retailer_name or "").strip().lower()
 
