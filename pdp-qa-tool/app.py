@@ -1,25 +1,10 @@
 # ==========================================
-# PDP Crawler QA Tool v2
-# Modernized Batch4 import BeautifulSoup# Modernized Batch QA for PDPs
-from PIL import Image, UnidentifiedImageError
-import warnings
-from openpyxl import load_workbook
-from openpyxl.styles import PatternFill
-from pandas.errors import EmptyDataError
-import threading
-from requests.adapters import HTTPAdapter
-import base64
-
-# -------------- UI & THEME ENHANCEMENTS ---------------
-CARD_BG = "#f7f8fa"
-HEADER_COLOR = "#212e48"
-ACCENT_GREEN = "#4CAF50"
-ACCENT_YELLOW = "#FFC107"
+# PDP Crawler QA Tool v2 - Modern UI & Rules
+# =================================107"# ==========================================
 ACCENT_RED = "#F44336"
 CARD_SHADOW = "0 2px 8px rgba(32, 56, 104, 0.13)"
 SUMMARY_CARD_STYLE = "font-size:16px; font-weight:600; padding:12px 24px; border-radius:8px;"
-st.set_page_config(layout="wide", page_title="PDP QA Tool v2")
-st.title("🛒 PDP Crawler QA Tool (v2)")
+
 st.markdown(
     f"""
     <style>
@@ -32,7 +17,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ------------ Retailer Rules (Editable) ------------
+# --- Editable retailer rules (expand as needed) ---
 RETAILER_RULES = {
     "sams club": {
         "min_images": 1,
@@ -48,7 +33,8 @@ RETAILER_RULES = {
         "copy_fields": ["title", "description", "features"],
         "robot_detection_enabled": False,
     },
-    "cvs": {}, "walgreens": {},
+    "cvs": {},
+    "walgreens": {},
     "ahold": {
         "min_images": 1,
         "max_images": 5,
@@ -88,6 +74,42 @@ RETAILER_RULES = {
 def get_rules_for_retailer(retailer):
     key = retailer.strip().lower()
     return RETAILER_RULES.get(key, RETAILER_RULES["sams club"])
+
+# ----------------------------------------------
+# Continue with your original parser logic here!
+# ----------------------------------------------
+
+
+import re
+import html
+import json
+import time
+import hashlib
+from io import BytesIO
+from difflib import SequenceMatcher
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import pandas as pd
+import requests
+import streamlit as st
+from bs4 import BeautifulSoup
+from PIL import Image, UnidentifiedImageError
+import warnings
+from openpyxl.styles import PatternFill
+from pandas.errors import EmptyDataError
+import threading
+from requests.adapters import HTTPAdapter
+import base64
+
+# --- Streamlit page config and new theme ---
+st.set_page_config(layout="wide", page_title="PDP QA Tool v2")
+st.title("🛒 PDP Crawler QA Tool (v2)")
+
+# --- Material/Fluent-inspired theme ---
+CARD_BG = "#f7f8fa"
+HEADER_COLOR = "#212e48"
+ACCENT_GREEN = "#4CAF50"
+
 
 # ========== CVS & Walgreens Parsers: DO NOT MODIFY ==========
 # ... (Insert all of your original CVS/Walgreens parser code here without change)
