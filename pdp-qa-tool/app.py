@@ -4441,18 +4441,364 @@ def get_sams_bundle(retail_url, target_rpc="", sku=""):
         ),
         "images": [] if is_sams_robot_page(html_text) else extract_sams_images_from_html(html_text),
     }
+
+# =========================================
+# KROGER PARSERS
+# =========================================
+def clean_kroger_text(text):
+    if not text:
+        return ""
+
+    text = str(text)
+    text = html.unescape(text)
+    text = re.sub(
+        r"<script\b[^>]*>.*?</script>",
+        " ",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    if "<" in text and ">" in text:
+        text = BeautifulSoup(text, "html.parser").get_text(" ", strip=True)
+
+    return normalize_space(text)
+
+
+def clean_kroger_title(text):
+    text = clean_kroger_text(text)
+    text = re.sub(r"\s+,", ",", text)
+    text = re.sub(r",\s*,", ", ", text)
+    return normalize_space(text)
+
+
+def normalize_kroger_features(items, max_features=5):
+    if not items:
+        return []
+
+    if isinstance(items, str):
+        items = [items]
+
+    cleaned = []
+    for item in items:
+        value = clean_kroger_text(item)
+        if value:
+            cleaned.append(value)
+
+    return dedupe_preserve_order(cleaned)[:max_features]
+
+
+def build_kroger_title_from_url_slug(retail_url):
+    retail_url = str(retail_url or "").strip()
+    if not retail_url:
+        return ""
+
+    m = re.search(r"/p/([^/?#]+)", retail_url, flags=re.IGNORECASE)
+    if not m:
+        return ""
+
+    slug = m.group(1)
+    slug = slug.replace("-", " ")
+    return clean_kroger_title(slug)
+
+
+def _collect_kroger_jsonld_images(soup):
+    images = []
+
+    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        raw = (script.string or script.get_text(" ", strip=True) or "").strip()
+        if not raw:
+            continue
+
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            continue
+
+        nodes = payload if isinstance(payload, list) else [payload]
+
+        while nodes:
+            node = nodes.pop(0)
+
+            if isinstance(node, dict):
+                image_value = node.get("image", None)
+
+                if isinstance(image_value, str) and image_value.strip():
+                    images.append(image_value)
+
+                elif isinstance(image_value, list):
+                    for item in image_value:
+                        if isinstance(item, str) and item.strip():
+                            images.append(item)
+
+                for value in node.values():
+                    if isinstance(value, (dict, list)):
+                        nodes.append(value)
+
+            elif isinstance(node, list):
+                nodes.extend(node)
+
+    return images
+
+
+def _normalize_kroger_image_url(url):
+    if not url:
+        return ""
+
+    url = html.unescape(str(url).strip())
+
+    if url.startswith("//"):
+        url = "https:" + url
+
+    if not re.match(r"^https?://", url, flags=re.IGNORECASE):
+        return ""
+
+    lowered = url.lower()
+
+    if any(bad in lowered for bad in ["sprite", "icon", "logo", "placeholder", ".svg", "data:image"]):
+        return ""
+
+    if not any(ext in lowered for ext in [".jpg", ".jpeg", ".png", ".webp", ".avif"]):
+        return ""
+
+    return url
+
+
+def extract_kroger_images_from_html(html_text):
+    if not html_text:
+        return []
+
+    soup = BeautifulSoup(html_text, "html.parser")
+    urls = []
+
+    # 1. JSON-LD image fields
+    urls.extend(_collect_kroger_jsonld_images(soup))
+
+    # 2. OpenGraph / Twitter / itemprop image
+    for attrs in [
+        {"property": "og:image"},
+        {"name": "twitter:image"},
+        {"itemprop": "image"},
+    ]:
+        tag = soup.find("meta", attrs=attrs)
+        if tag and tag.get("content"):
+            urls.append(tag.get("content"))
+
+    # 3. Image tags
+    for tag in soup.find_all(["img", "source"]):
+        for attr in ["src", "data-src", "data-zoom-image", "data-lazy-src", "srcset"]:
+            value = tag.get(attr, "")
+            if not value:
+                continue
+
+            if attr == "srcset":
+                for piece in str(value).split(","):
+                    part = piece.strip().split(" ")[0].strip()
+                    if part:
+                        urls.append(part)
+            else:
+                urls.append(value)
+
+    # 4. Regex fallback
+    regex_urls = re.findall(
+        r'https?://[^\\s"\']+\\.(?:jpg|jpeg|png|webp|avif)(?:\\?[^\\s"\']*)?',
+        str(html_text),
+        flags=re.IGNORECASE,
+    )
+    urls.extend(regex_urls)
+
+    out = []
+    seen = set()
+
+    for raw in urls:
+        clean = _normalize_kroger_image_url(raw)
+        if not clean:
+            continue
+
+        base = clean.split("?", 1)[0]
+        if base not in seen:
+            seen.add(base)
+            out.append(base)
+
+    return out[:MAX_IMAGE_SLOTS_TO_COMPARE]
+
+
+def extract_kroger_text_from_html(html_text, retail_url="", target_rpc=""):
+    debug = {
+        "Title Path": "",
+        "Description Path": "",
+        "Features Path": "",
+        "Source Used": "kroger_html",
+    }
+
+    if not html_text:
+        return {
+            "title": "",
+            "description": "",
+            "features": [],
+            "debug": debug,
+        }
+
+    soup = BeautifulSoup(html_text, "html.parser")
+
+    title = ""
+    description = ""
+    features = []
+
+    # -----------------------------------------
+    # TITLE
+    # -----------------------------------------
+    h1 = soup.find("h1")
+    if h1:
+        title = clean_kroger_title(h1.get_text(" ", strip=True))
+        if title:
+            debug["Title Path"] = "h1"
+
+    if not title:
+        og_title = soup.find("meta", attrs={"property": "og:title"})
+        if og_title and og_title.get("content"):
+            title = clean_kroger_title(og_title.get("content"))
+            if title:
+                debug["Title Path"] = "og:title"
+
+    if not title and soup.title:
+        title = clean_kroger_title(soup.title.get_text(" ", strip=True))
+        if title:
+            debug["Title Path"] = "html_title"
+
+    if not title:
+        title = build_kroger_title_from_url_slug(retail_url)
+        debug["Title Path"] = "retail_url_slug_fallback" if title else "kroger_title_missing"
+
+    # -----------------------------------------
+    # DESCRIPTION + FEATURES
+    # -----------------------------------------
+    # Try to target the product details accordion/content area first.
+    product_detail_candidates = []
+
+    # Common data-testid / semantic blocks.
+    for selector in [
+        '[data-testid*="product-details"]',
+        '[data-testid*="product-detail"]',
+        '[data-testid*="product-information"]',
+        '[data-testid*="nutrition-description"]',
+        '[class*="ProductDetails"]',
+        '[class*="product-details"]',
+        '[class*="Accordion"]',
+        '[class*="accordion"]',
+    ]:
+        try:
+            product_detail_candidates.extend(soup.select(selector))
+        except Exception:
+            pass
+
+    # Fallback to all section/div/article blocks if targeted selectors miss.
+    if not product_detail_candidates:
+        product_detail_candidates = soup.find_all(["section", "article", "div"])
+
+    best_desc = ""
+    best_features = []
+
+    for block in product_detail_candidates:
+        block_text = clean_kroger_text(block.get_text(" ", strip=True))
+        if not block_text:
+            continue
+
+        # Pull paragraph candidates
+        p_values = []
+        for p in block.find_all("p"):
+            p_text = clean_kroger_text(p.get_text(" ", strip=True))
+            if p_text and len(p_text) > len(best_desc):
+                p_values.append(p_text)
+
+        if p_values:
+            candidate_desc = max(p_values, key=len)
+            if len(candidate_desc) > len(best_desc):
+                best_desc = candidate_desc
+
+        # Pull bullet candidates
+        li_values = []
+        for li in block.find_all("li"):
+            li_text = clean_kroger_text(li.get_text(" ", strip=True))
+            if li_text:
+                li_values.append(li_text)
+
+        li_values = normalize_kroger_features(li_values, max_features=10)
+
+        if len(li_values) > len(best_features):
+            best_features = li_values
+
+    description = best_desc
+    features = normalize_kroger_features(best_features, max_features=5)
+
+    if description:
+        debug["Description Path"] = "kroger_product_details_dom"
+    else:
+        # meta fallback
+        for attrs in [
+            {"name": "description"},
+            {"property": "og:description"},
+            {"name": "twitter:description"},
+        ]:
+            tag = soup.find("meta", attrs=attrs)
+            if tag and tag.get("content"):
+                candidate = clean_kroger_text(tag.get("content"))
+                if len(candidate) > len(description):
+                    description = candidate
+
+        debug["Description Path"] = "kroger_meta_fallback" if description else "kroger_description_missing"
+
+    if features:
+        debug["Features Path"] = "kroger_product_details_li"
+    else:
+        debug["Features Path"] = "kroger_features_missing"
+
+    return {
+        "title": title,
+        "description": description,
+        "features": features[:5],
+        "debug": debug,
+    }
+
+
+@st.cache_data(show_spinner=False)
+def get_kroger_bundle(retail_url, target_rpc="", sku=""):
+    html_text = get_html(retail_url)
+
+    return {
+        "text": extract_kroger_text_from_html(
+            html_text,
+            retail_url=retail_url,
+            target_rpc=target_rpc,
+        ),
+        "images": extract_kroger_images_from_html(html_text),
+    }
     
-def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku=""):
+def get_retailer_bundle(
+    retailer_name,
+    retail_url,
+    target_rpc="",
+    sku="",
+    source_snapshot_text="",
+):
     retailer = str(retailer_name or "").strip().lower()
 
     if retailer == "walgreens":
         return get_walgreens_bundle(retail_url, target_rpc, sku=sku)
 
     if retailer in ["sam's club", "sams club", "samsclub"]:
-        return get_sams_bundle(retail_url, target_rpc, sku=sku)
+        return get_sams_bundle(
+            retail_url,
+            target_rpc,
+            sku=sku,
+            source_snapshot_text=source_snapshot_text,
+        )
+
+    if retailer == "kroger":
+        return get_kroger_bundle(retail_url, target_rpc, sku=sku)
 
     # Default path stays CVS.
     return get_cvs_bundle(retail_url, target_rpc)
+    
 
 # =========================================
 # RETAILER-SPECIFIC FINAL COPY CLEANUP
@@ -4947,6 +5293,15 @@ def finalize_retailer_copy(retailer_name, r_text):
         out["title"] = clean_sams_title(out.get("title", ""))
         out["description"] = clean_sams_text(out.get("description", ""))
         out["features"] = normalize_sams_features_final(
+            out.get("features", []),
+            max_features=5,
+        )
+        return out
+
+    if retailer == "kroger":
+        out["title"] = clean_kroger_title(out.get("title", ""))
+        out["description"] = clean_kroger_text(out.get("description", ""))
+        out["features"] = normalize_kroger_features(
             out.get("features", []),
             max_features=5,
         )
