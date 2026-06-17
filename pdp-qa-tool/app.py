@@ -111,21 +111,26 @@ def get_rules_for_retailer(retailer):
 # =========================================
 # PERFORMANCE SETTINGS
 # =========================================
-# Higher parallelism for faster batch processing without changing
-# copy/image extraction logic.
+
+REQUEST_TIMEOUT = 6
+IMAGE_TIMEOUT = 2.5
+MAX_CACHE = 400
+# Retailer-specific fetch tuning
+WALGREENS_REQUEST_TIMEOUT = 18
+WALGREENS_DEBUG_TIMEOUT = 25
+WALGREENS_API_TIMEOUT = 10
+
+# Batch processing
 BATCH_SIZE = 32
 MAX_WORKERS = 12
 UI_UPDATE_EVERY = 5
 
-# Faster image compare via tiny difference hash.
+# Image hashing
 IMAGE_HASH_WIDTH = 9
 IMAGE_HASH_HEIGHT = 8
-
-# Larger caches to reduce repeat fetches during batch + visual QA.
 HTML_CACHE_MAX = 200
 IMAGE_HASH_CACHE_MAX = 300
 
-# Hard image safety limits.
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
 MAX_SAFE_IMAGE_PIXELS = 50_000_000
 MAX_IMAGE_SLOTS_TO_COMPARE = 20
@@ -137,6 +142,17 @@ image_compare_cache = {}
 IMAGE_COMPARE_CACHE_MAX = 600
 
 thread_local = threading.local()
+
+# Visual layout constants (optional, for UI rendering)
+SECTION_HEADER_SIZE = 24
+COPY_TEXT_SIZE = 15
+COPY_LINE_HEIGHT = 1.28
+SECTION_VERTICAL_GAP = 8
+IMG_SPACE_PX = 4
+IMG_BOX_HEIGHT = 104
+IMG_SCORE_WIDTH_PX = 72
+TITLE_TO_DESCRIPTION_GAP_PX = 28
+DESCRIPTION_TO_FEATURES_GAP_PX = 28
 
 # =========================================
 # VISUAL LAYOUT SETTINGS
