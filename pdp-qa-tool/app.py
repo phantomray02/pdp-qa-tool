@@ -1,12 +1,12 @@
-# ==========================================
-# PDP Crawler QA Tool v2 - Modern UI & Rules
-# ==========================================
-
+# =========================================
+# IMPORTS
+# =========================================
 import re
 import html
 import json
 import time
 import hashlib
+import traceback
 from io import BytesIO
 from difflib import SequenceMatcher
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -14,103 +14,53 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 from bs4 import BeautifulSoup
 from PIL import Image, UnidentifiedImageError
 import warnings
+from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
 from pandas.errors import EmptyDataError
 import threading
 from requests.adapters import HTTPAdapter
 import base64
 
-# --- Streamlit page config and new theme ---
-st.set_page_config(layout="wide", page_title="PDP QA Tool v2")
-st.title("🛒 PDP Crawler QA Tool (v2)")
-
-# --- Material/Fluent-inspired theme ---
-CARD_BG = "#f7f8fa"
-HEADER_COLOR = "#212e48"
-ACCENT_GREEN = "#4CAF50"
-ACCENT_YELLOW = "#FFC107"
-ACCENT_RED = "#F44336"
-CARD_SHADOW = "0 2px 8px rgba(32, 56, 104, 0.13)"
-SUMMARY_CARD_STYLE = "font-size:16px; font-weight:600; padding:12px 24px; border-radius:8px;"
+# =========================================
+# APP SETUP
+# =========================================
+st.set_page_config(layout="wide")
+st.title("PDP QA Tool ✅")
 
 st.markdown(
-    f"""
-    <style>
-    .main {{ background-color: {CARD_BG}; }}
-    .card {{ background: {CARD_BG}; border-radius:8px; box-shadow:{CARD_SHADOW}; padding:24px; margin-bottom:16px; }}
-    .accent-green {{ color: {ACCENT_GREEN}; }} .accent-yellow {{ color: {ACCENT_YELLOW}; }} .accent-red {{ color: {ACCENT_RED}; }}
-    .summary-card {{ {SUMMARY_CARD_STYLE} }}
-    </style>
-    """,
+    "<style>"
+    "div[data-testid='stFileUploader'] > section {"
+    "background:#232733;"
+    "border:1px solid #2f3442;"
+    "border-radius:10px;"
+    "padding:10px;"
+    "}"
+    "div[data-testid='stDownloadButton'] > button {"
+    "width:100%;"
+    "min-height:56px;"
+    "border-radius:10px;"
+    "border:1px solid #2f3442;"
+    "background:#232733;"
+    "color:white;"
+    "font-weight:700;"
+    "}"
+    "div[data-testid='stDownloadButton'] > button:hover {"
+    "border-color:#4EA1FF;"
+    "color:white;"
+    "}"
+    "</style>",
     unsafe_allow_html=True,
 )
 
-# --- Editable retailer rules (expand as needed) ---
-RETAILER_RULES = {
-    "sams club": {
-        "min_images": 1,
-        "max_images": 5,
-        "image_order": ["hero", "lifestyle", "packaging"],
-        "copy_fields": ["title", "description", "features"],
-        "robot_detection_enabled": True,
-    },
-    "kroger": {
-        "min_images": 1,
-        "max_images": 6,
-        "image_order": ["hero", "lifestyle", "packaging"],
-        "copy_fields": ["title", "description", "features"],
-        "robot_detection_enabled": False,
-    },
-    "cvs": {},
-    "walgreens": {},
-    "ahold": {
-        "min_images": 1,
-        "max_images": 5,
-        "image_order": ["hero", "lifestyle", "packaging"],
-        "copy_fields": ["title", "description", "features"],
-        "robot_detection_enabled": False,
-    },
-    "meijer": {
-        "min_images": 1,
-        "max_images": 5,
-        "image_order": ["hero", "lifestyle", "packaging"],
-        "copy_fields": ["title", "description", "features"],
-        "robot_detection_enabled": False,
-    },
-    "heb": {
-        "min_images": 1,
-        "max_images": 5,
-        "image_order": ["hero", "lifestyle", "packaging"],
-        "copy_fields": ["title", "description", "features"],
-        "robot_detection_enabled": False,
-    },
-    "albertsons": {
-        "min_images": 1,
-        "max_images": 5,
-        "image_order": ["hero", "lifestyle", "packaging"],
-        "copy_fields": ["title", "description", "features"],
-        "robot_detection_enabled": False,
-    },
-    "door dash": {
-        "min_images": 1,
-        "max_images": 3,
-        "image_order": ["hero", "lifestyle"],
-        "copy_fields": ["title", "description", "features"],
-        "robot_detection_enabled": False,
-    },
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Connection": "keep-alive",
 }
-def get_rules_for_retailer(retailer):
-    key = retailer.strip().lower()
-    return RETAILER_RULES.get(key, RETAILER_RULES["sams club"])
-
-# (You can keep your SECTION_HEADER_SIZE, COPY_TEXT_SIZE, etc. constants if you want to reuse them.)
-
-# =========================================
-# PERFORMANCE SETTINGS
-# =========================================
 
 REQUEST_TIMEOUT = 6
 IMAGE_TIMEOUT = 2.5
@@ -120,17 +70,24 @@ WALGREENS_REQUEST_TIMEOUT = 18
 WALGREENS_DEBUG_TIMEOUT = 25
 WALGREENS_API_TIMEOUT = 10
 
-# Batch processing
+# =========================================
+# PERFORMANCE SETTINGS
+# =========================================
+# Higher parallelism for faster batch processing without changing
+# copy/image extraction logic.
 BATCH_SIZE = 32
 MAX_WORKERS = 12
 UI_UPDATE_EVERY = 5
 
-# Image hashing
+# Faster image compare via tiny difference hash.
 IMAGE_HASH_WIDTH = 9
 IMAGE_HASH_HEIGHT = 8
+
+# Larger caches to reduce repeat fetches during batch + visual QA.
 HTML_CACHE_MAX = 200
 IMAGE_HASH_CACHE_MAX = 300
 
+# Hard image safety limits.
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
 MAX_SAFE_IMAGE_PIXELS = 50_000_000
 MAX_IMAGE_SLOTS_TO_COMPARE = 20
@@ -142,17 +99,6 @@ image_compare_cache = {}
 IMAGE_COMPARE_CACHE_MAX = 600
 
 thread_local = threading.local()
-
-# Visual layout constants (optional, for UI rendering)
-SECTION_HEADER_SIZE = 24
-COPY_TEXT_SIZE = 15
-COPY_LINE_HEIGHT = 1.28
-SECTION_VERTICAL_GAP = 8
-IMG_SPACE_PX = 4
-IMG_BOX_HEIGHT = 104
-IMG_SCORE_WIDTH_PX = 72
-TITLE_TO_DESCRIPTION_GAP_PX = 28
-DESCRIPTION_TO_FEATURES_GAP_PX = 28
 
 # =========================================
 # VISUAL LAYOUT SETTINGS
@@ -4799,7 +4745,6 @@ def get_retailer_bundle(
     # Default path stays CVS.
     return get_cvs_bundle(retail_url, target_rpc)
     
-
 # =========================================
 # RETAILER-SPECIFIC FINAL COPY CLEANUP
 # =========================================
