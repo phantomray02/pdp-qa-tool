@@ -2634,6 +2634,65 @@ def find_first_dict_with_keys(obj, required_keys):
     return {}
 
 
+def extract_walgreens_reviews_from_app_state_payload(payload):
+    """
+    Pull live Walgreens review fields from app-state payload:
+    productData -> prodDetails -> section[] -> reviews
+    """
+    rating = ""
+    review_count = ""
+
+    if not isinstance(payload, dict):
+        return rating, review_count
+
+    root = payload
+    if isinstance(payload.get("productData"), dict):
+        root = payload.get("productData", {})
+
+    prod_details = root.get("prodDetails", {}) if isinstance(root, dict) else {}
+    section_list = prod_details.get("section", []) if isinstance(prod_details, dict) else []
+
+    if isinstance(section_list, list):
+        for section in section_list:
+            if not isinstance(section, dict):
+                continue
+            reviews_obj = section.get("reviews", {})
+            if isinstance(reviews_obj, dict):
+                rating = str(reviews_obj.get("overallRating", "") or "").strip()
+                review_count = str(reviews_obj.get("reviewCount", "") or "").strip()
+                if rating or review_count:
+                    return rating, review_count
+
+    return rating, review_count
+
+
+def extract_walgreens_reviews_from_html(html_text):
+    """
+    Parse live Walgreens review values from:
+    window.__APP_INITIAL_STATE__ = {...};
+    """
+    if not html_text:
+        return "", ""
+
+    html_text = str(html_text or "")
+    app_state_match = re.search(
+        r'window\.__APP_INITIAL_STATE__\s*=\s*(\{.*?\})\s*;',
+        html_text,
+        flags=re.DOTALL,
+    )
+    if not app_state_match:
+        return "", ""
+
+    raw_json = app_state_match.group(1)
+
+    try:
+        payload = json.loads(raw_json)
+    except Exception:
+        return "", ""
+
+    return extract_walgreens_reviews_from_app_state_payload(payload)
+
+
 def format_walgreens_title_from_parts(raw_title="", size_count="", primary_attr=""):
     raw_title = _normalize_walgreens_text(raw_title)
     size_count = _normalize_walgreens_text(size_count)
@@ -3308,6 +3367,8 @@ def build_walgreens_bundle_from_api_payload(payload):
             "title": "",
             "description": "",
             "features": [],
+            "rating": "",
+            "review_count": "",
             "debug": {
                 "Title Path": "walgreens_api_missing",
                 "Description Path": "walgreens_api_missing",
@@ -3324,6 +3385,8 @@ def build_walgreens_bundle_from_api_payload(payload):
     root = payload
     if isinstance(payload, dict) and "productData" in payload and isinstance(payload["productData"], dict):
         root = payload["productData"]
+
+    live_rating, live_review_count = extract_walgreens_reviews_from_app_state_payload(payload)
 
     product_info = {}
     prod_details = {}
@@ -3386,6 +3449,8 @@ def build_walgreens_bundle_from_api_payload(payload):
             "title": final_title,
             "description": description,
             "features": features[:5],
+            "rating": live_rating,
+            "review_count": live_review_count,
             "debug": {
                 "Title Path": (
                     "walgreens_api_productInfo_title_plus_sizeCount"
@@ -3595,12 +3660,15 @@ def extract_walgreens_text_from_html(html_text, retail_url="", target_rpc=""):
             "title": "",
             "description": "",
             "features": [],
+            "rating": "",
+            "review_count": "",
             "debug": debug,
         }
 
     title, title_path = _extract_walgreens_title_from_source(html_text)
     description, features, copy_path = _extract_walgreens_description_and_features_from_product_desc(html_text)
     fallback_description, fallback_features = extract_walgreens_copy_from_meta_and_jsonld(html_text)
+    live_rating, live_review_count = extract_walgreens_reviews_from_html(html_text)
 
     chosen_description = _walgreens_choose_richer_description(description, fallback_description)
     chosen_features = normalize_walgreens_features_final(features, max_features=5)
@@ -3630,6 +3698,8 @@ def extract_walgreens_text_from_html(html_text, retail_url="", target_rpc=""):
         "title": title,
         "description": chosen_description,
         "features": chosen_features[:5],
+        "rating": live_rating,
+        "review_count": live_review_count,
         "debug": debug,
     }
 
@@ -3761,6 +3831,8 @@ def merge_walgreens_bundles_prefer_richer_copy(*bundles):
             "title": "",
             "description": "",
             "features": [],
+            "rating": "",
+            "review_count": "",
             "debug": {},
         },
         "images": [],
@@ -3789,6 +3861,11 @@ def merge_walgreens_bundles_prefer_richer_copy(*bundles):
         new_features = bundle_text.get("features", []) or []
         if _walgreens_feature_richness_tuple(new_features) > _walgreens_feature_richness_tuple(current_features):
             merged["text"]["features"] = _walgreens_clean_feature_list(new_features, max_features=5)
+
+        if not merged["text"].get("rating") and bundle_text.get("rating"):
+            merged["text"]["rating"] = str(bundle_text.get("rating", "") or "").strip()
+        if not merged["text"].get("review_count") and bundle_text.get("review_count"):
+            merged["text"]["review_count"] = str(bundle_text.get("review_count", "") or "").strip()
 
         if not merged.get("images") and bundle_images:
             merged["images"] = [x for x in bundle_images if x]
@@ -4402,7 +4479,7 @@ def get_sams_bundle(retail_url, target_rpc="", sku=""):
         "images": [] if is_sams_robot_page(html_text) else extract_sams_images_from_html(html_text),
     }
     
-def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku=""):
+def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_source_code=""):
     retailer = str(retailer_name or "").strip().lower()
 
     if retailer == "walgreens":
@@ -5239,7 +5316,7 @@ def process_row(row):
         retail_url = row.get("retail_url", "")
         salsify_url = row.get("salsify_url", "")
         cvs_rpc = row.get("retailer_rpc", "")
-        ow_source_code = row.get("copy_source_code", "")
+        row_source_code = row.get("copy_source_code", "")
         retailer_name = row.get("retailer", "") or infer_retailer_name_from_url(retail_url)
         rating_value = row.get("rating", "")
         review_count_value = row.get("review_count", "")
@@ -5261,124 +5338,56 @@ def process_row(row):
             status_notes.append("Missing Salsify URL")
         if not retail_url:
             status_notes.append("Missing Retail URL")
-
         if status_notes:
-                    return {
-                        "summary": {
-                            "SKU": row.get("sku", ""),
-                            "Retailer": retailer_name,
-                            "Retailer RPC": cvs_rpc,
-                            "Brand": row.get("brand", ""),
-                            "Salsify URL": salsify_url,
-                            "Retail URL": retail_url,
-                            "Rating": rating_value,
-                            "Review Count": review_count_value,
-                            "Title %": title_score,
-                            "Description %": desc_score,
-                            "Feature %": avg_feature_score,
-                            "Image Match %": avg_img_score,
-                            "Overall %": overall,
-                            "Status": ", ".join(status_notes),
-                            **feature_score_fields,
-                            **image_position_scores,
-                        },
-                        "detail": {
-                            "SKU": row.get("sku", ""),
-                            "Retailer": retailer_name,
-                            "Retailer RPC": cvs_rpc,
-                            "Brand": row.get("brand", ""),
-                            "Salsify URL": salsify_url,
-                            "Retail URL": retail_url,
-                            "Rating": rating_value,
-                            "Review Count": review_count_value,
-                            "Title %": title_score,
-                            "Description %": desc_score,
-                            "Feature %": avg_feature_score,
-                            "Image Match %": avg_img_score,
-                            "Overall %": overall,
-                            "Status": ", ".join(status_notes),
-                            "Salsify Title": s_text.get("title", ""),
-                            "Retailer Title": r_text.get("title", ""),
-                            "Salsify Description": s_text.get("description", ""),
-                            "Retailer Description": r_text.get("description", ""),
-                            "Salsify Feature 1": s_text.get("feature1", ""),
-                            "Salsify Feature 2": s_text.get("feature2", ""),
-                            "Salsify Feature 3": s_text.get("feature3", ""),
-                            "Salsify Feature 4": s_text.get("feature4", ""),
-                            "Salsify Feature 5": s_text.get("feature5", ""),
-                            "Retailer Features": " | ".join(r_text.get("features", [])),
-                            "Salsify Images": " | ".join(
-                                [img.get("url", "") for img in s_images if isinstance(img, dict)]
-                            ),
-                            "Retailer Images": " | ".join(r_images),
-                            "Title Path": debug_data.get("Title Path", ""),
-                            "Description Path": debug_data.get("Description Path", ""),
-                            "Features Path": debug_data.get("Features Path", ""),
-                            "vendorDetailsBulletsRef": debug_data.get("vendorDetailsBulletsRef", ""),
-                            "vendorDetailsParagraphRef": debug_data.get("vendorDetailsParagraphRef", ""),
-                            "featuresKey": debug_data.get("featuresKey", ""),
-                            "descriptionKey": debug_data.get("descriptionKey", ""),
-                            "directVendorContentFound": debug_data.get("directVendorContentFound", False),
-                            "directVendorDetailsFound": debug_data.get("directVendorDetailsFound", False),
-                            "variantWindowMatched": debug_data.get("variantWindowMatched", False),
-                            "variantMatchScore": debug_data.get("variantMatchScore", 0),
-                            "variantMatchReason": debug_data.get("variantMatchReason", ""),
-                            "matchedDynamicMediaUrl": debug_data.get("matchedDynamicMediaUrl", ""),
-                            "matchedVariantUrl": debug_data.get("matchedVariantUrl", ""),
-                            "matchedNearbyImage": debug_data.get("matchedNearbyImage", ""),
-                            **image_position_scores,
-                        },
-                        "debug": {
-                            "SKU": row.get("sku", ""),
-                            "Retailer": retailer_name,
-                            "Retailer RPC": cvs_rpc,
-                            "Brand": row.get("brand", ""),
-                            "Retail URL": retail_url,
-                            "Rating": rating_value,
-                            "Review Count": review_count_value,
-                            "Salsify URL": salsify_url,
-                            "Desc Final": r_text.get("description", ""),
-                            "Desc Quality Score": r_desc_debug["quality_score"],
-                            "Desc Length": r_desc_debug["length"],
-                            "Desc Issues": ", ".join(r_desc_debug["issues"]),
-                            "Salsify Desc Quality Score": s_desc_debug["quality_score"],
-                            "Final Features": " | ".join(r_text.get("features", [])),
-                            "Title Path": debug_data.get("Title Path", ""),
-                            "Description Path": debug_data.get("Description Path", ""),
-                            "Features Path": debug_data.get("Features Path", ""),
-                            "vendorPatternFound": debug_data.get("vendorPatternFound", False),
-                            "vendorDetailsBulletsRef": debug_data.get("vendorDetailsBulletsRef", ""),
-                            "vendorDetailsParagraphRef": debug_data.get("vendorDetailsParagraphRef", ""),
-                            "featuresKey": debug_data.get("featuresKey", ""),
-                            "descriptionKey": debug_data.get("descriptionKey", ""),
-                            "featuresArrayFound": debug_data.get("featuresArrayFound", False),
-                            "descriptionBlockFound": debug_data.get("descriptionBlockFound", False),
-                            "directVendorContentFound": debug_data.get("directVendorContentFound", False),
-                            "directVendorDetailsFound": debug_data.get("directVendorDetailsFound", False),
-                            "variantWindowMatched": debug_data.get("variantWindowMatched", False),
-                            "variantMatchScore": debug_data.get("variantMatchScore", 0),
-                            "variantMatchReason": debug_data.get("variantMatchReason", ""),
-                            "matchedDynamicMediaUrl": debug_data.get("matchedDynamicMediaUrl", ""),
-                            "matchedVariantUrl": debug_data.get("matchedVariantUrl", ""),
-                            "matchedNearbyImage": debug_data.get("matchedNearbyImage", ""),
-                            "Source Used": debug_data.get("Source Used", ""),
-                            "vendorPatternExcerpt": debug_data.get("vendorPatternExcerpt", ""),
-                            "featuresArrayExcerpt": debug_data.get("featuresArrayExcerpt", ""),
-                            "descriptionBlockExcerpt": debug_data.get("descriptionBlockExcerpt", ""),
-                            "directVendorContentExcerpt": debug_data.get("directVendorContentExcerpt", ""),
-                            "rawHtmlLength": debug_data.get("rawHtmlLength", 0),
-                            "rawTextLength": debug_data.get("rawTextLength", 0),
-                            "nextjsChunkFound": debug_data.get("nextjsChunkFound", False),
-                            "rawHtmlHasSelfNextF": debug_data.get("rawHtmlHasSelfNextF", False),
-                            "rawHtmlHasVendorDetailsBullets": debug_data.get("rawHtmlHasVendorDetailsBullets", False),
-                            "rawHtmlHasVendorDetailsParagraph": debug_data.get("rawHtmlHasVendorDetailsParagraph", False),
-                            "rawTextHasVendorDetailsBullets": debug_data.get("rawTextHasVendorDetailsBullets", False),
-                            "rawTextHasVendorDetailsParagraph": debug_data.get("rawTextHasVendorDetailsParagraph", False),
-                            "rawHtmlVendorExcerpt": debug_data.get("rawHtmlVendorExcerpt", ""),
-                            "rawTextVendorExcerpt": debug_data.get("rawTextVendorExcerpt", ""),
-                        },
-                    }
-
+            return {
+                "summary": {
+                    "SKU": row.get("sku", ""),
+                    "Retailer": retailer_name,
+                    "Retailer RPC": cvs_rpc,
+                    "Brand": row.get("brand", ""),
+                    "Salsify URL": salsify_url,
+                    "Retail URL": retail_url,
+                    "Rating": rating_value,
+                    "Review Count": review_count_value,
+                    "Title %": title_score,
+                    "Description %": desc_score,
+                    "Feature %": avg_feature_score,
+                    "Image Match %": avg_img_score,
+                    "Overall %": overall,
+                    "Status": ", ".join(status_notes),
+                    **feature_score_fields,
+                    **image_position_scores,
+                },
+                "detail": {
+                    "SKU": row.get("sku", ""),
+                    "Retailer": retailer_name,
+                    "Retailer RPC": cvs_rpc,
+                    "Brand": row.get("brand", ""),
+                    "Salsify URL": salsify_url,
+                    "Retail URL": retail_url,
+                    "Rating": rating_value,
+                    "Review Count": review_count_value,
+                    "Title %": title_score,
+                    "Description %": desc_score,
+                    "Feature %": avg_feature_score,
+                    "Image Match %": avg_img_score,
+                    "Overall %": overall,
+                    "Status": ", ".join(status_notes),
+                    **feature_score_fields,
+                    **image_position_scores,
+                },
+                "debug": {
+                    "SKU": row.get("sku", ""),
+                    "Retailer": retailer_name,
+                    "Retailer RPC": cvs_rpc,
+                    "Brand": row.get("brand", ""),
+                    "Retail URL": retail_url,
+                    "Rating": rating_value,
+                    "Review Count": review_count_value,
+                    "Salsify URL": salsify_url,
+                    "Status": ", ".join(status_notes),
+                },
+            }
 
         target_sku = get_target_sku_from_inputs(
             retail_url=retail_url,
@@ -6094,8 +6103,8 @@ if (
                 )
 
                 if str(retailer_name or "").strip().lower() == "walgreens":
-                    rating_value = row.get("rating", "") or "4.5"
-                    review_count_value = row.get("review_count", "") or "4201"
+                    rating_value = (r_text.get("rating", "") if isinstance(r_text, dict) else "") or row.get("rating", "") or "4.5"
+                    review_count_value = (r_text.get("review_count", "") if isinstance(r_text, dict) else "") or row.get("review_count", "") or "4201"
                     top_rating.markdown(
                         rating_stars_html(rating_value, review_count_value, font_size_px=11),
                         unsafe_allow_html=True,
