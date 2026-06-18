@@ -5586,10 +5586,12 @@ with top_download_col:
     st.markdown("<div style='height: 30px;'></div>", unsafe_allow_html=True)
 
     if st.session_state.report_bytes is not None and st.session_state.report_filename:
-        download_key_suffix = str(
-            st.session_state.report_batch_key
-            or st.session_state.completed_batch_key
-            or "default"
+        st.download_button(
+            label="⬇ Download Excel Report",
+            data=st.session_state.report_bytes,
+            file_name=st.session_state.report_filename,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_excel_report_top_single",
         )
 
         st.download_button(
@@ -5853,6 +5855,7 @@ if retailer_df is not None and file_ready_for_batch:
         st.error("🔥 CRITICAL APP ERROR")
         st.text(str(e))
         st.text(traceback.format_exc())
+
 # =========================================
 # TOP EXPORT SECTION
 # =========================================
@@ -5931,25 +5934,6 @@ if (
     st.session_state.report_filename = f"pdp_qa_results_{safe_retailer}_all_brands.xlsx"
     st.session_state.report_batch_key = st.session_state.completed_batch_key
     st.session_state.auto_download_done = False
-
-
-with top_download_col:
-    st.markdown("<div style='height: 30px;'></div>", unsafe_allow_html=True)
-
-    if st.session_state.report_bytes is not None and st.session_state.report_filename:
-        download_key_suffix = str(
-            st.session_state.report_batch_key
-            or st.session_state.completed_batch_key
-            or "default"
-        )
-
-        st.download_button(
-            label="⬇ Download Excel Report",
-            data=st.session_state.report_bytes,
-            file_name=st.session_state.report_filename,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key=f"download_excel_report_top_inline_{download_key_suffix}",
-        )
         
 # =========================================
 # FULL VISUAL MODE
