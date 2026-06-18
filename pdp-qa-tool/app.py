@@ -286,7 +286,7 @@ def avg_score_bar_html(label, score):
     )
 
 
-def rating_stars_html(rating, review_count=None, font_size_px=11):
+def rating_stars_html(rating, review_count=None, font_size_px=18):
     try:
         rating = float(rating or 0)
     except Exception:
@@ -298,20 +298,19 @@ def rating_stars_html(rating, review_count=None, font_size_px=11):
     review_html = ""
     if review_count is not None and str(review_count).strip() != "":
         review_html = (
-            f'<span style="margin-left:4px;font-size:10px;color:#4b5563;'
-            f'text-decoration:underline;line-height:1;">{html_escape_text(review_count)}</span>'
+            f'<span style="margin-left:6px;font-size:15px;color:#FFFFFF;line-height:1;">'
+            f'{html_escape_text(review_count)}</span>'
         )
 
     return (
-        f'<div style="display:flex;align-items:center;justify-content:flex-end;gap:4px;'
-        f'white-space:nowrap;background:#f3f4f6;padding:1px 4px;border-radius:2px;'
-        f'margin:0 0 0 auto;width:max-content;line-height:1;">'
-        f'<span style="font-size:10px;color:#111827;line-height:1;">{rating:.1f}</span>'
+        f'<div style="display:flex;align-items:center;justify-content:flex-end;gap:6px;'
+        f'white-space:nowrap;margin:0 0 0 auto;width:max-content;line-height:1;">'
+        f'<span style="font-size:28px;font-weight:900;color:#FFFFFF;line-height:1;">{rating:.1f}</span>'
         f'<div style="position:relative;display:inline-block;line-height:1;'
-        f'font-size:{font_size_px}px;letter-spacing:0.3px;">'
-        f'<div style="color:#c7c7c7;">★★★★★</div>'
+        f'font-size:{font_size_px}px;letter-spacing:0.6px;">'
+        f'<div style="color:rgba(255,255,255,0.35);">★★★★★</div>'
         f'<div style="position:absolute;top:0;left:0;width:{fill_pct}%;overflow:hidden;'
-        f'white-space:nowrap;color:#111111;">★★★★★</div>'
+        f'white-space:nowrap;color:#FFFFFF;">★★★★★</div>'
         f'</div>'
         f'{review_html}'
         f'</div>'
@@ -6083,7 +6082,7 @@ if (
             left, right = st.columns([2.72, 0.95], gap="small")
         
             with left:
-                top_l, top_mid, top_rating = st.columns([1.08, 1.0, 0.42], gap="small")
+                top_l, top_mid, top_rating = st.columns([1.02, 1.0, 0.72], gap="small")
 
                 top_l.markdown(
                     column_header_link_html("Salsify", sku, salsify_url),
@@ -6106,7 +6105,7 @@ if (
                     rating_value = (r_text.get("rating", "") if isinstance(r_text, dict) else "") or row.get("rating", "") or "4.5"
                     review_count_value = (r_text.get("review_count", "") if isinstance(r_text, dict) else "") or row.get("review_count", "") or "4201"
                     top_rating.markdown(
-                        rating_stars_html(rating_value, review_count_value, font_size_px=11),
+                        rating_stars_html(rating_value, review_count_value, font_size_px=18),
                         unsafe_allow_html=True,
                     )
                 else:
