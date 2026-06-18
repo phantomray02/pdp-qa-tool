@@ -296,7 +296,50 @@ def avg_score_bar_html(label, score):
         f"</div>"
     )
 
+def rating_stars_html(rating, review_count=None, font_size_px=14):
+    try:
+        rating = float(rating or 0)
+    except Exception:
+        rating = 0.0
 
+    rating = max(0.0, min(rating, 5.0))
+    fill_pct = (rating / 5.0) * 100
+
+    review_html = ""
+    if review_count is not None and str(review_count).strip() != "":
+        review_html = (
+            f'<span style="margin-left:8px; font-size:12px; color:#4b5563; '
+            f'text-decoration:underline;">{html_escape_text(review_count)}</span>'
+        )
+
+    return f'''
+    <div style="display:flex; align-items:center; gap:6px; margin:2px 0 8px 0;">
+        <span style="font-size:12px; color:#111827; min-width:26px;">
+            {rating:.1f}
+        </span>
+
+        <div style="
+            position:relative;
+            display:inline-block;
+            line-height:1;
+            font-size:{font_size_px}px;
+            letter-spacing:1px;
+        ">
+            <div style="color:#d1d5db;">★★★★★</div>
+            <div style="
+                position:absolute;
+                top:0;
+                left:0;
+                width:{fill_pct}%;
+                overflow:hidden;
+                white-space:nowrap;
+                color:#111111;
+            ">★★★★★</div>
+        </div>
+
+        {review_html}
+    </div>
+    '''
 def column_header_link_html(label, item_number, href):
     safe_label = html_escape_text(label or "")
     safe_item = html_escape_text(item_number or "")
@@ -593,10 +636,12 @@ def prepare_input_df(df):
         "retail_url",
         "brand",
         "retailer_rpc",
+        "rating",
+        "review_count",
     ]:
         if col not in df.columns:
             df[col] = ""
-
+    
     # Clean standard text columns safely.
     for col in [
         "sku",
@@ -604,6 +649,8 @@ def prepare_input_df(df):
         "retail_url",
         "brand",
         "retailer_rpc",
+        "rating",
+        "review_count",
     ]:
         df[col] = (
             df[col]
@@ -5227,6 +5274,8 @@ def process_row(row):
         cvs_rpc = row.get("retailer_rpc", "")
         ow_source_code = row.get("copy_source_code", "")
         retailer_name = row.get("retailer", "") or infer_retailer_name_from_url(retail_url)
+        rating_value = row.get("rating", "")
+        review_count_value = row.get("review_count", "")
 
         salsify_url = str(salsify_url or "").strip()
         retail_url = str(retail_url or "").strip()
@@ -5247,6 +5296,8 @@ def process_row(row):
                             "Brand": row.get("brand", ""),
                             "Salsify URL": salsify_url,
                             "Retail URL": retail_url,
+                            "Rating": rating_value,
+                            "Review Count": review_count_value,
                             "Title %": title_score,
                             "Description %": desc_score,
                             "Feature %": avg_feature_score,
@@ -5263,6 +5314,8 @@ def process_row(row):
                             "Brand": row.get("brand", ""),
                             "Salsify URL": salsify_url,
                             "Retail URL": retail_url,
+                            "Rating": rating_value,
+                            "Review Count": review_count_value,
                             "Title %": title_score,
                             "Description %": desc_score,
                             "Feature %": avg_feature_score,
@@ -5306,6 +5359,8 @@ def process_row(row):
                             "Retailer RPC": cvs_rpc,
                             "Brand": row.get("brand", ""),
                             "Retail URL": retail_url,
+                            "Rating": rating_value,
+                            "Review Count": review_count_value,
                             "Salsify URL": salsify_url,
                             "Desc Final": r_text.get("description", ""),
                             "Desc Quality Score": r_desc_debug["quality_score"],
@@ -6045,15 +6100,15 @@ if (
             
             with left:
                 top_l, top_r = st.columns(2, gap="small")
-            
+
                 top_l.markdown(
                     column_header_link_html("Salsify", sku, salsify_url),
                     unsafe_allow_html=True,
                 )
-            
+                
                 raw_rpc = current_target_sku or current_rpc
                 clean_rpc = clean_item_number(raw_rpc)
-            
+                
                 top_r.markdown(
                     column_header_link_html(
                         retailer_name,
@@ -6062,11 +6117,34 @@ if (
                     ),
                     unsafe_allow_html=True,
                 )
-            
+                
                 st.markdown(
                     avg_score_bar_html("Copy — Avg", copy_avg_score),
                     unsafe_allow_html=True
                 )
+                st.markdown(
+                    avg_score_bar_html("Copy — Avg", copy_avg_score),
+                    unsafe_allow_html=True
+                )
+                
+                # Walgreens-only rating display
+                if str(retailer_name or "").strip().lower() == "walgreens":
+                    rating_value = row.get("rating", "")
+                    review_count_value = row.get("review_count", "")
+                
+                    if str(rating_value).strip() not in {"", "nan", "None"}:
+                        st.markdown(
+                            rating_stars_html(rating_value, review_count_value, font_size_px=14),
+                            unsafe_allow_html=True,
+                        )
+                
+                st.markdown(section_header_html("Title", title_score), unsafe_allow_html=True)
+                t1, t2 = st.columns(2, gap="small")
+                with t1:
+                    st.markdown(
+                        "<div style='margin-bottom:4px'>" + equal_height_block(s_title or "Missing", min_height=56) + "</div>",
+                        unsafe_allow_html=True,
+                    )
 
                 st.markdown(section_header_html("Title", title_score), unsafe_allow_html=True)
                 t1, t2 = st.columns(2, gap="small")
