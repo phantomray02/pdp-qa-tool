@@ -376,35 +376,81 @@ def image_compare_cell_html(url):
         f"Missing"
         f"</div>"
     )
+    
+def clickable_image_html(image_url, alt_text="Image", height_px=104):
+    image_url = str(image_url or "").strip()
 
-def image_compare_row_html(s_url, r_url, score):
+    if not image_url:
+        return (
+            f'<div style="'
+            f'height:{height_px}px;'
+            f'border:1px solid #2a2f3a;'
+            f'border-radius:8px;'
+            f'display:flex;'
+            f'align-items:center;'
+            f'justify-content:center;'
+            f'background:#111827;'
+            f'color:#9ca3af;'
+            f'font-size:12px;'
+            f'">Missing</div>'
+        )
+
     return (
-        f"<div style=\""
-        f"display:grid;"
-        f"grid-template-columns:minmax(0,1fr) minmax(0,1fr) {IMG_SCORE_WIDTH_PX}px;"
-        f"column-gap:8px;"
-        f"align-items:start;"
-        f"margin:0 0 {IMG_SPACE_PX}px 0;"
-        f"padding:0;"
-        f"\">"
-        f"<div style=\"margin:0; padding:0;\">"
-        f"{image_compare_cell_html(s_url)}"
-        f"</div>"
-        f"<div style=\"margin:0; padding:0;\">"
-        f"{image_compare_cell_html(r_url)}"
-        f"</div>"
-        f"<div style=\""
-        f"display:flex;"
-        f"align-items:flex-start;"
-        f"justify-content:flex-start;"
-        f"text-align:left;"
-        f"margin:0;"
-        f"padding-top:4px;"
-        f"\">"
-        f"{score_text_html(score)}"
-        f"</div>"
-        f"</div>"
+        f'<a href="{image_url}" target="_blank" rel="noopener noreferrer" '
+        f'style="display:block; text-decoration:none;">'
+        f'<img src="{image_url}" alt="{alt_text}" '
+        f'style="'
+        f'height:{height_px}px; '
+        f'width:100%; '
+        f'object-fit:contain; '
+        f'border:1px solid #2a2f3a; '
+        f'border-radius:8px; '
+        f'background:#111827;'
+        f'" />'
+        f'</a>'
     )
+    
+def image_compare_row_html(s_url, r_url, slot_score):
+    left_img = clickable_image_html(
+        s_url,
+        alt_text="Salsify image",
+        height_px=IMG_BOX_HEIGHT,
+    )
+
+    right_img = clickable_image_html(
+        r_url,
+        alt_text="Retailer image",
+        height_px=IMG_BOX_HEIGHT,
+    )
+
+    return f"""
+    <div style="
+        display:grid;
+        grid-template-columns: 1fr {IMG_SCORE_WIDTH_PX}px 1fr;
+        gap:{IMG_SPACE_PX}px;
+        align-items:start;
+        margin:0 0 {SECTION_VERTICAL_GAP}px 0;
+    ">
+        <div>
+            {left_img}
+        </div>
+
+        <div style="
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            min-height:{IMG_BOX_HEIGHT}px;
+            font-size:14px;
+            font-weight:700;
+        ">
+            {score_text_html(slot_score)}
+        </div>
+
+        <div>
+            {right_img}
+        </div>
+    </div>
+    """
 
 def image_tile_html(label, url, box_height=170):
     safe_label = html.escape(label)
@@ -5891,43 +5937,61 @@ def process_row(row):
 # =========================================
 if "start_idx" not in st.session_state:
     st.session_state.start_idx = 0
+
 if "summary_rows" not in st.session_state:
     st.session_state.summary_rows = []
+
 if "export_rows" not in st.session_state:
     st.session_state.export_rows = []
+
 if "debug_rows" not in st.session_state:
     st.session_state.debug_rows = []
+
 if "summary_skus" not in st.session_state:
     st.session_state.summary_skus = set()
+
 if "detail_skus" not in st.session_state:
     st.session_state.detail_skus = set()
+
 if "debug_skus" not in st.session_state:
     st.session_state.debug_skus = set()
+
 if "processing_done" not in st.session_state:
     st.session_state.processing_done = False
-if "progress_bar" not in st.session_state:
-    st.session_state.progress_bar = None
+
 if "last_file_hash" not in st.session_state:
-    st.session_state.last_file_hash = None
+    st.session_state.last_file_hash = ""
+
 if "uploaded_file_bytes" not in st.session_state:
     st.session_state.uploaded_file_bytes = None
+
 if "selected_retailer" not in st.session_state:
-    st.session_state.selected_retailer = "-- Select Retailer --"
+    st.session_state.selected_retailer = ""
+
 if "selected_brand_visual" not in st.session_state:
-    st.session_state.selected_brand_visual = "All"
+    st.session_state.selected_brand_visual = ""
+
 if "active_batch_key" not in st.session_state:
     st.session_state.active_batch_key = ""
+
 if "completed_batch_key" not in st.session_state:
     st.session_state.completed_batch_key = ""
+
 if "auto_download_done" not in st.session_state:
     st.session_state.auto_download_done = False
+
 if "report_bytes" not in st.session_state:
     st.session_state.report_bytes = None
+
 if "report_filename" not in st.session_state:
     st.session_state.report_filename = None
+
 if "report_batch_key" not in st.session_state:
     st.session_state.report_batch_key = ""
 
+if "show_visual_ui" not in st.session_state:
+    st.session_state.show_visual_ui = False
+    
 # =========================================
 # TOP UPLOAD + DOWNLOAD UI
 # =========================================
@@ -5938,14 +6002,24 @@ with top_upload_col:
 
 with top_download_col:
     st.markdown("<div style='height: 30px;'></div>", unsafe_allow_html=True)
-    if st.session_state.report_bytes is not None and st.session_state.report_filename:
+
+    if (
+        st.session_state.processing_done
+        and st.session_state.report_bytes is not None
+        and st.session_state.report_filename
+    ):
         st.download_button(
-            label="📥 Download Excel Report",
+            label="⬇ Download Excel Report",
             data=st.session_state.report_bytes,
             file_name=st.session_state.report_filename,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key="download_excel_report_top_inline",
         )
+
+        st.caption("Download the extract first. Full Visual QA stays hidden until you open it.")
+
+        if st.button("🔎 Open Full Visual QA", key="open_full_visual_qa"):
+            st.session_state.show_visual_ui = True
 
 master_df = None
 retailer_df = None
@@ -5962,27 +6036,34 @@ if uploaded_file:
         st.session_state.uploaded_file_bytes = file_bytes
         file_hash = hashlib.md5(file_bytes).hexdigest()
 
-        if st.session_state.last_file_hash != file_hash:
+        if file_hash != st.session_state.last_file_hash:
+            st.session_state.last_file_hash = file_hash
+            st.session_state.uploaded_file_bytes = file_bytes
+        
+            st.session_state.start_idx = 0
             st.session_state.summary_rows = []
             st.session_state.export_rows = []
             st.session_state.debug_rows = []
+        
             st.session_state.summary_skus = set()
             st.session_state.detail_skus = set()
             st.session_state.debug_skus = set()
-            st.session_state.start_idx = 0
+        
             st.session_state.processing_done = False
-            st.session_state.progress_bar = None
-            st.session_state.last_file_hash = file_hash
-            st.session_state.selected_retailer = "-- Select Retailer --"
-            st.session_state.selected_brand_visual = "All"
             st.session_state.active_batch_key = ""
             st.session_state.completed_batch_key = ""
+        
             st.session_state.auto_download_done = False
             st.session_state.report_bytes = None
             st.session_state.report_filename = None
             st.session_state.report_batch_key = ""
+        
+            # IMPORTANT: hide Full Visual QA on new upload
+            st.session_state.show_visual_ui = False
+        
             clear_in_memory_caches()
             st.cache_data.clear()
+
 
         master_df = read_uploaded_file_from_bytes(file_bytes, uploaded_file.name)
         master_df = prepare_input_df(master_df)
@@ -6023,6 +6104,7 @@ if uploaded_file:
 
             if st.session_state.active_batch_key != current_batch_key:
                 st.session_state.summary_rows = []
+                st.session_state.show_visual_ui = False
                 st.session_state.export_rows = []
                 st.session_state.debug_rows = []
                 st.session_state.summary_skus = set()
@@ -6303,7 +6385,16 @@ if (
             "<style>.block-container{max-width:1700px;padding-top:1rem;padding-bottom:1rem;} img{max-width:100%;height:auto;}</style>",
             unsafe_allow_html=True,
         )
-        st.markdown("## 👁️ Full Visual QA Review")
+        if st.session_state.processing_done and st.session_state.report_bytes:
+            if st.session_state.show_visual_ui:
+                st.markdown("## 🔎 Full Visual QA Review")
+        
+                visual_df = retailer_df.copy()
+        
+                # keep your existing Full Visual QA code here
+        
+            else:
+                st.info("Generate and download the extract first, then click 'Open Full Visual QA'.")
 
         if hidden_count > 0:
             st.caption(
