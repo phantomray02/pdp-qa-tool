@@ -268,6 +268,9 @@ def section_header_html(label, score):
 
 
 def avg_score_bar_html(label, score):
+    safe_label = html_escape_text(label or "")
+    score = max(0, min(int(score or 0), 100))
+
     if score >= 80:
         color = "#2E7D32"
     elif score >= 50:
@@ -275,27 +278,19 @@ def avg_score_bar_html(label, score):
     else:
         color = "#C62828"
 
-    safe_label = html_escape_text(label or "")
     return (
-        f"<div style=\""
-        f"background-color:{color};"
-        f"padding:6px 10px;"
-        f"border-radius:4px;"
-        f"color:white;"
-        f"font-weight:900;"
-        f"font-size:19px;"
-        f"margin-top:2px;"
-        f"margin-bottom:{IMG_SPACE_PX}px;"
-        f"display:flex;"
-        f"justify-content:space-between;"
-        f"align-items:center;"
-        f"gap:10px;"
-        f"\">"
-        f"<span>{safe_label}</span>"
-        f"<span style=\"color:#FFFFFF; font-weight:900; font-size:20px;\">{score}%</span>"
-        f"</div>"
+        f'<div style="margin:0 0 12px 0;">'
+        f'  <div style="display:flex; justify-content:space-between; '
+        f'      font-size:14px; font-weight:700; margin-bottom:4px;">'
+        f'    <span>{safe_label}</span>'
+        f'    <span>{score}%</span>'
+        f'  </div>'
+        f'  <div style="width:100%; height:12px; background:#1f2937; '
+        f'      border-radius:999px; overflow:hidden;">'
+        f'    <div style="width:{score}%; height:100%; background:{color};"></div>'
+        f'  </div>'
+        f'</div>'
     )
-
 
 def column_header_link_html(label, item_number, href):
     safe_label = html_escape_text(label or "")
@@ -5584,15 +5579,16 @@ with top_upload_col:
 
 with top_download_col:
     st.markdown("<div style='height: 30px;'></div>", unsafe_allow_html=True)
+
     if st.session_state.report_bytes is not None and st.session_state.report_filename:
         st.download_button(
-            label="📥 Download Excel Report",
+            label="⬇ Download Excel Report",
             data=st.session_state.report_bytes,
             file_name=st.session_state.report_filename,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key="download_excel_report_top_inline",
         )
-
+        
 master_df = None
 retailer_df = None
 all_retailers = []
@@ -5866,6 +5862,10 @@ if (
             summary_df.to_excel(writer, index=False, sheet_name="Summary")
             detail_df.to_excel(writer, index=False, sheet_name="Details")
             debug_df.to_excel(writer, index=False, sheet_name="Debug")
+        
+        st.session_state.report_bytes = output.getvalue()
+        st.session_state.report_filename = f"pdp_qa_results_{selected_retailer.lower().replace(' ', '_')}_all_brands.xlsx"
+        st.session_state.report_batch_key = st.session_state.completed_batch_key
 
             wb = writer.book
             ws = wb["Summary"]
