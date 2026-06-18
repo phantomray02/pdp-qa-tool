@@ -399,6 +399,15 @@ def clickable_image_html(image_url, alt_text="Image", height_px=104):
         f'<a href="{image_url}" target="_blank" rel="noopener noreferrer" '
         f'style="display:block; text-decoration:none;">'
         f'<img src="{image_url}" alt="{alt_text}" '
+        f'style="width:100%; height:{height_px}px; object-fit:contain; '
+        f'border:1px solid #2a2f3a; border-radius:8px; background:#111827; display:block;" />'
+        f'</a>'
+    )
+
+    return (
+        f'<a href="{image_url}" target="_blank" rel="noopener noreferrer" '
+        f'style="display:block; text-decoration:none;">'
+        f'<img src="{image_url}" alt="{alt_text}" '
         f'style="'
         f'height:{height_px}px; '
         f'width:100%; '
@@ -431,9 +440,7 @@ def image_compare_row_html(s_url, r_url, slot_score):
         align-items:start;
         margin:0 0 {SECTION_VERTICAL_GAP}px 0;
     ">
-        <div>
-            {left_img}
-        </div>
+        <div>{left_img}</div>
 
         <div style="
             display:flex;
@@ -446,9 +453,7 @@ def image_compare_row_html(s_url, r_url, slot_score):
             {score_text_html(slot_score)}
         </div>
 
-        <div>
-            {right_img}
-        </div>
+        <div>{right_img}</div>
     </div>
     """
 
@@ -6003,11 +6008,7 @@ with top_upload_col:
 with top_download_col:
     st.markdown("<div style='height: 30px;'></div>", unsafe_allow_html=True)
 
-    if (
-        st.session_state.processing_done
-        and st.session_state.report_bytes is not None
-        and st.session_state.report_filename
-    ):
+    if st.session_state.report_bytes is not None and st.session_state.report_filename:
         st.download_button(
             label="⬇ Download Excel Report",
             data=st.session_state.report_bytes,
@@ -6016,11 +6017,9 @@ with top_download_col:
             key="download_excel_report_top_inline",
         )
 
-        st.caption("Download the extract first. Full Visual QA stays hidden until you open it.")
-
         if st.button("🔎 Open Full Visual QA", key="open_full_visual_qa"):
             st.session_state.show_visual_ui = True
-
+            
 master_df = None
 retailer_df = None
 all_retailers = []
@@ -6385,9 +6384,10 @@ if (
             "<style>.block-container{max-width:1700px;padding-top:1rem;padding-bottom:1rem;} img{max-width:100%;height:auto;}</style>",
             unsafe_allow_html=True,
         )
-        if st.session_state.processing_done and st.session_state.report_bytes:
+        if st.session_state.report_bytes is not None and st.session_state.report_filename:
             if st.session_state.show_visual_ui:
                 st.markdown("## 🔎 Full Visual QA Review")
+
         
                 visual_df = retailer_df.copy()
         
@@ -6395,6 +6395,10 @@ if (
         
             else:
                 st.info("Generate and download the extract first, then click 'Open Full Visual QA'.")
+
+            else:
+                st.info("Download the extract first, then click '🔎 Open Full Visual QA'.")
+
 
         if hidden_count > 0:
             st.caption(
