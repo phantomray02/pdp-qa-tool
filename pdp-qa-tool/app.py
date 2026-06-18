@@ -187,7 +187,7 @@ def description_similarity_score(a, b):
         return 100
 
     return int(SequenceMatcher(None, a_norm, b_norm).ratio() * 100)
-    
+
 def html_escape_text(text):
     return html.escape(str(text or ""))
 
@@ -195,20 +195,42 @@ def html_escape_text(text):
 def equal_height_block(text, min_height=150):
     safe_text = html_escape_text(text or "Missing")
     return (
-        f'<div style="min-height:{min_height}px; '
-        f'font-size:{COPY_TEXT_SIZE}px; '
-        f'line-height:{COPY_LINE_HEIGHT}; '
-        f'white-space:pre-wrap;">{safe_text}</div>'
+        f"<div style=\""
+        f"width:100%;"
+        f"min-height:{min_height}px;"
+        f"padding:0;"
+        f"margin:0;"
+        f"background:transparent;"
+        f"color:#FFFFFF;"
+        f"white-space:pre-wrap;"
+        f"line-height:{COPY_LINE_HEIGHT};"
+        f"font-size:{COPY_TEXT_SIZE}px;"
+        f"font-weight:500;"
+        f"text-indent:0;"
+        f"overflow-wrap:anywhere;"
+        f"word-break:break-word;"
+        f"\">{safe_text}</div>"
     )
 
 
 def equal_feature_block(text, min_height=40):
     safe_text = html_escape_text(text or "Missing")
     return (
-        f'<div style="min-height:{min_height}px; '
-        f'font-size:{COPY_TEXT_SIZE}px; '
-        f'line-height:{COPY_LINE_HEIGHT}; '
-        f'white-space:pre-wrap;">{safe_text}</div>'
+        f"<div style=\""
+        f"width:100%;"
+        f"min-height:{min_height}px;"
+        f"padding:0;"
+        f"margin:0;"
+        f"background:transparent;"
+        f"color:#FFFFFF;"
+        f"white-space:pre-wrap;"
+        f"line-height:{COPY_LINE_HEIGHT};"
+        f"font-size:{COPY_TEXT_SIZE}px;"
+        f"font-weight:500;"
+        f"text-indent:0;"
+        f"overflow-wrap:anywhere;"
+        f"word-break:break-word;"
+        f"\">{safe_text}</div>"
     )
 
 
@@ -223,23 +245,29 @@ def score_text_html(score):
         color = "#F44336"
         label = "Poor"
 
-    return f'<span style="color:{color}; font-weight:700;">{score}% ({label})</span>'
+    return f"<span style='color:{color}; font-weight:900; font-size:22px;'>{score}% ({label})</span>"
 
 
 def section_header_html(label, score):
     safe_label = html_escape_text(label or "")
     return (
-        f'<div style="display:flex; justify-content:space-between; '
-        f'align-items:center; margin:0 0 6px 0;">'
-        f'<div style="font-size:{SECTION_HEADER_SIZE}px; font-weight:800;">{safe_label}</div>'
-        f'<div style="font-size:15px; font-weight:700;">{score_text_html(score)}</div>'
-        f'</div>'
+        f"<div style=\""
+        f"display:flex;"
+        f"justify-content:space-between;"
+        f"align-items:flex-end;"
+        f"gap:12px;"
+        f"margin-top:{SECTION_VERTICAL_GAP}px;"
+        f"margin-bottom:{SECTION_VERTICAL_GAP}px;"
+        f"\">"
+        f"<div style=\"font-size:{SECTION_HEADER_SIZE}px; font-weight:900; color:#FFFFFF; line-height:1.0;\">"
+        f"{safe_label}"
+        f"</div>"
+        f"<div style=\"line-height:1.0;\">{score_text_html(score)}</div>"
+        f"</div>"
     )
 
 
 def avg_score_bar_html(label, score):
-    safe_label = html_escape_text(label or "")
-
     if score >= 80:
         color = "#2E7D32"
     elif score >= 50:
@@ -247,115 +275,172 @@ def avg_score_bar_html(label, score):
     else:
         color = "#C62828"
 
+    safe_label = html_escape_text(label or "")
     return (
-        f'<div style="margin:0 0 12px 0;">'
-        f'<div style="display:flex; justify-content:space-between; '
-        f'font-size:14px; font-weight:700; margin-bottom:4px;">'
-        f'<span>{safe_label}</span><span>{score}%</span>'
-        f'</div>'
-        f'<div style="width:100%; height:10px; background:#1f2937; '
-        f'border-radius:999px; overflow:hidden;">'
-        f'<div style="width:{max(0, min(score, 100))}%; height:100%; '
-        f'background:{color};"></div>'
-        f'</div>'
-        f'</div>'
+        f"<div style=\""
+        f"background-color:{color};"
+        f"padding:6px 10px;"
+        f"border-radius:4px;"
+        f"color:white;"
+        f"font-weight:900;"
+        f"font-size:19px;"
+        f"margin-top:2px;"
+        f"margin-bottom:{IMG_SPACE_PX}px;"
+        f"display:flex;"
+        f"justify-content:space-between;"
+        f"align-items:center;"
+        f"gap:10px;"
+        f"\">"
+        f"<span>{safe_label}</span>"
+        f"<span style=\"color:#FFFFFF; font-weight:900; font-size:20px;\">{score}%</span>"
+        f"</div>"
     )
 
-def column_header_link_html(
-    left_label,
-    left_url="",
-    right_label="",
-    retailer_name="",
-    retailer_rpc="",
-    retail_url="",
-):
-    safe_left = html_escape_text(left_label or "Salsify")
 
-    left_url = str(left_url or "").strip()
-    right_label = str(right_label or "").strip()
-    retailer_name = str(retailer_name or "").strip()
-    retailer_rpc = str(retailer_rpc or "").strip()
-    retail_url = str(retail_url or "").strip()
+def column_header_link_html(label, item_number, href):
+    safe_label = html_escape_text(label or "")
+    safe_item = html_escape_text(item_number or "")
+    safe_href = html.escape(str(href or ""), quote=True)
 
-    # Backward-compatible support for old call pattern:
-    # column_header_link_html("Salsify", sku, salsify_url)
-    if not retailer_name and not retailer_rpc and not retail_url:
-        if right_label.startswith("http://") or right_label.startswith("https://"):
-            left_url = right_label
-            safe_right = ""
-        else:
-            safe_right = html_escape_text(right_label or "Retailer")
-    else:
-        safe_right = html_escape_text(
-            f"{retailer_name}: {retailer_rpc}" if retailer_rpc else retailer_name or right_label or "Retailer"
-        )
-
-    if left_url.startswith("http://") or left_url.startswith("https://"):
-        left_html = (
-            f'<a href="{html.escape(left_url, quote=True)}" target="_blank" '
-            f'style="color:#60a5fa; text-decoration:none; font-weight:800;">{safe_left}</a>'
+    if safe_href and safe_item:
+        item_html = (
+            f"<a href=\"{safe_href}\" target=\"_blank\" "
+            f"style=\"color:#3EA6FF; text-decoration:none; font-weight:900;\">"
+            f"{safe_item}</a>"
         )
     else:
-        left_html = f'<span style="font-weight:800;">{safe_left}</span>'
-
-    if retail_url:
-        right_html = (
-            f'<a href="{html.escape(retail_url, quote=True)}" target="_blank" '
-            f'style="color:#60a5fa; text-decoration:none; font-weight:800;">{safe_right}</a>'
-        )
-    elif safe_right:
-        right_html = f'<span style="font-weight:800;">{safe_right}</span>'
-    else:
-        right_html = ""
+        item_html = f"<span style=\"color:#3EA6FF; font-weight:900;\">{safe_item or 'Missing'}</span>"
 
     return (
-        f'<div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; '
-        f'margin:0 0 10px 0; font-size:18px;">'
-        f'<div>{left_html}</div>'
-        f'<div>{right_html}</div>'
-        f'</div>'
+        f"<div style=\""
+        f"text-align:left;"
+        f"margin-top:0;"
+        f"margin-bottom:2px;"
+        f"font-size:28px;"
+        f"font-weight:900;"
+        f"color:#FFFFFF;"
+        f"line-height:1.05;"
+        f"\">"
+        f"{safe_label}: {item_html}"
+        f"</div>"
     )
+
 
 def image_header_html(label):
     safe_label = html_escape_text(label or "")
-    return f'<div style="font-size:18px; font-weight:800; margin:0 0 10px 0;">{safe_label}</div>'
+    return (
+        f"<div style=\""
+        f"text-align:left;"
+        f"margin-top:0;"
+        f"margin-bottom:2px;"
+        f"font-size:28px;"
+        f"font-weight:900;"
+        f"color:#FFFFFF;"
+        f"line-height:1.05;"
+        f"\">"
+        f"{safe_label}"
+        f"</div>"
+    )
 
 
-def image_compare_row_html(s_url, r_url, slot_score):
-    def render_image_box(image_url, alt_text="Image"):
-        image_url = str(image_url or "").strip()
-
-        if not image_url:
-            return (
-                f'<div style="height:{IMG_BOX_HEIGHT}px; border:1px solid #2a2f3a; '
-                f'border-radius:8px; display:flex; align-items:center; justify-content:center; '
-                f'background:#111827; color:#9ca3af; font-size:12px;">Missing</div>'
-            )
-
+def image_compare_cell_html(url):
+    if url:
+        safe_url = html.escape(str(url), quote=True)
         return (
-            f'<div style="height:{IMG_BOX_HEIGHT}px; border:1px solid #2a2f3a; '
-            f'border-radius:8px; display:flex; align-items:center; justify-content:center; '
-            f'background:#111827; overflow:hidden; padding:6px;">'
-            f'<img src="{html.escape(image_url, quote=True)}" alt="{html.escape(alt_text)}" '
-            f'style="max-width:100%; max-height:{IMG_BOX_HEIGHT - 12}px; object-fit:contain; '
-            f'display:block; margin:auto; border-radius:4px;" />'
-            f'</div>'
+            f"<div style=\""
+            f"width:100%;"
+            f"margin:0;"
+            f"padding:0;"
+            f"display:flex;"
+            f"align-items:flex-start;"
+            f"justify-content:center;"
+            f"overflow:hidden;"
+            f"\">"
+            f"<img src=\"{safe_url}\" style=\"display:block; width:100%; height:auto; object-fit:contain;\" />"
+            f"</div>"
         )
 
-    left_img = render_image_box(s_url, alt_text="Salsify image")
-    right_img = render_image_box(r_url, alt_text="Retailer image")
-
     return (
-        f'<div style="display:grid; grid-template-columns:1fr {IMG_SCORE_WIDTH_PX}px 1fr; '
-        f'gap:{IMG_SPACE_PX}px; align-items:start; margin:0 0 {SECTION_VERTICAL_GAP}px 0;">'
-        f'<div>{left_img}</div>'
-        f'<div style="display:flex; align-items:center; justify-content:center; '
-        f'min-height:{IMG_BOX_HEIGHT}px; font-size:14px; font-weight:700;">'
-        f'{score_text_html(slot_score)}'
-        f'</div>'
-        f'<div>{right_img}</div>'
-        f'</div>'
+        f"<div style=\""
+        f"width:100%;"
+        f"min-height:80px;"
+        f"display:flex;"
+        f"align-items:center;"
+        f"justify-content:center;"
+        f"margin:0;"
+        f"padding:0;"
+        f"color:#C62828;"
+        f"font-size:16px;"
+        f"font-weight:700;"
+        f"\">"
+        f"Missing"
+        f"</div>"
     )
+
+def image_compare_row_html(s_url, r_url, score):
+    return (
+        f"<div style=\""
+        f"display:grid;"
+        f"grid-template-columns:minmax(0,1fr) minmax(0,1fr) {IMG_SCORE_WIDTH_PX}px;"
+        f"column-gap:8px;"
+        f"align-items:start;"
+        f"margin:0 0 {IMG_SPACE_PX}px 0;"
+        f"padding:0;"
+        f"\">"
+        f"<div style=\"margin:0; padding:0;\">"
+        f"{image_compare_cell_html(s_url)}"
+        f"</div>"
+        f"<div style=\"margin:0; padding:0;\">"
+        f"{image_compare_cell_html(r_url)}"
+        f"</div>"
+        f"<div style=\""
+        f"display:flex;"
+        f"align-items:flex-start;"
+        f"justify-content:flex-start;"
+        f"text-align:left;"
+        f"margin:0;"
+        f"padding-top:4px;"
+        f"\">"
+        f"{score_text_html(score)}"
+        f"</div>"
+        f"</div>"
+    )
+
+def image_tile_html(label, url, box_height=170):
+    safe_label = html.escape(label)
+
+    if url:
+        safe_url = html.escape(url, quote=True)
+        return f'''<div style="border:1px solid #E0E0E0;border-radius:8px;background:#FFFFFF;padding:8px;">
+<div style="font-size:45px;font-weight:600;margin-bottom:6px;">{safe_label}</div>
+<div style="height:{box_height}px;display:flex;align-items:center;justify-content:center;background:#FAFAFA;border-radius:6px;overflow:hidden;">
+<img src="{safe_url}" style="max-width:100%;max-height:{box_height}px;object-fit:contain;" />
+</div>
+</div>'''
+    else:
+        return f'''<div style="border:1px solid #E0E0E0;border-radius:8px;background:#FFFFFF;padding:8px;">
+<div style="font-size:45px;font-weight:600;margin-bottom:6px;">{safe_label}</div>
+<div style="height:{box_height}px;display:flex;align-items:center;justify-content:center;background:#FAFAFA;border-radius:6px;color:#C62828;font-size:14px;font-weight:600;">
+❌ Missing
+</div>
+</div>'''
+
+
+def image_slot_block_html(slot_num, s_url, r_url, score, retailer_name="CVS", box_height=170):
+    if score >= 80:
+        score_color = "#2E7D32"
+    elif score >= 50:
+        score_color = "#F9A825"
+    else:
+        score_color = "#C62828"
+
+    return f'''<div style="border:1px solid #DADADA;border-radius:10px;padding:10px;margin-bottom:12px;background:#FCFCFC;">
+<div style="font-weight:700;margin-bottom:10px;color:{score_color};">Image Slot {slot_num} — {score}%</div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+{image_tile_html("Salsify", s_url, box_height=box_height)}
+{image_tile_html(retailer_name, r_url, box_height=box_height)}
+</div>
+</div>'''
 
 
 def build_image_panel_html(s_images, r_images, max_images, retailer_name="CVS", box_height=110):
@@ -367,10 +452,17 @@ def build_image_panel_html(s_images, r_images, max_images, retailer_name="CVS", 
         score = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
 
         blocks.append(
-            image_compare_row_html(s_url, r_url, score)
+            image_slot_block_html(
+                slot_num=i + 1,
+                s_url=s_url,
+                r_url=r_url,
+                score=score,
+                retailer_name=retailer_name,
+                box_height=box_height,
+            )
         )
 
-    return "".join(blocks)
+    return f'''<div style="padding-right:4px;">{"".join(blocks)}</div>'''
 
 
 def read_uploaded_file_from_bytes(file_bytes, file_name):
@@ -4295,364 +4387,19 @@ def get_sams_bundle(retail_url, target_rpc="", sku=""):
         ),
         "images": [] if is_sams_robot_page(html_text) else extract_sams_images_from_html(html_text),
     }
-
-# =========================================
-# KROGER PARSERS
-# =========================================
-def clean_kroger_text(text):
-    if not text:
-        return ""
-
-    text = str(text)
-    text = html.unescape(text)
-    text = re.sub(
-        r"<script\b[^>]*>.*?</script>",
-        " ",
-        text,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-
-    if "<" in text and ">" in text:
-        text = BeautifulSoup(text, "html.parser").get_text(" ", strip=True)
-
-    return normalize_space(text)
-
-
-def clean_kroger_title(text):
-    text = clean_kroger_text(text)
-    text = re.sub(r"\s+,", ",", text)
-    text = re.sub(r",\s*,", ", ", text)
-    return normalize_space(text)
-
-
-def normalize_kroger_features(items, max_features=5):
-    if not items:
-        return []
-
-    if isinstance(items, str):
-        items = [items]
-
-    cleaned = []
-    for item in items:
-        value = clean_kroger_text(item)
-        if value:
-            cleaned.append(value)
-
-    return dedupe_preserve_order(cleaned)[:max_features]
-
-
-def build_kroger_title_from_url_slug(retail_url):
-    retail_url = str(retail_url or "").strip()
-    if not retail_url:
-        return ""
-
-    m = re.search(r"/p/([^/?#]+)", retail_url, flags=re.IGNORECASE)
-    if not m:
-        return ""
-
-    slug = m.group(1)
-    slug = slug.replace("-", " ")
-    return clean_kroger_title(slug)
-
-
-def _collect_kroger_jsonld_images(soup):
-    images = []
-
-    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
-        raw = (script.string or script.get_text(" ", strip=True) or "").strip()
-        if not raw:
-            continue
-
-        try:
-            payload = json.loads(raw)
-        except Exception:
-            continue
-
-        nodes = payload if isinstance(payload, list) else [payload]
-
-        while nodes:
-            node = nodes.pop(0)
-
-            if isinstance(node, dict):
-                image_value = node.get("image", None)
-
-                if isinstance(image_value, str) and image_value.strip():
-                    images.append(image_value)
-
-                elif isinstance(image_value, list):
-                    for item in image_value:
-                        if isinstance(item, str) and item.strip():
-                            images.append(item)
-
-                for value in node.values():
-                    if isinstance(value, (dict, list)):
-                        nodes.append(value)
-
-            elif isinstance(node, list):
-                nodes.extend(node)
-
-    return images
-
-
-def _normalize_kroger_image_url(url):
-    if not url:
-        return ""
-
-    url = html.unescape(str(url).strip())
-
-    if url.startswith("//"):
-        url = "https:" + url
-
-    if not re.match(r"^https?://", url, flags=re.IGNORECASE):
-        return ""
-
-    lowered = url.lower()
-
-    if any(bad in lowered for bad in ["sprite", "icon", "logo", "placeholder", ".svg", "data:image"]):
-        return ""
-
-    if not any(ext in lowered for ext in [".jpg", ".jpeg", ".png", ".webp", ".avif"]):
-        return ""
-
-    return url
-
-
-def extract_kroger_images_from_html(html_text):
-    if not html_text:
-        return []
-
-    soup = BeautifulSoup(html_text, "html.parser")
-    urls = []
-
-    # 1. JSON-LD image fields
-    urls.extend(_collect_kroger_jsonld_images(soup))
-
-    # 2. OpenGraph / Twitter / itemprop image
-    for attrs in [
-        {"property": "og:image"},
-        {"name": "twitter:image"},
-        {"itemprop": "image"},
-    ]:
-        tag = soup.find("meta", attrs=attrs)
-        if tag and tag.get("content"):
-            urls.append(tag.get("content"))
-
-    # 3. Image tags
-    for tag in soup.find_all(["img", "source"]):
-        for attr in ["src", "data-src", "data-zoom-image", "data-lazy-src", "srcset"]:
-            value = tag.get(attr, "")
-            if not value:
-                continue
-
-            if attr == "srcset":
-                for piece in str(value).split(","):
-                    part = piece.strip().split(" ")[0].strip()
-                    if part:
-                        urls.append(part)
-            else:
-                urls.append(value)
-
-    # 4. Regex fallback
-    regex_urls = re.findall(
-        r'https?://[^\\s"\']+\\.(?:jpg|jpeg|png|webp|avif)(?:\\?[^\\s"\']*)?',
-        str(html_text),
-        flags=re.IGNORECASE,
-    )
-    urls.extend(regex_urls)
-
-    out = []
-    seen = set()
-
-    for raw in urls:
-        clean = _normalize_kroger_image_url(raw)
-        if not clean:
-            continue
-
-        base = clean.split("?", 1)[0]
-        if base not in seen:
-            seen.add(base)
-            out.append(base)
-
-    return out[:MAX_IMAGE_SLOTS_TO_COMPARE]
-
-
-def extract_kroger_text_from_html(html_text, retail_url="", target_rpc=""):
-    debug = {
-        "Title Path": "",
-        "Description Path": "",
-        "Features Path": "",
-        "Source Used": "kroger_html",
-    }
-
-    if not html_text:
-        return {
-            "title": "",
-            "description": "",
-            "features": [],
-            "debug": debug,
-        }
-
-    soup = BeautifulSoup(html_text, "html.parser")
-
-    title = ""
-    description = ""
-    features = []
-
-    # -----------------------------------------
-    # TITLE
-    # -----------------------------------------
-    h1 = soup.find("h1")
-    if h1:
-        title = clean_kroger_title(h1.get_text(" ", strip=True))
-        if title:
-            debug["Title Path"] = "h1"
-
-    if not title:
-        og_title = soup.find("meta", attrs={"property": "og:title"})
-        if og_title and og_title.get("content"):
-            title = clean_kroger_title(og_title.get("content"))
-            if title:
-                debug["Title Path"] = "og:title"
-
-    if not title and soup.title:
-        title = clean_kroger_title(soup.title.get_text(" ", strip=True))
-        if title:
-            debug["Title Path"] = "html_title"
-
-    if not title:
-        title = build_kroger_title_from_url_slug(retail_url)
-        debug["Title Path"] = "retail_url_slug_fallback" if title else "kroger_title_missing"
-
-    # -----------------------------------------
-    # DESCRIPTION + FEATURES
-    # -----------------------------------------
-    # Try to target the product details accordion/content area first.
-    product_detail_candidates = []
-
-    # Common data-testid / semantic blocks.
-    for selector in [
-        '[data-testid*="product-details"]',
-        '[data-testid*="product-detail"]',
-        '[data-testid*="product-information"]',
-        '[data-testid*="nutrition-description"]',
-        '[class*="ProductDetails"]',
-        '[class*="product-details"]',
-        '[class*="Accordion"]',
-        '[class*="accordion"]',
-    ]:
-        try:
-            product_detail_candidates.extend(soup.select(selector))
-        except Exception:
-            pass
-
-    # Fallback to all section/div/article blocks if targeted selectors miss.
-    if not product_detail_candidates:
-        product_detail_candidates = soup.find_all(["section", "article", "div"])
-
-    best_desc = ""
-    best_features = []
-
-    for block in product_detail_candidates:
-        block_text = clean_kroger_text(block.get_text(" ", strip=True))
-        if not block_text:
-            continue
-
-        # Pull paragraph candidates
-        p_values = []
-        for p in block.find_all("p"):
-            p_text = clean_kroger_text(p.get_text(" ", strip=True))
-            if p_text and len(p_text) > len(best_desc):
-                p_values.append(p_text)
-
-        if p_values:
-            candidate_desc = max(p_values, key=len)
-            if len(candidate_desc) > len(best_desc):
-                best_desc = candidate_desc
-
-        # Pull bullet candidates
-        li_values = []
-        for li in block.find_all("li"):
-            li_text = clean_kroger_text(li.get_text(" ", strip=True))
-            if li_text:
-                li_values.append(li_text)
-
-        li_values = normalize_kroger_features(li_values, max_features=10)
-
-        if len(li_values) > len(best_features):
-            best_features = li_values
-
-    description = best_desc
-    features = normalize_kroger_features(best_features, max_features=5)
-
-    if description:
-        debug["Description Path"] = "kroger_product_details_dom"
-    else:
-        # meta fallback
-        for attrs in [
-            {"name": "description"},
-            {"property": "og:description"},
-            {"name": "twitter:description"},
-        ]:
-            tag = soup.find("meta", attrs=attrs)
-            if tag and tag.get("content"):
-                candidate = clean_kroger_text(tag.get("content"))
-                if len(candidate) > len(description):
-                    description = candidate
-
-        debug["Description Path"] = "kroger_meta_fallback" if description else "kroger_description_missing"
-
-    if features:
-        debug["Features Path"] = "kroger_product_details_li"
-    else:
-        debug["Features Path"] = "kroger_features_missing"
-
-    return {
-        "title": title,
-        "description": description,
-        "features": features[:5],
-        "debug": debug,
-    }
-
-
-@st.cache_data(show_spinner=False)
-def get_kroger_bundle(retail_url, target_rpc="", sku=""):
-    html_text = get_html(retail_url)
-
-    return {
-        "text": extract_kroger_text_from_html(
-            html_text,
-            retail_url=retail_url,
-            target_rpc=target_rpc,
-        ),
-        "images": extract_kroger_images_from_html(html_text),
-    }
     
-def get_retailer_bundle(
-    retailer_name,
-    retail_url,
-    target_rpc="",
-    sku="",
-    source_snapshot_text="",
-):
+def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku=""):
     retailer = str(retailer_name or "").strip().lower()
 
     if retailer == "walgreens":
         return get_walgreens_bundle(retail_url, target_rpc, sku=sku)
 
     if retailer in ["sam's club", "sams club", "samsclub"]:
-        return get_sams_bundle(
-            retail_url,
-            target_rpc,
-            sku=sku,
-            source_snapshot_text=source_snapshot_text,
-        )
-
-    if retailer == "kroger":
-        return get_kroger_bundle(retail_url, target_rpc, sku=sku)
+        return get_sams_bundle(retail_url, target_rpc, sku=sku)
 
     # Default path stays CVS.
     return get_cvs_bundle(retail_url, target_rpc)
-    
+
 # =========================================
 # RETAILER-SPECIFIC FINAL COPY CLEANUP
 # =========================================
@@ -5146,15 +4893,6 @@ def finalize_retailer_copy(retailer_name, r_text):
         out["title"] = clean_sams_title(out.get("title", ""))
         out["description"] = clean_sams_text(out.get("description", ""))
         out["features"] = normalize_sams_features_final(
-            out.get("features", []),
-            max_features=5,
-        )
-        return out
-
-    if retailer == "kroger":
-        out["title"] = clean_kroger_title(out.get("title", ""))
-        out["description"] = clean_kroger_text(out.get("description", ""))
-        out["features"] = normalize_kroger_features(
             out.get("features", []),
             max_features=5,
         )
@@ -5799,61 +5537,43 @@ def process_row(row):
 # =========================================
 if "start_idx" not in st.session_state:
     st.session_state.start_idx = 0
-
 if "summary_rows" not in st.session_state:
     st.session_state.summary_rows = []
-
 if "export_rows" not in st.session_state:
     st.session_state.export_rows = []
-
 if "debug_rows" not in st.session_state:
     st.session_state.debug_rows = []
-
 if "summary_skus" not in st.session_state:
     st.session_state.summary_skus = set()
-
 if "detail_skus" not in st.session_state:
     st.session_state.detail_skus = set()
-
 if "debug_skus" not in st.session_state:
     st.session_state.debug_skus = set()
-
 if "processing_done" not in st.session_state:
     st.session_state.processing_done = False
-
+if "progress_bar" not in st.session_state:
+    st.session_state.progress_bar = None
 if "last_file_hash" not in st.session_state:
-    st.session_state.last_file_hash = ""
-
+    st.session_state.last_file_hash = None
 if "uploaded_file_bytes" not in st.session_state:
     st.session_state.uploaded_file_bytes = None
-
 if "selected_retailer" not in st.session_state:
-    st.session_state.selected_retailer = ""
-
+    st.session_state.selected_retailer = "-- Select Retailer --"
 if "selected_brand_visual" not in st.session_state:
-    st.session_state.selected_brand_visual = ""
-
+    st.session_state.selected_brand_visual = "All"
 if "active_batch_key" not in st.session_state:
     st.session_state.active_batch_key = ""
-
 if "completed_batch_key" not in st.session_state:
     st.session_state.completed_batch_key = ""
-
 if "auto_download_done" not in st.session_state:
     st.session_state.auto_download_done = False
-
 if "report_bytes" not in st.session_state:
     st.session_state.report_bytes = None
-
 if "report_filename" not in st.session_state:
     st.session_state.report_filename = None
-
 if "report_batch_key" not in st.session_state:
     st.session_state.report_batch_key = ""
 
-if "show_visual_ui" not in st.session_state:
-    st.session_state.show_visual_ui = False
-    
 # =========================================
 # TOP UPLOAD + DOWNLOAD UI
 # =========================================
@@ -5864,19 +5584,15 @@ with top_upload_col:
 
 with top_download_col:
     st.markdown("<div style='height: 30px;'></div>", unsafe_allow_html=True)
-
     if st.session_state.report_bytes is not None and st.session_state.report_filename:
         st.download_button(
-            label="⬇ Download Excel Report",
+            label="📥 Download Excel Report",
             data=st.session_state.report_bytes,
             file_name=st.session_state.report_filename,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key="download_excel_report_top_inline",
         )
 
-        if st.button("🔎 Open Full Visual QA", key="open_full_visual_qa"):
-            st.session_state.show_visual_ui = True
-            
 master_df = None
 retailer_df = None
 all_retailers = []
@@ -5892,34 +5608,27 @@ if uploaded_file:
         st.session_state.uploaded_file_bytes = file_bytes
         file_hash = hashlib.md5(file_bytes).hexdigest()
 
-        if file_hash != st.session_state.last_file_hash:
-            st.session_state.last_file_hash = file_hash
-            st.session_state.uploaded_file_bytes = file_bytes
-        
-            st.session_state.start_idx = 0
+        if st.session_state.last_file_hash != file_hash:
             st.session_state.summary_rows = []
             st.session_state.export_rows = []
             st.session_state.debug_rows = []
-        
             st.session_state.summary_skus = set()
             st.session_state.detail_skus = set()
             st.session_state.debug_skus = set()
-        
+            st.session_state.start_idx = 0
             st.session_state.processing_done = False
+            st.session_state.progress_bar = None
+            st.session_state.last_file_hash = file_hash
+            st.session_state.selected_retailer = "-- Select Retailer --"
+            st.session_state.selected_brand_visual = "All"
             st.session_state.active_batch_key = ""
             st.session_state.completed_batch_key = ""
-        
             st.session_state.auto_download_done = False
             st.session_state.report_bytes = None
             st.session_state.report_filename = None
             st.session_state.report_batch_key = ""
-        
-            # IMPORTANT: hide Full Visual QA on new upload
-            st.session_state.show_visual_ui = False
-        
             clear_in_memory_caches()
             st.cache_data.clear()
-
 
         master_df = read_uploaded_file_from_bytes(file_bytes, uploaded_file.name)
         master_df = prepare_input_df(master_df)
@@ -5960,7 +5669,6 @@ if uploaded_file:
 
             if st.session_state.active_batch_key != current_batch_key:
                 st.session_state.summary_rows = []
-                st.session_state.show_visual_ui = False
                 st.session_state.export_rows = []
                 st.session_state.debug_rows = []
                 st.session_state.summary_skus = set()
@@ -6241,18 +5949,7 @@ if (
             "<style>.block-container{max-width:1700px;padding-top:1rem;padding-bottom:1rem;} img{max-width:100%;height:auto;}</style>",
             unsafe_allow_html=True,
         )
-        
-        if st.session_state.report_bytes is not None and st.session_state.report_filename:
-            if st.session_state.show_visual_ui:
-                st.markdown("## 🔎 Full Visual QA Review")
-        
-                visual_df = retailer_df.copy()
-        
-                # keep your existing Full Visual QA code here
-
-            else:
-                st.info("Download the extract first, then click '🔎 Open Full Visual QA'.")
-
+        st.markdown("## 👁️ Full Visual QA Review")
 
         if hidden_count > 0:
             st.caption(
