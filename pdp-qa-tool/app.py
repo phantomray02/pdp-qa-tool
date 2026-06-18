@@ -376,24 +376,6 @@ def image_compare_cell_html(url):
         f"Missing"
         f"</div>"
     )
-    
-def clickable_image_html(image_url, alt_text="Image", height_px=104):
-    image_url = str(image_url or "").strip()
-
-    if not image_url:
-        return (
-            f'<div style="'
-            f'height:{height_px}px;'
-            f'border:1px solid #2a2f3a;'
-            f'border-radius:8px;'
-            f'display:flex;'
-            f'align-items:center;'
-            f'justify-content:center;'
-            f'background:#111827;'
-            f'color:#9ca3af;'
-            f'font-size:12px;'
-            f'">Missing</div>'
-        )
 
     return (
         f'<a href="{image_url}" target="_blank" rel="noopener noreferrer" '
@@ -420,17 +402,55 @@ def clickable_image_html(image_url, alt_text="Image", height_px=104):
     )
     
 def image_compare_row_html(s_url, r_url, slot_score):
-    left_img = clickable_image_html(
-        s_url,
-        alt_text="Salsify image",
-        height_px=IMG_BOX_HEIGHT,
-    )
+    def render_image_box(image_url, alt_text="Image"):
+        image_url = str(image_url or "").strip()
 
-    right_img = clickable_image_html(
-        r_url,
-        alt_text="Retailer image",
-        height_px=IMG_BOX_HEIGHT,
-    )
+        if not image_url:
+            return f"""
+            <div style="
+                height:{IMG_BOX_HEIGHT}px;
+                border:1px solid #2a2f3a;
+                border-radius:8px;
+                display:flex;
+                align-items:center;
+                justify-content:center;
+                background:#111827;
+                color:#9ca3af;
+                font-size:12px;
+            ">
+                Missing
+            </div>
+            """
+
+        return f"""
+        <div style="
+            height:{IMG_BOX_HEIGHT}px;
+            border:1px solid #2a2f3a;
+            border-radius:8px;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            background:#111827;
+            overflow:hidden;
+            padding:6px;
+        ">
+            <img
+                src="{html.escape(image_url)}"
+                alt="{html.escape(alt_text)}"
+                style="
+                    max-width:100%;
+                    max-height:{IMG_BOX_HEIGHT - 12}px;
+                    object-fit:contain;
+                    display:block;
+                    margin:auto;
+                    border-radius:4px;
+                "
+            />
+        </div>
+        """
+
+    left_img = render_image_box(s_url, alt_text="Salsify image")
+    right_img = render_image_box(r_url, alt_text="Retailer image")
 
     return f"""
     <div style="
@@ -455,7 +475,7 @@ def image_compare_row_html(s_url, r_url, slot_score):
 
         <div>{right_img}</div>
     </div>
-    """
+    ""
 
 def image_tile_html(label, url, box_height=170):
     safe_label = html.escape(label)
