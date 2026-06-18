@@ -187,8 +187,6 @@ def description_similarity_score(a, b):
         return 100
 
     return int(SequenceMatcher(None, a_norm, b_norm).ratio() * 100)
-
-def image_compare_row_html(...):
     
 def image_compare_row_html(s_url, r_url, slot_score):
     def render_image_box(image_url, alt_text="Image"):
