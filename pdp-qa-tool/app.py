@@ -5937,51 +5937,63 @@ with top_download_col:
 # =========================================
 # FULL VISUAL MODE
 # =========================================
-if (
-    retailer_df is not None
-    and st.session_state.processing_done
-    and st.session_state.completed_batch_key == current_batch_key
-):
-    try:
-        visual_df = retailer_df.copy()
+if st.session_state.report_bytes is not None and st.session_state.report_filename:
+    st.markdown("## 🔎 Full Visual QA Review")
 
-        selected_visual_brand = st.session_state.selected_brand_visual
-        if selected_visual_brand != "All" and "brand" in visual_df.columns:
-            visual_df = visual_df[visual_df["brand"].astype(str) == selected_visual_brand].copy()
+    visual_df = retailer_df.copy()
 
-        if visual_df.empty:
-            st.warning("No rows found for the selected retailer / brand.")
-            st.stop()
-
-        invalid_retail_values = {"", "n/a", "#n/a", "na", "nan", "none"}
-        visual_df["retail_url_clean"] = (
-            visual_df["retail_url"]
-            .fillna("")
-            .astype(str)
-            .str.strip()
-            .str.lower()
+    if "brand" in visual_df.columns:
+        all_visual_brands = sorted(
+            visual_df["brand"].fillna("").astype(str).unique().tolist()
         )
-        hidden_count = int(visual_df["retail_url_clean"].isin(invalid_retail_values).sum())
-        visual_df = visual_df[
-            ~visual_df["retail_url_clean"].isin(invalid_retail_values)
-        ].copy()
-        visual_df.drop(columns=["retail_url_clean"], inplace=True, errors="ignore")
+        visual_brand_options = ["All"] + [b for b in all_visual_brands if b != ""]
 
-        st.markdown(
-            "<style>.block-container{max-width:1700px;padding-top:1rem;padding-bottom:1rem;} img{max-width:100%;height:auto;}</style>",
-            unsafe_allow_html=True,
+        if st.session_state.selected_brand_visual not in visual_brand_options:
+            st.session_state.selected_brand_visual = "All"
+
+        selected_visual_brand = st.selectbox(
+            "Select Brand for Full Visual QA",
+            visual_brand_options,
+            key="selected_brand_visual",
         )
-        st.markdown("## 👁️ Full Visual QA Review")
 
-        if hidden_count > 0:
-            st.caption(
-                f"Excluded from Full Visual QA only: {hidden_count} item(s) with missing retailer URLs."
-            )
-        if visual_df.empty:
-            st.info(
-                "No visually reviewable items found. Products without retailer URLs are still included in the extract."
-            )
-            st.stop()
+        if selected_visual_brand != "All":
+            visual_df = visual_df[
+                visual_df["brand"].fillna("").astype(str) == selected_visual_brand
+            ].copy()
+
+    if visual_df.empty:
+        st.warning("No rows found for the selected retailer / brand.")
+        st.stop()
+
+    invalid_retail_values = {"", "n/a", "#n/a", "na", "nan", "none"}
+
+    visual_df["retail_url_clean"] = (
+        visual_df["retail_url"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+
+    visual_df = visual_df[
+        ~visual_df["retail_url_clean"].str.lower().isin(invalid_retail_values)
+    ].copy()
+
+    if visual_df.empty:
+        st.info("No rows with a valid retailer URL were available for Full Visual QA.")
+        st.stop()
+
+    hidden_count = len(retailer_df) - len(visual_df)
+    if hidden_count > 0:
+        st.caption(
+            f"{hidden_count} item(s) were excluded from Full Visual QA because the retailer URL was blank / invalid."
+        )
+
+    # KEEP YOUR EXISTING PER-SKU VISUAL LOOP BELOW THIS LINE.
+    # Leave your existing row scoring / Copy Avg / Images Avg /
+    # title / description / features / images / debugger rendering as-is.
+        summary_df.to_excel(writer, sheet_name="Summary", index=False)
+
 
         for _, row in visual_df.iterrows():
             sku = row.get("sku", "Missing SKU")
