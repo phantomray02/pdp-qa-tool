@@ -307,7 +307,7 @@ def rating_stars_html(rating, review_count=None, font_size_px=28):
         f'white-space:nowrap;margin:0;line-height:1;">'
         f'<span style="font-size:28px;font-weight:900;color:#FFFFFF;line-height:1;">{rating:.1f}</span>'
         f'<div style="position:relative;display:inline-block;line-height:1;'
-        f'font-size:{font_size_px}px;letter-spacing:0.25px;">'
+        f'font-size:{font_size_px}px;letter-spacing:0.15px;">'
         f'<div style="color:rgba(255,255,255,0.35);">★★★★★</div>'
         f'<div style="position:absolute;top:0;left:0;width:{fill_pct}%;overflow:hidden;'
         f'white-space:nowrap;color:#FFFFFF;">★★★★★</div>'
@@ -6082,30 +6082,32 @@ if (
             left, right = st.columns([2.72, 0.95], gap="small")
         
             with left:
-                top_l, top_mid, top_rating = st.columns([0.88, 1.20, 0.94], gap="small")
+                top_l, top_sp1, top_mid, top_sp2, top_rating = st.columns([0.72, 0.10, 0.94, 0.08, 0.96], gap="small")
 
                 top_l.markdown(
                     column_header_link_html("Salsify", sku, salsify_url),
                     unsafe_allow_html=True,
                 )
+                top_sp1.markdown("&nbsp;", unsafe_allow_html=True)
 
                 raw_rpc = current_target_sku or current_rpc
                 clean_rpc = clean_item_number(raw_rpc)
 
                 top_mid.markdown(
-                    f"<div style='margin-left:68px;'>" + column_header_link_html(
+                    column_header_link_html(
                         retailer_name,
                         clean_rpc,
                         retail_url,
-                    ) + "</div>",
+                    ),
                     unsafe_allow_html=True,
                 )
+                top_sp2.markdown("&nbsp;", unsafe_allow_html=True)
 
                 if str(retailer_name or "").strip().lower() == "walgreens":
                     rating_value = (r_text.get("rating", "") if isinstance(r_text, dict) else "") or row.get("rating", "") or "4.5"
                     review_count_value = (r_text.get("review_count", "") if isinstance(r_text, dict) else "") or row.get("review_count", "") or "4201"
                     top_rating.markdown(
-                        f"<div style='margin-left:46px;'>" + rating_stars_html(rating_value, review_count_value, font_size_px=28) + "</div>",
+                        rating_stars_html(rating_value, review_count_value, font_size_px=28),
                         unsafe_allow_html=True,
                     )
                 else:
@@ -6165,12 +6167,10 @@ if (
                     )
 
             with right:
-                head_i1, head_i2 = st.columns(2, gap="small")
+                head_i1, head_i_gap, head_i2 = st.columns([0.86, 0.02, 1.12], gap="small")
                 head_i1.markdown(image_header_html("Salsify"), unsafe_allow_html=True)
-                head_i2.markdown(
-                    f"<div style='margin-left:-50px;'>" + image_header_html(retailer_name) + "</div>",
-                    unsafe_allow_html=True,
-                )
+                head_i_gap.markdown("&nbsp;", unsafe_allow_html=True)
+                head_i2.markdown(image_header_html(retailer_name), unsafe_allow_html=True)
                 st.markdown(
                     avg_score_bar_html("Images — Avg", avg_img_score),
                     unsafe_allow_html=True,
