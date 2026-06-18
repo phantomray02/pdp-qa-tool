@@ -6384,17 +6384,14 @@ if (
             "<style>.block-container{max-width:1700px;padding-top:1rem;padding-bottom:1rem;} img{max-width:100%;height:auto;}</style>",
             unsafe_allow_html=True,
         )
+        
         if st.session_state.report_bytes is not None and st.session_state.report_filename:
             if st.session_state.show_visual_ui:
                 st.markdown("## 🔎 Full Visual QA Review")
-
         
                 visual_df = retailer_df.copy()
         
                 # keep your existing Full Visual QA code here
-        
-            else:
-                st.info("Generate and download the extract first, then click 'Open Full Visual QA'.")
 
             else:
                 st.info("Download the extract first, then click '🔎 Open Full Visual QA'.")
