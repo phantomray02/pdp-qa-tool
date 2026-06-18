@@ -5594,14 +5594,6 @@ with top_download_col:
             key="download_excel_report_top_single",
         )
 
-        st.download_button(
-            label="⬇ Download Excel Report",
-            data=st.session_state.report_bytes,
-            file_name=st.session_state.report_filename,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key=f"download_excel_report_top_inline_{download_key_suffix}",
-        )
-        
 master_df = None
 retailer_df = None
 all_retailers = []
