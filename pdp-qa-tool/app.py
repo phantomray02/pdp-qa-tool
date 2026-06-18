@@ -5843,74 +5843,96 @@ if retailer_df is not None and file_ready_for_batch:
         st.text(str(e))
         st.text(traceback.format_exc())
 
+
 # =========================================
 # TOP EXPORT SECTION
 # =========================================
 if (
-    retailer_df is not None
-    and st.session_state.processing_done
-    and st.session_state.completed_batch_key == current_batch_key
-    and st.session_state.summary_rows
+    st.session_state.processing_done
+    and st.session_state.completed_batch_key
+    and st.session_state.report_batch_key != st.session_state.completed_batch_key
 ):
-    if st.session_state.report_batch_key != current_batch_key:
-        summary_df = pd.DataFrame(st.session_state.summary_rows)
-        detail_df = pd.DataFrame(st.session_state.export_rows)
-        debug_df = pd.DataFrame(st.session_state.debug_rows)
+    summary_df = pd.DataFrame(st.session_state.summary_rows)
+    detail_df = pd.DataFrame(st.session_state.export_rows)
+    debug_df = pd.DataFrame(st.session_state.debug_rows)
 
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            summary_df.to_excel(writer, index=False, sheet_name="Summary")
-            detail_df.to_excel(writer, index=False, sheet_name="Details")
-            debug_df.to_excel(writer, index=False, sheet_name="Debug")
-        
-        st.session_state.report_bytes = output.getvalue()
-        st.session_state.report_filename = f"pdp_qa_results_{selected_retailer.lower().replace(' ', '_')}_all_brands.xlsx"
-        st.session_state.report_batch_key = st.session_state.completed_batch_key
+    output = BytesIO()
 
-            wb = writer.book
-            ws = wb["Summary"]
-            green = PatternFill(start_color="C6EFCE", fill_type="solid")
-            yellow = PatternFill(start_color="FFEB9C", fill_type="solid")
-            red = PatternFill(start_color="FFC7CE", fill_type="solid")
+    with pd.ExcelWriter(output, engine="openpyxl") as writer_df.to_excel(writer, sheet_name="Details", index=False)    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        debug_df.to_excel(writer, sheet_name="Debug", index=False)
 
-            for row in ws.iter_rows(min_row=2):
-                for cell in row:
-                    if isinstance(cell.value, (int, float)):
-                        if cell.value >= 80:
-                            cell.fill = green
-                        elif cell.value >= 50:
-                            cell.fill = yellow
+        wb = writer.book
+
+        green_fill = PatternFill(fill_type="solid", fgColor="C6EFCE")
+        yellow_fill = PatternFill(fill_type="solid", fgColor="FFEB9C")
+        red_fill = PatternFill(fill_type="solid", fgColor="FFC7CE")
+
+        for sheet_name in ["Summary", "Details"]:
+            ws = wb[sheet_name]
+
+            header_map = {}
+            for cell in ws[1]:
+                header_map[str(cell.value).strip()] = cell.column
+
+            for col_name, col_idx in header_map.items():
+                if "%" in col_name:
+                    for row_idx in range(2, ws.max_row + 1):
+                        cell = ws.cell(row=row_idx, column=col_idx)
+                        value = cell.value
+
+                        if value is None or value == "":
+                            continue
+
+                        try:
+                            score_val = float(value)
+                        except Exception:
+                            continue
+
+                        if score_val >= 80:
+                            cell.fill = green_fill
+                        elif score_val >= 50:
+                            cell.fill = yellow_fill
                         else:
-                            cell.fill = red
+                            cell.fill = red_fill
 
-        output.seek(0)
-        safe_retailer = re.sub(r"[^A-Za-z0-9_-]+", "_", str(selected_retailer or "retailer"))
-        report_filename = f"pdp_qa_results_{safe_retailer}_all_brands.xlsx"
-        report_bytes = output.getvalue()
+            for col_cells in ws.columns:
+                max_length = 0
+                col_letter = col_cells[0].column_letter
 
-        st.session_state.report_bytes = report_bytes
-        st.session_state.report_filename = report_filename
-        st.session_state.report_batch_key = current_batch_key
+                for cell in col_cells:
+                    try:
+                        cell_len = len(str(cell.value or ""))
+                        if cell_len > max_length:
+                            max_length = cell_len
+                    except Exception:
+                        pass
 
-    if (
-        not st.session_state.auto_download_done
-        and st.session_state.report_bytes
-        and st.session_state.report_filename
-    ):
-        b64 = base64.b64encode(st.session_state.report_bytes).decode()
-        components.html(
-            "<script>"
-            "const link = document.createElement('a');"
-            f"link.href = 'data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}';"
-            f"link.download = '{st.session_state.report_filename}';"
-            "document.body.appendChild(link);"
-            "link.click();"
-            "document.body.removeChild(link);"
-            "</script>",
-            height=0,
-            width=0,
+                adjusted_width = min(max(max_length + 2, 12), 60)
+                ws.column_dimensions[col_letter].width = adjusted_width
+
+    safe_retailer = re.sub(
+        r"[^a-z0-9]+",
+        "_",
+        str(selected_retailer or "retailer").lower().strip(),
+    ).strip("_") or "retailer"
+
+    st.session_state.report_bytes = output.getvalue()
+    st.session_state.report_filename = f"pdp_qa_results_{safe_retailer}_all_brands.xlsx"
+    st.session_state.report_batch_key = st.session_state.completed_batch_key
+    st.session_state.auto_download_done = False
+
+
+with top_download_col:
+    st.markdown("<div style='height: 30px;'></div>", unsafe_allow_html=True)
+
+    if st.session_state.report_bytes is not None and st.session_state.report_filename:
+        st.download_button(
+            label="⬇ Download Excel Report",
+            data=st.session_state.report_bytes,
+            file_name=st.session_state.report_filename,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_excel_report_top_inline",
         )
-        st.session_state.auto_download_done = True
 
 # =========================================
 # FULL VISUAL MODE
