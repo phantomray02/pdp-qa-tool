@@ -277,23 +277,12 @@ def avg_score_bar_html(label, score):
 
     safe_label = html_escape_text(label or "")
     return (
-        f"<div style=""
-        f"background-color:{color};"
-        f"padding:6px 10px;"
-        f"border-radius:4px;"
-        f"color:white;"
-        f"font-weight:900;"
-        f"font-size:19px;"
-        f"margin-top:2px;"
-        f"margin-bottom:{IMG_SPACE_PX}px;"
-        f"display:flex;"
-        f"justify-content:space-between;"
-        f"align-items:center;"
-        f"gap:10px;"
-        f"">"
-        f"<span>{safe_label}</span>"
-        f"<span style="color:#FFFFFF; font-weight:900; font-size:20px;">{score}%</span>"
-        f"</div>"
+        f'<div style="background-color:{color};padding:6px 10px;border-radius:4px;color:white;'
+        f'font-weight:900;font-size:19px;margin-top:2px;margin-bottom:{IMG_SPACE_PX}px;'
+        f'display:flex;justify-content:space-between;align-items:center;gap:10px;">'
+        f'<span>{safe_label}</span>'
+        f'<span style="color:#FFFFFF; font-weight:900; font-size:20px;">{score}%</span>'
+        f'</div>'
     )
 
 
@@ -309,8 +298,8 @@ def rating_stars_html(rating, review_count=None, font_size_px=11):
     review_html = ""
     if review_count is not None and str(review_count).strip() != "":
         review_html = (
-            f'<span style="margin-left:4px; font-size:10px; color:#4b5563; text-decoration:underline; line-height:1;">'
-            f'{html_escape_text(review_count)}</span>'
+            f'<span style="margin-left:4px;font-size:10px;color:#4b5563;'
+            f'text-decoration:underline;line-height:1;">{html_escape_text(review_count)}</span>'
         )
 
     return (
@@ -318,9 +307,11 @@ def rating_stars_html(rating, review_count=None, font_size_px=11):
         f'white-space:nowrap;background:#f3f4f6;padding:1px 4px;border-radius:2px;'
         f'margin:0 0 0 auto;width:max-content;line-height:1;">'
         f'<span style="font-size:10px;color:#111827;line-height:1;">{rating:.1f}</span>'
-        f'<div style="position:relative;display:inline-block;line-height:1;font-size:{font_size_px}px;letter-spacing:0.3px;">'
+        f'<div style="position:relative;display:inline-block;line-height:1;'
+        f'font-size:{font_size_px}px;letter-spacing:0.3px;">'
         f'<div style="color:#c7c7c7;">★★★★★</div>'
-        f'<div style="position:absolute;top:0;left:0;width:{fill_pct}%;overflow:hidden;white-space:nowrap;color:#111111;">★★★★★</div>'
+        f'<div style="position:absolute;top:0;left:0;width:{fill_pct}%;overflow:hidden;'
+        f'white-space:nowrap;color:#111111;">★★★★★</div>'
         f'</div>'
         f'{review_html}'
         f'</div>'
@@ -334,25 +325,15 @@ def column_header_link_html(label, item_number, href):
 
     if safe_href and safe_item:
         item_html = (
-            f"<a href="{safe_href}" target="_blank" "
-            f"style="color:#3EA6FF; text-decoration:none; font-weight:900;">"
-            f"{safe_item}</a>"
+            f'<a href="{safe_href}" target="_blank" '
+            f'style="color:#3EA6FF; text-decoration:none; font-weight:900;">{safe_item}</a>'
         )
     else:
-        item_html = f"<span style="color:#3EA6FF; font-weight:900;">{safe_item or 'Missing'}</span>"
+        item_html = f'<span style="color:#3EA6FF; font-weight:900;">{safe_item or "Missing"}</span>'
 
     return (
-        f"<div style=""
-        f"text-align:left;"
-        f"margin-top:0;"
-        f"margin-bottom:2px;"
-        f"font-size:28px;"
-        f"font-weight:900;"
-        f"color:#FFFFFF;"
-        f"line-height:1.05;"
-        f"">"
-        f"{safe_label}: {item_html}"
-        f"</div>"
+        f'<div style="text-align:left;margin-top:0;margin-bottom:2px;font-size:28px;'
+        f'font-weight:900;color:#FFFFFF;line-height:1.05;">{safe_label}: {item_html}</div>'
     )
 
 def image_header_html(label):
