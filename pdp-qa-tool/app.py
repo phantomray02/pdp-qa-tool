@@ -188,118 +188,147 @@ def description_similarity_score(a, b):
 
     return int(SequenceMatcher(None, a_norm, b_norm).ratio() * 100)
     
+def html_escape_text(text):
+    return html.escape(str(text or ""))
+
+
+def equal_height_block(text, min_height=150):
+    safe_text = html_escape_text(text or "Missing")
+    return (
+        f'<div style="min-height:{min_height}px; font-size:{COPY_TEXT_SIZE}px; '
+        f'line-height:{COPY_LINE_HEIGHT}; white-space:pre-wrap;">{safe_text}</div40):        f'line-height:{COPY_LINE_HEIGHT}; white-space:pre-wrap;">{safe_text}</div>'
+    safe_text = html_escape_text(text or "Missing")
+    return (
+        f'<div style="min-height:{min_height}px; font-size:{COPY_TEXT_SIZE}px; '
+        f'line-height:{COPY_LINE_HEIGHT}; white-space:pre-wrap;">{safe_text}</div>'
+    )
+
+
+def score_text_html(score):
+    if score >= 80:
+        color = "#4CAF50"
+        label = "Strong"
+    elif score >= 50:
+        color = "#FFC107"
+        label = "Review"
+    else:
+        color = "#F44336"
+        label = "Poor"
+
+    return f'<span style="color:{color}; font-weight:700;">{score}% ({label})</span>'
+
+
+def section_header_html(label, score):
+    safe_label = html_escape_text(label or "")
+    return (
+        f'<div style="display:flex; justify-content:space-between; align-items:center; '
+        f'margin:0 0 6px 0;">'
+        f'<div style="font-size:{SECTION_HEADER_SIZE}px; font-weight:800;">{safe_label}</div>'
+        f'<div style="font-size:15px; font-weight:700;">{score_text_html(score)}</div>'
+        f'</div>'
+    )
+
+
+def avg_score_bar_html(label, score):
+    safe_label = html_escape_text(label or "")
+
+    if score >= 80:
+        color = "#2E7D32"
+    elif score >= 50:
+        color = "#F9A825"
+    else:
+        color = "#C62828"
+
+    return (
+        f'<div style="margin:0 0 12px 0;">'
+        f'<div style="display:flex; justify-content:space-between; '
+        f'font-size:14px; font-weight:700; margin-bottom:4px;">'
+        f'<span>{safe_label}</span><span>{score}%</span>'
+        f'</div>'
+        f'<div style="width:100%; height:10px; background:#1f2937; '
+        f'border-radius:999px; overflow:hidden;">'
+        f'<div style="width:{max(0, min(score, 100))}%; height:100%; '
+        f'background:{color};"></div>'
+        f'</div>'
+        f'</div>'
+    )
+
+
+def column_header_link_html(left_label, left_url, right_label, retailer_name, retailer_rpc, retail_url):
+    safe_left = html_escape_text(left_label or "Salsify")
+    safe_right = html_escape_text(
+        f"{retailer_name}: {retailer_rpc}" if retailer_rpc else retailer_name or right_label or "Retailer"
+    )
+
+    left_url = str(left_url or "").strip()
+    retail_url = str(retail_url or "").strip()
+
+    if left_url:
+        left_html = (
+            f'<a href="{html.escape(left_url, quote=True)}" target="_blank" '
+            f'style="color:#60a5fa; text-decoration:none; font-weight:800;">{safe_left}</a>'
+        )
+    else:
+        left_html = f'<span style="font-weight:800;">{safe_left}</span>'
+
+    if retail_url:
+        right_html = (
+            f'<a href="{html.escape(retail_url, quote=True)}" target="_blank" '
+            f'style="color:#60a5fa; text-decoration:none; font-weight:800;">{safe_right}</a>'
+        )
+    else:
+        right_html = f'<span style="font-weight:800;">{safe_right}</span>'
+
+    return (
+        f'<div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; '
+        f'margin:0 0 10px 0; font-size:18px;">'
+        f'<div>{left_html}</div>'
+        f'<div>{right_html}</div>'
+        f'</div>'
+    )
+
+
+def image_header_html(label):
+    safe_label = html_escape_text(label or "")
+    return f'<div style="font-size:18px; font-weight:800; margin:0 0 10px 0;">{safe_label}</div>'
+
+
 def image_compare_row_html(s_url, r_url, slot_score):
     def render_image_box(image_url, alt_text="Image"):
         image_url = str(image_url or "").strip()
 
         if not image_url:
-            return f"""
-            <div style="
-                height:{IMG_BOX_HEIGHT}px;
-                border:1px solid #2a2f3a;
-                border-radius:8px;
-                display:flex;
-                align-items:center;
-                justify-content:center;
-                background:#111827;
-                color:#9ca3af;
-                font-size:12px;
-            ">
-                Missing
-            </div>
-            """
+            return (
+                f'<div style="height:{IMG_BOX_HEIGHT}px; border:1px solid #2a2f3a; '
+                f'border-radius:8px; display:flex; align-items:center; justify-content:center; '
+                f'background:#111827; color:#9ca3af; font-size:12px;">Missing</div>'
+            )
 
-        return f"""
-        <div style="
-            height:{IMG_BOX_HEIGHT}px;
-            border:1px solid #2a2f3a;
-            border-radius:8px;
-            display:flex;
-            align-items:center;
-            justify-content:center;
-            background:#111827;
-            overflow:hidden;
-            padding:6px;
-        ">
-            <img
-                src="{html.escape(image_url)}"
-                alt="{html.escape(alt_text)}"
-                style="
-                    max-width:100%;
-                    max-height:{IMG_BOX_HEIGHT - 12}px;
-                    object-fit:contain;
-                    display:block;
-                    margin:auto;
-                    border-radius:4px;
-                "
-            />
-        </div>
-        """
+        return (
+            f'<div style="height:{IMG_BOX_HEIGHT}px; border:1px solid #2a2f3a; '
+            f'border-radius:8px; display:flex; align-items:center; justify-content:center; '
+            f'background:#111827; overflow:hidden; padding:6px;">'
+            f'<img src="{html.escape(image_url, quote=True)}" alt="{html.escape(alt_text)}" '
+            f'style="max-width:100%; max-height:{IMG_BOX_HEIGHT - 12}px; object-fit:contain; '
+            f'display:block; margin:auto; border-radius:4px;" />'
+            f'</div>'
+        )
 
     left_img = render_image_box(s_url, alt_text="Salsify image")
     right_img = render_image_box(r_url, alt_text="Retailer image")
 
-    return f"""
-    <div style="
-        display:grid;
-        grid-template-columns: 1fr {IMG_SCORE_WIDTH_PX}px 1fr;
-        gap:{IMG_SPACE_PX}px;
-        align-items:start;
-        margin:0 0 {SECTION_VERTICAL_GAP}px 0;
-    ">
-        <div>{left_img}</div>
-
-        <div style="
-            display:flex;
-            align-items:center;
-            justify-content:center;
-            min-height:{IMG_BOX_HEIGHT}px;
-            font-size:14px;
-            font-weight:700;
-        ">
-            {score_text_html(slot_score)}
-        </div>
-
-        <div>{right_img}</div>
-    </div>
-    ""
-
-def image_tile_html(label, url, box_height=170):
-    safe_label = html.escape(label)
-
-    if url:
-        safe_url = html.escape(url, quote=True)
-        return f'''<div style="border:1px solid #E0E0E0;border-radius:8px;background:#FFFFFF;padding:8px;">
-<div style="font-size:45px;font-weight:600;margin-bottom:6px;">{safe_label}</div>
-<div style="height:{box_height}px;display:flex;align-items:center;justify-content:center;background:#FAFAFA;border-radius:6px;overflow:hidden;">
-<img src="{safe_url}" style="max-width:100%;max-height:{box_height}px;object-fit:contain;" />
-</div>
-</div>'''
-    else:
-        return f'''<div style="border:1px solid #E0E0E0;border-radius:8px;background:#FFFFFF;padding:8px;">
-<div style="font-size:45px;font-weight:600;margin-bottom:6px;">{safe_label}</div>
-<div style="height:{box_height}px;display:flex;align-items:center;justify-content:center;background:#FAFAFA;border-radius:6px;color:#C62828;font-size:14px;font-weight:600;">
-❌ Missing
-</div>
-</div>'''
-
-
-def image_slot_block_html(slot_num, s_url, r_url, score, retailer_name="CVS", box_height=170):
-    if score >= 80:
-        score_color = "#2E7D32"
-    elif score >= 50:
-        score_color = "#F9A825"
-    else:
-        score_color = "#C62828"
-
-    return f'''<div style="border:1px solid #DADADA;border-radius:10px;padding:10px;margin-bottom:12px;background:#FCFCFC;">
-<div style="font-weight:700;margin-bottom:10px;color:{score_color};">Image Slot {slot_num} — {score}%</div>
-<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
-{image_tile_html("Salsify", s_url, box_height=box_height)}
-{image_tile_html(retailer_name, r_url, box_height=box_height)}
-</div>
-</div>'''
-
+    return (
+        f'<div style="display:grid; grid-template-columns:1fr {IMG_SCORE_WIDTH_PX}px 1fr; '
+        f'gap:{IMG_SPACE_PX}px; align-items:start; margin:0 0 {SECTION_VERTICAL_GAP}px 0;">'
+        f'<div>{left_img}</div>'
+        f'<div style="display:flex; align-items:center; justify-content:center; '
+        f'min-height:{IMG_BOX_HEIGHT}px; font-size:14px; font-weight:700;">'
+        f'{score_text_html(slot_score)}'
+        f'</div>'
+        f'<div>{right_img}</div>'
+        f'</div>'
+    )
+    )
 
 def build_image_panel_html(s_images, r_images, max_images, retailer_name="CVS", box_height=110):
     blocks = []
