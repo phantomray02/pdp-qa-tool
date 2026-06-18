@@ -5853,7 +5853,6 @@ if retailer_df is not None and file_ready_for_batch:
         st.error("🔥 CRITICAL APP ERROR")
         st.text(str(e))
         st.text(traceback.format_exc())
-
 # =========================================
 # TOP EXPORT SECTION
 # =========================================
