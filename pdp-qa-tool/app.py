@@ -261,17 +261,36 @@ def avg_score_bar_html(label, score):
         f'</div>'
     )
 
-
-def column_header_link_html(left_label, left_url, right_label, retailer_name, retailer_rpc, retail_url):
+def column_header_link_html(
+    left_label,
+    left_url="",
+    right_label="",
+    retailer_name="",
+    retailer_rpc="",
+    retail_url="",
+):
     safe_left = html_escape_text(left_label or "Salsify")
-    safe_right = html_escape_text(
-        f"{retailer_name}: {retailer_rpc}" if retailer_rpc else retailer_name or right_label or "Retailer"
-    )
 
     left_url = str(left_url or "").strip()
+    right_label = str(right_label or "").strip()
+    retailer_name = str(retailer_name or "").strip()
+    retailer_rpc = str(retailer_rpc or "").strip()
     retail_url = str(retail_url or "").strip()
 
-    if left_url:
+    # Backward-compatible support for old call pattern:
+    # column_header_link_html("Salsify", sku, salsify_url)
+    if not retailer_name and not retailer_rpc and not retail_url:
+        if right_label.startswith("http://") or right_label.startswith("https://"):
+            left_url = right_label
+            safe_right = ""
+        else:
+            safe_right = html_escape_text(right_label or "Retailer")
+    else:
+        safe_right = html_escape_text(
+            f"{retailer_name}: {retailer_rpc}" if retailer_rpc else retailer_name or right_label or "Retailer"
+        )
+
+    if left_url.startswith("http://") or left_url.startswith("https://"):
         left_html = (
             f'<a href="{html.escape(left_url, quote=True)}" target="_blank" '
             f'style="color:#60a5fa; text-decoration:none; font-weight:800;">{safe_left}</a>'
@@ -284,8 +303,10 @@ def column_header_link_html(left_label, left_url, right_label, retailer_name, re
             f'<a href="{html.escape(retail_url, quote=True)}" target="_blank" '
             f'style="color:#60a5fa; text-decoration:none; font-weight:800;">{safe_right}</a>'
         )
-    else:
+    elif safe_right:
         right_html = f'<span style="font-weight:800;">{safe_right}</span>'
+    else:
+        right_html = ""
 
     return (
         f'<div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; '
@@ -294,7 +315,6 @@ def column_header_link_html(left_label, left_url, right_label, retailer_name, re
         f'<div>{right_html}</div>'
         f'</div>'
     )
-
 
 def image_header_html(label):
     safe_label = html_escape_text(label or "")
