@@ -5938,6 +5938,19 @@ with top_download_col:
     st.markdown("<div style='height: 30px;'></div>", unsafe_allow_html=True)
 
     if st.session_state.report_bytes is not None and st.session_state.report_filename:
+        download_key_suffix = str(
+            st.session_state.report_batch_key
+            or st.session_state.completed_batch_key
+            or "default"
+        )
+
+        st.download_button(
+            label="⬇ Download Excel Report",
+            data=st.session_state.report_bytes,
+            file_name=st.session_state.report_filename,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"download_excel_report_top_inline_{download_key_suffix}",
+        )
         
 # =========================================
 # FULL VISUAL MODE
