@@ -195,12 +195,20 @@ def html_escape_text(text):
 def equal_height_block(text, min_height=150):
     safe_text = html_escape_text(text or "Missing")
     return (
-        f'<div style="min-height:{min_height}px; font-size:{COPY_TEXT_SIZE}px; '
-        f'line-height:{COPY_LINE_HEIGHT}; white-space:pre-wrap;">{safe_text}</div40):        f'line-height:{COPY_LINE_HEIGHT}; white-space:pre-wrap;">{safe_text}</div>'
+        f'<div style="min-height:{min_height}px; '
+        f'font-size:{COPY_TEXT_SIZE}px; '
+        f'line-height:{COPY_LINE_HEIGHT}; '
+        f'white-space:pre-wrap;">{safe_text}</div>'
+    )
+
+
+def equal_feature_block(text, min_height=40):
     safe_text = html_escape_text(text or "Missing")
     return (
-        f'<div style="min-height:{min_height}px; font-size:{COPY_TEXT_SIZE}px; '
-        f'line-height:{COPY_LINE_HEIGHT}; white-space:pre-wrap;">{safe_text}</div>'
+        f'<div style="min-height:{min_height}px; '
+        f'font-size:{COPY_TEXT_SIZE}px; '
+        f'line-height:{COPY_LINE_HEIGHT}; '
+        f'white-space:pre-wrap;">{safe_text}</div>'
     )
 
 
@@ -221,8 +229,8 @@ def score_text_html(score):
 def section_header_html(label, score):
     safe_label = html_escape_text(label or "")
     return (
-        f'<div style="display:flex; justify-content:space-between; align-items:center; '
-        f'margin:0 0 6px 0;">'
+        f'<div style="display:flex; justify-content:space-between; '
+        f'align-items:center; margin:0 0 6px 0;">'
         f'<div style="font-size:{SECTION_HEADER_SIZE}px; font-weight:800;">{safe_label}</div>'
         f'<div style="font-size:15px; font-weight:700;">{score_text_html(score)}</div>'
         f'</div>'
@@ -328,7 +336,7 @@ def image_compare_row_html(s_url, r_url, slot_score):
         f'<div>{right_img}</div>'
         f'</div>'
     )
-    )
+
 
 def build_image_panel_html(s_images, r_images, max_images, retailer_name="CVS", box_height=110):
     blocks = []
@@ -339,17 +347,10 @@ def build_image_panel_html(s_images, r_images, max_images, retailer_name="CVS", 
         score = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
 
         blocks.append(
-            image_slot_block_html(
-                slot_num=i + 1,
-                s_url=s_url,
-                r_url=r_url,
-                score=score,
-                retailer_name=retailer_name,
-                box_height=box_height,
-            )
+            image_compare_row_html(s_url, r_url, score)
         )
 
-    return f'''<div style="padding-right:4px;">{"".join(blocks)}</div>'''
+    return "".join(blocks)
 
 
 def read_uploaded_file_from_bytes(file_bytes, file_name):
