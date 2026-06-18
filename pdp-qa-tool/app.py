@@ -268,9 +268,6 @@ def section_header_html(label, score):
 
 
 def avg_score_bar_html(label, score):
-    safe_label = html_escape_text(label or "")
-    score = max(0, min(int(score or 0), 100))
-
     if score >= 80:
         color = "#2E7D32"
     elif score >= 50:
@@ -278,19 +275,27 @@ def avg_score_bar_html(label, score):
     else:
         color = "#C62828"
 
+    safe_label = html_escape_text(label or "")
     return (
-        f'<div style="margin:0 0 12px 0;">'
-        f'  <div style="display:flex; justify-content:space-between; '
-        f'      font-size:14px; font-weight:700; margin-bottom:4px;">'
-        f'    <span>{safe_label}</span>'
-        f'    <span>{score}%</span>'
-        f'  </div>'
-        f'  <div style="width:100%; height:12px; background:#1f2937; '
-        f'      border-radius:999px; overflow:hidden;">'
-        f'    <div style="width:{score}%; height:100%; background:{color};"></div>'
-        f'  </div>'
-        f'</div>'
+        f"<div style=\""
+        f"background-color:{color};"
+        f"padding:6px 10px;"
+        f"border-radius:4px;"
+        f"color:white;"
+        f"font-weight:900;"
+        f"font-size:19px;"
+        f"margin-top:2px;"
+        f"margin-bottom:{IMG_SPACE_PX}px;"
+        f"display:flex;"
+        f"justify-content:space-between;"
+        f"align-items:center;"
+        f"gap:10px;"
+        f"\">"
+        f"<span>{safe_label}</span>"
+        f"<span style=\"color:#FFFFFF; font-weight:900; font-size:20px;\">{score}%</span>"
+        f"</div>"
     )
+
 
 def column_header_link_html(label, item_number, href):
     safe_label = html_escape_text(label or "")
@@ -5579,16 +5584,15 @@ with top_upload_col:
 
 with top_download_col:
     st.markdown("<div style='height: 30px;'></div>", unsafe_allow_html=True)
-
     if st.session_state.report_bytes is not None and st.session_state.report_filename:
         st.download_button(
-            label="⬇ Download Excel Report",
+            label="📥 Download Excel Report",
             data=st.session_state.report_bytes,
             file_name=st.session_state.report_filename,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key="download_excel_report_top_inline",
         )
-        
+
 master_df = None
 retailer_df = None
 all_retailers = []
@@ -5843,7 +5847,6 @@ if retailer_df is not None and file_ready_for_batch:
         st.text(str(e))
         st.text(traceback.format_exc())
 
-
 # =========================================
 # TOP EXPORT SECTION
 # =========================================
@@ -5858,7 +5861,9 @@ if (
 
     output = BytesIO()
 
-    with pd.ExcelWriter(output, engine="openpyxl") as writer_df.to_excel(writer, sheet_name="Details", index=False)    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        summary_df.to_excel(writer, sheet_name="Summary", index=False)
+        detail_df.to_excel(writer, sheet_name="Details", index=False)
         debug_df.to_excel(writer, sheet_name="Debug", index=False)
 
         wb = writer.book
@@ -5937,63 +5942,51 @@ with top_download_col:
 # =========================================
 # FULL VISUAL MODE
 # =========================================
-if st.session_state.report_bytes is not None and st.session_state.report_filename:
-    st.markdown("## 🔎 Full Visual QA Review")
+if (
+    retailer_df is not None
+    and st.session_state.processing_done
+    and st.session_state.completed_batch_key == current_batch_key
+):
+    try:
+        visual_df = retailer_df.copy()
 
-    visual_df = retailer_df.copy()
+        selected_visual_brand = st.session_state.selected_brand_visual
+        if selected_visual_brand != "All" and "brand" in visual_df.columns:
+            visual_df = visual_df[visual_df["brand"].astype(str) == selected_visual_brand].copy()
 
-    if "brand" in visual_df.columns:
-        all_visual_brands = sorted(
-            visual_df["brand"].fillna("").astype(str).unique().tolist()
+        if visual_df.empty:
+            st.warning("No rows found for the selected retailer / brand.")
+            st.stop()
+
+        invalid_retail_values = {"", "n/a", "#n/a", "na", "nan", "none"}
+        visual_df["retail_url_clean"] = (
+            visual_df["retail_url"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .str.lower()
         )
-        visual_brand_options = ["All"] + [b for b in all_visual_brands if b != ""]
+        hidden_count = int(visual_df["retail_url_clean"].isin(invalid_retail_values).sum())
+        visual_df = visual_df[
+            ~visual_df["retail_url_clean"].isin(invalid_retail_values)
+        ].copy()
+        visual_df.drop(columns=["retail_url_clean"], inplace=True, errors="ignore")
 
-        if st.session_state.selected_brand_visual not in visual_brand_options:
-            st.session_state.selected_brand_visual = "All"
-
-        selected_visual_brand = st.selectbox(
-            "Select Brand for Full Visual QA",
-            visual_brand_options,
-            key="selected_brand_visual",
+        st.markdown(
+            "<style>.block-container{max-width:1700px;padding-top:1rem;padding-bottom:1rem;} img{max-width:100%;height:auto;}</style>",
+            unsafe_allow_html=True,
         )
+        st.markdown("## 👁️ Full Visual QA Review")
 
-        if selected_visual_brand != "All":
-            visual_df = visual_df[
-                visual_df["brand"].fillna("").astype(str) == selected_visual_brand
-            ].copy()
-
-    if visual_df.empty:
-        st.warning("No rows found for the selected retailer / brand.")
-        st.stop()
-
-    invalid_retail_values = {"", "n/a", "#n/a", "na", "nan", "none"}
-
-    visual_df["retail_url_clean"] = (
-        visual_df["retail_url"]
-        .fillna("")
-        .astype(str)
-        .str.strip()
-    )
-
-    visual_df = visual_df[
-        ~visual_df["retail_url_clean"].str.lower().isin(invalid_retail_values)
-    ].copy()
-
-    if visual_df.empty:
-        st.info("No rows with a valid retailer URL were available for Full Visual QA.")
-        st.stop()
-
-    hidden_count = len(retailer_df) - len(visual_df)
-    if hidden_count > 0:
-        st.caption(
-            f"{hidden_count} item(s) were excluded from Full Visual QA because the retailer URL was blank / invalid."
-        )
-
-    # KEEP YOUR EXISTING PER-SKU VISUAL LOOP BELOW THIS LINE.
-    # Leave your existing row scoring / Copy Avg / Images Avg /
-    # title / description / features / images / debugger rendering as-is.
-        summary_df.to_excel(writer, sheet_name="Summary", index=False)
-
+        if hidden_count > 0:
+            st.caption(
+                f"Excluded from Full Visual QA only: {hidden_count} item(s) with missing retailer URLs."
+            )
+        if visual_df.empty:
+            st.info(
+                "No visually reviewable items found. Products without retailer URLs are still included in the extract."
+            )
+            st.stop()
 
         for _, row in visual_df.iterrows():
             sku = row.get("sku", "Missing SKU")
