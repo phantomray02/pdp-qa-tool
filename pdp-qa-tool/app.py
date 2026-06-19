@@ -306,7 +306,7 @@ def rating_stars_html(rating, review_count=None, font_size_px=28):
         )
 
     return (
-        f'<div style="display:flex;align-items:center;justify-content:flex-end;gap:8px;width:100%;'
+        f'<div style="display:flex;align-items:center;justify-content:flex-start;gap:8px;'
         f'white-space:nowrap;margin:0;line-height:1;">'
         f'<span style="font-size:28px;font-weight:900;color:#FFFFFF;line-height:1;">{rating:.1f}</span>'
         f'<div style="position:relative;display:inline-block;line-height:1;'
@@ -6366,7 +6366,7 @@ if (
             left, right = st.columns([2.72, 0.95], gap="small")
         
             with left:
-                top_l, top_mid, top_rating = st.columns([0.90, 1.08, 1.02], gap="small")
+                top_l, top_mid, top_rating = st.columns([0.90, 1.18, 0.92], gap="small")
 
                 top_l.markdown(
                     column_header_link_html("Salsify", sku, salsify_url),
@@ -6377,7 +6377,7 @@ if (
                 clean_rpc = clean_item_number(raw_rpc)
 
                 top_mid.markdown(
-                    f"<div style='margin-left:88px;'>" + column_header_link_html(
+                    f"<div style='margin-left:128px;'>" + column_header_link_html(
                         retailer_name,
                         clean_rpc,
                         retail_url,
@@ -6389,7 +6389,7 @@ if (
                     rating_value = (r_text.get("rating", "") if isinstance(r_text, dict) else "") or row.get("rating", "") or "4.5"
                     review_count_value = (r_text.get("review_count", "") if isinstance(r_text, dict) else "") or row.get("review_count", "") or "4201"
                     top_rating.markdown(
-                        rating_stars_html(rating_value, review_count_value, font_size_px=28),
+                        f"<div style='margin-left:34px;'>" + rating_stars_html(rating_value, review_count_value, font_size_px=28) + "</div>",
                         unsafe_allow_html=True,
                     )
                 else:
