@@ -5181,7 +5181,7 @@ def compare_images_visually(s_url, r_url):
 
     return score
     
-def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMAGE_SLOTS_TO_SCORE):
+def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
     """
     Build a retailer-specific Salsify comparison image list.
 
@@ -5290,10 +5290,16 @@ def get_visual_row_payload(
         sku=sku,
     )
 
+    # Visual QA should be allowed to render all comparison slots.
+    # Scoring remains capped separately by MAX_IMAGE_SLOTS_TO_SCORE.
+    visual_max_slots = MAX_IMAGE_SLOTS_TO_COMPARE
+    if str(retailer_name or "").strip().lower() == "walgreens":
+        visual_max_slots = 6
+
     s_images = align_salsify_images_for_retailer(
         retailer_name,
         s_bundle["images"],
-        max_slots=MAX_IMAGE_SLOTS_TO_SCORE,
+        max_slots=visual_max_slots,
     )
 
     r_images = r_bundle["images"] or []
