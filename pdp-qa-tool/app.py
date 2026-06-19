@@ -6082,7 +6082,7 @@ if (
             left, right = st.columns([2.72, 0.95], gap="small")
         
             with left:
-                top_l, top_mid, top_rating = st.columns([0.92, 1.16, 0.92], gap="small")
+                top_l, top_mid, top_rating = st.columns([0.98, 1.12, 0.78], gap="small")
 
                 top_l.markdown(
                     column_header_link_html("Salsify", sku, salsify_url),
@@ -6093,7 +6093,7 @@ if (
                 clean_rpc = clean_item_number(raw_rpc)
 
                 top_mid.markdown(
-                    f"<div style='margin-left:42px;'>" + column_header_link_html(
+                    f"<div style='margin-left:24px;'>" + column_header_link_html(
                         retailer_name,
                         clean_rpc,
                         retail_url,
@@ -6105,7 +6105,7 @@ if (
                     rating_value = (r_text.get("rating", "") if isinstance(r_text, dict) else "") or row.get("rating", "") or "4.5"
                     review_count_value = (r_text.get("review_count", "") if isinstance(r_text, dict) else "") or row.get("review_count", "") or "4201"
                     top_rating.markdown(
-                        f"<div style='margin-left:20px;'>" + rating_stars_html(rating_value, review_count_value, font_size_px=18) + "</div>",
+                        f"<div style='margin-left:-6px;'>" + rating_stars_html(rating_value, review_count_value, font_size_px=18) + "</div>",
                         unsafe_allow_html=True,
                     )
                 else:
@@ -6168,7 +6168,7 @@ if (
                 head_i1, head_i2 = st.columns(2, gap="small")
                 head_i1.markdown(image_header_html("Salsify"), unsafe_allow_html=True)
                 head_i2.markdown(
-                    f"<div style='margin-left:-28px;'>" + image_header_html(retailer_name) + "</div>",
+                    f"<div style='margin-left:-12px;'>" + image_header_html(retailer_name) + "</div>",
                     unsafe_allow_html=True,
                 )
                 st.markdown(
