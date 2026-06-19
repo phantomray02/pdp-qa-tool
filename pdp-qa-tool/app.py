@@ -5056,6 +5056,35 @@ def debug_description(desc):
 # =========================================
 # IMAGE HASHING (FAST IMAGE COMPARE)
 # =========================================
+def _compute_dhash_from_pil_image(img, crop_ratio=0.0):
+    if img is None:
+        return None
+
+    working = img.copy().convert("L")
+    width, height = working.size
+
+    if crop_ratio > 0 and width > 20 and height > 20:
+        dx = int(width * crop_ratio)
+        dy = int(height * crop_ratio)
+        if dx * 2 < width and dy * 2 < height:
+            working = working.crop((dx, dy, width - dx, height - dy))
+
+    working.thumbnail((256, 256))
+    working = working.resize((IMAGE_HASH_WIDTH, IMAGE_HASH_HEIGHT))
+
+    bits = []
+    for y in range(IMAGE_HASH_HEIGHT):
+        for x in range(IMAGE_HASH_WIDTH - 1):
+            left_pixel = working.getpixel((x, y))
+            right_pixel = working.getpixel((x + 1, y))
+            bits.append(1 if left_pixel > right_pixel else 0)
+
+    h = 0
+    for bit in bits:
+        h = (h << 1) | bit
+    return h
+
+
 def get_image_dhash(url):
     global image_hash_cache
 
@@ -5070,8 +5099,6 @@ def get_image_dhash(url):
 
     try:
         session = get_session()
-
-        # Stream the response so we can stop early if the file is too large.
         r = session.get(url, timeout=IMAGE_TIMEOUT, stream=True)
         if r.status_code != 200:
             return None
@@ -5085,13 +5112,10 @@ def get_image_dhash(url):
             return None
 
         image_bytes = bytearray()
-
         for chunk in r.iter_content(chunk_size=65536):
             if not chunk:
                 continue
-
             image_bytes.extend(chunk)
-
             if len(image_bytes) > MAX_IMAGE_BYTES:
                 return None
 
@@ -5099,43 +5123,31 @@ def get_image_dhash(url):
             return None
 
         bio = BytesIO(image_bytes)
-
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
-
             img = Image.open(bio)
-
             width, height = img.size
             if width * height > MAX_SAFE_IMAGE_PIXELS:
                 return None
-
             img.load()
 
-        img = img.convert("L")
-        img.thumbnail((256, 256))
-        img = img.resize((IMAGE_HASH_WIDTH, IMAGE_HASH_HEIGHT))
+        variants = {
+            "full": _compute_dhash_from_pil_image(img, crop_ratio=0.0),
+            "center_6": _compute_dhash_from_pil_image(img, crop_ratio=0.06),
+            "center_12": _compute_dhash_from_pil_image(img, crop_ratio=0.12),
+        }
 
-        bits = []
-        for y in range(IMAGE_HASH_HEIGHT):
-            for x in range(IMAGE_HASH_WIDTH - 1):
-                left_pixel = img.getpixel((x, y))
-                right_pixel = img.getpixel((x + 1, y))
-                bits.append(1 if left_pixel > right_pixel else 0)
-
-        h = 0
-        for bit in bits:
-            h = (h << 1) | bit
-
-        image_hash_cache[url] = h
+        image_hash_cache[url] = variants
         while len(image_hash_cache) > IMAGE_HASH_CACHE_MAX:
             image_hash_cache.pop(next(iter(image_hash_cache)))
 
-        return h
+        return variants
 
     except (Image.DecompressionBombWarning, UnidentifiedImageError, OSError, ValueError):
         return None
     except Exception:
         return None
+
 
 def hamming_distance(a, b):
     return bin(a ^ b).count("1")
@@ -5154,33 +5166,47 @@ def compare_images_visually(s_url, r_url):
     if cache_key in image_compare_cache:
         return image_compare_cache[cache_key]
 
-    s_hash = get_image_dhash(s_url)
-    r_hash = get_image_dhash(r_url)
+    s_hashes = get_image_dhash(s_url)
+    r_hashes = get_image_dhash(r_url)
 
-    if s_hash is None or r_hash is None:
+    if not s_hashes or not r_hashes:
         score = 0
     else:
-        dist = hamming_distance(s_hash, r_hash)
+        distances = []
+        for key in ["full", "center_6", "center_12"]:
+            s_hash = s_hashes.get(key)
+            r_hash = r_hashes.get(key)
+            if s_hash is None or r_hash is None:
+                continue
+            distances.append(hamming_distance(s_hash, r_hash))
 
-        if dist <= 2:
-            score = 100
-        elif dist <= 6:
-            score = 90
-        elif dist <= 10:
-            score = 75
-        elif dist <= 16:
-            score = 60
-        elif dist <= 22:
-            score = 45
+        if not distances:
+            score = 0
         else:
-            score = 25
+            dist = min(distances)
+
+            if dist <= 2:
+                score = 100
+            elif dist <= 5:
+                score = 95
+            elif dist <= 8:
+                score = 90
+            elif dist <= 12:
+                score = 80
+            elif dist <= 16:
+                score = 70
+            elif dist <= 22:
+                score = 55
+            else:
+                score = 30
 
     image_compare_cache[cache_key] = score
     while len(image_compare_cache) > IMAGE_COMPARE_CACHE_MAX:
         image_compare_cache.pop(next(iter(image_compare_cache)))
 
     return score
-    
+
+
 def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
     """
     Build a retailer-specific Salsify comparison image list.
@@ -5241,6 +5267,29 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
     # Never include left/packaging for Walgreens.
     return aligned[:6]
     
+def get_image_slot_url(slot_value):
+    if isinstance(slot_value, dict):
+        return str(slot_value.get("url", "") or "").strip()
+    return str(slot_value or "").strip()
+
+
+def trim_trailing_empty_image_slots(s_images, r_images):
+    s_images = list(s_images or [])
+    r_images = list(r_images or [])
+
+    keep_len = max(len(s_images), len(r_images))
+    while keep_len > 0:
+        s_url = get_image_slot_url(s_images[keep_len - 1]) if keep_len - 1 < len(s_images) else ""
+        r_url = get_image_slot_url(r_images[keep_len - 1]) if keep_len - 1 < len(r_images) else ""
+
+        if s_url or r_url:
+            break
+
+        keep_len -= 1
+
+    return s_images[:keep_len], r_images[:keep_len]
+
+
 def build_image_score_fields(s_images, r_images, max_slots=MAX_IMAGE_SLOTS_TO_SCORE):
     """
     Build per-slot image scores and an average image score.
@@ -5306,6 +5355,8 @@ def get_visual_row_payload(
 
     if str(retailer_name or "").strip().lower() == "walgreens":
         r_images = r_images[:6]
+
+    s_images, r_images = trim_trailing_empty_image_slots(s_images, r_images)
 
     return {
         "s_text": s_bundle["text"],
@@ -5970,6 +6021,7 @@ if (
     st.session_state.report_filename = f"pdp_qa_results_{safe_retailer}_all_brands.xlsx"
     st.session_state.report_batch_key = st.session_state.completed_batch_key
     st.session_state.auto_download_done = False
+    st.rerun()
         
 # =========================================
 # FULL VISUAL MODE
@@ -6066,7 +6118,8 @@ if (
 
             avg_feature_score = int(sum(feature_scores) / len(feature_scores)) if feature_scores else 0
             copy_avg_score = int((title_score + desc_score + avg_feature_score) / 3)
-            
+
+            s_images, r_images = trim_trailing_empty_image_slots(s_images, r_images)
             max_images = min(max(len(s_images), len(r_images)), MAX_IMAGE_SLOTS_TO_COMPARE)
             
             # Compute image score before applying row filters.
