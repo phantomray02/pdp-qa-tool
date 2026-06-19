@@ -6366,7 +6366,7 @@ if (
             left, right = st.columns([2.72, 0.95], gap="small")
         
             with left:
-                top_l, top_mid, top_rating = st.columns([0.90,.50, 0.15], gap="small")
+                top_l, top_mid, top_rating = st.columns([0.90, 1.0, 0.92], gap="small")
 
                 top_l.markdown(
                     column_header_link_html("Salsify", sku, salsify_url),
