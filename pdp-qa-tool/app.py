@@ -91,7 +91,10 @@ IMAGE_HASH_CACHE_MAX = 300
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
 MAX_SAFE_IMAGE_PIXELS = 50_000_000
 MAX_IMAGE_SLOTS_TO_COMPARE = 20
-MAX_IMAGE_SLOTS_TO_SCORE = 5
+MAX_IMAGE_SLOTS_TO_SCORE = 12
+STRICT_LIVE_RETAILER_ONLY = True
+STRICT_CVS_VARIANT_MATCH = True
+CVS_VARIANT_MIN_MATCH_SCORE = 35
 
 html_cache = {}
 image_hash_cache = {}
@@ -540,6 +543,63 @@ def infer_retailer_name_from_url(url):
 
     return "Retailer"
     
+
+
+def normalize_retailer_name(value):
+    value = normalize_space(value)
+    if not value:
+        return "Retailer"
+    lowered = value.lower()
+    mapping = {
+        "cvs": "CVS",
+        "walgreens": "Walgreens",
+        "wags": "Walgreens",
+        "sam's club": "Sam's Club",
+        "sams club": "Sam's Club",
+        "samsclub": "Sam's Club",
+        "walmart": "Walmart",
+        "target": "Target",
+        "kroger": "Kroger",
+        "amazon": "Amazon",
+        "retailer": "Retailer",
+    }
+    return mapping.get(lowered, value)
+
+
+def build_empty_retailer_bundle(retailer_name="Retailer", reason=""):
+    retailer_name = normalize_retailer_name(retailer_name)
+    reason = normalize_space(reason) or "retailer_not_supported"
+    return {
+        "text": {
+            "title": "",
+            "description": "",
+            "features": [],
+            "rating": "",
+            "review_count": "",
+            "debug": {
+                "Title Path": reason,
+                "Description Path": reason,
+                "Features Path": reason,
+                "Source Used": reason,
+                "Retailer": retailer_name,
+            },
+        },
+        "images": [],
+    }
+
+
+def normalize_salsify_asset_name(value):
+    value = html.unescape(str(value or "")).lower()
+    value = value.replace("&", " and ")
+    value = re.sub(r"[/_|-]+", " ", value)
+    value = re.sub(r"[^a-z0-9]+", " ", value)
+    value = re.sub(r"\s+", " ", value)
+    return value.strip()
+
+
+def make_blank_salsify_image_slot(name="missing"):
+    return {"name": str(name or "missing"), "url": ""}
+
 def prepare_input_df(df):
     df = df.copy()
 
@@ -637,6 +697,7 @@ def prepare_input_df(df):
             .astype(str)
             .str.strip()
         )
+    df["retailer"] = df["retailer"].apply(normalize_retailer_name)
 
     required = ["sku", "salsify_url", "retail_url"]
     missing = [c for c in required if c not in df.columns]
@@ -1234,7 +1295,6 @@ def _parse_salsify_page(html_text):
         },
         "images": [],
     }
-
     if not html_text:
         return empty
 
@@ -1259,7 +1319,7 @@ def _parse_salsify_page(html_text):
     except Exception:
         pass
 
-    text = {
+    text_bundle = {
         "title": text_map.get("PRODUCT_TITLE", ""),
         "description": text_map.get("DESCRIPTION", ""),
         "feature1": text_map.get("FEATURE_1", ""),
@@ -1269,47 +1329,58 @@ def _parse_salsify_page(html_text):
         "feature5": text_map.get("FEATURE_5", ""),
     }
 
-    asset_map = {}
+    asset_lookup = {}
     try:
         properties = data["props"]["pageProps"]["product"]["digitalAssets"]["properties"]
         for prop in properties:
-            name = prop.get("property", "").lower()
+            raw_name = prop.get("property", "")
+            normalized_name = normalize_salsify_asset_name(raw_name)
             values = prop.get("values", [])
-            if values:
-                val = values[0].get("value", "")
-                if val:
-                    asset_map[name] = val.split("?")[0]
+            if not normalized_name or not values:
+                continue
+            val = values[0].get("value", "")
+            if not val:
+                continue
+            asset_lookup[normalized_name] = val.split("?")[0]
     except Exception:
         pass
 
-    def find(keyword):
-        for k, v in asset_map.items():
-            if keyword in k:
-                return v
-        return None
+    def find_asset(*queries):
+        for query in queries:
+            q_norm = normalize_salsify_asset_name(query)
+            if not q_norm:
+                continue
+            for key, value in asset_lookup.items():
+                if q_norm in key:
+                    return value
+        return ""
 
-    ordered_images = [
-        {"name": "online", "url": find("online") or ""},
-        {"name": "back", "url": find("back") or ""},
-        {"name": "left", "url": find("left") or ""},
+    ordered_candidates = [
+        ("online", find_asset("online", "front")),
+        ("back", find_asset("back")),
+        ("left", find_asset("left")),
+        ("atf io", find_asset("atf i o generic", "atf io generic", "atf i o", "atf io")),
+        ("atf 2", find_asset("atf 2")),
+        ("atf 3", find_asset("atf 3")),
+        ("atf 4", find_asset("atf 4")),
+        ("atf 5", find_asset("atf 5")),
+        ("atf 6", find_asset("atf 6")),
     ]
 
-    atf_io = find("atf io")
-    if atf_io:
-        ordered_images.append({"name": "atf io", "url": atf_io or ""})
-        for k in ["atf 2", "atf 3", "atf 4", "atf 5", "atf 6"]:
-            ordered_images.append({"name": k, "url": find(k) or ""})
-    else:
-        for k in ["atf 2", "atf 3", "atf 4", "atf 5", "atf 6"]:
-            ordered_images.append({"name": k, "url": find(k) or ""})
-
-    images = ordered_images[:8]
+    images = []
+    seen_urls = set()
+    for name, url in ordered_candidates:
+        url = str(url or "").strip()
+        if not url or url in seen_urls:
+            continue
+        images.append({"name": name, "url": url})
+        seen_urls.add(url)
 
     return {
-        "text": text,
-        "images": images,
+        "text": text_bundle,
+        "images": images[:MAX_IMAGE_SLOTS_TO_COMPARE],
     }
-    
+
 @st.cache_data(show_spinner=False)
 def get_salsify_bundle(url):
     html_text = get_html(url)
@@ -2218,9 +2289,13 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
     )
 
     for candidate in sorted_candidates:
+        candidate_match_score = int(candidate.get("match_score", 0) or 0)
+        if target_rpc and STRICT_CVS_VARIANT_MATCH and candidate_match_score < CVS_VARIANT_MIN_MATCH_SCORE:
+            continue
+
         candidate_debug = debug.copy()
-        candidate_debug["variantWindowMatched"] = candidate.get("match_score", 0) > 0
-        candidate_debug["variantMatchScore"] = candidate.get("match_score", 0)
+        candidate_debug["variantWindowMatched"] = candidate_match_score > 0
+        candidate_debug["variantMatchScore"] = candidate_match_score
         candidate_debug["variantMatchReason"] = " | ".join(candidate.get("match_reason", []))
         candidate_debug["matchedDynamicMediaUrl"] = candidate.get("matched_dynamic_media", "")
         candidate_debug["matchedVariantUrl"] = candidate.get("matched_variant_url", "")
@@ -2244,6 +2319,14 @@ def extract_vendor_copy_from_source(source, source_name="", target_rpc="", retai
 
     if direct_fastpath_result:
         return direct_fastpath_result
+
+    if target_rpc and STRICT_CVS_VARIANT_MATCH:
+        strict_debug = debug.copy()
+        strict_debug["variantWindowMatched"] = False
+        strict_debug["variantMatchScore"] = 0
+        strict_debug["variantMatchReason"] = "strict_variant_match_required_no_confident_variant"
+        strict_debug["Source Used"] = f"{source_name} | strict_variant_match_required" if source_name else "strict_variant_match_required"
+        return {"features": [], "description": "", "debug": strict_debug}
 
     shared_features = []
     shared_description = ""
@@ -3651,9 +3734,8 @@ def extract_walgreens_text_from_html(html_text, retail_url="", target_rpc=""):
         "Title Path": "",
         "Description Path": "",
         "Features Path": "",
-        "Source Used": "walgreens_html",
+        "Source Used": "walgreens_live_html",
     }
-
     if not html_text:
         return {
             "title": "",
@@ -3666,36 +3748,17 @@ def extract_walgreens_text_from_html(html_text, retail_url="", target_rpc=""):
 
     title, title_path = _extract_walgreens_title_from_source(html_text)
     description, features, copy_path = _extract_walgreens_description_and_features_from_product_desc(html_text)
-    fallback_description, fallback_features = extract_walgreens_copy_from_meta_and_jsonld(html_text)
     live_rating, live_review_count = extract_walgreens_reviews_from_html(html_text)
 
-    chosen_description = _walgreens_choose_richer_description(description, fallback_description)
     chosen_features = normalize_walgreens_features_final(features, max_features=5)
-    fallback_features = normalize_walgreens_features_final(fallback_features, max_features=5)
-    if _walgreens_feature_richness_tuple(fallback_features) > _walgreens_feature_richness_tuple(chosen_features):
-        chosen_features = fallback_features
 
     debug["Title Path"] = title_path
-    if chosen_description == description and description:
-        debug["Description Path"] = copy_path
-    elif chosen_description:
-        debug["Description Path"] = "walgreens_meta_jsonld_fallback"
-        debug["Source Used"] = "walgreens_html | walgreens_meta_jsonld_fallback"
-    else:
-        debug["Description Path"] = "walgreens_description_missing"
-
-    if chosen_features == normalize_walgreens_features_final(features, max_features=5) and chosen_features:
-        debug["Features Path"] = copy_path
-    elif chosen_features:
-        debug["Features Path"] = "walgreens_meta_jsonld_fallback"
-        if "walgreens_meta_jsonld_fallback" not in str(debug.get("Source Used", "")):
-            debug["Source Used"] = "walgreens_html | walgreens_meta_jsonld_fallback"
-    else:
-        debug["Features Path"] = "walgreens_features_missing"
+    debug["Description Path"] = copy_path if description else "walgreens_live_html_description_missing"
+    debug["Features Path"] = copy_path if chosen_features else "walgreens_live_html_features_missing"
 
     return {
         "title": title,
-        "description": chosen_description,
+        "description": description,
         "features": chosen_features[:5],
         "rating": live_rating,
         "review_count": live_review_count,
@@ -3926,17 +3989,11 @@ def _walgreens_features_are_rich_enough(values):
 @st.cache_data(show_spinner=False)
 def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
     """
-    Walgreens extraction order:
-    1. Pull live HTML bundle first.
-    2. If live HTML already has rich enough copy, use it.
-    3. Otherwise also pull API + prodDesc fragment.
-    4. Merge all available bundles and keep the richest copy.
-    5. Keep the first non-empty image set in the order passed in.
+    Strict live-page Walgreens path.
+    Only use live HTML visible/embedded on the Walgreens PDP itself.
     """
-
     retail_url = str(retail_url or "").strip()
     retail_url_lc = retail_url.lower()
-    product_id = get_walgreens_product_id_from_url(retail_url)
 
     def build_html_bundle():
         html_text = get_walgreens_html(retail_url)
@@ -3949,64 +4006,21 @@ def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
             "images": extract_walgreens_images_from_html(html_text),
         }
 
-    # Search results pages are not PDPs.
     if "/search/results.jsp" in retail_url_lc:
         html_bundle = build_html_bundle()
         if _walgreens_has_copy_or_images(html_bundle):
             return html_bundle
-        return {
-            "text": {
-                "title": "",
-                "description": "",
-                "features": [],
-                "debug": {
-                    "Title Path": "walgreens_search_results_url_not_pdp",
-                    "Description Path": "walgreens_search_results_url_not_pdp",
-                    "Features Path": "walgreens_search_results_url_not_pdp",
-                    "Source Used": "walgreens_search_results_url_not_pdp",
-                },
-            },
-            "images": [],
-        }
+        return build_empty_retailer_bundle("Walgreens", "walgreens_search_results_url_not_pdp")
 
-    candidate_bundles = []
-
-    # 1. Live HTML first.
     html_bundle = build_html_bundle()
     if _walgreens_has_copy_or_images(html_bundle):
-        # If HTML already has strong enough copy, trust live page first.
-        if _walgreens_bundle_is_rich_enough(html_bundle):
-            return html_bundle
-        candidate_bundles.append(html_bundle)
+        return html_bundle
 
-    # 2. Structured API fallback.
-    if product_id:
-        api_payload = get_walgreens_product_api_payload(product_id)
-        api_bundle = build_walgreens_bundle_from_api_payload(api_payload)
-        if _walgreens_has_copy_or_images(api_bundle):
-            if _walgreens_bundle_is_rich_enough(api_bundle):
-                return api_bundle
-            candidate_bundles.append(api_bundle)
+    if STRICT_LIVE_RETAILER_ONLY:
+        return build_empty_retailer_bundle("Walgreens", "walgreens_live_html_missing")
 
-        # 3. prodDesc fragment fallback.
-        fragment_bundle = build_walgreens_bundle_from_prod_desc_fragment(
-            product_id,
-            retail_url=retail_url,
-        )
-        if _walgreens_has_copy_or_images(fragment_bundle):
-            if _walgreens_bundle_is_rich_enough(fragment_bundle):
-                return fragment_bundle
-            candidate_bundles.append(fragment_bundle)
-
-    # 4. Merge available candidates and prefer richer copy.
-    if candidate_bundles:
-        merged_bundle = merge_walgreens_bundles_prefer_richer_copy(*candidate_bundles)
-        if _walgreens_has_copy_or_images(merged_bundle):
-            return merged_bundle
-
-    # Final fallback.
     return html_bundle
-    
+
 def is_sams_robot_page(html_text):
     """
     Detect Sam's Club anti-bot / challenge pages so we do not accidentally
@@ -4479,16 +4493,19 @@ def get_sams_bundle(retail_url, target_rpc="", sku=""):
     }
     
 def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_source_code=""):
-    retailer = str(retailer_name or "").strip().lower()
+    retailer = normalize_retailer_name(retailer_name).strip().lower()
 
-    if retailer == "walgreens":
-        return get_walgreens_bundle(retail_url, target_rpc, sku=sku)
+    retailer_fetchers = {
+        "cvs": lambda: get_cvs_bundle(retail_url, target_rpc),
+        "walgreens": lambda: get_walgreens_bundle(retail_url, target_rpc, sku=sku),
+        "sam's club": lambda: get_sams_bundle(retail_url, target_rpc, sku=sku),
+    }
 
-    if retailer in ["sam's club", "sams club", "samsclub"]:
-        return get_sams_bundle(retail_url, target_rpc, sku=sku)
+    fetcher = retailer_fetchers.get(retailer)
+    if fetcher is None:
+        return build_empty_retailer_bundle(retailer_name or "Retailer", "retailer_not_supported_no_default_cvs_fallback")
 
-    # Default path stays CVS.
-    return get_cvs_bundle(retail_url, target_rpc)
+    return fetcher()
 
 # =========================================
 # RETAILER-SPECIFIC FINAL COPY CLEANUP
@@ -5209,64 +5226,108 @@ def compare_images_visually(s_url, r_url):
 
 def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
     """
-    Build a retailer-specific Salsify comparison image list.
+    Build the retailer-specific Salsify comparison image list.
 
-    Walgreens rules:
-    1. online = main image
-    2. back = temporary ingredients image
-    3. atf io if present, else atf 2
-    4. next lifestyle
-    5. next lifestyle
-    6. next lifestyle
-
-    IMPORTANT:
-    - Exclude left/packaging image entirely for Walgreens.
-    - Cap Walgreens comparison at 6 images.
-    - Leave all other retailers unchanged.
+    Key rule: Salsify image slots should collapse naturally when optional ATF I/O images
+    are missing so downstream images move up instead of leaving a blank hole.
     """
     retailer = str(retailer_name or "").strip().lower()
-    s_images = s_images or []
+    s_images = [img for img in (s_images or []) if isinstance(img, dict) and str(img.get("url", "") or "").strip()]
 
     if retailer != "walgreens":
         return s_images[:max_slots]
 
-    # Build a lookup by normalized name from the Salsify image bundle.
     by_name = {}
     for img in s_images:
-        if not isinstance(img, dict):
-            continue
-        name = str(img.get("name", "")).strip().lower()
+        name = normalize_salsify_asset_name(img.get("name", ""))
         if name and name not in by_name:
             by_name[name] = img
 
     aligned = []
 
-    def add_if_present(name):
-        img = by_name.get(name)
-        if img and img not in aligned:
-            aligned.append(img)
+    def add_if_present(*queries):
+        for query in queries:
+            q_norm = normalize_salsify_asset_name(query)
+            img = by_name.get(q_norm)
+            if img and img not in aligned:
+                aligned.append(img)
+                return
 
-    # 1. Main image
     add_if_present("online")
-
-    # 2. Ingredients image placeholder for now
     add_if_present("back")
+    add_if_present("atf io")
+    add_if_present("atf 2")
+    add_if_present("atf 3")
+    add_if_present("atf 4")
+    add_if_present("atf 5")
+    add_if_present("atf 6")
 
-    # 3-6. Walgreens lifestyle flow
-    if "atf io" in by_name:
-        add_if_present("atf io")
-        add_if_present("atf 2")
-        add_if_present("atf 3")
-        add_if_present("atf 4")
-    else:
-        add_if_present("atf 2")
-        add_if_present("atf 3")
-        add_if_present("atf 4")
-        add_if_present("atf 5")
+    return aligned[:min(max_slots, 6)]
 
-    # Never include left/packaging for Walgreens.
-    return aligned[:6]
-    
+
+def align_image_slots_for_comparison(s_images, r_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE, strong_threshold=80):
+    """
+    Lightweight local sequence alignment for image slots.
+
+    This prevents a single missing optional image, such as ATF I/O, from shifting every
+    downstream score into the wrong slot comparison.
+    """
+    s_seq = list(s_images or [])[:max_slots]
+    r_seq = list(r_images or [])[:max_slots]
+
+    aligned_s = []
+    aligned_r = []
+    i = 0
+    j = 0
+
+    while i < len(s_seq) or j < len(r_seq):
+        if i >= len(s_seq):
+            aligned_s.append(make_blank_salsify_image_slot())
+            aligned_r.append(r_seq[j] if j < len(r_seq) else "")
+            j += 1
+            continue
+
+        if j >= len(r_seq):
+            aligned_s.append(s_seq[i])
+            aligned_r.append("")
+            i += 1
+            continue
+
+        s_url = get_image_slot_url(s_seq[i])
+        r_url = get_image_slot_url(r_seq[j])
+        current_score = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
+
+        next_r_score = -1
+        if j + 1 < len(r_seq):
+            next_r_url = get_image_slot_url(r_seq[j + 1])
+            next_r_score = compare_images_visually(s_url, next_r_url) if (s_url and next_r_url) else 0
+
+        next_s_score = -1
+        if i + 1 < len(s_seq):
+            next_s_url = get_image_slot_url(s_seq[i + 1])
+            next_s_score = compare_images_visually(next_s_url, r_url) if (next_s_url and r_url) else 0
+
+        if next_r_score >= strong_threshold and next_r_score > current_score and next_r_score >= next_s_score:
+            aligned_s.append(make_blank_salsify_image_slot())
+            aligned_r.append(r_seq[j])
+            j += 1
+            continue
+
+        if next_s_score >= strong_threshold and next_s_score > current_score and next_s_score > next_r_score:
+            aligned_s.append(s_seq[i])
+            aligned_r.append("")
+            i += 1
+            continue
+
+        aligned_s.append(s_seq[i])
+        aligned_r.append(r_seq[j])
+        i += 1
+        j += 1
+
+    aligned_s, aligned_r = trim_trailing_empty_image_slots(aligned_s, aligned_r)
+    return aligned_s[:max_slots], aligned_r[:max_slots]
+
+
 def get_image_slot_url(slot_value):
     if isinstance(slot_value, dict):
         return str(slot_value.get("url", "") or "").strip()
@@ -5339,29 +5400,33 @@ def get_visual_row_payload(
         sku=sku,
     )
 
-    # Visual QA should be allowed to render all comparison slots.
-    # Scoring remains capped separately by MAX_IMAGE_SLOTS_TO_SCORE.
     visual_max_slots = MAX_IMAGE_SLOTS_TO_COMPARE
     if str(retailer_name or "").strip().lower() == "walgreens":
         visual_max_slots = 6
 
+    s_text = finalize_salsify_copy_for_retailer(retailer_name, s_bundle["text"] or {})
     s_images = align_salsify_images_for_retailer(
         retailer_name,
         s_bundle["images"],
         max_slots=visual_max_slots,
     )
 
+    r_text = finalize_retailer_copy(retailer_name, r_bundle["text"] or {})
     r_images = r_bundle["images"] or []
 
     if str(retailer_name or "").strip().lower() == "walgreens":
         r_images = r_images[:6]
 
-    s_images, r_images = trim_trailing_empty_image_slots(s_images, r_images)
+    s_images, r_images = align_image_slots_for_comparison(
+        s_images,
+        r_images,
+        max_slots=visual_max_slots,
+    )
 
     return {
-        "s_text": s_bundle["text"],
+        "s_text": s_text,
         "s_images": s_images,
-        "r_text": finalize_retailer_copy(retailer_name, r_bundle["text"] or {}),
+        "r_text": r_text,
         "r_images": r_images,
     }
 # =========================================
@@ -5465,19 +5530,27 @@ def process_row(row):
         if str(retailer_name).strip().lower() == "walgreens":
             print("WAGS SOURCE:", (r_bundle.get("text", {}) or {}).get("debug", {}).get("Source Used", ""))
 
-        s_text = s_bundle["text"]
+        s_text = finalize_salsify_copy_for_retailer(
+            retailer_name,
+            s_bundle["text"] or {},
+        )
         s_images = align_salsify_images_for_retailer(
             retailer_name,
             s_bundle["images"],
             max_slots=MAX_IMAGE_SLOTS_TO_SCORE,
         )
-        
+
         r_text = finalize_retailer_copy(
             retailer_name,
             r_bundle["text"] or {},
         )
-        r_images = (r_bundle["images"] or [])[:6] if str(retailer_name or "").strip().lower() == "walgreens" else r_bundle["images"]
-        
+        r_images = (r_bundle["images"] or [])[:6] if str(retailer_name or "").strip().lower() == "walgreens" else (r_bundle["images"] or [])
+        s_images, r_images = align_image_slots_for_comparison(
+            s_images,
+            r_images,
+            max_slots=MAX_IMAGE_SLOTS_TO_SCORE,
+        )
+
         debug_data = r_text.get("debug", {})
 
         title_score = keyword_score(s_text.get("title", ""), r_text.get("title", ""))
@@ -5734,6 +5807,9 @@ if uploaded_file:
         multi_retailer = len(all_retailers) > 1
 
         with top_upload_col:
+            st.caption("Detected retailers in upload: " + ", ".join(all_retailers))
+
+        with top_upload_col:
             if multi_retailer:
                 retailer_options = ["-- Select Retailer --"] + all_retailers
                 if st.session_state.selected_retailer not in retailer_options:
@@ -5754,7 +5830,7 @@ if uploaded_file:
                     "🏪 Select Retailer",
                     all_retailers,
                     index=0,
-                    key="selected_retailer_single",
+                    key="selected_retailer",
                     disabled=True,
                 )
                 file_ready_for_batch = True
