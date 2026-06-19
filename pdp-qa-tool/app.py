@@ -92,7 +92,7 @@ MAX_IMAGE_BYTES = 12 * 1024 * 1024
 MAX_SAFE_IMAGE_PIXELS = 50_000_000
 MAX_IMAGE_SLOTS_TO_COMPARE = 20
 MAX_IMAGE_SLOTS_TO_SCORE = 12
-STRICT_LIVE_RETAILER_ONLY = True
+STRICT_LIVE_RETAILER_ONLY = False
 STRICT_CVS_VARIANT_MATCH = True
 CVS_VARIANT_MIN_MATCH_SCORE = 35
 
@@ -289,7 +289,7 @@ def avg_score_bar_html(label, score):
     )
 
 
-def rating_stars_html(rating, review_count=None, font_size_px=18):
+def rating_stars_html(rating, review_count=None, font_size_px=28):
     try:
         rating = float(rating or 0)
     except Exception:
@@ -310,7 +310,7 @@ def rating_stars_html(rating, review_count=None, font_size_px=18):
         f'white-space:nowrap;margin:0;line-height:1;">'
         f'<span style="font-size:28px;font-weight:900;color:#FFFFFF;line-height:1;">{rating:.1f}</span>'
         f'<div style="position:relative;display:inline-block;line-height:1;'
-        f'font-size:{font_size_px}px;letter-spacing:0.6px;">'
+        f'font-size:{font_size_px}px;letter-spacing:0.25px;">'
         f'<div style="color:rgba(255,255,255,0.35);">★★★★★</div>'
         f'<div style="position:absolute;top:0;left:0;width:{fill_pct}%;overflow:hidden;'
         f'white-space:nowrap;color:#FFFFFF;">★★★★★</div>'
@@ -3803,7 +3803,7 @@ def extract_walgreens_text_from_html(html_text, retail_url="", target_rpc=""):
         "Title Path": "",
         "Description Path": "",
         "Features Path": "",
-        "Source Used": "walgreens_live_html",
+        "Source Used": "walgreens_html",
     }
     if not html_text:
         return {
@@ -3817,22 +3817,42 @@ def extract_walgreens_text_from_html(html_text, retail_url="", target_rpc=""):
 
     title, title_path = _extract_walgreens_title_from_source(html_text)
     description, features, copy_path = _extract_walgreens_description_and_features_from_product_desc(html_text)
+    fallback_description, fallback_features = extract_walgreens_copy_from_meta_and_jsonld(html_text)
     live_rating, live_review_count = extract_walgreens_reviews_from_html(html_text)
 
+    chosen_description = _walgreens_choose_richer_description(description, fallback_description)
     chosen_features = normalize_walgreens_features_final(features, max_features=5)
+    fallback_features = normalize_walgreens_features_final(fallback_features, max_features=5)
+    if _walgreens_feature_richness_tuple(fallback_features) > _walgreens_feature_richness_tuple(chosen_features):
+        chosen_features = fallback_features
 
     debug["Title Path"] = title_path
-    debug["Description Path"] = copy_path if description else "walgreens_live_html_description_missing"
-    debug["Features Path"] = copy_path if chosen_features else "walgreens_live_html_features_missing"
+    if chosen_description == description and description:
+        debug["Description Path"] = copy_path
+    elif chosen_description:
+        debug["Description Path"] = "walgreens_meta_jsonld_fallback"
+        debug["Source Used"] = "walgreens_html | walgreens_meta_jsonld_fallback"
+    else:
+        debug["Description Path"] = "walgreens_description_missing"
+
+    if chosen_features == normalize_walgreens_features_final(features, max_features=5) and chosen_features:
+        debug["Features Path"] = copy_path
+    elif chosen_features:
+        debug["Features Path"] = "walgreens_meta_jsonld_fallback"
+        if "walgreens_meta_jsonld_fallback" not in str(debug.get("Source Used", "")):
+            debug["Source Used"] = "walgreens_html | walgreens_meta_jsonld_fallback"
+    else:
+        debug["Features Path"] = "walgreens_features_missing"
 
     return {
         "title": title,
-        "description": description,
+        "description": chosen_description,
         "features": chosen_features[:5],
         "rating": live_rating,
         "review_count": live_review_count,
         "debug": debug,
     }
+
 
 def extract_walgreens_images_from_html(html_text):
     """
@@ -4058,11 +4078,16 @@ def _walgreens_features_are_rich_enough(values):
 @st.cache_data(show_spinner=False)
 def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
     """
-    Strict live-page Walgreens path.
-    Only use live HTML visible/embedded on the Walgreens PDP itself.
+    Walgreens extraction order:
+    1. Pull live HTML bundle first.
+    2. If live HTML already has rich enough copy, use it.
+    3. Otherwise also pull API + prodDesc fragment.
+    4. Merge all available bundles and keep the richest copy.
+    5. Keep the first non-empty image set in the order passed in.
     """
     retail_url = str(retail_url or "").strip()
     retail_url_lc = retail_url.lower()
+    product_id = get_walgreens_product_id_from_url(retail_url)
 
     def build_html_bundle():
         html_text = get_walgreens_html(retail_url)
@@ -4075,20 +4100,63 @@ def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
             "images": extract_walgreens_images_from_html(html_text),
         }
 
+    # Search results pages are not PDPs.
     if "/search/results.jsp" in retail_url_lc:
         html_bundle = build_html_bundle()
         if _walgreens_has_copy_or_images(html_bundle):
             return html_bundle
-        return build_empty_retailer_bundle("Walgreens", "walgreens_search_results_url_not_pdp")
+        return {
+            "text": {
+                "title": "",
+                "description": "",
+                "features": [],
+                "debug": {
+                    "Title Path": "walgreens_search_results_url_not_pdp",
+                    "Description Path": "walgreens_search_results_url_not_pdp",
+                    "Features Path": "walgreens_search_results_url_not_pdp",
+                    "Source Used": "walgreens_search_results_url_not_pdp",
+                },
+            },
+            "images": [],
+        }
 
+    candidate_bundles = []
+
+    # 1. Live HTML first.
     html_bundle = build_html_bundle()
     if _walgreens_has_copy_or_images(html_bundle):
-        return html_bundle
+        if _walgreens_bundle_is_rich_enough(html_bundle):
+            return html_bundle
+        candidate_bundles.append(html_bundle)
 
-    if STRICT_LIVE_RETAILER_ONLY:
-        return build_empty_retailer_bundle("Walgreens", "walgreens_live_html_missing")
+    # 2. Structured API fallback.
+    if product_id:
+        api_payload = get_walgreens_product_api_payload(product_id)
+        api_bundle = build_walgreens_bundle_from_api_payload(api_payload)
+        if _walgreens_has_copy_or_images(api_bundle):
+            if _walgreens_bundle_is_rich_enough(api_bundle):
+                return api_bundle
+            candidate_bundles.append(api_bundle)
 
+        # 3. prodDesc fragment fallback.
+        fragment_bundle = build_walgreens_bundle_from_prod_desc_fragment(
+            product_id,
+            retail_url=retail_url,
+        )
+        if _walgreens_has_copy_or_images(fragment_bundle):
+            if _walgreens_bundle_is_rich_enough(fragment_bundle):
+                return fragment_bundle
+            candidate_bundles.append(fragment_bundle)
+
+    # 4. Merge available candidates and prefer richer copy.
+    if candidate_bundles:
+        merged_bundle = merge_walgreens_bundles_prefer_richer_copy(*candidate_bundles)
+        if _walgreens_has_copy_or_images(merged_bundle):
+            return merged_bundle
+
+    # Final fallback.
     return html_bundle
+
 
 def is_sams_robot_page(html_text):
     """
@@ -6323,7 +6391,7 @@ if (
                     rating_value = (r_text.get("rating", "") if isinstance(r_text, dict) else "") or row.get("rating", "") or "4.5"
                     review_count_value = (r_text.get("review_count", "") if isinstance(r_text, dict) else "") or row.get("review_count", "") or "4201"
                     top_rating.markdown(
-                        f"<div style='margin-left:34px;'>" + rating_stars_html(rating_value, review_count_value, font_size_px=18) + "</div>",
+                        f"<div style='margin-left:34px;'>" + rating_stars_html(rating_value, review_count_value, font_size_px=28) + "</div>",
                         unsafe_allow_html=True,
                     )
                 else:
