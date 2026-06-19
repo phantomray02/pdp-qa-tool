@@ -6389,7 +6389,7 @@ if (
                     rating_value = (r_text.get("rating", "") if isinstance(r_text, dict) else "") or row.get("rating", "") or "4.5"
                     review_count_value = (r_text.get("review_count", "") if isinstance(r_text, dict) else "") or row.get("review_count", "") or "4201"
                     top_rating.markdown(
-                        f"<div style='width:max-content;margin-left:auto;'>" + rating_stars_html(rating_value, review_count_value, font_size_px=28) + "</div>",
+                        f"<div style='width:max-content;margin-left:34px;'>" + rating_stars_html(rating_value, review_count_value, font_size_px=28) + "</div>",
                         unsafe_allow_html=True,
                     )
                 else:
