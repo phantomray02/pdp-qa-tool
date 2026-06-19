@@ -600,6 +600,75 @@ def normalize_salsify_asset_name(value):
 def make_blank_salsify_image_slot(name="missing"):
     return {"name": str(name or "missing"), "url": ""}
 
+
+def build_locked_salsify_slots(s_images, lock_top_three=True, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
+    """
+    Salsify-only slot builder.
+
+    Rules:
+    1. Slot 1 is reserved for Online Optimized Image / online image.
+    2. Slot 2 is reserved for Flat Back_2D / back image.
+    3. Slot 3 is reserved for Flat Left_2D / left image.
+    4. If one of those top-three images is missing, keep the slot blank so later
+       lifestyle / ATF images shift down and do not move up into slots 1-3.
+    5. Retailer images must not be modified by this rule.
+    """
+    s_images = [img for img in (s_images or []) if isinstance(img, dict)]
+
+    by_name = {}
+    remainder = []
+    locked_name_map = {
+        "online": [
+            "online optimized image",
+            "online image",
+            "online",
+            "front",
+        ],
+        "back": [
+            "flat back 2d",
+            "flat back",
+            "back 2d",
+            "back",
+        ],
+        "left": [
+            "flat left 2d",
+            "flat left",
+            "left 2d",
+            "left",
+        ],
+    }
+
+    def classify(img):
+        name = normalize_salsify_asset_name(img.get("name", ""))
+        for canonical, options in locked_name_map.items():
+            for option in options:
+                if normalize_salsify_asset_name(option) in name:
+                    return canonical
+        return ""
+
+    for img in s_images:
+        canonical = classify(img)
+        if canonical and canonical not in by_name:
+            by_name[canonical] = img
+        else:
+            remainder.append(img)
+
+    if not lock_top_three:
+        ordered = []
+        for key in ["online", "back", "left"]:
+            if key in by_name:
+                ordered.append(by_name[key])
+        ordered.extend(remainder)
+        return ordered[:max_slots]
+
+    ordered = [
+        by_name.get("online") or make_blank_salsify_image_slot("online"),
+        by_name.get("back") or make_blank_salsify_image_slot("back"),
+        by_name.get("left") or make_blank_salsify_image_slot("left"),
+    ]
+    ordered.extend(remainder)
+    return ordered[:max_slots]
+
 def prepare_input_df(df):
     df = df.copy()
 
@@ -1356,9 +1425,9 @@ def _parse_salsify_page(html_text):
         return ""
 
     ordered_candidates = [
-        ("online", find_asset("online", "front")),
-        ("back", find_asset("back")),
-        ("left", find_asset("left")),
+        ("online", find_asset("online optimized image", "online image", "online", "front")),
+        ("back", find_asset("flat back 2d", "flat back", "back 2d", "back")),
+        ("left", find_asset("flat left 2d", "flat left", "left 2d", "left")),
         ("atf io", find_asset("atf i o generic", "atf io generic", "atf i o", "atf io")),
         ("atf 2", find_asset("atf 2")),
         ("atf 3", find_asset("atf 3")),
@@ -5228,22 +5297,38 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
     """
     Build the retailer-specific Salsify comparison image list.
 
-    Key rule: Salsify image slots should collapse naturally when optional ATF I/O images
-    are missing so downstream images move up instead of leaving a blank hole.
+    Salsify-only rule:
+    - Lock slots 1-3 to Online Optimized Image, Flat Back_2D, Flat Left_2D.
+    - If any of those are missing, keep a blank Salsify slot so later ATF / lifestyle
+      images shift down instead of moving up into the first three slots.
+    - Retailer images are not changed by this rule.
+
+    Beyond the top three locked Salsify slots, optional ATF I/O still behaves naturally.
+    If ATF I/O is missing, later ATF slots move up behind the locked top three.
     """
     retailer = str(retailer_name or "").strip().lower()
-    s_images = [img for img in (s_images or []) if isinstance(img, dict) and str(img.get("url", "") or "").strip()]
+    s_images = build_locked_salsify_slots(
+        s_images,
+        lock_top_three=True,
+        max_slots=max_slots,
+    )
 
     if retailer != "walgreens":
         return s_images[:max_slots]
 
     by_name = {}
     for img in s_images:
+        if not isinstance(img, dict):
+            continue
         name = normalize_salsify_asset_name(img.get("name", ""))
         if name and name not in by_name:
             by_name[name] = img
 
-    aligned = []
+    aligned = [
+        by_name.get("online") or make_blank_salsify_image_slot("online"),
+        by_name.get("back") or make_blank_salsify_image_slot("back"),
+        by_name.get("left") or make_blank_salsify_image_slot("left"),
+    ]
 
     def add_if_present(*queries):
         for query in queries:
@@ -5253,8 +5338,6 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
                 aligned.append(img)
                 return
 
-    add_if_present("online")
-    add_if_present("back")
     add_if_present("atf io")
     add_if_present("atf 2")
     add_if_present("atf 3")
