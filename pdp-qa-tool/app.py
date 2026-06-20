@@ -328,15 +328,16 @@ def column_header_link_html(label, item_number, href):
     if safe_href and safe_item:
         item_html = (
             f'<a href="{safe_href}" target="_blank" '
-            f'style="color:#3EA6FF; text-decoration:none; font-weight:900;">{safe_item}</a>'
+            f'style="color:#3EA6FF; text-decoration:none; font-weight:900; white-space:nowrap;">{safe_item}</a>'
         )
     else:
-        item_html = f'<span style="color:#3EA6FF; font-weight:900;">{safe_item or "Missing"}</span>'
+        item_html = f'<span style="color:#3EA6FF; font-weight:900; white-space:nowrap;">{safe_item or "Missing"}</span>'
 
     return (
         f'<div style="text-align:left;margin-top:0;margin-bottom:2px;font-size:28px;'
-        f'font-weight:900;color:#FFFFFF;line-height:1.05;">{safe_label}: {item_html}</div>'
+        f'font-weight:900;color:#FFFFFF;line-height:1.05;white-space:nowrap;display:inline-block;">{safe_label}: {item_html}</div>'
     )
+
 
 def image_header_html(label):
     safe_label = html_escape_text(label or "")
@@ -6300,7 +6301,7 @@ if (
             left, right = st.columns([2.72, 0.95], gap="small")
         
             with left:
-                top_l, top_mid, top_rating = st.columns([0.90, 1.48, 0.62], gap="small")
+                top_l, top_mid, top_rating = st.columns([0.90, 1.58, 0.52], gap="small")
 
                 top_l.markdown(
                     column_header_link_html("Salsify", sku, salsify_url),
@@ -6311,7 +6312,7 @@ if (
                 clean_rpc = clean_item_number(raw_rpc)
 
                 top_mid.markdown(
-                    f"<div style='margin-left:225px;'>" + column_header_link_html(
+                    f"<div style='margin-left:220px;'>" + column_header_link_html(
                         retailer_name,
                         clean_rpc,
                         retail_url,
