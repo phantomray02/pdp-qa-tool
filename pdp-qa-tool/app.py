@@ -899,23 +899,23 @@ def normalize_kroger_url(url):
     if not url:
         return ""
 
-    # Remove volatile tracking params that do not affect product copy extraction.
-    url = re.sub(r"([?&])msockid=[^&]+", r"\1", url, flags=re.IGNORECASE)
-    url = re.sub(r"([?&])searchType=[^&]+", r"\1", url, flags=re.IGNORECASE)
-    url = re.sub(r"([?&])fulfillment=[^&]+", r"\1", url, flags=re.IGNORECASE)
-    url = re.sub(r"([?&])campaign=[^&]+", r"\1", url, flags=re.IGNORECASE)
-    url = re.sub(r"([?&])adgroup=[^&]+", r"\1", url, flags=re.IGNORECASE)
-    url = re.sub(r"([?&])pid=[^&]+", r"\1", url, flags=re.IGNORECASE)
-    url = re.sub(r"\?&", "?", url)
-    url = re.sub(r"[?&]+$", "", url)
-    url = re.sub(r"\?{2,}", "?", url)
+    # Remove volatile tracking params that do not affect PDP copy extraction.
+    url = re.sub(r'([?&])msockid=[^&]+', r'\1', url, flags=re.IGNORECASE)
+    url = re.sub(r'([?&])searchType=[^&]+', r'\1', url, flags=re.IGNORECASE)
+    url = re.sub(r'([?&])fulfillment=[^&]+', r'\1', url, flags=re.IGNORECASE)
+    url = re.sub(r'([?&])campaign=[^&]+', r'\1', url, flags=re.IGNORECASE)
+    url = re.sub(r'([?&])adgroup=[^&]+', r'\1', url, flags=re.IGNORECASE)
+    url = re.sub(r'([?&])pid=[^&]+', r'\1', url, flags=re.IGNORECASE)
+    url = re.sub(r'\?&', '?', url)
+    url = re.sub(r'[?&]+$', '', url)
+    url = re.sub(r'\?{2,}', '?', url)
     return url
 
 
 def get_kroger_html(url):
     """
     Kroger-specific fetch path with a longer timeout and shared HTML cache.
-    This avoids repeat PDP fetches and helps debugger/visual QA use the same cleaned URL.
+    This helps debugger + visual QA reuse the same cleaned URL.
     """
     global html_cache
     if "html_cache" not in globals() or not isinstance(globals().get("html_cache"), dict):
@@ -2787,11 +2787,7 @@ def extract_kroger_description_and_features_from_html(html_text):
 
     working = html.unescape(str(html_text or ""))
 
-    # -------------------------------------------------
-    # DOM-FIRST path using Kroger's stable product-details
-    # container shown in DevTools:
-    # data-testid="product-details-romance-description"
-    # -------------------------------------------------
+    # DOM-first path using Kroger's stable product-details container.
     soup = BeautifulSoup(working, "html.parser")
     romance = soup.select_one('[data-testid="product-details-romance-description"]')
 
@@ -2821,9 +2817,7 @@ def extract_kroger_description_and_features_from_html(html_text):
         if description or features:
             return description, features, debug
 
-    # -------------------------------------------------
-    # Exact marker fallback path
-    # -------------------------------------------------
+    # Exact marker fallback.
     desc_start_marker = 'product-details-romance-description"><p>'
     desc_end_marker = '</p><ul><li>'
     feat_start_marker = '<ul><li>'
@@ -2857,9 +2851,7 @@ def extract_kroger_description_and_features_from_html(html_text):
                     debug["parser_path"] = "kroger_exact_markers"
                     return description, features, debug
 
-    # -------------------------------------------------
-    # Regex fallback using the data-testid anchor
-    # -------------------------------------------------
+    # Regex fallback using the stable data-testid anchor.
     romance_match = re.search(
         r'data-testid="product-details-romance-description"[^>]*>.*?<p>(.*?)</p>\s*<ul>(.*?)</ul>',
         working,
