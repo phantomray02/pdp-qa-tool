@@ -1116,10 +1116,39 @@ def preview_between_markers(text, start_marker="", end_marker=""):
     return result
 
 
-def fetch_url_debug(url, retailer_name=""):
+def parse_debug_headers_text(headers_text):
+    headers = {}
+    raw_text = str(headers_text or "").strip()
+    if not raw_text:
+        return headers
+    for line in raw_text.splitlines():
+        line = str(line or "").strip()
+        if not line or ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key = str(key or "").strip()
+        value = str(value or "").strip()
+        if key:
+            headers[key] = value
+    return headers
+
+
+def fetch_url_debug(
+    url,
+    retailer_name="",
+    headers_text="",
+    timeout_override=None,
+    use_mobile=False,
+    proxy_url="",
+):
     """
     Fresh non-cached fetch debugger so we can see exactly what the app receives.
-    Uses retailer-specific timeout tuning when needed.
+    Apify-like options:
+    - url
+    - headers_text (Header-Name: value per line)
+    - timeout_override
+    - use_mobile (mobile-like UA)
+    - proxy_url (single proxy string, optional)
     """
     result = {
         "requested_url": str(url or ""),
@@ -1135,10 +1164,13 @@ def fetch_url_debug(url, retailer_name=""):
         "dom_text": "",
         "prettified_dom": "",
         "response_headers": {},
+        "request_headers_used": {},
+        "proxy_used": "",
     }
 
     url = str(url or "").strip()
     retailer_name = str(retailer_name or "").strip().lower()
+    proxy_url = str(proxy_url or "").strip()
 
     if not url:
         result["error"] = "No URL provided."
@@ -1152,8 +1184,40 @@ def fetch_url_debug(url, retailer_name=""):
         url = normalize_kroger_url(url)
 
     try:
+        if timeout_override is not None and str(timeout_override).strip() != "":
+            timeout_seconds = max(1, int(timeout_override))
+    except Exception:
+        pass
+
+    mobile_ua = (
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) "
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
+    )
+
+    extra_headers = parse_debug_headers_text(headers_text)
+    request_headers = dict(HEADERS)
+    request_headers.update(extra_headers)
+    if use_mobile:
+        request_headers["User-Agent"] = mobile_ua
+    result["request_headers_used"] = request_headers
+    result["proxy_used"] = proxy_url
+
+    proxies = None
+    if proxy_url:
+        proxies = {
+            "http": proxy_url,
+            "https": proxy_url,
+        }
+
+    try:
         session = get_session()
-        r = session.get(url, timeout=timeout_seconds, allow_redirects=True)
+        r = session.get(
+            url,
+            timeout=timeout_seconds,
+            allow_redirects=True,
+            headers=request_headers,
+            proxies=proxies,
+        )
 
         result["final_url"] = str(r.url or "")
         result["status_code"] = int(r.status_code)
@@ -1194,8 +1258,8 @@ def fetch_url_debug(url, retailer_name=""):
         result["error"] = repr(e)
 
     return result
-    
-    
+
+
 @st.cache_data(show_spinner=False)
 def get_debug_views_for_url(url):
     html_text = get_html(url)
@@ -1274,6 +1338,10 @@ def resolve_debug_views(
     manual_html_text="",
     manual_html_file=None,
     debugger_fetch_mode="Live fetch + cached fallback",
+    headers_text="",
+    timeout_override=None,
+    use_mobile=False,
+    proxy_url="",
 ):
     """
     Resolve debugger views from manual override, live fetch, or cached/page fetch.
@@ -1305,7 +1373,14 @@ def resolve_debug_views(
     if debugger_fetch_mode == "Cached/page fetch only":
         return get_cached_debug_views_for_url(debug_url, retailer_name=retailer_name)
 
-    live_result = fetch_url_debug(debug_url, retailer_name=retailer_name)
+    live_result = fetch_url_debug(
+        debug_url,
+        retailer_name=retailer_name,
+        headers_text=headers_text,
+        timeout_override=timeout_override,
+        use_mobile=use_mobile,
+        proxy_url=proxy_url,
+    )
 
     if debugger_fetch_mode == "Live fetch + cached fallback":
         live_has_content = bool(
@@ -1358,7 +1433,7 @@ def render_debugger_panel(
     debug_views,
     sku="",
     use_manual_html_override=False,
-    text_area_height=1000,
+    text_area_height=1200,
     show_download_buttons=True,
 ):
     requested_url = str(debug_views.get("requested_url", "") or "")
@@ -1374,6 +1449,8 @@ def render_debugger_panel(
     error_text = str(debug_views.get("error", "") or "")
     live_fetch_error = str(debug_views.get("live_fetch_error", "") or "")
     response_headers = debug_views.get("response_headers", {}) or {}
+    request_headers_used = debug_views.get("request_headers_used", {}) or {}
+    proxy_used = str(debug_views.get("proxy_used", "") or "")
 
     if use_manual_html_override:
         st.success("Using manual HTML override for debugger.")
@@ -1383,12 +1460,6 @@ def render_debugger_panel(
         st.info("Debugger is using cached/page fetch only.")
     elif error_text:
         st.error(f"Debugger fetch error: {error_text}")
-
-    if is_debug_view_robot_page(debug_views):
-        st.warning(
-            "Sam's Club returned a robot / human verification page instead of the product page. "
-            "The parser cannot extract real PDP copy or images from this response."
-        )
 
     metric_cols = st.columns(5)
     with metric_cols[0]:
@@ -1423,6 +1494,13 @@ def render_debugger_panel(
 
     st.text_input("Requested URL", value=requested_url, key=f"debug_requested_url_{sku}")
     st.text_input("Final URL", value=final_url, key=f"debug_final_url_{sku}")
+
+    if proxy_used:
+        st.text_input("Proxy used", value=proxy_used, key=f"debug_proxy_used_{sku}")
+
+    if request_headers_used:
+        with st.expander("Request headers used"):
+            st.json(request_headers_used)
 
     if response_headers:
         with st.expander("Response headers"):
@@ -6320,21 +6398,55 @@ show_below_90_only = st.checkbox("🔎 Show Only Scores Below 90%", key="show_be
 st.markdown("### 🧪 Debug Controls")
 
 show_html_debugger = st.checkbox(
-    "Show top URL debugger",
+    "Show raw HTML extractor",
     key="show_html_debugger",
 )
 
 debugger_fetch_mode = st.selectbox(
-    "Debugger fetch mode",
+    "Fetch mode",
     ["Live fetch + cached fallback", "Live fetch only", "Cached/page fetch only"],
     key="debugger_fetch_mode",
 )
 
+standalone_debug_url = st.text_input(
+    "URL",
+    key="standalone_debug_url",
+    placeholder="https://example.com",
+).strip()
+
+debug_headers_text = st.text_area(
+    "Extra request headers (optional)",
+    height=120,
+    key="debug_headers_text",
+    placeholder="Header-Name: value",
+)
+
+debug_timeout_override = st.number_input(
+    "Request timeout (sec)",
+    min_value=1,
+    max_value=180,
+    value=30,
+    step=1,
+    key="debug_timeout_override",
+)
+
+debug_use_mobile = st.checkbox(
+    "Pretend mobile browser",
+    value=False,
+    key="debug_use_mobile",
+)
+
+debug_proxy_url = st.text_input(
+    "Proxy URL (optional)",
+    key="debug_proxy_url",
+    placeholder="http://user:pass@host:port",
+).strip()
+
 debugger_text_height = st.slider(
     "Debugger text area height",
     min_value=500,
-    max_value=2000,
-    value=1000,
+    max_value=2400,
+    value=1200,
     step=50,
     key="debugger_text_height",
 )
@@ -6344,11 +6456,6 @@ show_debug_download_buttons = st.checkbox(
     value=True,
     key="show_debug_download_buttons",
 )
-
-standalone_debug_url = st.text_input(
-    "Paste URL to fetch full Raw HTML / DOM / Prettified DOM",
-    key="standalone_debug_url",
-).strip()
 
 use_manual_html_override = st.checkbox(
     "Use manual HTML / text override for debugger",
@@ -6366,12 +6473,12 @@ if use_manual_html_override:
     )
     manual_html_text = st.text_area(
         "Or paste raw HTML / rendered page text here for debugger only",
-        height=260,
+        height=220,
         key="manual_html_text",
     )
 
 st.caption(
-    "Paste a retailer URL and the debugger will try to pull the full Raw HTML first, then fall back to the app's broader cached/page fetch path when needed."
+    "This works like a simple raw HTML extractor: paste one URL, optionally add headers / timeout / mobile UA / proxy, and the tool will return the full source it received."
 )
 
 if show_html_debugger:
@@ -6386,9 +6493,13 @@ if show_html_debugger:
             manual_html_text=manual_html_text,
             manual_html_file=manual_html_file,
             debugger_fetch_mode=debugger_fetch_mode,
+            headers_text=debug_headers_text,
+            timeout_override=debug_timeout_override,
+            use_mobile=debug_use_mobile,
+            proxy_url=debug_proxy_url,
         )
 
-        with st.expander("🔎 Top URL HTML / DOM Debugger", expanded=True):
+        with st.expander("🔎 Raw HTML Extractor", expanded=True):
             render_debugger_panel(
                 top_debug_views,
                 sku="top_debugger",
@@ -6793,7 +6904,7 @@ if (
                 avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
                 overall_score = int((title_score + desc_score + avg_feature_score + avg_img_score) / 4)
 
-                        # Top URL debugger now renders above the visual results area.
+                        # Top raw HTML extractor now renders above the visual results area.
             st.divider()
     except Exception as e:
         st.error("🔥 CRITICAL APP ERROR")
