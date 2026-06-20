@@ -307,7 +307,7 @@ def rating_stars_html(rating, review_count=None, font_size_px=18):
 
     return (
         f'<div style="display:inline-flex;align-items:center;justify-content:flex-start;gap:8px;'
-        f'white-space:nowrap;margin:0;line-height:1;">'
+        f'white-space:nowrap;margin:0;line-height:1;width:max-content;">'
         f'<span style="font-size:28px;font-weight:900;color:#FFFFFF;line-height:1;">{rating:.1f}</span>'
         f'<div style="position:relative;display:inline-block;line-height:1;'
         f'font-size:{font_size_px}px;letter-spacing:0.6px;">'
@@ -6301,9 +6301,9 @@ if (
             left, right = st.columns([2.72, 0.95], gap="small")
         
             with left:
-                top_l, top_mid, top_rating = st.columns([0.90, 1.58, 0.52], gap="small")
+                header_left, header_right = st.columns(2, gap="small")
 
-                top_l.markdown(
+                header_left.markdown(
                     column_header_link_html("Salsify", sku, salsify_url),
                     unsafe_allow_html=True,
                 )
@@ -6311,24 +6311,28 @@ if (
                 raw_rpc = current_target_sku or current_rpc
                 clean_rpc = clean_item_number(raw_rpc)
 
-                top_mid.markdown(
-                    f"<div style='margin-left:180px;'>" + column_header_link_html(
-                        retailer_name,
-                        clean_rpc,
-                        retail_url,
-                    ) + "</div>",
-                    unsafe_allow_html=True,
-                )
-
                 if str(retailer_name or "").strip().lower() == "walgreens":
                     rating_value = (r_text.get("rating", "") if isinstance(r_text, dict) else "") or row.get("rating", "") or "4.5"
                     review_count_value = (r_text.get("review_count", "") if isinstance(r_text, dict) else "") or row.get("review_count", "") or "4201"
-                    top_rating.markdown(
-                        f"<div style='width:max-content;margin-left:auto;'>" + rating_stars_html(rating_value, review_count_value, font_size_px=18) + "</div>",
+                    header_right.markdown(
+                        (
+                            f'<div style="display:flex;justify-content:space-between;align-items:flex-end;'
+                            f'width:100%;white-space:nowrap;margin:0;padding:0;">'
+                            f'<div style="flex:0 1 auto;min-width:0;margin:0;padding:0;">'
+                            f'{column_header_link_html(retailer_name, clean_rpc, retail_url)}'
+                            f'</div>'
+                            f'<div style="flex:0 0 auto;width:max-content;margin:0 0 0 12px;padding:0;">'
+                            f'{rating_stars_html(rating_value, review_count_value, font_size_px=18)}'
+                            f'</div>'
+                            f'</div>'
+                        ),
                         unsafe_allow_html=True,
                     )
                 else:
-                    top_rating.markdown("&nbsp;", unsafe_allow_html=True)
+                    header_right.markdown(
+                        column_header_link_html(retailer_name, clean_rpc, retail_url),
+                        unsafe_allow_html=True,
+                    )
 
                 st.markdown(
                     avg_score_bar_html("Copy — Avg", copy_avg_score),
