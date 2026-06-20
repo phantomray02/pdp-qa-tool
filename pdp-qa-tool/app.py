@@ -69,6 +69,8 @@ MAX_CACHE = 400
 WALGREENS_REQUEST_TIMEOUT = 18
 WALGREENS_DEBUG_TIMEOUT = 25
 WALGREENS_API_TIMEOUT = 10
+KROGER_REQUEST_TIMEOUT = 15
+KROGER_DEBUG_TIMEOUT = 20
 
 # =========================================
 # PERFORMANCE SETTINGS
@@ -885,6 +887,50 @@ def get_walgreens_html(url):
             html_cache.pop(next(iter(html_cache)))
     return html_text
 
+
+def normalize_kroger_url(url):
+    url = str(url or "").strip()
+    if not url:
+        return ""
+
+    # Remove volatile params that often break debugger fetches but do not affect PDP content.
+    url = re.sub(r'([?&])msockid=[^&]+', r'\1', url, flags=re.IGNORECASE)
+    url = re.sub(r'([?&])searchType=[^&]+', r'\1', url, flags=re.IGNORECASE)
+    url = re.sub(r'([?&])fulfillment=[^&]+', r'\1', url, flags=re.IGNORECASE)
+    url = re.sub(r'([?&])campaign=[^&]+', r'\1', url, flags=re.IGNORECASE)
+    url = re.sub(r'([?&])adgroup=[^&]+', r'\1', url, flags=re.IGNORECASE)
+    url = re.sub(r'([?&])pid=[^&]+', r'\1', url, flags=re.IGNORECASE)
+    url = re.sub(r'\?&', '?', url)
+    url = re.sub(r'[?&]+$', '', url)
+    url = re.sub(r'\?{2,}', '?', url)
+    return url
+
+
+def get_kroger_html(url):
+    """
+    Kroger-specific fetch path with a longer timeout and shared HTML cache.
+    This helps debugger + visual QA reuse the same cleaned URL.
+    """
+    global html_cache
+    if "html_cache" not in globals() or not isinstance(globals().get("html_cache"), dict):
+        html_cache = {}
+
+    url = normalize_kroger_url(url)
+    if not url:
+        return ""
+
+    cache_key = f"kroger::{url}"
+    if cache_key in html_cache:
+        html_cache[cache_key] = html_cache.pop(cache_key)
+        return html_cache[cache_key]
+
+    html_text = fetch_html_with_timeout(url, KROGER_REQUEST_TIMEOUT)
+    if html_text:
+        html_cache[cache_key] = html_text
+        while len(html_cache) > HTML_CACHE_MAX:
+            html_cache.pop(next(iter(html_cache)))
+    return html_text
+
 def get_walgreens_product_id_from_url(retail_url):
     """
     Supports Walgreens product URLs like:
@@ -1095,6 +1141,9 @@ def fetch_url_debug(url, retailer_name=""):
     timeout_seconds = REQUEST_TIMEOUT
     if retailer_name == "walgreens":
         timeout_seconds = WALGREENS_DEBUG_TIMEOUT
+    elif retailer_name == "kroger":
+        timeout_seconds = KROGER_DEBUG_TIMEOUT
+        url = normalize_kroger_url(url)
 
     try:
         session = get_session()
@@ -1184,7 +1233,11 @@ def get_cached_debug_views_for_url(debug_url, retailer_name=""):
     effective_url = requested_url
     source_used = "cached_fetch"
 
-    if retailer_name == "walgreens":
+    if retailer_name == "kroger":
+        effective_url = normalize_kroger_url(debug_url)
+        html_text = get_kroger_html(effective_url)
+        source_used = "kroger_cached_fetch"
+    elif retailer_name == "walgreens":
         html_text = get_walgreens_html(debug_url)
         source_used = "walgreens_cached_fetch"
     else:
