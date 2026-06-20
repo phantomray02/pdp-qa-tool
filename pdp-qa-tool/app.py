@@ -1357,11 +1357,8 @@ def is_debug_view_robot_page(debug_views):
 def render_debugger_panel(
     debug_views,
     sku="",
-    marker_start="",
-    marker_end="",
-    marker_target="Raw HTML",
     use_manual_html_override=False,
-    text_area_height=560,
+    text_area_height=1000,
     show_download_buttons=True,
 ):
     requested_url = str(debug_views.get("requested_url", "") or "")
@@ -1431,7 +1428,7 @@ def render_debugger_panel(
         with st.expander("Response headers"):
             st.json(response_headers)
 
-    tab_raw, tab_dom, tab_pretty, tab_marker = st.tabs(["Raw HTML", "DOM Text", "Prettified DOM", "Marker Test"])
+    tab_raw, tab_dom, tab_pretty = st.tabs(["Raw HTML", "DOM Text", "Prettified DOM"])
 
     with tab_raw:
         if show_download_buttons and raw_html:
@@ -1442,7 +1439,12 @@ def render_debugger_panel(
                 mime="text/html",
                 key=f"download_raw_html_{sku}",
             )
-        st.text_area(f"raw_html_{sku or 'debug'}", value=raw_html, height=text_area_height, key=f"debug_raw_html_{sku}")
+        st.text_area(
+            f"raw_html_{sku or 'debug'}",
+            value=raw_html,
+            height=text_area_height,
+            key=f"debug_raw_html_{sku}",
+        )
 
     with tab_dom:
         if show_download_buttons and dom_text:
@@ -1453,7 +1455,12 @@ def render_debugger_panel(
                 mime="text/plain",
                 key=f"download_dom_text_{sku}",
             )
-        st.text_area(f"dom_text_{sku or 'debug'}", value=dom_text, height=text_area_height, key=f"debug_dom_text_{sku}")
+        st.text_area(
+            f"dom_text_{sku or 'debug'}",
+            value=dom_text,
+            height=text_area_height,
+            key=f"debug_dom_text_{sku}",
+        )
 
     with tab_pretty:
         if show_download_buttons and prettified_dom:
@@ -1464,31 +1471,12 @@ def render_debugger_panel(
                 mime="text/html",
                 key=f"download_pretty_dom_{sku}",
             )
-        st.text_area(f"prettified_dom_{sku or 'debug'}", value=prettified_dom, height=text_area_height, key=f"debug_prettified_dom_{sku}")
-
-    with tab_marker:
-        marker_source_name = marker_target or "Raw HTML"
-        if marker_source_name == "DOM Text":
-            marker_source_text = dom_text
-        elif marker_source_name == "Prettified DOM":
-            marker_source_text = prettified_dom
-        else:
-            marker_source_text = raw_html
-        marker_result = preview_between_markers(marker_source_text, start_marker=marker_start, end_marker=marker_end)
-        marker_cols = st.columns(4)
-        with marker_cols[0]:
-            st.caption("Start Found")
-            st.markdown(f"### {'Yes' if marker_result.get('start_found') else 'No'}")
-        with marker_cols[1]:
-            st.caption("End Found")
-            st.markdown(f"### {'Yes' if marker_result.get('end_found') else 'No'}")
-        with marker_cols[2]:
-            st.caption("Start Index")
-            st.markdown(f"### {marker_result.get('start_index', -1)}")
-        with marker_cols[3]:
-            st.caption("End Index")
-            st.markdown(f"### {marker_result.get('end_index', -1)}")
-        st.text_area("Marker preview", value=str(marker_result.get("preview", "") or ""), height=max(280, min(text_area_height, 560)), key=f"debug_marker_preview_{sku}")
+        st.text_area(
+            f"prettified_dom_{sku or 'debug'}",
+            value=prettified_dom,
+            height=text_area_height,
+            key=f"debug_prettified_dom_{sku}",
+        )
 
 
 # =========================================
@@ -6332,14 +6320,8 @@ show_below_90_only = st.checkbox("🔎 Show Only Scores Below 90%", key="show_be
 st.markdown("### 🧪 Debug Controls")
 
 show_html_debugger = st.checkbox(
-    "Show Raw HTML / DOM Debugger in Full Visual QA",
+    "Show top URL debugger",
     key="show_html_debugger",
-)
-
-debugger_source = st.selectbox(
-    "Debugger Source",
-    ["Retailer page", "Salsify page"],
-    key="debugger_source",
 )
 
 debugger_fetch_mode = st.selectbox(
@@ -6348,17 +6330,12 @@ debugger_fetch_mode = st.selectbox(
     key="debugger_fetch_mode",
 )
 
-debug_only_sku = st.text_input(
-    "Debug only this SKU. Leave blank to show debugger for all visible rows.",
-    key="debug_only_sku",
-).strip()
-
 debugger_text_height = st.slider(
     "Debugger text area height",
-    min_value=320,
-    max_value=1200,
-    value=560,
-    step=40,
+    min_value=500,
+    max_value=2000,
+    value=1000,
+    step=50,
     key="debugger_text_height",
 )
 
@@ -6367,6 +6344,11 @@ show_debug_download_buttons = st.checkbox(
     value=True,
     key="show_debug_download_buttons",
 )
+
+standalone_debug_url = st.text_input(
+    "Paste URL to fetch full Raw HTML / DOM / Prettified DOM",
+    key="standalone_debug_url",
+).strip()
 
 use_manual_html_override = st.checkbox(
     "Use manual HTML / text override for debugger",
@@ -6384,34 +6366,36 @@ if use_manual_html_override:
     )
     manual_html_text = st.text_area(
         "Or paste raw HTML / rendered page text here for debugger only",
-        height=220,
+        height=260,
         key="manual_html_text",
     )
 
 st.caption(
-    "Tip: if live fetch times out, switch to 'Cached/page fetch only' or keep 'Live fetch + cached fallback'. "
-    "You can also paste page source or rendered text into the manual override box."
+    "Paste a retailer URL and the debugger will try to pull the full Raw HTML first, then fall back to the app's broader cached/page fetch path when needed."
 )
 
-st.markdown("#### 🔬 Marker Test Controls")
+if show_html_debugger:
+    manual_has_content = bool(str(manual_html_text or "").strip()) or (manual_html_file is not None)
+    if standalone_debug_url or manual_has_content:
+        top_debug_url = standalone_debug_url
+        top_debug_retailer = infer_retailer_name_from_url(top_debug_url) if top_debug_url else ""
+        top_debug_views = resolve_debug_views(
+            top_debug_url,
+            retailer_name=top_debug_retailer,
+            use_manual_html_override=use_manual_html_override,
+            manual_html_text=manual_html_text,
+            manual_html_file=manual_html_file,
+            debugger_fetch_mode=debugger_fetch_mode,
+        )
 
-debug_marker_start = st.text_input(
-    "Start marker",
-    key="debug_marker_start",
-    value='"longDescription":"',
-)
-
-debug_marker_end = st.text_input(
-    "End marker",
-    key="debug_marker_end",
-    value='\u003c/p\u003e"',
-)
-
-debug_marker_target = st.selectbox(
-    "Marker test target",
-    ["Raw HTML", "DOM Text", "Prettified DOM"],
-    key="debug_marker_target",
-)
+        with st.expander("🔎 Top URL HTML / DOM Debugger", expanded=True):
+            render_debugger_panel(
+                top_debug_views,
+                sku="top_debugger",
+                use_manual_html_override=use_manual_html_override,
+                text_area_height=debugger_text_height,
+                show_download_buttons=show_debug_download_buttons,
+            )
 
 
 if retailer_df is not None and st.session_state.processing_done and st.session_state.completed_batch_key == current_batch_key:
@@ -6809,35 +6793,7 @@ if (
                 avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
                 overall_score = int((title_score + desc_score + avg_feature_score + avg_img_score) / 4)
 
-            if show_html_debugger:
-                should_render_debugger = (not debug_only_sku) or (
-                    str(sku).strip() == str(debug_only_sku).strip()
-                )
-            
-                if should_render_debugger:
-                    debug_url = retail_url if debugger_source == "Retailer page" else salsify_url
-                    debug_retailer_name = retailer_name if debugger_source == "Retailer page" else "salsify"
-            
-                    debug_views = resolve_debug_views(
-                        debug_url,
-                        retailer_name=debug_retailer_name,
-                        use_manual_html_override=use_manual_html_override,
-                        manual_html_text=manual_html_text,
-                        manual_html_file=manual_html_file,
-                        debugger_fetch_mode=debugger_fetch_mode,
-                    )
-            
-                    with st.expander(f"🔎 HTML / DOM Debugger — {sku}", expanded=True):
-                        render_debugger_panel(
-                            debug_views,
-                            sku=sku,
-                            marker_start=debug_marker_start,
-                            marker_end=debug_marker_end,
-                            marker_target=debug_marker_target,
-                            use_manual_html_override=use_manual_html_override,
-                            text_area_height=debugger_text_height,
-                            show_download_buttons=show_debug_download_buttons,
-                        )
+                        # Top URL debugger now renders above the visual results area.
             st.divider()
     except Exception as e:
         st.error("🔥 CRITICAL APP ERROR")
