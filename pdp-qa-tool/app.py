@@ -1095,9 +1095,6 @@ def fetch_url_debug(url, retailer_name=""):
     timeout_seconds = REQUEST_TIMEOUT
     if retailer_name == "walgreens":
         timeout_seconds = WALGREENS_DEBUG_TIMEOUT
-    elif retailer_name == "kroger":
-        timeout_seconds = 20
-        url = normalize_kroger_url(url)
 
     try:
         session = get_session()
@@ -1142,8 +1139,8 @@ def fetch_url_debug(url, retailer_name=""):
         result["error"] = repr(e)
 
     return result
-
-
+    
+    
 @st.cache_data(show_spinner=False)
 def get_debug_views_for_url(url):
     html_text = get_html(url)
@@ -1180,94 +1177,16 @@ def get_uploaded_text_file_bytes(uploaded_text_file):
         return ""
 
 
-def normalize_kroger_url(url):
-    url = str(url or "").strip()
-    if not url:
-        return ""
-
-    # Remove volatile params that often break debugger fetches without changing PDP content.
-    url = re.sub(r'([?&])msockid=[^&]+', r'\1', url, flags=re.IGNORECASE)
-    url = re.sub(r'([?&])searchType=[^&]+', r'\1', url, flags=re.IGNORECASE)
-    url = re.sub(r'([?&])fulfillment=[^&]+', r'\1', url, flags=re.IGNORECASE)
-    url = re.sub(r'([?&])campaign=[^&]+', r'\1', url, flags=re.IGNORECASE)
-    url = re.sub(r'([?&])adgroup=[^&]+', r'\1', url, flags=re.IGNORECASE)
-    url = re.sub(r'([?&])pid=[^&]+', r'\1', url, flags=re.IGNORECASE)
-    url = re.sub(r'\?&', '?', url)
-    url = re.sub(r'[?&]+$', '', url)
-    url = re.sub(r'\?{2,}', '?', url)
-    return url
-
-
-def get_kroger_html(url):
-    """
-    Kroger-specific cached/page fetch path with a longer timeout and cleaned URL.
-    """
-    global html_cache
-    if "html_cache" not in globals() or not isinstance(globals().get("html_cache"), dict):
-        html_cache = {}
-
-    url = normalize_kroger_url(url)
-    if not url:
-        return ""
-
-    cache_key = f"kroger::{url}"
-    if cache_key in html_cache:
-        html_cache[cache_key] = html_cache.pop(cache_key)
-        return html_cache[cache_key]
-
-    html_text = fetch_html_with_timeout(url, 15)
-    if html_text:
-        html_cache[cache_key] = html_text
-        while len(html_cache) > HTML_CACHE_MAX:
-            html_cache.pop(next(iter(html_cache)))
-    return html_text
-
-
-def get_cached_debug_views_for_url(debug_url, retailer_name=""):
-    """Build debugger views from the normal cached/page fetch path."""
-    requested_url = str(debug_url or "")
-    retailer_name = str(retailer_name or "").strip().lower()
-    effective_url = requested_url
-    source_used = "cached_fetch"
-
-    if retailer_name == "kroger":
-        effective_url = normalize_kroger_url(debug_url)
-        html_text = get_kroger_html(effective_url)
-        source_used = "kroger_cached_fetch"
-    elif retailer_name == "walgreens":
-        html_text = get_walgreens_html(debug_url)
-        source_used = "walgreens_cached_fetch"
-    else:
-        html_text = get_html(debug_url)
-        source_used = "generic_cached_fetch"
-
-    views = build_debug_views_from_html(html_text)
-    return {
-        "mode": "cached_fetch",
-        "requested_url": requested_url,
-        "final_url": effective_url,
-        "status_code": "CACHED" if html_text else "EMPTY",
-        "reason": source_used if html_text else f"{source_used}_empty",
-        "content_type": "text/html" if html_text else "",
-        "content_length_header": str(len(html_text or "")),
-        "text_length": len(html_text or ""),
-        "history": [],
-        "error": "",
-        "response_headers": {},
-        **views,
-    }
-
-
 def resolve_debug_views(
     debug_url,
     retailer_name="",
     use_manual_html_override=False,
     manual_html_text="",
     manual_html_file=None,
-    debugger_fetch_mode="Live fetch + cached fallback",
 ):
     """
-    Resolve debugger views from manual override, live fetch, or cached/page fetch.
+    If manual override is provided, use that instead of live fetch.
+    Otherwise use the live fetch debugger.
     """
     manual_text = str(manual_html_text or "").strip()
     uploaded_text = get_uploaded_text_file_bytes(manual_html_file).strip()
@@ -1291,39 +1210,9 @@ def resolve_debug_views(
                 **views,
             }
 
-    debugger_fetch_mode = str(debugger_fetch_mode or "Live fetch + cached fallback").strip()
-
-    if debugger_fetch_mode == "Cached/page fetch only":
-        return get_cached_debug_views_for_url(debug_url, retailer_name=retailer_name)
-
-    live_result = fetch_url_debug(debug_url, retailer_name=retailer_name)
-
-    if debugger_fetch_mode == "Live fetch + cached fallback":
-        live_has_content = bool(
-            str(live_result.get("raw_html", "") or "").strip()
-            or str(live_result.get("dom_text", "") or "").strip()
-            or str(live_result.get("prettified_dom", "") or "").strip()
-        )
-        if not live_has_content:
-            fallback_result = get_cached_debug_views_for_url(debug_url, retailer_name=retailer_name)
-            fallback_has_content = bool(
-                str(fallback_result.get("raw_html", "") or "").strip()
-                or str(fallback_result.get("dom_text", "") or "").strip()
-                or str(fallback_result.get("prettified_dom", "") or "").strip()
-            )
-            if fallback_has_content:
-                fallback_result["mode"] = "cached_fetch_fallback"
-                fallback_result["live_fetch_error"] = str(live_result.get("error", "") or "")
-                fallback_result["reason"] = (
-                    str(fallback_result.get("reason", "") or "")
-                    + " | live_fetch_failed_fallback_used"
-                ).strip(" |")
-                return fallback_result
-
-    live_result["mode"] = live_result.get("mode", "live_fetch") or "live_fetch"
-    return live_result
-
-
+    # Fallback to live fetch.
+    return fetch_url_debug(debug_url, retailer_name=retailer_name)
+    
 def is_debug_view_robot_page(debug_views):
     raw_html = str(debug_views.get("raw_html", "") or "").lower()
     final_url = str(debug_views.get("final_url", "") or "").lower()
@@ -1352,29 +1241,21 @@ def render_debugger_panel(
     marker_end="",
     marker_target="Raw HTML",
     use_manual_html_override=False,
-    text_area_height=1000,
-    show_download_buttons=True,
 ):
     requested_url = str(debug_views.get("requested_url", "") or "")
     final_url = str(debug_views.get("final_url", "") or "")
     status_code = str(debug_views.get("status_code", "") or "")
     reason = str(debug_views.get("reason", "") or "")
-    mode = str(debug_views.get("mode", "live_fetch") or "live_fetch")
     text_length = int(debug_views.get("text_length", 0) or 0)
     history = debug_views.get("history", []) or []
     raw_html = str(debug_views.get("raw_html", "") or "")
     dom_text = str(debug_views.get("dom_text", "") or "")
     prettified_dom = str(debug_views.get("prettified_dom", "") or "")
     error_text = str(debug_views.get("error", "") or "")
-    live_fetch_error = str(debug_views.get("live_fetch_error", "") or "")
     response_headers = debug_views.get("response_headers", {}) or {}
 
     if use_manual_html_override:
         st.success("Using manual HTML override for debugger.")
-    elif mode == "cached_fetch_fallback" and live_fetch_error:
-        st.warning(f"Live debugger fetch failed, so cached/page fetch fallback was used. Live error: {live_fetch_error}")
-    elif mode == "cached_fetch":
-        st.info("Debugger is using cached/page fetch only.")
     elif error_text:
         st.error(f"Debugger fetch error: {error_text}")
 
@@ -1385,103 +1266,112 @@ def render_debugger_panel(
         )
 
     metric_cols = st.columns(5)
+
     with metric_cols[0]:
         st.caption("Status")
         st.markdown(f"### {status_code if status_code else 'N/A'}")
+
     with metric_cols[1]:
         st.caption("Reason")
         st.markdown(f"### {reason if reason else 'N/A'}")
+
     with metric_cols[2]:
         st.caption("Content Length")
         st.markdown(f"### {text_length}")
+
     with metric_cols[3]:
         st.caption("Redirects")
         st.markdown(f"### {len(history)}")
+
     with metric_cols[4]:
         st.caption("Final URL Set")
         st.markdown(f"### {'Yes' if final_url else 'No'}")
 
-    extra_cols = st.columns(4)
-    with extra_cols[0]:
-        st.caption("Mode")
-        st.markdown(f"### {mode}")
-    with extra_cols[1]:
-        st.caption("Raw HTML chars")
-        st.markdown(f"### {len(raw_html)}")
-    with extra_cols[2]:
-        st.caption("DOM text chars")
-        st.markdown(f"### {len(dom_text)}")
-    with extra_cols[3]:
-        st.caption("Pretty DOM chars")
-        st.markdown(f"### {len(prettified_dom)}")
+    st.text_input(
+        "Requested URL",
+        value=requested_url,
+        key=f"debug_requested_url_{sku}",
+    )
 
-    st.text_input("Requested URL", value=requested_url, key=f"debug_requested_url_{sku}")
-    st.text_input("Final URL", value=final_url, key=f"debug_final_url_{sku}")
+    st.text_input(
+        "Final URL",
+        value=final_url,
+        key=f"debug_final_url_{sku}",
+    )
 
     if response_headers:
         with st.expander("Response headers"):
             st.json(response_headers)
 
-    tab_raw, tab_dom, tab_pretty, tab_marker = st.tabs(["Raw HTML", "DOM Text", "Prettified DOM", "Marker Test"])
+    tab_raw, tab_dom, tab_pretty, tab_marker = st.tabs(
+        ["Raw HTML", "DOM Text", "Prettified DOM", "Marker Test"]
+    )
 
     with tab_raw:
-        if show_download_buttons and raw_html:
-            st.download_button(
-                "Download raw HTML",
-                data=raw_html.encode("utf-8"),
-                file_name=f"raw_html_{sku or 'debug'}.html",
-                mime="text/html",
-                key=f"download_raw_html_{sku}",
-            )
-        st.text_area(f"raw_html_{sku or 'debug'}", value=raw_html, height=text_area_height, key=f"debug_raw_html_{sku}")
+        st.text_area(
+            f"raw_html_{sku or 'debug'}",
+            value=raw_html,
+            height=320,
+            key=f"debug_raw_html_{sku}",
+        )
 
     with tab_dom:
-        if show_download_buttons and dom_text:
-            st.download_button(
-                "Download DOM text",
-                data=dom_text.encode("utf-8"),
-                file_name=f"dom_text_{sku or 'debug'}.txt",
-                mime="text/plain",
-                key=f"download_dom_text_{sku}",
-            )
-        st.text_area(f"dom_text_{sku or 'debug'}", value=dom_text, height=text_area_height, key=f"debug_dom_text_{sku}")
+        st.text_area(
+            f"dom_text_{sku or 'debug'}",
+            value=dom_text,
+            height=320,
+            key=f"debug_dom_text_{sku}",
+        )
 
     with tab_pretty:
-        if show_download_buttons and prettified_dom:
-            st.download_button(
-                "Download prettified DOM",
-                data=prettified_dom.encode("utf-8"),
-                file_name=f"prettified_dom_{sku or 'debug'}.html",
-                mime="text/html",
-                key=f"download_pretty_dom_{sku}",
-            )
-        st.text_area(f"prettified_dom_{sku or 'debug'}", value=prettified_dom, height=text_area_height, key=f"debug_prettified_dom_{sku}")
+        st.text_area(
+            f"prettified_dom_{sku or 'debug'}",
+            value=prettified_dom,
+            height=320,
+            key=f"debug_prettified_dom_{sku}",
+        )
 
     with tab_marker:
         marker_source_name = marker_target or "Raw HTML"
+
         if marker_source_name == "DOM Text":
             marker_source_text = dom_text
         elif marker_source_name == "Prettified DOM":
             marker_source_text = prettified_dom
         else:
             marker_source_text = raw_html
-        marker_result = preview_between_markers(marker_source_text, start_marker=marker_start, end_marker=marker_end)
+
+        marker_result = preview_between_markers(
+            marker_source_text,
+            start_marker=marker_start,
+            end_marker=marker_end,
+        )
+
         marker_cols = st.columns(4)
+
         with marker_cols[0]:
             st.caption("Start Found")
             st.markdown(f"### {'Yes' if marker_result.get('start_found') else 'No'}")
+
         with marker_cols[1]:
             st.caption("End Found")
             st.markdown(f"### {'Yes' if marker_result.get('end_found') else 'No'}")
+
         with marker_cols[2]:
             st.caption("Start Index")
             st.markdown(f"### {marker_result.get('start_index', -1)}")
+
         with marker_cols[3]:
             st.caption("End Index")
             st.markdown(f"### {marker_result.get('end_index', -1)}")
-        st.text_area("Marker preview", value=str(marker_result.get("preview", "") or ""), height=max(280, min(text_area_height, 700)), key=f"debug_marker_preview_{sku}")
 
-
+        st.text_area(
+            "Marker preview",
+            value=str(marker_result.get("preview", "") or ""),
+            height=280,
+            key=f"debug_marker_preview_{sku}",
+        )
+        
 # =========================================
 # SALSIFY PARSERS
 # =========================================
@@ -6305,112 +6195,48 @@ show_below_90_only = st.checkbox("🔎 Show Only Scores Below 90%", key="show_be
 st.markdown("### 🧪 Debug Controls")
 
 show_html_debugger = st.checkbox(
-    "Show Raw HTML / DOM Debugger in Full Visual QA",
+    "Debug HTML",
     key="show_html_debugger",
 )
 
-debugger_source = st.selectbox(
-    "Debugger Source",
-    ["Retailer page", "Salsify page"],
-    key="debugger_source",
-)
-
-debugger_fetch_mode = st.selectbox(
-    "Debugger fetch mode",
-    ["Live fetch + cached fallback", "Live fetch only", "Cached/page fetch only"],
-    key="debugger_fetch_mode",
-)
+# Keep downstream variables defined so the existing lower code continues to run unchanged.
+debugger_source = "Retailer page"
+debug_only_sku = ""
+use_manual_html_override = False
+manual_html_file = None
+manual_html_text = ""
+debug_marker_start = ""
+debug_marker_end = ""
+debug_marker_target = "Raw HTML"
 
 standalone_debug_url = st.text_input(
-    "Paste any URL to pull the full raw HTML / DOM",
+    "URL to pull raw HTML",
     key="standalone_debug_url",
 ).strip()
 
-debug_only_sku = st.text_input(
-    "Debug only this SKU. Leave blank to show debugger for all visible rows.",
-    key="debug_only_sku",
-).strip()
-
-debugger_text_height = st.number_input(
-    "Debugger text area height",
-    min_value=320,
-    max_value=2400,
-    value=1000,
-    step=40,
-    key="debugger_text_height",
-)
-
-show_debug_download_buttons = st.checkbox(
-    "Show debugger download buttons",
-    value=True,
-    key="show_debug_download_buttons",
-)
-
-use_manual_html_override = st.checkbox(
-    "Use manual HTML override for debugger",
-    key="use_manual_html_override",
-)
-
-manual_html_file = None
-manual_html_text = ""
-
-if use_manual_html_override:
-    manual_html_file = st.file_uploader(
-        "Upload HTML or text file for debugger only",
-        type=["html", "txt"],
-        key="manual_html_file",
-    )
-    manual_html_text = st.text_area(
-        "Or paste raw HTML / rendered page text here for debugger only",
-        height=220,
-        key="manual_html_text",
-    )
-
 st.caption(
-    "Paste a URL above to pull the full raw HTML response, then use the Raw HTML tab to point the parser at the exact spot you want."
+    "Paste a URL and the debugger will fetch the raw HTML response so you can inspect the exact source before we build a retailer-specific parser."
 )
 
-if show_html_debugger and (standalone_debug_url or use_manual_html_override):
-    standalone_retailer_name = infer_retailer_name_from_url(standalone_debug_url) if standalone_debug_url else ""
+if show_html_debugger and standalone_debug_url:
+    standalone_retailer_name = infer_retailer_name_from_url(standalone_debug_url)
     standalone_debug_views = resolve_debug_views(
         standalone_debug_url,
         retailer_name=standalone_retailer_name,
-        use_manual_html_override=use_manual_html_override,
-        manual_html_text=manual_html_text,
-        manual_html_file=manual_html_file,
-        debugger_fetch_mode=debugger_fetch_mode,
+        use_manual_html_override=False,
+        manual_html_text="",
+        manual_html_file=None,
     )
-    with st.expander("🔎 Raw HTML Extractor", expanded=True):
+
+    with st.expander("🔎 Debug HTML", expanded=True):
         render_debugger_panel(
             standalone_debug_views,
             sku="top_debugger",
-            marker_start='"longDescription":"',
-            marker_end='\u003c/p\u003e"',
+            marker_start="",
+            marker_end="",
             marker_target="Raw HTML",
-            use_manual_html_override=use_manual_html_override,
-            text_area_height=int(debugger_text_height),
-            show_download_buttons=show_debug_download_buttons,
+            use_manual_html_override=False,
         )
-
-st.markdown("#### 🔬 Marker Test Controls")
-
-debug_marker_start = st.text_input(
-    "Start marker",
-    key="debug_marker_start",
-    value='"longDescription":"',
-)
-
-debug_marker_end = st.text_input(
-    "End marker",
-    key="debug_marker_end",
-    value='\u003c/p\u003e"',
-)
-
-debug_marker_target = st.selectbox(
-    "Marker test target",
-    ["Raw HTML", "DOM Text", "Prettified DOM"],
-    key="debug_marker_target",
-)
 
 
 if retailer_df is not None and st.session_state.processing_done and st.session_state.completed_batch_key == current_batch_key:
@@ -6823,7 +6649,6 @@ if (
                         use_manual_html_override=use_manual_html_override,
                         manual_html_text=manual_html_text,
                         manual_html_file=manual_html_file,
-                        debugger_fetch_mode=debugger_fetch_mode,
                     )
             
                     with st.expander(f"🔎 HTML / DOM Debugger — {sku}", expanded=True):
@@ -6834,8 +6659,6 @@ if (
                             marker_end=debug_marker_end,
                             marker_target=debug_marker_target,
                             use_manual_html_override=use_manual_html_override,
-                            text_area_height=int(debugger_text_height),
-                            show_download_buttons=show_debug_download_buttons,
                         )
             st.divider()
     except Exception as e:
