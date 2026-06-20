@@ -307,7 +307,7 @@ def rating_stars_html(rating, review_count=None, font_size_px=18):
 
     return (
         f'<div style="display:inline-flex;align-items:center;justify-content:flex-start;gap:8px;'
-        f'white-space:nowrap;margin:0;line-height:1;width:max-content;">'
+        f'white-space:nowrap;margin:0;line-height:1;">'
         f'<span style="font-size:28px;font-weight:900;color:#FFFFFF;line-height:1;">{rating:.1f}</span>'
         f'<div style="position:relative;display:inline-block;line-height:1;'
         f'font-size:{font_size_px}px;letter-spacing:0.6px;">'
@@ -2655,6 +2655,192 @@ def get_cvs_bundle(retail_url, target_rpc=""):
     }
 
 # =========================================
+# KROGER PARSERS
+# =========================================
+def clean_kroger_text(text):
+    if not text:
+        return ""
+    text = str(text)
+    text = html.unescape(text)
+    text = text.replace("\u003c", "<")
+    text = text.replace("\u003e", ">")
+    text = text.replace("\u0026", "&")
+    text = text.replace("\n", " ")
+    text = text.replace("\\/", "/")
+    text = text.replace('\"', '"')
+    text = re.sub(
+        r"<script\b[^>]*>.*?</script>",
+        " ",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if "<" in text and ">" in text:
+        text = BeautifulSoup(text, "html.parser").get_text(" ", strip=True)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def normalize_kroger_features(items, max_features=10):
+    if not items:
+        return []
+    out = []
+    for item in items:
+        val = clean_kroger_text(item)
+        if val:
+            out.append(val)
+    return dedupe_preserve_order(out[:max_features])
+
+
+def extract_kroger_description_and_features_from_html(html_text):
+    debug = {
+        "description_marker_found": False,
+        "description_end_marker_found": False,
+        "feature_block_found": False,
+        "feature_count": 0,
+        "description_excerpt": "",
+        "features_excerpt": "",
+        "parser_path": "",
+    }
+
+    if not html_text:
+        return "", [], debug
+
+    working = html.unescape(str(html_text or ""))
+
+    desc_start_marker = 'product-details-romance-description"><p>'
+    desc_end_marker = '</p><ul><li>'
+    feat_start_marker = '<ul><li>'
+    feat_end_marker = '</li></ul></div>'
+
+    start_idx = working.find(desc_start_marker)
+    if start_idx != -1:
+        debug["description_marker_found"] = True
+        desc_body_start = start_idx + len(desc_start_marker)
+        desc_end_idx = working.find(desc_end_marker, desc_body_start)
+        if desc_end_idx != -1:
+            debug["description_end_marker_found"] = True
+            raw_desc = working[desc_body_start:desc_end_idx]
+            description = clean_kroger_text(raw_desc)
+
+            feat_block_start = working.find(feat_start_marker, desc_end_idx)
+            if feat_block_start != -1:
+                feat_body_start = feat_block_start + len(feat_start_marker)
+                feat_end_idx = working.find(feat_end_marker, feat_body_start)
+                if feat_end_idx != -1:
+                    debug["feature_block_found"] = True
+                    raw_feat_block = working[feat_body_start:feat_end_idx]
+                    raw_features = re.split(r"</li>\s*<li>", raw_feat_block, flags=re.IGNORECASE)
+                    features = normalize_kroger_features(raw_features, max_features=10)
+                    debug["feature_count"] = len(features)
+                    debug["description_excerpt"] = description[:500]
+                    debug["features_excerpt"] = " | ".join(features[:5])[:1000]
+                    debug["parser_path"] = "kroger_exact_markers"
+                    return description, features, debug
+
+    romance_match = re.search(
+        r'product-details-romance-description[^>]*>\s*<p>(.*?)</p>\s*<ul>(.*?)</ul>\s*</div>',
+        working,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if romance_match:
+        raw_desc = romance_match.group(1)
+        raw_ul = romance_match.group(2)
+        description = clean_kroger_text(raw_desc)
+        raw_features = re.findall(r'<li[^>]*>(.*?)</li>', raw_ul, flags=re.IGNORECASE | re.DOTALL)
+        features = normalize_kroger_features(raw_features, max_features=10)
+        debug["description_marker_found"] = True
+        debug["description_end_marker_found"] = True
+        debug["feature_block_found"] = True
+        debug["feature_count"] = len(features)
+        debug["description_excerpt"] = description[:500]
+        debug["features_excerpt"] = " | ".join(features[:5])[:1000]
+        debug["parser_path"] = "kroger_regex_fallback"
+        return description, features, debug
+
+    soup = BeautifulSoup(working, "html.parser")
+    romance = soup.select_one('.product-details-romance-description')
+    if romance:
+        p_tag = romance.find('p')
+        ul_tag = romance.find('ul')
+        description = clean_kroger_text(p_tag.get_text(" ", strip=True) if p_tag else "")
+        features = []
+        if ul_tag:
+            features = normalize_kroger_features(
+                [li.get_text(" ", strip=True) for li in ul_tag.find_all('li')],
+                max_features=10,
+            )
+        debug["description_marker_found"] = bool(p_tag)
+        debug["description_end_marker_found"] = bool(p_tag)
+        debug["feature_block_found"] = bool(ul_tag)
+        debug["feature_count"] = len(features)
+        debug["description_excerpt"] = description[:500]
+        debug["features_excerpt"] = " | ".join(features[:5])[:1000]
+        debug["parser_path"] = "kroger_dom_fallback"
+        return description, features, debug
+
+    return "", [], debug
+
+
+def extract_kroger_text_from_html(html_text, retail_url="", target_rpc=""):
+    debug = {
+        "Title Path": "",
+        "Description Path": "",
+        "Features Path": "",
+        "Source Used": "kroger_html",
+        "Retailer": "Kroger",
+    }
+    if not html_text:
+        return {
+            "title": "",
+            "description": "",
+            "features": [],
+            "rating": "",
+            "review_count": "",
+            "debug": debug,
+        }
+
+    soup = BeautifulSoup(html_text, "html.parser")
+
+    title = ""
+    h1 = soup.find("h1")
+    if h1:
+        title = normalize_space(h1.get_text(" ", strip=True))
+        debug["Title Path"] = "h1"
+    elif soup.title:
+        title = normalize_space(soup.title.get_text(" ", strip=True))
+        debug["Title Path"] = "html_title"
+    else:
+        debug["Title Path"] = "kroger_title_missing"
+
+    description, features, kroger_debug = extract_kroger_description_and_features_from_html(html_text)
+
+    debug["Description Path"] = kroger_debug.get("parser_path", "") if description else "kroger_description_missing"
+    debug["Features Path"] = kroger_debug.get("parser_path", "") if features else "kroger_features_missing"
+    debug["Kroger Parser Debug"] = kroger_debug
+
+    return {
+        "title": title,
+        "description": description,
+        "features": features[:10],
+        "rating": "",
+        "review_count": "",
+        "debug": debug,
+    }
+
+
+@st.cache_data(show_spinner=False)
+def get_kroger_bundle(retail_url, target_rpc=""):
+    html_text = get_html(retail_url)
+    return {
+        "text": extract_kroger_text_from_html(
+            html_text,
+            retail_url=retail_url,
+            target_rpc=target_rpc,
+        ),
+        "images": [],
+    }
+
+# =========================================
 # WALGREENS PARSERS
 # =========================================
 def _safe_json_loads(text):
@@ -4569,6 +4755,7 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
         "cvs": lambda: get_cvs_bundle(retail_url, target_rpc),
         "walgreens": lambda: get_walgreens_bundle(retail_url, target_rpc, sku=sku),
         "sam's club": lambda: get_sams_bundle(retail_url, target_rpc, sku=sku),
+        "kroger": lambda: get_kroger_bundle(retail_url, target_rpc),
     }
 
     fetcher = retailer_fetchers.get(retailer)
@@ -5047,6 +5234,12 @@ def finalize_salsify_copy_for_retailer(retailer_name, s_text):
 def finalize_retailer_copy(retailer_name, r_text):
     retailer = str(retailer_name or "").strip().lower()
     out = dict(r_text or {})
+
+    if retailer == "kroger":
+        out["title"] = normalize_space(out.get("title", ""))
+        out["description"] = clean_kroger_text(out.get("description", ""))
+        out["features"] = normalize_kroger_features(out.get("features", []), max_features=10)
+        return out
 
     if retailer == "walgreens":
         out["title"] = clean_walgreens_title(out.get("title", ""))
@@ -6301,9 +6494,9 @@ if (
             left, right = st.columns([2.72, 0.95], gap="small")
         
             with left:
-                header_left, header_right = st.columns(2, gap="small")
+                top_l, top_mid, top_rating = st.columns([0.90, 1.58, 0.52], gap="small")
 
-                header_left.markdown(
+                top_l.markdown(
                     column_header_link_html("Salsify", sku, salsify_url),
                     unsafe_allow_html=True,
                 )
@@ -6311,28 +6504,24 @@ if (
                 raw_rpc = current_target_sku or current_rpc
                 clean_rpc = clean_item_number(raw_rpc)
 
+                top_mid.markdown(
+                    f"<div style='margin-left:180px;'>" + column_header_link_html(
+                        retailer_name,
+                        clean_rpc,
+                        retail_url,
+                    ) + "</div>",
+                    unsafe_allow_html=True,
+                )
+
                 if str(retailer_name or "").strip().lower() == "walgreens":
                     rating_value = (r_text.get("rating", "") if isinstance(r_text, dict) else "") or row.get("rating", "") or "4.5"
                     review_count_value = (r_text.get("review_count", "") if isinstance(r_text, dict) else "") or row.get("review_count", "") or "4201"
-                    header_right.markdown(
-                        (
-                            f'<div style="display:flex;justify-content:space-between;align-items:flex-end;'
-                            f'width:100%;white-space:nowrap;margin:0;padding:0;">'
-                            f'<div style="flex:0 1 auto;min-width:0;margin:0;padding:0;">'
-                            f'{column_header_link_html(retailer_name, clean_rpc, retail_url)}'
-                            f'</div>'
-                            f'<div style="flex:0 0 auto;width:max-content;margin:0 0 0 12px;padding:0;">'
-                            f'{rating_stars_html(rating_value, review_count_value, font_size_px=18)}'
-                            f'</div>'
-                            f'</div>'
-                        ),
+                    top_rating.markdown(
+                        f"<div style='width:max-content;margin-left:auto;'>" + rating_stars_html(rating_value, review_count_value, font_size_px=18) + "</div>",
                         unsafe_allow_html=True,
                     )
                 else:
-                    header_right.markdown(
-                        column_header_link_html(retailer_name, clean_rpc, retail_url),
-                        unsafe_allow_html=True,
-                    )
+                    top_rating.markdown("&nbsp;", unsafe_allow_html=True)
 
                 st.markdown(
                     avg_score_bar_html("Copy — Avg", copy_avg_score),
