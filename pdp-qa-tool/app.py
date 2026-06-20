@@ -1064,11 +1064,38 @@ def preview_between_markers(text, start_marker="", end_marker=""):
     return result
 
 
-def fetch_url_debug(url, retailer_name=""):
-    """
-    Fresh non-cached fetch debugger so we can see exactly what the app receives.
-    Uses retailer-specific timeout tuning when needed.
-    """
+def parse_debug_headers_text(headers_text):
+    """Accept JSON object text or Header: Value lines."""
+    raw = str(headers_text or "").strip()
+    if not raw:
+        return {}
+    if raw.startswith("{"):
+        try:
+            value = json.loads(raw)
+            return value if isinstance(value, dict) else {}
+        except Exception:
+            return {}
+    headers = {}
+    for line in raw.splitlines():
+        line = str(line or "").strip()
+        if not line or ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key = str(key or "").strip()
+        value = str(value or "").strip()
+        if key:
+            headers[key] = value
+    return headers
+
+
+def fetch_url_debug(
+    url,
+    retailer_name="",
+    headers_text="",
+    timeout_override=None,
+    use_mobile=False,
+    proxy_url="",
+):
     result = {
         "requested_url": str(url or ""),
         "final_url": "",
@@ -1083,64 +1110,93 @@ def fetch_url_debug(url, retailer_name=""):
         "dom_text": "",
         "prettified_dom": "",
         "response_headers": {},
+        "request_headers_used": {},
+        "proxy_used": "",
+        "elapsed_seconds": 0.0,
     }
 
     url = str(url or "").strip()
     retailer_name = str(retailer_name or "").strip().lower()
+    proxy_url = str(proxy_url or "").strip()
 
     if not url:
         result["error"] = "No URL provided."
         return result
 
-    timeout_seconds = REQUEST_TIMEOUT
+    if retailer_name == "kroger":
+        try:
+            url = normalize_kroger_url(url)
+        except Exception:
+            pass
+
+    desktop_ua = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    )
+    mobile_ua = (
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) "
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1"
+    )
+
+    headers = dict(HEADERS)
+    headers.update(parse_debug_headers_text(headers_text))
+    headers["User-Agent"] = mobile_ua if use_mobile else desktop_ua
+    headers.setdefault("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+    headers.setdefault("Accept-Language", "en-US,en;q=0.9")
+    headers.setdefault("Cache-Control", "no-cache")
+    headers.setdefault("Pragma", "no-cache")
+    headers.setdefault("Upgrade-Insecure-Requests", "1")
+    result["request_headers_used"] = headers
+    result["proxy_used"] = proxy_url
+
+    timeout_value = (6, 30)
     if retailer_name == "walgreens":
-        timeout_seconds = WALGREENS_DEBUG_TIMEOUT
+        timeout_value = (6, WALGREENS_DEBUG_TIMEOUT)
+    elif retailer_name == "kroger":
+        timeout_value = (8, 45)
 
     try:
-        session = get_session()
-        r = session.get(url, timeout=timeout_seconds, allow_redirects=True)
+        if timeout_override is not None and str(timeout_override).strip() != "":
+            timeout_override = max(1, int(timeout_override))
+            timeout_value = (min(timeout_override, 10), timeout_override)
+    except Exception:
+        pass
 
+    proxies = None
+    if proxy_url:
+        proxies = {"http": proxy_url, "https": proxy_url}
+
+    start = time.monotonic()
+    try:
+        session = get_session()
+        r = session.get(
+            url,
+            headers=headers,
+            timeout=timeout_value,
+            proxies=proxies,
+            allow_redirects=True,
+        )
+        result["elapsed_seconds"] = round(time.monotonic() - start, 3)
         result["final_url"] = str(r.url or "")
         result["status_code"] = int(r.status_code)
         result["reason"] = str(getattr(r, "reason", "") or "")
         result["content_type"] = str(r.headers.get("Content-Type", "") or "")
         result["content_length_header"] = str(r.headers.get("Content-Length", "") or "")
-        result["history"] = [
-            {
-                "status_code": int(h.status_code),
-                "url": str(h.url or ""),
-            }
-            for h in r.history
-        ]
-
-        interesting_headers = [
-            "Content-Type",
-            "Content-Length",
-            "Server",
-            "Cache-Control",
-            "Set-Cookie",
-            "Location",
-            "X-Cache",
-            "X-Served-By",
-            "CF-Cache-Status",
-            "CF-Ray",
-        ]
-        result["response_headers"] = {
-            k: v for k, v in r.headers.items() if k in interesting_headers
-        }
-
+        result["history"] = [{"status_code": int(h.status_code), "url": str(h.url or "")} for h in r.history]
+        interesting_headers = ["Content-Type", "Content-Length", "Server", "Cache-Control", "Set-Cookie", "Location", "X-Cache", "X-Served-By", "CF-Cache-Status", "CF-Ray"]
+        result["response_headers"] = {k: v for k, v in r.headers.items() if k in interesting_headers}
         raw_html = r.text or ""
         result["raw_html"] = raw_html
         result["text_length"] = len(raw_html)
         result["dom_text"] = html_to_debug_textblob(raw_html)
         result["prettified_dom"] = html_to_prettified_dom(raw_html)
-
     except Exception as e:
+        result["elapsed_seconds"] = round(time.monotonic() - start, 3)
         result["error"] = repr(e)
 
     return result
-    
-    
+
+
 @st.cache_data(show_spinner=False)
 def get_debug_views_for_url(url):
     html_text = get_html(url)
@@ -1177,17 +1233,33 @@ def get_uploaded_text_file_bytes(uploaded_text_file):
         return ""
 
 
+def normalize_kroger_url(url):
+    url = str(url or "").strip()
+    if not url:
+        return ""
+    url = re.sub(r'([?&])msockid=[^&]+', r'\1', url, flags=re.IGNORECASE)
+    url = re.sub(r'([?&])searchType=[^&]+', r'\1', url, flags=re.IGNORECASE)
+    url = re.sub(r'([?&])fulfillment=[^&]+', r'\1', url, flags=re.IGNORECASE)
+    url = re.sub(r'([?&])campaign=[^&]+', r'\1', url, flags=re.IGNORECASE)
+    url = re.sub(r'([?&])adgroup=[^&]+', r'\1', url, flags=re.IGNORECASE)
+    url = re.sub(r'([?&])pid=[^&]+', r'\1', url, flags=re.IGNORECASE)
+    url = re.sub(r'\?&', '?', url)
+    url = re.sub(r'[?&]+$', '', url)
+    url = re.sub(r'\?{2,}', '?', url)
+    return url
+
+
 def resolve_debug_views(
     debug_url,
     retailer_name="",
     use_manual_html_override=False,
     manual_html_text="",
     manual_html_file=None,
+    headers_text="",
+    timeout_override=None,
+    use_mobile=False,
+    proxy_url="",
 ):
-    """
-    If manual override is provided, use that instead of live fetch.
-    Otherwise use the live fetch debugger.
-    """
     manual_text = str(manual_html_text or "").strip()
     uploaded_text = get_uploaded_text_file_bytes(manual_html_file).strip()
 
@@ -1210,9 +1282,16 @@ def resolve_debug_views(
                 **views,
             }
 
-    # Fallback to live fetch.
-    return fetch_url_debug(debug_url, retailer_name=retailer_name)
-    
+    return fetch_url_debug(
+        debug_url,
+        retailer_name=retailer_name,
+        headers_text=headers_text,
+        timeout_override=timeout_override,
+        use_mobile=use_mobile,
+        proxy_url=proxy_url,
+    )
+
+
 def is_debug_view_robot_page(debug_views):
     raw_html = str(debug_views.get("raw_html", "") or "").lower()
     final_url = str(debug_views.get("final_url", "") or "").lower()
@@ -1253,125 +1332,62 @@ def render_debugger_panel(
     prettified_dom = str(debug_views.get("prettified_dom", "") or "")
     error_text = str(debug_views.get("error", "") or "")
     response_headers = debug_views.get("response_headers", {}) or {}
+    request_headers_used = debug_views.get("request_headers_used", {}) or {}
+    elapsed_seconds = debug_views.get("elapsed_seconds", 0.0)
+    proxy_used = str(debug_views.get("proxy_used", "") or "")
 
     if use_manual_html_override:
         st.success("Using manual HTML override for debugger.")
     elif error_text:
         st.error(f"Debugger fetch error: {error_text}")
 
-    if is_debug_view_robot_page(debug_views):
-        st.warning(
-            "Sam's Club returned a robot / human verification page instead of the product page. "
-            "The parser cannot extract real PDP copy or images from this response."
-        )
-
-    metric_cols = st.columns(5)
-
+    metric_cols = st.columns(6)
     with metric_cols[0]:
         st.caption("Status")
         st.markdown(f"### {status_code if status_code else 'N/A'}")
-
     with metric_cols[1]:
         st.caption("Reason")
         st.markdown(f"### {reason if reason else 'N/A'}")
-
     with metric_cols[2]:
         st.caption("Content Length")
         st.markdown(f"### {text_length}")
-
     with metric_cols[3]:
         st.caption("Redirects")
         st.markdown(f"### {len(history)}")
-
     with metric_cols[4]:
+        st.caption("Elapsed Seconds")
+        st.markdown(f"### {elapsed_seconds}")
+    with metric_cols[5]:
         st.caption("Final URL Set")
         st.markdown(f"### {'Yes' if final_url else 'No'}")
 
-    st.text_input(
-        "Requested URL",
-        value=requested_url,
-        key=f"debug_requested_url_{sku}",
-    )
-
-    st.text_input(
-        "Final URL",
-        value=final_url,
-        key=f"debug_final_url_{sku}",
-    )
-
+    st.text_input("Requested URL", value=requested_url, key=f"debug_requested_url_{sku}")
+    st.text_input("Final URL", value=final_url, key=f"debug_final_url_{sku}")
+    if proxy_used:
+        st.text_input("Proxy Used", value=proxy_used, key=f"debug_proxy_used_{sku}")
+    if request_headers_used:
+        with st.expander("Request headers used"):
+            st.json(request_headers_used)
     if response_headers:
         with st.expander("Response headers"):
             st.json(response_headers)
 
-    tab_raw, tab_dom, tab_pretty, tab_marker = st.tabs(
-        ["Raw HTML", "DOM Text", "Prettified DOM", "Marker Test"]
-    )
-
+    tab_raw, tab_dom, tab_pretty = st.tabs(["Raw HTML", "DOM Text", "Prettified DOM"])
     with tab_raw:
-        st.text_area(
-            f"raw_html_{sku or 'debug'}",
-            value=raw_html,
-            height=320,
-            key=f"debug_raw_html_{sku}",
+        st.download_button(
+            "Download raw HTML",
+            data=raw_html.encode("utf-8"),
+            file_name=f"raw_html_{sku or 'debug'}.html",
+            mime="text/html",
+            key=f"download_raw_html_{sku}",
         )
-
+        st.text_area(f"raw_html_{sku or 'debug'}", value=raw_html, height=1200, key=f"debug_raw_html_{sku}")
     with tab_dom:
-        st.text_area(
-            f"dom_text_{sku or 'debug'}",
-            value=dom_text,
-            height=320,
-            key=f"debug_dom_text_{sku}",
-        )
-
+        st.text_area(f"dom_text_{sku or 'debug'}", value=dom_text, height=1000, key=f"debug_dom_text_{sku}")
     with tab_pretty:
-        st.text_area(
-            f"prettified_dom_{sku or 'debug'}",
-            value=prettified_dom,
-            height=320,
-            key=f"debug_prettified_dom_{sku}",
-        )
+        st.text_area(f"prettified_dom_{sku or 'debug'}", value=prettified_dom, height=1000, key=f"debug_prettified_dom_{sku}")
 
-    with tab_marker:
-        marker_source_name = marker_target or "Raw HTML"
 
-        if marker_source_name == "DOM Text":
-            marker_source_text = dom_text
-        elif marker_source_name == "Prettified DOM":
-            marker_source_text = prettified_dom
-        else:
-            marker_source_text = raw_html
-
-        marker_result = preview_between_markers(
-            marker_source_text,
-            start_marker=marker_start,
-            end_marker=marker_end,
-        )
-
-        marker_cols = st.columns(4)
-
-        with marker_cols[0]:
-            st.caption("Start Found")
-            st.markdown(f"### {'Yes' if marker_result.get('start_found') else 'No'}")
-
-        with marker_cols[1]:
-            st.caption("End Found")
-            st.markdown(f"### {'Yes' if marker_result.get('end_found') else 'No'}")
-
-        with marker_cols[2]:
-            st.caption("Start Index")
-            st.markdown(f"### {marker_result.get('start_index', -1)}")
-
-        with marker_cols[3]:
-            st.caption("End Index")
-            st.markdown(f"### {marker_result.get('end_index', -1)}")
-
-        st.text_area(
-            "Marker preview",
-            value=str(marker_result.get("preview", "") or ""),
-            height=280,
-            key=f"debug_marker_preview_{sku}",
-        )
-        
 # =========================================
 # SALSIFY PARSERS
 # =========================================
@@ -6199,7 +6215,7 @@ show_html_debugger = st.checkbox(
     key="show_html_debugger",
 )
 
-# Keep downstream variables defined so the existing lower code continues to run unchanged.
+# Keep downstream variables defined so the rest of the app keeps working unchanged.
 debugger_source = "Retailer page"
 debug_only_sku = ""
 use_manual_html_override = False
@@ -6214,6 +6230,32 @@ standalone_debug_url = st.text_input(
     key="standalone_debug_url",
 ).strip()
 
+debug_timeout_override = st.number_input(
+    "Timeout (s)",
+    min_value=1,
+    max_value=120,
+    value=30,
+    step=1,
+    key="debug_timeout_override",
+)
+
+debug_headers_text = st.text_area(
+    "Custom headers (optional)",
+    placeholder="Either JSON, e.g. {'Accept-Language': 'en-US'} or one per line: Key: Value",
+    height=100,
+    key="debug_headers_text",
+)
+
+col_debug_1, col_debug_2 = st.columns(2)
+with col_debug_1:
+    debug_use_mobile = st.checkbox("Use mobile User-Agent", value=False, key="debug_use_mobile")
+with col_debug_2:
+    debug_proxy_url = st.text_input(
+        "Proxy URL (optional)",
+        key="debug_proxy_url",
+        placeholder="http://user:pass@host:port",
+    ).strip()
+
 st.caption(
     "Paste a URL and the debugger will fetch the raw HTML response so you can inspect the exact source before we build a retailer-specific parser."
 )
@@ -6226,6 +6268,10 @@ if show_html_debugger and standalone_debug_url:
         use_manual_html_override=False,
         manual_html_text="",
         manual_html_file=None,
+        headers_text=debug_headers_text,
+        timeout_override=int(debug_timeout_override),
+        use_mobile=debug_use_mobile,
+        proxy_url=debug_proxy_url,
     )
 
     with st.expander("🔎 Debug HTML", expanded=True):
