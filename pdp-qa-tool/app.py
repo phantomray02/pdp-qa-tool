@@ -69,8 +69,6 @@ MAX_CACHE = 400
 WALGREENS_REQUEST_TIMEOUT = 18
 WALGREENS_DEBUG_TIMEOUT = 25
 WALGREENS_API_TIMEOUT = 10
-KROGER_REQUEST_TIMEOUT = 15
-KROGER_DEBUG_TIMEOUT = 20
 
 # =========================================
 # PERFORMANCE SETTINGS
@@ -887,50 +885,6 @@ def get_walgreens_html(url):
             html_cache.pop(next(iter(html_cache)))
     return html_text
 
-
-def normalize_kroger_url(url):
-    url = str(url or "").strip()
-    if not url:
-        return ""
-
-    # Remove volatile params that often break debugger fetches but do not affect PDP content.
-    url = re.sub(r'([?&])msockid=[^&]+', r'\1', url, flags=re.IGNORECASE)
-    url = re.sub(r'([?&])searchType=[^&]+', r'\1', url, flags=re.IGNORECASE)
-    url = re.sub(r'([?&])fulfillment=[^&]+', r'\1', url, flags=re.IGNORECASE)
-    url = re.sub(r'([?&])campaign=[^&]+', r'\1', url, flags=re.IGNORECASE)
-    url = re.sub(r'([?&])adgroup=[^&]+', r'\1', url, flags=re.IGNORECASE)
-    url = re.sub(r'([?&])pid=[^&]+', r'\1', url, flags=re.IGNORECASE)
-    url = re.sub(r'\?&', '?', url)
-    url = re.sub(r'[?&]+$', '', url)
-    url = re.sub(r'\?{2,}', '?', url)
-    return url
-
-
-def get_kroger_html(url):
-    """
-    Kroger-specific fetch path with a longer timeout and shared HTML cache.
-    This helps debugger + visual QA reuse the same cleaned URL.
-    """
-    global html_cache
-    if "html_cache" not in globals() or not isinstance(globals().get("html_cache"), dict):
-        html_cache = {}
-
-    url = normalize_kroger_url(url)
-    if not url:
-        return ""
-
-    cache_key = f"kroger::{url}"
-    if cache_key in html_cache:
-        html_cache[cache_key] = html_cache.pop(cache_key)
-        return html_cache[cache_key]
-
-    html_text = fetch_html_with_timeout(url, KROGER_REQUEST_TIMEOUT)
-    if html_text:
-        html_cache[cache_key] = html_text
-        while len(html_cache) > HTML_CACHE_MAX:
-            html_cache.pop(next(iter(html_cache)))
-    return html_text
-
 def get_walgreens_product_id_from_url(retail_url):
     """
     Supports Walgreens product URLs like:
@@ -1142,7 +1096,7 @@ def fetch_url_debug(url, retailer_name=""):
     if retailer_name == "walgreens":
         timeout_seconds = WALGREENS_DEBUG_TIMEOUT
     elif retailer_name == "kroger":
-        timeout_seconds = KROGER_DEBUG_TIMEOUT
+        timeout_seconds = 20
         url = normalize_kroger_url(url)
 
     try:
@@ -1188,8 +1142,8 @@ def fetch_url_debug(url, retailer_name=""):
         result["error"] = repr(e)
 
     return result
-    
-    
+
+
 @st.cache_data(show_spinner=False)
 def get_debug_views_for_url(url):
     html_text = get_html(url)
@@ -1224,6 +1178,49 @@ def get_uploaded_text_file_bytes(uploaded_text_file):
         return str(raw)
     except Exception:
         return ""
+
+
+def normalize_kroger_url(url):
+    url = str(url or "").strip()
+    if not url:
+        return ""
+
+    # Remove volatile params that often break debugger fetches without changing PDP content.
+    url = re.sub(r'([?&])msockid=[^&]+', r'\1', url, flags=re.IGNORECASE)
+    url = re.sub(r'([?&])searchType=[^&]+', r'\1', url, flags=re.IGNORECASE)
+    url = re.sub(r'([?&])fulfillment=[^&]+', r'\1', url, flags=re.IGNORECASE)
+    url = re.sub(r'([?&])campaign=[^&]+', r'\1', url, flags=re.IGNORECASE)
+    url = re.sub(r'([?&])adgroup=[^&]+', r'\1', url, flags=re.IGNORECASE)
+    url = re.sub(r'([?&])pid=[^&]+', r'\1', url, flags=re.IGNORECASE)
+    url = re.sub(r'\?&', '?', url)
+    url = re.sub(r'[?&]+$', '', url)
+    url = re.sub(r'\?{2,}', '?', url)
+    return url
+
+
+def get_kroger_html(url):
+    """
+    Kroger-specific cached/page fetch path with a longer timeout and cleaned URL.
+    """
+    global html_cache
+    if "html_cache" not in globals() or not isinstance(globals().get("html_cache"), dict):
+        html_cache = {}
+
+    url = normalize_kroger_url(url)
+    if not url:
+        return ""
+
+    cache_key = f"kroger::{url}"
+    if cache_key in html_cache:
+        html_cache[cache_key] = html_cache.pop(cache_key)
+        return html_cache[cache_key]
+
+    html_text = fetch_html_with_timeout(url, 15)
+    if html_text:
+        html_cache[cache_key] = html_text
+        while len(html_cache) > HTML_CACHE_MAX:
+            html_cache.pop(next(iter(html_cache)))
+    return html_text
 
 
 def get_cached_debug_views_for_url(debug_url, retailer_name=""):
@@ -1425,9 +1422,7 @@ def render_debugger_panel(
         with st.expander("Response headers"):
             st.json(response_headers)
 
-    tab_raw, tab_dom, tab_pretty, tab_marker = st.tabs(
-        ["Raw HTML", "DOM Text", "Prettified DOM", "Marker Test"]
-    )
+    tab_raw, tab_dom, tab_pretty, tab_marker = st.tabs(["Raw HTML", "DOM Text", "Prettified DOM", "Marker Test"])
 
     with tab_raw:
         if show_download_buttons and raw_html:
@@ -1438,12 +1433,7 @@ def render_debugger_panel(
                 mime="text/html",
                 key=f"download_raw_html_{sku}",
             )
-        st.text_area(
-            f"raw_html_{sku or 'debug'}",
-            value=raw_html,
-            height=text_area_height,
-            key=f"debug_raw_html_{sku}",
-        )
+        st.text_area(f"raw_html_{sku or 'debug'}", value=raw_html, height=text_area_height, key=f"debug_raw_html_{sku}")
 
     with tab_dom:
         if show_download_buttons and dom_text:
@@ -1454,12 +1444,7 @@ def render_debugger_panel(
                 mime="text/plain",
                 key=f"download_dom_text_{sku}",
             )
-        st.text_area(
-            f"dom_text_{sku or 'debug'}",
-            value=dom_text,
-            height=text_area_height,
-            key=f"debug_dom_text_{sku}",
-        )
+        st.text_area(f"dom_text_{sku or 'debug'}", value=dom_text, height=text_area_height, key=f"debug_dom_text_{sku}")
 
     with tab_pretty:
         if show_download_buttons and prettified_dom:
@@ -1470,12 +1455,7 @@ def render_debugger_panel(
                 mime="text/html",
                 key=f"download_pretty_dom_{sku}",
             )
-        st.text_area(
-            f"prettified_dom_{sku or 'debug'}",
-            value=prettified_dom,
-            height=text_area_height,
-            key=f"debug_prettified_dom_{sku}",
-        )
+        st.text_area(f"prettified_dom_{sku or 'debug'}", value=prettified_dom, height=text_area_height, key=f"debug_prettified_dom_{sku}")
 
     with tab_marker:
         marker_source_name = marker_target or "Raw HTML"
@@ -1485,13 +1465,7 @@ def render_debugger_panel(
             marker_source_text = prettified_dom
         else:
             marker_source_text = raw_html
-
-        marker_result = preview_between_markers(
-            marker_source_text,
-            start_marker=marker_start,
-            end_marker=marker_end,
-        )
-
+        marker_result = preview_between_markers(marker_source_text, start_marker=marker_start, end_marker=marker_end)
         marker_cols = st.columns(4)
         with marker_cols[0]:
             st.caption("Start Found")
@@ -1505,13 +1479,7 @@ def render_debugger_panel(
         with marker_cols[3]:
             st.caption("End Index")
             st.markdown(f"### {marker_result.get('end_index', -1)}")
-
-        st.text_area(
-            "Marker preview",
-            value=str(marker_result.get("preview", "") or ""),
-            height=max(320, min(text_area_height, 700)),
-            key=f"debug_marker_preview_{sku}",
-        )
+        st.text_area("Marker preview", value=str(marker_result.get("preview", "") or ""), height=max(280, min(text_area_height, 700)), key=f"debug_marker_preview_{sku}")
 
 
 # =========================================
@@ -6363,12 +6331,12 @@ debug_only_sku = st.text_input(
     key="debug_only_sku",
 ).strip()
 
-debugger_text_height = st.slider(
+debugger_text_height = st.number_input(
     "Debugger text area height",
-    min_value=400,
+    min_value=320,
     max_value=2400,
     value=1000,
-    step=50,
+    step=40,
     key="debugger_text_height",
 )
 
@@ -6388,12 +6356,12 @@ manual_html_text = ""
 
 if use_manual_html_override:
     manual_html_file = st.file_uploader(
-        "Upload HTML file for debugger only",
+        "Upload HTML or text file for debugger only",
         type=["html", "txt"],
         key="manual_html_file",
     )
     manual_html_text = st.text_area(
-        "Or paste raw HTML here for debugger only",
+        "Or paste raw HTML / rendered page text here for debugger only",
         height=220,
         key="manual_html_text",
     )
@@ -6420,7 +6388,7 @@ if show_html_debugger and (standalone_debug_url or use_manual_html_override):
             marker_end='\u003c/p\u003e"',
             marker_target="Raw HTML",
             use_manual_html_override=use_manual_html_override,
-            text_area_height=debugger_text_height,
+            text_area_height=int(debugger_text_height),
             show_download_buttons=show_debug_download_buttons,
         )
 
@@ -6866,7 +6834,7 @@ if (
                             marker_end=debug_marker_end,
                             marker_target=debug_marker_target,
                             use_manual_html_override=use_manual_html_override,
-                            text_area_height=debugger_text_height,
+                            text_area_height=int(debugger_text_height),
                             show_download_buttons=show_debug_download_buttons,
                         )
             st.divider()
