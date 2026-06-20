@@ -69,8 +69,6 @@ MAX_CACHE = 400
 WALGREENS_REQUEST_TIMEOUT = 18
 WALGREENS_DEBUG_TIMEOUT = 25
 WALGREENS_API_TIMEOUT = 10
-KROGER_REQUEST_TIMEOUT = 15
-KROGER_DEBUG_TIMEOUT = 20
 
 # =========================================
 # PERFORMANCE SETTINGS
@@ -715,8 +713,6 @@ def prepare_input_df(df):
     )
 
     # Build one normalized retailer_rpc column.
-    # Supports exact retailer sheet headers like:
-    # sku | kroger rpc | salsify_url | retail_url | brand
     rpc_candidates = []
 
     for rpc_col in [
@@ -724,8 +720,6 @@ def prepare_input_df(df):
         "cvs rpc",
         "walgreens rpc",
         "sams club rpc",
-        "kroger rpc",
-        "kroger_rpc",
     ]:
         if rpc_col in df.columns:
             rpc_candidates.append(
@@ -750,8 +744,6 @@ def prepare_input_df(df):
         "cvs rpc",
         "walgreens rpc",
         "sams club rpc",
-        "kroger rpc",
-        "kroger_rpc",
     ]:
         if rpc_col in df.columns:
             df.drop(columns=[rpc_col], inplace=True)
@@ -887,50 +879,6 @@ def get_walgreens_html(url):
         return html_cache[cache_key]
 
     html_text = fetch_html_with_timeout(url, WALGREENS_REQUEST_TIMEOUT)
-    if html_text:
-        html_cache[cache_key] = html_text
-        while len(html_cache) > HTML_CACHE_MAX:
-            html_cache.pop(next(iter(html_cache)))
-    return html_text
-
-
-def normalize_kroger_url(url):
-    url = str(url or "").strip()
-    if not url:
-        return ""
-
-    # Remove volatile tracking params that do not affect PDP copy extraction.
-    url = re.sub(r'([?&])msockid=[^&]+', r'\1', url, flags=re.IGNORECASE)
-    url = re.sub(r'([?&])searchType=[^&]+', r'\1', url, flags=re.IGNORECASE)
-    url = re.sub(r'([?&])fulfillment=[^&]+', r'\1', url, flags=re.IGNORECASE)
-    url = re.sub(r'([?&])campaign=[^&]+', r'\1', url, flags=re.IGNORECASE)
-    url = re.sub(r'([?&])adgroup=[^&]+', r'\1', url, flags=re.IGNORECASE)
-    url = re.sub(r'([?&])pid=[^&]+', r'\1', url, flags=re.IGNORECASE)
-    url = re.sub(r'\?&', '?', url)
-    url = re.sub(r'[?&]+$', '', url)
-    url = re.sub(r'\?{2,}', '?', url)
-    return url
-
-
-def get_kroger_html(url):
-    """
-    Kroger-specific fetch path with a longer timeout and shared HTML cache.
-    This helps debugger + visual QA reuse the same cleaned URL.
-    """
-    global html_cache
-    if "html_cache" not in globals() or not isinstance(globals().get("html_cache"), dict):
-        html_cache = {}
-
-    url = normalize_kroger_url(url)
-    if not url:
-        return ""
-
-    cache_key = f"kroger::{url}"
-    if cache_key in html_cache:
-        html_cache[cache_key] = html_cache.pop(cache_key)
-        return html_cache[cache_key]
-
-    html_text = fetch_html_with_timeout(url, KROGER_REQUEST_TIMEOUT)
     if html_text:
         html_cache[cache_key] = html_text
         while len(html_cache) > HTML_CACHE_MAX:
@@ -1116,39 +1064,10 @@ def preview_between_markers(text, start_marker="", end_marker=""):
     return result
 
 
-def parse_debug_headers_text(headers_text):
-    headers = {}
-    raw_text = str(headers_text or "").strip()
-    if not raw_text:
-        return headers
-    for line in raw_text.splitlines():
-        line = str(line or "").strip()
-        if not line or ":" not in line:
-            continue
-        key, value = line.split(":", 1)
-        key = str(key or "").strip()
-        value = str(value or "").strip()
-        if key:
-            headers[key] = value
-    return headers
-
-
-def fetch_url_debug(
-    url,
-    retailer_name="",
-    headers_text="",
-    timeout_override=None,
-    use_mobile=False,
-    proxy_url="",
-):
+def fetch_url_debug(url, retailer_name=""):
     """
     Fresh non-cached fetch debugger so we can see exactly what the app receives.
-    Apify-like options:
-    - url
-    - headers_text (Header-Name: value per line)
-    - timeout_override
-    - use_mobile (mobile-like UA)
-    - proxy_url (single proxy string, optional)
+    Uses retailer-specific timeout tuning when needed.
     """
     result = {
         "requested_url": str(url or ""),
@@ -1164,13 +1083,10 @@ def fetch_url_debug(
         "dom_text": "",
         "prettified_dom": "",
         "response_headers": {},
-        "request_headers_used": {},
-        "proxy_used": "",
     }
 
     url = str(url or "").strip()
     retailer_name = str(retailer_name or "").strip().lower()
-    proxy_url = str(proxy_url or "").strip()
 
     if not url:
         result["error"] = "No URL provided."
@@ -1179,45 +1095,10 @@ def fetch_url_debug(
     timeout_seconds = REQUEST_TIMEOUT
     if retailer_name == "walgreens":
         timeout_seconds = WALGREENS_DEBUG_TIMEOUT
-    elif retailer_name == "kroger":
-        timeout_seconds = KROGER_DEBUG_TIMEOUT
-        url = normalize_kroger_url(url)
-
-    try:
-        if timeout_override is not None and str(timeout_override).strip() != "":
-            timeout_seconds = max(1, int(timeout_override))
-    except Exception:
-        pass
-
-    mobile_ua = (
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) "
-        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
-    )
-
-    extra_headers = parse_debug_headers_text(headers_text)
-    request_headers = dict(HEADERS)
-    request_headers.update(extra_headers)
-    if use_mobile:
-        request_headers["User-Agent"] = mobile_ua
-    result["request_headers_used"] = request_headers
-    result["proxy_used"] = proxy_url
-
-    proxies = None
-    if proxy_url:
-        proxies = {
-            "http": proxy_url,
-            "https": proxy_url,
-        }
 
     try:
         session = get_session()
-        r = session.get(
-            url,
-            timeout=timeout_seconds,
-            allow_redirects=True,
-            headers=request_headers,
-            proxies=proxies,
-        )
+        r = session.get(url, timeout=timeout_seconds, allow_redirects=True)
 
         result["final_url"] = str(r.url or "")
         result["status_code"] = int(r.status_code)
@@ -1258,8 +1139,8 @@ def fetch_url_debug(
         result["error"] = repr(e)
 
     return result
-
-
+    
+    
 @st.cache_data(show_spinner=False)
 def get_debug_views_for_url(url):
     html_text = get_html(url)
@@ -1303,11 +1184,7 @@ def get_cached_debug_views_for_url(debug_url, retailer_name=""):
     effective_url = requested_url
     source_used = "cached_fetch"
 
-    if retailer_name == "kroger":
-        effective_url = normalize_kroger_url(debug_url)
-        html_text = get_kroger_html(effective_url)
-        source_used = "kroger_cached_fetch"
-    elif retailer_name == "walgreens":
+    if retailer_name == "walgreens":
         html_text = get_walgreens_html(debug_url)
         source_used = "walgreens_cached_fetch"
     else:
@@ -1338,10 +1215,6 @@ def resolve_debug_views(
     manual_html_text="",
     manual_html_file=None,
     debugger_fetch_mode="Live fetch + cached fallback",
-    headers_text="",
-    timeout_override=None,
-    use_mobile=False,
-    proxy_url="",
 ):
     """
     Resolve debugger views from manual override, live fetch, or cached/page fetch.
@@ -1373,14 +1246,7 @@ def resolve_debug_views(
     if debugger_fetch_mode == "Cached/page fetch only":
         return get_cached_debug_views_for_url(debug_url, retailer_name=retailer_name)
 
-    live_result = fetch_url_debug(
-        debug_url,
-        retailer_name=retailer_name,
-        headers_text=headers_text,
-        timeout_override=timeout_override,
-        use_mobile=use_mobile,
-        proxy_url=proxy_url,
-    )
+    live_result = fetch_url_debug(debug_url, retailer_name=retailer_name)
 
     if debugger_fetch_mode == "Live fetch + cached fallback":
         live_has_content = bool(
@@ -1432,8 +1298,11 @@ def is_debug_view_robot_page(debug_views):
 def render_debugger_panel(
     debug_views,
     sku="",
+    marker_start="",
+    marker_end="",
+    marker_target="Raw HTML",
     use_manual_html_override=False,
-    text_area_height=1200,
+    text_area_height=1000,
     show_download_buttons=True,
 ):
     requested_url = str(debug_views.get("requested_url", "") or "")
@@ -1449,8 +1318,6 @@ def render_debugger_panel(
     error_text = str(debug_views.get("error", "") or "")
     live_fetch_error = str(debug_views.get("live_fetch_error", "") or "")
     response_headers = debug_views.get("response_headers", {}) or {}
-    request_headers_used = debug_views.get("request_headers_used", {}) or {}
-    proxy_used = str(debug_views.get("proxy_used", "") or "")
 
     if use_manual_html_override:
         st.success("Using manual HTML override for debugger.")
@@ -1460,6 +1327,12 @@ def render_debugger_panel(
         st.info("Debugger is using cached/page fetch only.")
     elif error_text:
         st.error(f"Debugger fetch error: {error_text}")
+
+    if is_debug_view_robot_page(debug_views):
+        st.warning(
+            "Sam's Club returned a robot / human verification page instead of the product page. "
+            "The parser cannot extract real PDP copy or images from this response."
+        )
 
     metric_cols = st.columns(5)
     with metric_cols[0]:
@@ -1495,18 +1368,13 @@ def render_debugger_panel(
     st.text_input("Requested URL", value=requested_url, key=f"debug_requested_url_{sku}")
     st.text_input("Final URL", value=final_url, key=f"debug_final_url_{sku}")
 
-    if proxy_used:
-        st.text_input("Proxy used", value=proxy_used, key=f"debug_proxy_used_{sku}")
-
-    if request_headers_used:
-        with st.expander("Request headers used"):
-            st.json(request_headers_used)
-
     if response_headers:
         with st.expander("Response headers"):
             st.json(response_headers)
 
-    tab_raw, tab_dom, tab_pretty = st.tabs(["Raw HTML", "DOM Text", "Prettified DOM"])
+    tab_raw, tab_dom, tab_pretty, tab_marker = st.tabs(
+        ["Raw HTML", "DOM Text", "Prettified DOM", "Marker Test"]
+    )
 
     with tab_raw:
         if show_download_buttons and raw_html:
@@ -1554,6 +1422,42 @@ def render_debugger_panel(
             value=prettified_dom,
             height=text_area_height,
             key=f"debug_prettified_dom_{sku}",
+        )
+
+    with tab_marker:
+        marker_source_name = marker_target or "Raw HTML"
+        if marker_source_name == "DOM Text":
+            marker_source_text = dom_text
+        elif marker_source_name == "Prettified DOM":
+            marker_source_text = prettified_dom
+        else:
+            marker_source_text = raw_html
+
+        marker_result = preview_between_markers(
+            marker_source_text,
+            start_marker=marker_start,
+            end_marker=marker_end,
+        )
+
+        marker_cols = st.columns(4)
+        with marker_cols[0]:
+            st.caption("Start Found")
+            st.markdown(f"### {'Yes' if marker_result.get('start_found') else 'No'}")
+        with marker_cols[1]:
+            st.caption("End Found")
+            st.markdown(f"### {'Yes' if marker_result.get('end_found') else 'No'}")
+        with marker_cols[2]:
+            st.caption("Start Index")
+            st.markdown(f"### {marker_result.get('start_index', -1)}")
+        with marker_cols[3]:
+            st.caption("End Index")
+            st.markdown(f"### {marker_result.get('end_index', -1)}")
+
+        st.text_area(
+            "Marker preview",
+            value=str(marker_result.get("preview", "") or ""),
+            height=max(320, min(text_area_height, 700)),
+            key=f"debug_marker_preview_{sku}",
         )
 
 
@@ -1737,17 +1641,15 @@ def clean_cvs_feature_text(text):
     return text
 
 
-def get_target_sku_from_inputs(retail_url="", cvs_rpc="", retailer_rpc=""):
+def get_target_sku_from_inputs(retail_url="", cvs_rpc=""):
     retail_url = html.unescape(str(retail_url or ""))
     cvs_rpc = str(cvs_rpc or "").strip()
-    retailer_rpc = str(retailer_rpc or "").strip()
-    fallback_rpc = retailer_rpc or cvs_rpc
 
     m = re.search(r'[?&]skuId=([0-9A-Za-z_-]+)', retail_url)
     if m:
         return m.group(1).strip()
 
-    return fallback_rpc
+    return cvs_rpc
 
 
 def clean_cvs_text_refined(text):
@@ -2917,37 +2819,6 @@ def extract_kroger_description_and_features_from_html(html_text):
 
     working = html.unescape(str(html_text or ""))
 
-    # DOM-first path using Kroger's stable product-details container.
-    soup = BeautifulSoup(working, "html.parser")
-    romance = soup.select_one('[data-testid="product-details-romance-description"]')
-
-    if romance:
-        p_tag = romance.find("p")
-        ul_tag = romance.find("ul")
-
-        description = clean_kroger_text(
-            p_tag.get_text(" ", strip=True) if p_tag else ""
-        )
-
-        features = []
-        if ul_tag:
-            features = normalize_kroger_features(
-                [li.get_text(" ", strip=True) for li in ul_tag.find_all("li")],
-                max_features=10,
-            )
-
-        debug["description_marker_found"] = bool(p_tag)
-        debug["description_end_marker_found"] = bool(p_tag)
-        debug["feature_block_found"] = bool(ul_tag)
-        debug["feature_count"] = len(features)
-        debug["description_excerpt"] = description[:500]
-        debug["features_excerpt"] = " | ".join(features[:5])[:1000]
-        debug["parser_path"] = "kroger_dom_datatestid"
-
-        if description or features:
-            return description, features, debug
-
-    # Exact marker fallback.
     desc_start_marker = 'product-details-romance-description"><p>'
     desc_end_marker = '</p><ul><li>'
     feat_start_marker = '<ul><li>'
@@ -2958,7 +2829,6 @@ def extract_kroger_description_and_features_from_html(html_text):
         debug["description_marker_found"] = True
         desc_body_start = start_idx + len(desc_start_marker)
         desc_end_idx = working.find(desc_end_marker, desc_body_start)
-
         if desc_end_idx != -1:
             debug["description_end_marker_found"] = True
             raw_desc = working[desc_body_start:desc_end_idx]
@@ -2968,40 +2838,56 @@ def extract_kroger_description_and_features_from_html(html_text):
             if feat_block_start != -1:
                 feat_body_start = feat_block_start + len(feat_start_marker)
                 feat_end_idx = working.find(feat_end_marker, feat_body_start)
-
                 if feat_end_idx != -1:
                     debug["feature_block_found"] = True
                     raw_feat_block = working[feat_body_start:feat_end_idx]
                     raw_features = re.split(r"</li>\s*<li>", raw_feat_block, flags=re.IGNORECASE)
                     features = normalize_kroger_features(raw_features, max_features=10)
-
                     debug["feature_count"] = len(features)
                     debug["description_excerpt"] = description[:500]
                     debug["features_excerpt"] = " | ".join(features[:5])[:1000]
                     debug["parser_path"] = "kroger_exact_markers"
                     return description, features, debug
 
-    # Regex fallback using the stable data-testid anchor.
     romance_match = re.search(
-        r'data-testid="product-details-romance-description"[^>]*>.*?<p>(.*?)</p>\s*<ul>(.*?)</ul>',
+        r'product-details-romance-description[^>]*>\s*<p>(.*?)</p>\s*<ul>(.*?)</ul>\s*</div>',
         working,
         flags=re.IGNORECASE | re.DOTALL,
     )
     if romance_match:
         raw_desc = romance_match.group(1)
         raw_ul = romance_match.group(2)
-
         description = clean_kroger_text(raw_desc)
-        raw_features = re.findall(r"<li[^>]*>(.*?)</li>", raw_ul, flags=re.IGNORECASE | re.DOTALL)
+        raw_features = re.findall(r'<li[^>]*>(.*?)</li>', raw_ul, flags=re.IGNORECASE | re.DOTALL)
         features = normalize_kroger_features(raw_features, max_features=10)
-
         debug["description_marker_found"] = True
         debug["description_end_marker_found"] = True
         debug["feature_block_found"] = True
         debug["feature_count"] = len(features)
         debug["description_excerpt"] = description[:500]
         debug["features_excerpt"] = " | ".join(features[:5])[:1000]
-        debug["parser_path"] = "kroger_regex_datatestid"
+        debug["parser_path"] = "kroger_regex_fallback"
+        return description, features, debug
+
+    soup = BeautifulSoup(working, "html.parser")
+    romance = soup.select_one('.product-details-romance-description')
+    if romance:
+        p_tag = romance.find('p')
+        ul_tag = romance.find('ul')
+        description = clean_kroger_text(p_tag.get_text(" ", strip=True) if p_tag else "")
+        features = []
+        if ul_tag:
+            features = normalize_kroger_features(
+                [li.get_text(" ", strip=True) for li in ul_tag.find_all('li')],
+                max_features=10,
+            )
+        debug["description_marker_found"] = bool(p_tag)
+        debug["description_end_marker_found"] = bool(p_tag)
+        debug["feature_block_found"] = bool(ul_tag)
+        debug["feature_count"] = len(features)
+        debug["description_excerpt"] = description[:500]
+        debug["features_excerpt"] = " | ".join(features[:5])[:1000]
+        debug["parser_path"] = "kroger_dom_fallback"
         return description, features, debug
 
     return "", [], debug
@@ -3015,7 +2901,6 @@ def extract_kroger_text_from_html(html_text, retail_url="", target_rpc=""):
         "Source Used": "kroger_html",
         "Retailer": "Kroger",
     }
-
     if not html_text:
         return {
             "title": "",
@@ -3027,6 +2912,7 @@ def extract_kroger_text_from_html(html_text, retail_url="", target_rpc=""):
         }
 
     soup = BeautifulSoup(html_text, "html.parser")
+
     title = ""
     h1 = soup.find("h1")
     if h1:
@@ -3039,6 +2925,7 @@ def extract_kroger_text_from_html(html_text, retail_url="", target_rpc=""):
         debug["Title Path"] = "kroger_title_missing"
 
     description, features, kroger_debug = extract_kroger_description_and_features_from_html(html_text)
+
     debug["Description Path"] = kroger_debug.get("parser_path", "") if description else "kroger_description_missing"
     debug["Features Path"] = kroger_debug.get("parser_path", "") if features else "kroger_features_missing"
     debug["Kroger Parser Debug"] = kroger_debug
@@ -3055,8 +2942,7 @@ def extract_kroger_text_from_html(html_text, retail_url="", target_rpc=""):
 
 @st.cache_data(show_spinner=False)
 def get_kroger_bundle(retail_url, target_rpc=""):
-    retail_url = normalize_kroger_url(retail_url)
-    html_text = get_kroger_html(retail_url)
+    html_text = get_html(retail_url)
     return {
         "text": extract_kroger_text_from_html(
             html_text,
@@ -6032,7 +5918,7 @@ def process_row(row):
 
         target_sku = get_target_sku_from_inputs(
             retail_url=retail_url,
-            retailer_rpc=cvs_rpc,
+            cvs_rpc=cvs_rpc,
         )
 
 
@@ -6398,55 +6284,37 @@ show_below_90_only = st.checkbox("🔎 Show Only Scores Below 90%", key="show_be
 st.markdown("### 🧪 Debug Controls")
 
 show_html_debugger = st.checkbox(
-    "Show raw HTML extractor",
+    "Show Raw HTML / DOM Debugger in Full Visual QA",
     key="show_html_debugger",
 )
 
+debugger_source = st.selectbox(
+    "Debugger Source",
+    ["Retailer page", "Salsify page"],
+    key="debugger_source",
+)
+
 debugger_fetch_mode = st.selectbox(
-    "Fetch mode",
+    "Debugger fetch mode",
     ["Live fetch + cached fallback", "Live fetch only", "Cached/page fetch only"],
     key="debugger_fetch_mode",
 )
 
 standalone_debug_url = st.text_input(
-    "URL",
+    "Paste any URL to pull the full raw HTML / DOM",
     key="standalone_debug_url",
-    placeholder="https://example.com",
 ).strip()
 
-debug_headers_text = st.text_area(
-    "Extra request headers (optional)",
-    height=120,
-    key="debug_headers_text",
-    placeholder="Header-Name: value",
-)
-
-debug_timeout_override = st.number_input(
-    "Request timeout (sec)",
-    min_value=1,
-    max_value=180,
-    value=30,
-    step=1,
-    key="debug_timeout_override",
-)
-
-debug_use_mobile = st.checkbox(
-    "Pretend mobile browser",
-    value=False,
-    key="debug_use_mobile",
-)
-
-debug_proxy_url = st.text_input(
-    "Proxy URL (optional)",
-    key="debug_proxy_url",
-    placeholder="http://user:pass@host:port",
+debug_only_sku = st.text_input(
+    "Debug only this SKU. Leave blank to show debugger for all visible rows.",
+    key="debug_only_sku",
 ).strip()
 
 debugger_text_height = st.slider(
     "Debugger text area height",
-    min_value=500,
+    min_value=400,
     max_value=2400,
-    value=1200,
+    value=1000,
     step=50,
     key="debugger_text_height",
 )
@@ -6458,7 +6326,7 @@ show_debug_download_buttons = st.checkbox(
 )
 
 use_manual_html_override = st.checkbox(
-    "Use manual HTML / text override for debugger",
+    "Use manual HTML override for debugger",
     key="use_manual_html_override",
 )
 
@@ -6467,46 +6335,61 @@ manual_html_text = ""
 
 if use_manual_html_override:
     manual_html_file = st.file_uploader(
-        "Upload HTML or text file for debugger only",
+        "Upload HTML file for debugger only",
         type=["html", "txt"],
         key="manual_html_file",
     )
     manual_html_text = st.text_area(
-        "Or paste raw HTML / rendered page text here for debugger only",
+        "Or paste raw HTML here for debugger only",
         height=220,
         key="manual_html_text",
     )
 
 st.caption(
-    "This works like a simple raw HTML extractor: paste one URL, optionally add headers / timeout / mobile UA / proxy, and the tool will return the full source it received."
+    "Paste a URL above to pull the full raw HTML response, then use the Raw HTML tab to point the parser at the exact spot you want."
 )
 
-if show_html_debugger:
-    manual_has_content = bool(str(manual_html_text or "").strip()) or (manual_html_file is not None)
-    if standalone_debug_url or manual_has_content:
-        top_debug_url = standalone_debug_url
-        top_debug_retailer = infer_retailer_name_from_url(top_debug_url) if top_debug_url else ""
-        top_debug_views = resolve_debug_views(
-            top_debug_url,
-            retailer_name=top_debug_retailer,
+if show_html_debugger and (standalone_debug_url or use_manual_html_override):
+    standalone_retailer_name = infer_retailer_name_from_url(standalone_debug_url) if standalone_debug_url else ""
+    standalone_debug_views = resolve_debug_views(
+        standalone_debug_url,
+        retailer_name=standalone_retailer_name,
+        use_manual_html_override=use_manual_html_override,
+        manual_html_text=manual_html_text,
+        manual_html_file=manual_html_file,
+        debugger_fetch_mode=debugger_fetch_mode,
+    )
+    with st.expander("🔎 Raw HTML Extractor", expanded=True):
+        render_debugger_panel(
+            standalone_debug_views,
+            sku="top_debugger",
+            marker_start='"longDescription":"',
+            marker_end='\u003c/p\u003e"',
+            marker_target="Raw HTML",
             use_manual_html_override=use_manual_html_override,
-            manual_html_text=manual_html_text,
-            manual_html_file=manual_html_file,
-            debugger_fetch_mode=debugger_fetch_mode,
-            headers_text=debug_headers_text,
-            timeout_override=debug_timeout_override,
-            use_mobile=debug_use_mobile,
-            proxy_url=debug_proxy_url,
+            text_area_height=debugger_text_height,
+            show_download_buttons=show_debug_download_buttons,
         )
 
-        with st.expander("🔎 Raw HTML Extractor", expanded=True):
-            render_debugger_panel(
-                top_debug_views,
-                sku="top_debugger",
-                use_manual_html_override=use_manual_html_override,
-                text_area_height=debugger_text_height,
-                show_download_buttons=show_debug_download_buttons,
-            )
+st.markdown("#### 🔬 Marker Test Controls")
+
+debug_marker_start = st.text_input(
+    "Start marker",
+    key="debug_marker_start",
+    value='"longDescription":"',
+)
+
+debug_marker_end = st.text_input(
+    "End marker",
+    key="debug_marker_end",
+    value='\u003c/p\u003e"',
+)
+
+debug_marker_target = st.selectbox(
+    "Marker test target",
+    ["Raw HTML", "DOM Text", "Prettified DOM"],
+    key="debug_marker_target",
+)
 
 
 if retailer_df is not None and st.session_state.processing_done and st.session_state.completed_batch_key == current_batch_key:
@@ -6733,7 +6616,7 @@ if (
             current_rpc = row.get("retailer_rpc", "")
             current_target_sku = get_target_sku_from_inputs(
                 retail_url=retail_url,
-                retailer_rpc=current_rpc,
+                cvs_rpc=current_rpc,
             )
             
             visual_payload = get_visual_row_payload(
@@ -6904,7 +6787,35 @@ if (
                 avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
                 overall_score = int((title_score + desc_score + avg_feature_score + avg_img_score) / 4)
 
-                        # Top raw HTML extractor now renders above the visual results area.
+            if show_html_debugger:
+                should_render_debugger = (not debug_only_sku) or (
+                    str(sku).strip() == str(debug_only_sku).strip()
+                )
+            
+                if should_render_debugger:
+                    debug_url = retail_url if debugger_source == "Retailer page" else salsify_url
+                    debug_retailer_name = retailer_name if debugger_source == "Retailer page" else "salsify"
+            
+                    debug_views = resolve_debug_views(
+                        debug_url,
+                        retailer_name=debug_retailer_name,
+                        use_manual_html_override=use_manual_html_override,
+                        manual_html_text=manual_html_text,
+                        manual_html_file=manual_html_file,
+                        debugger_fetch_mode=debugger_fetch_mode,
+                    )
+            
+                    with st.expander(f"🔎 HTML / DOM Debugger — {sku}", expanded=True):
+                        render_debugger_panel(
+                            debug_views,
+                            sku=sku,
+                            marker_start=debug_marker_start,
+                            marker_end=debug_marker_end,
+                            marker_target=debug_marker_target,
+                            use_manual_html_override=use_manual_html_override,
+                            text_area_height=debugger_text_height,
+                            show_download_buttons=show_debug_download_buttons,
+                        )
             st.divider()
     except Exception as e:
         st.error("🔥 CRITICAL APP ERROR")
