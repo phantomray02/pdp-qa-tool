@@ -6312,7 +6312,7 @@ if (
                 clean_rpc = clean_item_number(raw_rpc)
 
                 top_mid.markdown(
-                    f"<div style='margin-left:220px;'>" + column_header_link_html(
+                    f"<div style='margin-left:180px;'>" + column_header_link_html(
                         retailer_name,
                         clean_rpc,
                         retail_url,
