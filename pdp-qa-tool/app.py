@@ -301,24 +301,47 @@ def rating_stars_html(rating, review_count=None, font_size_px=18):
     review_html = ""
     if review_count is not None and str(review_count).strip() != "":
         review_html = (
-            f'<span style="margin-left:8px;font-size:28px;font-weight:900;color:#FFFFFF;line-height:1;">'
+            f'<span style="margin-left:8px;font-size:28px;font-weight:900;color:#FFFFFF;line-height:1;white-space:nowrap;">'
             f'{html_escape_text(review_count)}</span>'
         )
 
     return (
-        f'<div style="display:inline-flex;align-items:center;justify-content:flex-start;gap:8px;'
-        f'white-space:nowrap;margin:0;line-height:1;">'
+        f'<div style="display:inline-flex;align-items:center;justify-content:flex-end;gap:8px;white-space:nowrap;margin:0;line-height:1;overflow:visible;">'
         f'<span style="font-size:28px;font-weight:900;color:#FFFFFF;line-height:1;">{rating:.1f}</span>'
-        f'<div style="position:relative;display:inline-block;line-height:1;'
-        f'font-size:{font_size_px}px;letter-spacing:0.6px;">'
+        f'<div style="position:relative;display:inline-block;line-height:1;font-size:{font_size_px}px;letter-spacing:0.6px;">'
         f'<div style="color:rgba(255,255,255,0.35);">★★★★★</div>'
-        f'<div style="position:absolute;top:0;left:0;width:{fill_pct}%;overflow:hidden;'
-        f'white-space:nowrap;color:#FFFFFF;">★★★★★</div>'
+        f'<div style="position:absolute;top:0;left:0;width:{fill_pct}%;overflow:hidden;color:#FFFFFF;white-space:nowrap;">★★★★★</div>'
         f'</div>'
         f'{review_html}'
         f'</div>'
     )
 
+
+def locked_visual_header_row_html(
+    salsify_header_html,
+    retailer_header_html,
+    rating_html="",
+    retailer_name="",
+):
+    retailer_name = str(retailer_name or "").strip().lower()
+
+    if retailer_name == "walgreens":
+        return (
+            '<div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);column-gap:18px;align-items:start;margin:0 0 6px 0;">'
+            f'<div style="min-width:0;display:flex;align-items:flex-start;justify-content:flex-start;overflow:visible;">{salsify_header_html}</div>'
+            '<div style="min-width:0;display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:12px;align-items:start;overflow:visible;">'
+            f'<div style="min-width:0;display:flex;align-items:flex-start;justify-content:flex-start;overflow:visible;">{retailer_header_html}</div>'
+            f'<div style="min-width:0;display:flex;align-items:flex-start;justify-content:flex-end;overflow:visible;">{rating_html or "&nbsp;"}</div>'
+            '</div>'
+            '</div>'
+        )
+
+    return (
+        '<div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);column-gap:18px;align-items:start;margin:0 0 6px 0;">'
+        f'<div style="min-width:0;display:flex;align-items:flex-start;justify-content:flex-start;overflow:visible;">{salsify_header_html}</div>'
+        f'<div style="min-width:0;display:flex;align-items:flex-start;justify-content:flex-start;overflow:visible;">{retailer_header_html}</div>'
+        '</div>'
+    )
 
 def column_header_link_html(label, item_number, href):
     safe_label = html_escape_text(label or "")
@@ -4245,11 +4268,12 @@ def _walgreens_features_are_rich_enough(values):
 @st.cache_data(show_spinner=False)
 def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
     """
-    Strict live-page Walgreens path.
-    Only use live HTML visible/embedded on the Walgreens PDP itself.
+    Prefer live Walgreens HTML first, but recover copy/images when the live page under-pulls.
+    Header values should still come from the richest recovered bundle.
     """
     retail_url = str(retail_url or "").strip()
     retail_url_lc = retail_url.lower()
+    product_id = get_walgreens_product_id_from_url(retail_url)
 
     def build_html_bundle():
         html_text = get_walgreens_html(retail_url)
@@ -4262,20 +4286,36 @@ def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
             "images": extract_walgreens_images_from_html(html_text),
         }
 
+    html_bundle = build_html_bundle()
+
     if "/search/results.jsp" in retail_url_lc:
-        html_bundle = build_html_bundle()
         if _walgreens_has_copy_or_images(html_bundle):
             return html_bundle
         return build_empty_retailer_bundle("Walgreens", "walgreens_search_results_url_not_pdp")
 
-    html_bundle = build_html_bundle()
-    if _walgreens_has_copy_or_images(html_bundle):
+    fallback_candidates = [html_bundle]
+
+    if _walgreens_bundle_is_rich_enough(html_bundle):
         return html_bundle
 
-    if STRICT_LIVE_RETAILER_ONLY:
-        return build_empty_retailer_bundle("Walgreens", "walgreens_live_html_missing")
+    if product_id:
+        prod_desc_bundle = build_walgreens_bundle_from_prod_desc_fragment(
+            product_id,
+            retail_url=retail_url,
+        )
+        if _walgreens_has_copy_or_images(prod_desc_bundle):
+            fallback_candidates.append(prod_desc_bundle)
 
-    return html_bundle
+        api_payload = get_walgreens_product_api_payload(product_id)
+        api_bundle = build_walgreens_bundle_from_api_payload(api_payload)
+        if _walgreens_has_copy_or_images(api_bundle):
+            fallback_candidates.append(api_bundle)
+
+    merged_bundle = merge_walgreens_bundles_prefer_richer_copy(*fallback_candidates)
+    if _walgreens_has_copy_or_images(merged_bundle):
+        return merged_bundle
+
+    return build_empty_retailer_bundle("Walgreens", "walgreens_live_html_missing")
 
 def is_sams_robot_page(html_text):
     """
@@ -6494,34 +6534,31 @@ if (
             left, right = st.columns([2.72, 0.95], gap="small")
         
             with left:
-                top_l, top_mid, top_rating = st.columns([0.90, 1.58, 0.52], gap="small")
-
-                top_l.markdown(
-                    column_header_link_html("Salsify", sku, salsify_url),
-                    unsafe_allow_html=True,
-                )
-
                 raw_rpc = current_target_sku or current_rpc
                 clean_rpc = clean_item_number(raw_rpc)
 
-                top_mid.markdown(
-                    f"<div style='margin-left:180px;'>" + column_header_link_html(
-                        retailer_name,
-                        clean_rpc,
-                        retail_url,
-                    ) + "</div>",
-                    unsafe_allow_html=True,
+                salsify_header_html = column_header_link_html("Salsify", sku, salsify_url)
+                retailer_header_html = column_header_link_html(
+                    retailer_name,
+                    clean_rpc,
+                    retail_url,
                 )
 
+                rating_html = ""
                 if str(retailer_name or "").strip().lower() == "walgreens":
                     rating_value = (r_text.get("rating", "") if isinstance(r_text, dict) else "") or row.get("rating", "") or "4.5"
                     review_count_value = (r_text.get("review_count", "") if isinstance(r_text, dict) else "") or row.get("review_count", "") or "4201"
-                    top_rating.markdown(
-                        f"<div style='width:max-content;margin-left:auto;'>" + rating_stars_html(rating_value, review_count_value, font_size_px=18) + "</div>",
-                        unsafe_allow_html=True,
-                    )
-                else:
-                    top_rating.markdown("&nbsp;", unsafe_allow_html=True)
+                    rating_html = rating_stars_html(rating_value, review_count_value, font_size_px=18)
+
+                st.markdown(
+                    locked_visual_header_row_html(
+                        salsify_header_html,
+                        retailer_header_html,
+                        rating_html=rating_html,
+                        retailer_name=retailer_name,
+                    ),
+                    unsafe_allow_html=True,
+                )
 
                 st.markdown(
                     avg_score_bar_html("Copy — Avg", copy_avg_score),
