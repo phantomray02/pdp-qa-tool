@@ -69,6 +69,8 @@ MAX_CACHE = 400
 WALGREENS_REQUEST_TIMEOUT = 18
 WALGREENS_DEBUG_TIMEOUT = 25
 WALGREENS_API_TIMEOUT = 10
+KROGER_REQUEST_TIMEOUT = 15
+KROGER_DEBUG_TIMEOUT = 20
 
 # =========================================
 # PERFORMANCE SETTINGS
@@ -301,24 +303,47 @@ def rating_stars_html(rating, review_count=None, font_size_px=18):
     review_html = ""
     if review_count is not None and str(review_count).strip() != "":
         review_html = (
-            f'<span style="margin-left:8px;font-size:28px;font-weight:900;color:#FFFFFF;line-height:1;">'
+            f'<span style="margin-left:8px;font-size:28px;font-weight:900;color:#FFFFFF;line-height:1;white-space:nowrap;">'
             f'{html_escape_text(review_count)}</span>'
         )
 
     return (
-        f'<div style="display:inline-flex;align-items:center;justify-content:flex-start;gap:8px;'
-        f'white-space:nowrap;margin:0;line-height:1;">'
+        f'<div style="display:inline-flex;align-items:center;justify-content:flex-end;gap:8px;white-space:nowrap;margin:0;line-height:1;overflow:visible;">'
         f'<span style="font-size:28px;font-weight:900;color:#FFFFFF;line-height:1;">{rating:.1f}</span>'
-        f'<div style="position:relative;display:inline-block;line-height:1;'
-        f'font-size:{font_size_px}px;letter-spacing:0.6px;">'
+        f'<div style="position:relative;display:inline-block;line-height:1;font-size:{font_size_px}px;letter-spacing:0.6px;">'
         f'<div style="color:rgba(255,255,255,0.35);">★★★★★</div>'
-        f'<div style="position:absolute;top:0;left:0;width:{fill_pct}%;overflow:hidden;'
-        f'white-space:nowrap;color:#FFFFFF;">★★★★★</div>'
+        f'<div style="position:absolute;top:0;left:0;width:{fill_pct}%;overflow:hidden;color:#FFFFFF;white-space:nowrap;">★★★★★</div>'
         f'</div>'
         f'{review_html}'
         f'</div>'
     )
 
+
+def locked_visual_header_row_html(
+    salsify_header_html,
+    retailer_header_html,
+    rating_html="",
+    retailer_name="",
+):
+    retailer_name = str(retailer_name or "").strip().lower()
+
+    if retailer_name == "walgreens":
+        return (
+            '<div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);column-gap:18px;align-items:start;margin:0 0 6px 0;">'
+            f'<div style="min-width:0;display:flex;align-items:flex-start;justify-content:flex-start;overflow:visible;">{salsify_header_html}</div>'
+            '<div style="min-width:0;display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:12px;align-items:start;overflow:visible;">'
+            f'<div style="min-width:0;display:flex;align-items:flex-start;justify-content:flex-start;overflow:visible;">{retailer_header_html}</div>'
+            f'<div style="min-width:0;display:flex;align-items:flex-start;justify-content:flex-end;overflow:visible;">{rating_html or "&nbsp;"}</div>'
+            '</div>'
+            '</div>'
+        )
+
+    return (
+        '<div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);column-gap:18px;align-items:start;margin:0 0 6px 0;">'
+        f'<div style="min-width:0;display:flex;align-items:flex-start;justify-content:flex-start;overflow:visible;">{salsify_header_html}</div>'
+        f'<div style="min-width:0;display:flex;align-items:flex-start;justify-content:flex-start;overflow:visible;">{retailer_header_html}</div>'
+        '</div>'
+    )
 
 def column_header_link_html(label, item_number, href):
     safe_label = html_escape_text(label or "")
@@ -868,6 +893,50 @@ def get_walgreens_html(url):
             html_cache.pop(next(iter(html_cache)))
     return html_text
 
+
+def normalize_kroger_url(url):
+    url = str(url or "").strip()
+    if not url:
+        return ""
+
+    # Remove volatile tracking params that do not affect product copy extraction.
+    url = re.sub(r"([?&])msockid=[^&]+", r"\1", url, flags=re.IGNORECASE)
+    url = re.sub(r"([?&])searchType=[^&]+", r"\1", url, flags=re.IGNORECASE)
+    url = re.sub(r"([?&])fulfillment=[^&]+", r"\1", url, flags=re.IGNORECASE)
+    url = re.sub(r"([?&])campaign=[^&]+", r"\1", url, flags=re.IGNORECASE)
+    url = re.sub(r"([?&])adgroup=[^&]+", r"\1", url, flags=re.IGNORECASE)
+    url = re.sub(r"([?&])pid=[^&]+", r"\1", url, flags=re.IGNORECASE)
+    url = re.sub(r"\?&", "?", url)
+    url = re.sub(r"[?&]+$", "", url)
+    url = re.sub(r"\?{2,}", "?", url)
+    return url
+
+
+def get_kroger_html(url):
+    """
+    Kroger-specific fetch path with a longer timeout and shared HTML cache.
+    This avoids repeat PDP fetches and helps debugger/visual QA use the same cleaned URL.
+    """
+    global html_cache
+    if "html_cache" not in globals() or not isinstance(globals().get("html_cache"), dict):
+        html_cache = {}
+
+    url = normalize_kroger_url(url)
+    if not url:
+        return ""
+
+    cache_key = f"kroger::{url}"
+    if cache_key in html_cache:
+        html_cache[cache_key] = html_cache.pop(cache_key)
+        return html_cache[cache_key]
+
+    html_text = fetch_html_with_timeout(url, KROGER_REQUEST_TIMEOUT)
+    if html_text:
+        html_cache[cache_key] = html_text
+        while len(html_cache) > HTML_CACHE_MAX:
+            html_cache.pop(next(iter(html_cache)))
+    return html_text
+
 def get_walgreens_product_id_from_url(retail_url):
     """
     Supports Walgreens product URLs like:
@@ -1078,6 +1147,9 @@ def fetch_url_debug(url, retailer_name=""):
     timeout_seconds = REQUEST_TIMEOUT
     if retailer_name == "walgreens":
         timeout_seconds = WALGREENS_DEBUG_TIMEOUT
+    elif retailer_name == "kroger":
+        timeout_seconds = KROGER_DEBUG_TIMEOUT
+        url = normalize_kroger_url(url)
 
     try:
         session = get_session()
@@ -2715,6 +2787,43 @@ def extract_kroger_description_and_features_from_html(html_text):
 
     working = html.unescape(str(html_text or ""))
 
+    # -------------------------------------------------
+    # DOM-FIRST path using Kroger's stable product-details
+    # container shown in DevTools:
+    # data-testid="product-details-romance-description"
+    # -------------------------------------------------
+    soup = BeautifulSoup(working, "html.parser")
+    romance = soup.select_one('[data-testid="product-details-romance-description"]')
+
+    if romance:
+        p_tag = romance.find("p")
+        ul_tag = romance.find("ul")
+
+        description = clean_kroger_text(
+            p_tag.get_text(" ", strip=True) if p_tag else ""
+        )
+
+        features = []
+        if ul_tag:
+            features = normalize_kroger_features(
+                [li.get_text(" ", strip=True) for li in ul_tag.find_all("li")],
+                max_features=10,
+            )
+
+        debug["description_marker_found"] = bool(p_tag)
+        debug["description_end_marker_found"] = bool(p_tag)
+        debug["feature_block_found"] = bool(ul_tag)
+        debug["feature_count"] = len(features)
+        debug["description_excerpt"] = description[:500]
+        debug["features_excerpt"] = " | ".join(features[:5])[:1000]
+        debug["parser_path"] = "kroger_dom_datatestid"
+
+        if description or features:
+            return description, features, debug
+
+    # -------------------------------------------------
+    # Exact marker fallback path
+    # -------------------------------------------------
     desc_start_marker = 'product-details-romance-description"><p>'
     desc_end_marker = '</p><ul><li>'
     feat_start_marker = '<ul><li>'
@@ -2725,6 +2834,7 @@ def extract_kroger_description_and_features_from_html(html_text):
         debug["description_marker_found"] = True
         desc_body_start = start_idx + len(desc_start_marker)
         desc_end_idx = working.find(desc_end_marker, desc_body_start)
+
         if desc_end_idx != -1:
             debug["description_end_marker_found"] = True
             raw_desc = working[desc_body_start:desc_end_idx]
@@ -2734,56 +2844,42 @@ def extract_kroger_description_and_features_from_html(html_text):
             if feat_block_start != -1:
                 feat_body_start = feat_block_start + len(feat_start_marker)
                 feat_end_idx = working.find(feat_end_marker, feat_body_start)
+
                 if feat_end_idx != -1:
                     debug["feature_block_found"] = True
                     raw_feat_block = working[feat_body_start:feat_end_idx]
                     raw_features = re.split(r"</li>\s*<li>", raw_feat_block, flags=re.IGNORECASE)
                     features = normalize_kroger_features(raw_features, max_features=10)
+
                     debug["feature_count"] = len(features)
                     debug["description_excerpt"] = description[:500]
                     debug["features_excerpt"] = " | ".join(features[:5])[:1000]
                     debug["parser_path"] = "kroger_exact_markers"
                     return description, features, debug
 
+    # -------------------------------------------------
+    # Regex fallback using the data-testid anchor
+    # -------------------------------------------------
     romance_match = re.search(
-        r'product-details-romance-description[^>]*>\s*<p>(.*?)</p>\s*<ul>(.*?)</ul>\s*</div>',
+        r'data-testid="product-details-romance-description"[^>]*>.*?<p>(.*?)</p>\s*<ul>(.*?)</ul>',
         working,
         flags=re.IGNORECASE | re.DOTALL,
     )
     if romance_match:
         raw_desc = romance_match.group(1)
         raw_ul = romance_match.group(2)
+
         description = clean_kroger_text(raw_desc)
-        raw_features = re.findall(r'<li[^>]*>(.*?)</li>', raw_ul, flags=re.IGNORECASE | re.DOTALL)
+        raw_features = re.findall(r"<li[^>]*>(.*?)</li>", raw_ul, flags=re.IGNORECASE | re.DOTALL)
         features = normalize_kroger_features(raw_features, max_features=10)
+
         debug["description_marker_found"] = True
         debug["description_end_marker_found"] = True
         debug["feature_block_found"] = True
         debug["feature_count"] = len(features)
         debug["description_excerpt"] = description[:500]
         debug["features_excerpt"] = " | ".join(features[:5])[:1000]
-        debug["parser_path"] = "kroger_regex_fallback"
-        return description, features, debug
-
-    soup = BeautifulSoup(working, "html.parser")
-    romance = soup.select_one('.product-details-romance-description')
-    if romance:
-        p_tag = romance.find('p')
-        ul_tag = romance.find('ul')
-        description = clean_kroger_text(p_tag.get_text(" ", strip=True) if p_tag else "")
-        features = []
-        if ul_tag:
-            features = normalize_kroger_features(
-                [li.get_text(" ", strip=True) for li in ul_tag.find_all('li')],
-                max_features=10,
-            )
-        debug["description_marker_found"] = bool(p_tag)
-        debug["description_end_marker_found"] = bool(p_tag)
-        debug["feature_block_found"] = bool(ul_tag)
-        debug["feature_count"] = len(features)
-        debug["description_excerpt"] = description[:500]
-        debug["features_excerpt"] = " | ".join(features[:5])[:1000]
-        debug["parser_path"] = "kroger_dom_fallback"
+        debug["parser_path"] = "kroger_regex_datatestid"
         return description, features, debug
 
     return "", [], debug
@@ -2797,6 +2893,7 @@ def extract_kroger_text_from_html(html_text, retail_url="", target_rpc=""):
         "Source Used": "kroger_html",
         "Retailer": "Kroger",
     }
+
     if not html_text:
         return {
             "title": "",
@@ -2808,7 +2905,6 @@ def extract_kroger_text_from_html(html_text, retail_url="", target_rpc=""):
         }
 
     soup = BeautifulSoup(html_text, "html.parser")
-
     title = ""
     h1 = soup.find("h1")
     if h1:
@@ -2821,7 +2917,6 @@ def extract_kroger_text_from_html(html_text, retail_url="", target_rpc=""):
         debug["Title Path"] = "kroger_title_missing"
 
     description, features, kroger_debug = extract_kroger_description_and_features_from_html(html_text)
-
     debug["Description Path"] = kroger_debug.get("parser_path", "") if description else "kroger_description_missing"
     debug["Features Path"] = kroger_debug.get("parser_path", "") if features else "kroger_features_missing"
     debug["Kroger Parser Debug"] = kroger_debug
@@ -2838,7 +2933,8 @@ def extract_kroger_text_from_html(html_text, retail_url="", target_rpc=""):
 
 @st.cache_data(show_spinner=False)
 def get_kroger_bundle(retail_url, target_rpc=""):
-    html_text = get_html(retail_url)
+    retail_url = normalize_kroger_url(retail_url)
+    html_text = get_kroger_html(retail_url)
     return {
         "text": extract_kroger_text_from_html(
             html_text,
@@ -4253,11 +4349,12 @@ def _walgreens_features_are_rich_enough(values):
 @st.cache_data(show_spinner=False)
 def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
     """
-    Strict live-page Walgreens path.
-    Only use live HTML visible/embedded on the Walgreens PDP itself.
+    Prefer live Walgreens HTML first, but recover copy/images when the live page under-pulls.
+    Header values should still come from the richest recovered bundle.
     """
     retail_url = str(retail_url or "").strip()
     retail_url_lc = retail_url.lower()
+    product_id = get_walgreens_product_id_from_url(retail_url)
 
     def build_html_bundle():
         html_text = get_walgreens_html(retail_url)
@@ -4270,20 +4367,36 @@ def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
             "images": extract_walgreens_images_from_html(html_text),
         }
 
+    html_bundle = build_html_bundle()
+
     if "/search/results.jsp" in retail_url_lc:
-        html_bundle = build_html_bundle()
         if _walgreens_has_copy_or_images(html_bundle):
             return html_bundle
         return build_empty_retailer_bundle("Walgreens", "walgreens_search_results_url_not_pdp")
 
-    html_bundle = build_html_bundle()
-    if _walgreens_has_copy_or_images(html_bundle):
+    fallback_candidates = [html_bundle]
+
+    if _walgreens_bundle_is_rich_enough(html_bundle):
         return html_bundle
 
-    if STRICT_LIVE_RETAILER_ONLY:
-        return build_empty_retailer_bundle("Walgreens", "walgreens_live_html_missing")
+    if product_id:
+        prod_desc_bundle = build_walgreens_bundle_from_prod_desc_fragment(
+            product_id,
+            retail_url=retail_url,
+        )
+        if _walgreens_has_copy_or_images(prod_desc_bundle):
+            fallback_candidates.append(prod_desc_bundle)
 
-    return html_bundle
+        api_payload = get_walgreens_product_api_payload(product_id)
+        api_bundle = build_walgreens_bundle_from_api_payload(api_payload)
+        if _walgreens_has_copy_or_images(api_bundle):
+            fallback_candidates.append(api_bundle)
+
+    merged_bundle = merge_walgreens_bundles_prefer_richer_copy(*fallback_candidates)
+    if _walgreens_has_copy_or_images(merged_bundle):
+        return merged_bundle
+
+    return build_empty_retailer_bundle("Walgreens", "walgreens_live_html_missing")
 
 def is_sams_robot_page(html_text):
     """
@@ -6502,34 +6615,31 @@ if (
             left, right = st.columns([2.72, 0.95], gap="small")
         
             with left:
-                top_l, top_mid, top_rating = st.columns([0.90, 1.58, 0.52], gap="small")
-
-                top_l.markdown(
-                    column_header_link_html("Salsify", sku, salsify_url),
-                    unsafe_allow_html=True,
-                )
-
                 raw_rpc = current_target_sku or current_rpc
                 clean_rpc = clean_item_number(raw_rpc)
 
-                top_mid.markdown(
-                    f"<div style='margin-left:180px;'>" + column_header_link_html(
-                        retailer_name,
-                        clean_rpc,
-                        retail_url,
-                    ) + "</div>",
-                    unsafe_allow_html=True,
+                salsify_header_html = column_header_link_html("Salsify", sku, salsify_url)
+                retailer_header_html = column_header_link_html(
+                    retailer_name,
+                    clean_rpc,
+                    retail_url,
                 )
 
+                rating_html = ""
                 if str(retailer_name or "").strip().lower() == "walgreens":
                     rating_value = (r_text.get("rating", "") if isinstance(r_text, dict) else "") or row.get("rating", "") or "4.5"
                     review_count_value = (r_text.get("review_count", "") if isinstance(r_text, dict) else "") or row.get("review_count", "") or "4201"
-                    top_rating.markdown(
-                        f"<div style='width:max-content;margin-left:auto;'>" + rating_stars_html(rating_value, review_count_value, font_size_px=18) + "</div>",
-                        unsafe_allow_html=True,
-                    )
-                else:
-                    top_rating.markdown("&nbsp;", unsafe_allow_html=True)
+                    rating_html = rating_stars_html(rating_value, review_count_value, font_size_px=18)
+
+                st.markdown(
+                    locked_visual_header_row_html(
+                        salsify_header_html,
+                        retailer_header_html,
+                        rating_html=rating_html,
+                        retailer_name=retailer_name,
+                    ),
+                    unsafe_allow_html=True,
+                )
 
                 st.markdown(
                     avg_score_bar_html("Copy — Avg", copy_avg_score),
