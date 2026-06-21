@@ -6347,35 +6347,56 @@ file_ready_for_batch = False
 bridge_rows = []
 bridge_required_urls = set()
 
-captured_html_loaded_count = 0
-if 'captured_html_workbook' in locals() and captured_html_workbook:
-    try:
-        cap_bytes = captured_html_workbook.getvalue()
-        cap_hash = hashlib.md5(cap_bytes).hexdigest()
-        if st.session_state.raw_html_upload_hash != cap_hash:
-            cap_df = read_uploaded_file_from_bytes(cap_bytes, captured_html_workbook.name)
-            cap_df = normalize_raw_html_capture_df(cap_df)
-            uploaded_map = {}
-            for _, row in cap_df.iterrows():
-                url = str(row.get("url", "") or "").strip()
-                raw_html = str(row.get("raw_html", "") or "")
-                if not url or not raw_html.strip():
-                    continue
-                uploaded_map[url] = raw_html
-            st.session_state.uploaded_raw_html_by_url = uploaded_map
-            st.session_state.raw_html_upload_hash = cap_hash
-            st.session_state.raw_html_upload_filename = str(captured_html_workbook.name or "")
-            bridged_map = get_session_bridged_html_map()
-            bridged_map.update(uploaded_map)
-            st.session_state.bridged_html_by_url = bridged_map
-        captured_html_loaded_count = len(get_uploaded_raw_html_map())
-        if captured_html_loaded_count:
-            st.caption(f"Captured retailer HTML workbook loaded: {captured_html_loaded_count} URL(s). The app will parse raw_html from the upload when available.")
-    except Exception as e:
-        st.warning(f"Captured HTML workbook could not be read: {e}")
-elif get_uploaded_raw_html_map():
-    captured_html_loaded_count = len(get_uploaded_raw_html_map())
-    st.caption(f"Captured retailer HTML workbook still loaded in session: {captured_html_loaded_count} URL(s).")
+# HOTFIX FOR NameError: get_uploaded_raw_html_map
+# Paste this block ABOVE the line that starts with:
+# captured_html_loaded_count = 0
+
+
+def normalize_raw_html_capture_df(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df.columns = [str(c).strip() for c in df.columns]
+
+    rename_map = {}
+    for col in df.columns:
+        c = col.strip().lower()
+        if c in ["url", "retail_url", "retailer url", "retailer_url", "final_url"]:
+            if "url" not in rename_map.values():
+                rename_map[col] = "url"
+        elif c in ["raw_html", "html", "retailer_html", "captured_html"]:
+            rename_map[col] = "raw_html"
+        elif c in ["label", "sku"]:
+            if "label" not in rename_map.values():
+                rename_map[col] = "label"
+        elif c in ["retailer"]:
+            rename_map[col] = "retailer"
+        elif c in ["title"]:
+            rename_map[col] = "title"
+        elif c in ["status"]:
+            rename_map[col] = "status"
+        elif c in ["error", "error_detail"]:
+            rename_map[col] = "error"
+        elif c in ["batch_id", "batch"]:
+            rename_map[col] = "batch_id"
+        elif c in ["fetched_at", "captured_at"]:
+            rename_map[col] = "fetched_at"
+
+    if rename_map:
+        df = df.rename(columns=rename_map)
+
+    for required in ["url", "raw_html", "label", "retailer", "title", "status", "error", "batch_id", "fetched_at"]:
+        if required not in df.columns:
+            df[required] = ""
+
+    df["url"] = df["url"].astype(str).str.strip()
+    df["raw_html"] = df["raw_html"].astype(str)
+    df = df[df["url"].astype(str).str.strip().ne("")].copy()
+    return df
+
+
+def get_uploaded_raw_html_map():
+    if "uploaded_raw_html_by_url" not in st.session_state or not isinstance(st.session_state.get("uploaded_raw_html_by_url"), dict):
+        st.session_state["uploaded_raw_html_by_url"] = {}
+    return st.session_state["uploaded_raw_html_by_url"]
 
 if uploaded_file:
     try:
