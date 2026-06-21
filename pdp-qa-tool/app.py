@@ -6292,6 +6292,12 @@ if "last_file_hash" not in st.session_state:
     st.session_state.last_file_hash = None
 if "uploaded_file_bytes" not in st.session_state:
     st.session_state.uploaded_file_bytes = None
+if "uploaded_raw_html_by_url" not in st.session_state:
+    st.session_state.uploaded_raw_html_by_url = {}
+if "raw_html_upload_hash" not in st.session_state:
+    st.session_state.raw_html_upload_hash = ""
+if "raw_html_upload_filename" not in st.session_state:
+    st.session_state.raw_html_upload_filename = ""
 if "selected_retailer" not in st.session_state:
     st.session_state.selected_retailer = "-- Select Retailer --"
 if "selected_brand_visual" not in st.session_state:
@@ -6315,7 +6321,8 @@ if "report_batch_key" not in st.session_state:
 top_upload_col, top_download_col = st.columns([2.4, 1.1], gap="small")
 
 with top_upload_col:
-    uploaded_file = st.file_uploader("Upload Master File", type=["xlsx", "csv"])
+    uploaded_file = st.file_uploader("Upload Master File", type=["xlsx", "csv"], key="master_upload")
+    captured_html_workbook = st.file_uploader("Upload Captured Retailer HTML Workbook (optional)", type=["xlsx", "csv"], key="captured_html_workbook")
 
 with top_download_col:
     st.markdown("<div style='height: 30px;'></div>", unsafe_allow_html=True)
@@ -6339,6 +6346,36 @@ file_hash = ""
 file_ready_for_batch = False
 bridge_rows = []
 bridge_required_urls = set()
+
+captured_html_loaded_count = 0
+if 'captured_html_workbook' in locals() and captured_html_workbook:
+    try:
+        cap_bytes = captured_html_workbook.getvalue()
+        cap_hash = hashlib.md5(cap_bytes).hexdigest()
+        if st.session_state.raw_html_upload_hash != cap_hash:
+            cap_df = read_uploaded_file_from_bytes(cap_bytes, captured_html_workbook.name)
+            cap_df = normalize_raw_html_capture_df(cap_df)
+            uploaded_map = {}
+            for _, row in cap_df.iterrows():
+                url = str(row.get("url", "") or "").strip()
+                raw_html = str(row.get("raw_html", "") or "")
+                if not url or not raw_html.strip():
+                    continue
+                uploaded_map[url] = raw_html
+            st.session_state.uploaded_raw_html_by_url = uploaded_map
+            st.session_state.raw_html_upload_hash = cap_hash
+            st.session_state.raw_html_upload_filename = str(captured_html_workbook.name or "")
+            bridged_map = get_session_bridged_html_map()
+            bridged_map.update(uploaded_map)
+            st.session_state.bridged_html_by_url = bridged_map
+        captured_html_loaded_count = len(get_uploaded_raw_html_map())
+        if captured_html_loaded_count:
+            st.caption(f"Captured retailer HTML workbook loaded: {captured_html_loaded_count} URL(s). The app will parse raw_html from the upload when available.")
+    except Exception as e:
+        st.warning(f"Captured HTML workbook could not be read: {e}")
+elif get_uploaded_raw_html_map():
+    captured_html_loaded_count = len(get_uploaded_raw_html_map())
+    st.caption(f"Captured retailer HTML workbook still loaded in session: {captured_html_loaded_count} URL(s).")
 
 if uploaded_file:
     try:
@@ -6478,7 +6515,7 @@ if uploaded_file:
                 if BRIDGE_EXTENSION_MODE:
                     st.caption(
                         f"Bridge retailer HTML ready for this batch: {bridged_ready_count}/{len(bridge_required_urls)} URLs. "
-                        f"Salsify now loads directly in-app for speed. After choosing the retailer, click the Edge extension once to fetch the retailer batch."
+                        f"Salsify now loads directly in-app for speed. After choosing the retailer, click the Edge extension once to fetch the retailer batch, or upload a captured raw HTML workbook instead."
                     )
 
     except EmptyDataError:
@@ -6606,10 +6643,10 @@ if retailer_df is not None and file_ready_for_batch:
             bridge_batch_done = st.session_state.bridge_ready_batch_key == current_batch_key
             if missing_bridge_urls and not bridge_batch_done:
                 st.info(
-                    "Step 2: Click the Raw HTML Fetcher Edge extension once while this Streamlit tab is open. "
-                    "The app will start processing after the extension returns this retailer batch."
+                    "Step 2: Click the Raw HTML Fetcher Edge extension once while this Streamlit tab is open, or upload a captured raw HTML workbook. "
+                    "The app will start processing after the retailer HTML is available."
                 )
-                st.caption(f"Still waiting on {len(missing_bridge_urls)} retailer URL(s) from the extension bridge.")
+                st.caption(f"Still waiting on {len(missing_bridge_urls)} retailer URL(s) from the extension bridge/upload.")
                 st.stop()
             elif missing_bridge_urls and bridge_batch_done:
                 st.warning(
