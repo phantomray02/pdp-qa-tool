@@ -8,6 +8,7 @@ import time
 import hashlib
 import traceback
 from io import BytesIO
+from pathlib import Path
 from difflib import SequenceMatcher
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -24,6 +25,186 @@ from pandas.errors import EmptyDataError
 import threading
 from requests.adapters import HTTPAdapter
 import base64
+
+# =========================================
+# STREAMLIT CLOUD PAGE ↔ EXTENSION BRIDGE
+# =========================================
+BRIDGE_EXTENSION_MODE = True
+
+BRIDGE_COMPONENT_HTML = r'''<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>PDP Extension Bridge</title>
+  <style>
+    html, body { margin: 0; padding: 0; background: transparent; }
+    #status {
+      display: none;
+      padding: 8px 10px;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      background: #f9fafb;
+      color: #111827;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      font-size: 12px;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <div id="status"></div>
+  <script>
+    const statusEl = document.getElementById("status");
+    let currentArgs = { batch_id: "", retailer: "", rows: [], auto_show_status: false };
+
+    function sendToStreamlit(type, value) {
+      window.parent.postMessage({
+        isStreamlitMessage: true,
+        type,
+        value,
+      }, "*");
+    }
+
+    function setFrameHeight(height) {
+      sendToStreamlit("streamlit:setFrameHeight", { height });
+    }
+
+    function setComponentValue(value) {
+      sendToStreamlit("streamlit:setComponentValue", value);
+    }
+
+    function showStatus(text) {
+      statusEl.style.display = currentArgs.auto_show_status ? "block" : "none";
+      statusEl.textContent = text || "";
+      setFrameHeight(currentArgs.auto_show_status ? 56 : 0);
+    }
+
+    function normalizeArgs(payload) {
+      const args = payload && payload.args ? payload.args : payload || {};
+      currentArgs = {
+        batch_id: String(args.batch_id || ""),
+        retailer: String(args.retailer || ""),
+        rows: Array.isArray(args.rows) ? args.rows : [],
+        auto_show_status: Boolean(args.auto_show_status),
+      };
+      window.__PDP_BRIDGE_CONFIG__ = currentArgs;
+      window.postMessage({
+        source: "pdp-streamlit-bridge",
+        type: "PDP_BRIDGE_CONFIG_READY",
+        payload: currentArgs,
+      }, "*");
+      showStatus(
+        currentArgs.batch_id
+          ? `Bridge ready for ${currentArgs.retailer || "Retailer"} (${currentArgs.rows.length} URLs). Click the extension once to start.`
+          : "Bridge idle."
+      );
+    }
+
+    window.addEventListener("message", (event) => {
+      const data = event.data || {};
+      if (data.type === "streamlit:render" || (data.isStreamlitMessage && data.type === "streamlit:render")) {
+        normalizeArgs(data);
+        return;
+      }
+      if (data && data.source === "pdp-extension" && data.type === "PDP_BATCH_PROGRESS") {
+        const p = data.payload || {};
+        showStatus(`Fetching ${p.index || 0}/${p.total || 0}\n${p.url || ""}`);
+        return;
+      }
+      if (data && data.source === "pdp-extension" && data.type === "PDP_BATCH_COMPLETE") {
+        const payload = data.payload || {};
+        showStatus(`Finished ${payload.results ? payload.results.length : 0} pages.`);
+        setComponentValue(payload);
+        return;
+      }
+      if (data && data.source === "pdp-extension" && data.type === "PDP_BATCH_ERROR") {
+        const payload = data.payload || {};
+        showStatus(`Bridge error: ${payload.message || "Unknown error"}`);
+        setComponentValue({
+          bridge_error: payload.message || "Unknown error",
+          results: [],
+          retailer: currentArgs.retailer,
+          batch_id: currentArgs.batch_id,
+        });
+      }
+    });
+
+    sendToStreamlit("streamlit:componentReady", { apiVersion: 1 });
+    setFrameHeight(0);
+  </script>
+</body>
+</html>
+'''
+
+
+def ensure_bridge_component_dir():
+    try:
+        base_dir = Path(__file__).resolve().parent
+    except Exception:
+        base_dir = Path.cwd()
+    component_dir = base_dir / "_pdp_bridge_component_runtime"
+    component_dir.mkdir(parents=True, exist_ok=True)
+    component_path = component_dir / "index.html"
+    current_text = ""
+    if component_path.exists():
+        try:
+            current_text = component_path.read_text(encoding="utf-8")
+        except Exception:
+            current_text = ""
+    if current_text != BRIDGE_COMPONENT_HTML:
+        component_path.write_text(BRIDGE_COMPONENT_HTML, encoding="utf-8")
+    return component_dir
+
+
+@st.cache_resource(show_spinner=False)
+def get_extension_bridge_component():
+    component_dir = ensure_bridge_component_dir()
+    return components.declare_component("pdp_extension_bridge", path=str(component_dir))
+
+
+def extension_bridge(rows, retailer="", batch_id="", auto_show_status=False, key="pdp_extension_bridge"):
+    component = get_extension_bridge_component()
+    return component(
+        rows=rows or [],
+        retailer=retailer or "",
+        batch_id=batch_id or "",
+        auto_show_status=bool(auto_show_status),
+        default=None,
+        key=key,
+    )
+
+
+def get_session_bridged_html_map():
+    if "bridged_html_by_url" not in st.session_state or not isinstance(st.session_state.get("bridged_html_by_url"), dict):
+        st.session_state["bridged_html_by_url"] = {}
+    return st.session_state["bridged_html_by_url"]
+
+
+def build_bridge_rows_from_retailer_df(retailer_df):
+    rows = []
+    seen = set()
+    if retailer_df is None or getattr(retailer_df, "empty", True):
+        return rows
+    for _, row in retailer_df.iterrows():
+        sku = str(row.get("sku", "") or "").strip()
+        sources = [
+            ("salsify_url", "salsify"),
+            ("retail_url", "retailer"),
+        ]
+        for url_key, label_suffix in sources:
+            url = str(row.get(url_key, "") or "").strip()
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            rows.append({
+                "url": url,
+                "label": f"{sku} | {label_suffix}".strip(" |"),
+            })
+    return rows
+
+
+def get_bridge_required_urls(rows):
+    return {str((row or {}).get("url", "") or "").strip() for row in (rows or []) if str((row or {}).get("url", "") or "").strip()}
 
 # =========================================
 # APP SETUP
@@ -6138,6 +6319,14 @@ if "last_file_hash" not in st.session_state:
     st.session_state.last_file_hash = None
 if "uploaded_file_bytes" not in st.session_state:
     st.session_state.uploaded_file_bytes = None
+if "bridged_html_by_url" not in st.session_state:
+    st.session_state.bridged_html_by_url = {}
+if "bridge_batch_id" not in st.session_state:
+    st.session_state.bridge_batch_id = ""
+if "bridge_last_result_signature" not in st.session_state:
+    st.session_state.bridge_last_result_signature = ""
+if "bridge_ready_batch_key" not in st.session_state:
+    st.session_state.bridge_ready_batch_key = ""
 if "selected_retailer" not in st.session_state:
     st.session_state.selected_retailer = "-- Select Retailer --"
 if "selected_brand_visual" not in st.session_state:
@@ -6183,6 +6372,8 @@ selected_retailer = ""
 current_batch_key = ""
 file_hash = ""
 file_ready_for_batch = False
+bridge_rows = []
+bridge_required_urls = set()
 
 if uploaded_file:
     try:
@@ -6210,6 +6401,10 @@ if uploaded_file:
             st.session_state.report_filename = None
             st.session_state.report_batch_key = ""
             clear_in_memory_caches()
+            st.session_state.bridged_html_by_url = {}
+            st.session_state.bridge_batch_id = ""
+            st.session_state.bridge_last_result_signature = ""
+            st.session_state.bridge_ready_batch_key = ""
             st.cache_data.clear()
 
         master_df = read_uploaded_file_from_bytes(file_bytes, uploaded_file.name)
@@ -6251,6 +6446,9 @@ if uploaded_file:
         if file_ready_for_batch:
             retailer_df = master_df[master_df["retailer"].astype(str) == selected_retailer].copy()
             current_batch_key = f"{file_hash}::{selected_retailer}"
+            bridge_rows = build_bridge_rows_from_retailer_df(retailer_df)
+            bridge_required_urls = get_bridge_required_urls(bridge_rows)
+            st.session_state.bridge_batch_id = current_batch_key
 
             if st.session_state.active_batch_key != current_batch_key:
                 st.session_state.summary_rows = []
@@ -6267,6 +6465,10 @@ if uploaded_file:
                 st.session_state.selected_brand_visual = "All"
                 st.session_state.auto_download_done = False
                 st.session_state.report_batch_key = ""
+                st.session_state.bridged_html_by_url = {}
+                st.session_state.bridge_batch_id = current_batch_key
+                st.session_state.bridge_last_result_signature = ""
+                st.session_state.bridge_ready_batch_key = ""
 
                 # Tell the local fetch server this is now the active retailer,
                 # so the extension's auto-pilot only works on this retailer's
@@ -6283,6 +6485,39 @@ if uploaded_file:
                     )
                 except Exception:
                     pass  # fetch server may not be running yet — non-fatal
+
+
+            bridge_payload = extension_bridge(
+                rows=bridge_rows,
+                retailer=selected_retailer,
+                batch_id=current_batch_key,
+                auto_show_status=True,
+                key=f"bridge_{current_batch_key}",
+            )
+
+            if bridge_payload and isinstance(bridge_payload, dict):
+                payload_signature = hashlib.md5(
+                    json.dumps(bridge_payload, sort_keys=True, default=str).encode("utf-8")
+                ).hexdigest()
+                if st.session_state.bridge_last_result_signature != payload_signature:
+                    bridged_map = get_session_bridged_html_map()
+                    for item in bridge_payload.get("results", []) or []:
+                        url = str(item.get("url", "") or "").strip()
+                        if not url:
+                            continue
+                        bridged_map[url] = str(item.get("html", "") or "")
+                    st.session_state.bridged_html_by_url = bridged_map
+                    st.session_state.bridge_last_result_signature = payload_signature
+                    if str(bridge_payload.get("batch_id", "") or "") == current_batch_key:
+                        st.session_state.bridge_ready_batch_key = current_batch_key
+
+            bridged_map = get_session_bridged_html_map()
+            bridged_ready_count = len([url for url in bridge_required_urls if url in bridged_map])
+            if BRIDGE_EXTENSION_MODE:
+                st.caption(
+                    f"Bridge HTML ready for this batch: {bridged_ready_count}/{len(bridge_required_urls)} URLs. "
+                    f"After choosing the retailer, click the Edge extension once to fetch the batch."
+                )
 
     except EmptyDataError:
         st.error("🔥 CRITICAL APP ERROR")
@@ -6402,6 +6637,17 @@ if retailer_df is not None and file_ready_for_batch:
         if retailer_df.empty:
             st.warning("No rows found for the selected retailer.")
             st.stop()
+
+        if BRIDGE_EXTENSION_MODE:
+            bridged_map = get_session_bridged_html_map()
+            missing_bridge_urls = [url for url in bridge_required_urls if url not in bridged_map]
+            if missing_bridge_urls:
+                st.info(
+                    "Step 2: Click the Raw HTML Fetcher Edge extension once while this Streamlit tab is open. "
+                    "The app will start processing after the extension returns this batch."
+                )
+                st.caption(f"Still waiting on {len(missing_bridge_urls)} URL(s) from the extension bridge.")
+                st.stop()
 
         start = st.session_state.start_idx
         end = start + BATCH_SIZE
