@@ -25,11 +25,14 @@ from pandas.errors import EmptyDataError
 import threading
 from requests.adapters import HTTPAdapter
 import base64
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 
 # =========================================
 # STREAMLIT CLOUD PAGE ↔ EXTENSION BRIDGE
 # =========================================
 BRIDGE_EXTENSION_MODE = True
+EXTENSION_MODE_SKIP = "Skip extension and go straight to batch/load"
+EXTENSION_MODE_USE = "Use extension, capture TXT, upload TXT, then run batch from uploaded raw HTML"
 
 BRIDGE_COMPONENT_HTML = r'''<!doctype html>
 <html>
@@ -221,7 +224,7 @@ def build_bridge_rows_from_retailer_df(retailer_df, retailer_name=""):
         return rows
     for _, row in retailer_df.iterrows():
         sku = str(row.get("sku", "") or "").strip()
-        url = str(row.get("retail_url", "") or "").strip()
+        url = normalize_uploaded_capture_url(str(row.get("retail_url", "") or "").strip(), retailer_name)
         if not url or url in seen:
             continue
         seen.add(url)
@@ -229,8 +232,8 @@ def build_bridge_rows_from_retailer_df(retailer_df, retailer_name=""):
     return rows
 
 
-def get_bridge_required_urls(rows):
-    return {str((row or {}).get("url", "") or "").strip() for row in (rows or []) if str((row or {}).get("url", "") or "").strip()}
+def get_bridge_required_urls(rows, retailer_name=""):
+    return {normalize_uploaded_capture_url(str((row or {}).get("url", "") or "").strip(), retailer_name) for row in (rows or []) if str((row or {}).get("url", "") or "").strip()}
 
 
 def render_bridge_config_beacon(batch_id, retailer, rows):
@@ -1070,7 +1073,8 @@ def get_html(url):
     # the Edge extension (real browser session, avoids bot-detection), use
     # that HTML instead of making a direct request that may get blocked.
     bridged_map = get_session_bridged_html_map()
-    bridged_html = bridged_map.get(url, "")
+    bridged_lookup_url = normalize_uploaded_capture_url(url, infer_retailer_name_from_url(url))
+    bridged_html = bridged_map.get(bridged_lookup_url, "") or bridged_map.get(url, "")
     if bridged_html:
         html_cache[url] = bridged_html
         while len(html_cache) > HTML_CACHE_MAX:
@@ -1127,7 +1131,8 @@ def get_walgreens_html(url):
         return html_cache[cache_key]
 
     bridged_map = get_session_bridged_html_map()
-    bridged_html = bridged_map.get(url, "")
+    bridged_lookup_url = normalize_uploaded_capture_url(url, infer_retailer_name_from_url(url))
+    bridged_html = bridged_map.get(bridged_lookup_url, "") or bridged_map.get(url, "")
     if bridged_html:
         html_cache[cache_key] = bridged_html
         while len(html_cache) > HTML_CACHE_MAX:
@@ -1489,21 +1494,39 @@ def get_uploaded_text_file_bytes(uploaded_text_file):
         return ""
 
 
+
 def normalize_kroger_url(url):
     url = str(url or "").strip()
     if not url:
         return ""
-    url = re.sub(r'([?&])msockid=[^&]+', r'\1', url, flags=re.IGNORECASE)
-    url = re.sub(r'([?&])searchType=[^&]+', r'\1', url, flags=re.IGNORECASE)
-    url = re.sub(r'([?&])fulfillment=[^&]+', r'\1', url, flags=re.IGNORECASE)
-    url = re.sub(r'([?&])campaign=[^&]+', r'\1', url, flags=re.IGNORECASE)
-    url = re.sub(r'([?&])adgroup=[^&]+', r'\1', url, flags=re.IGNORECASE)
-    url = re.sub(r'([?&])pid=[^&]+', r'\1', url, flags=re.IGNORECASE)
-    url = re.sub(r'\?&', '?', url)
-    url = re.sub(r'[?&]+$', '', url)
-    url = re.sub(r'\?{2,}', '?', url)
+    try:
+        parts = urlsplit(url)
+        query_pairs = []
+        for k, v in parse_qsl(parts.query, keep_blank_values=True):
+            lk = str(k or "").strip().lower()
+            if lk in {"msockid", "searchtype", "fulfillment", "campaign", "adgroup", "pid", "cid", "storeid"}:
+                continue
+            query_pairs.append((k, v))
+        clean_query = urlencode(query_pairs, doseq=True)
+        cleaned = urlunsplit((parts.scheme, parts.netloc, parts.path.rstrip("?&"), clean_query, ""))
+        return cleaned.rstrip("?&")
+    except Exception:
+        return url
+
+
+
+def normalize_uploaded_capture_url(url: str, retailer: str = "") -> str:
+    url = str(url or "").strip()
+    retailer = str(retailer or "").strip().lower()
+    if not url:
+        return ""
+    if retailer == "kroger" or "kroger.com" in url.lower():
+        return normalize_kroger_url(url)
     return url
 
+
+def normalize_selected_retailer_mode_name(v: str) -> str:
+    return str(v or "").strip()
 
 def resolve_debug_views(
     debug_url,
@@ -6344,6 +6367,25 @@ top_upload_col, top_download_col = st.columns([2.4, 1.1], gap="small")
 
 with top_upload_col:
     uploaded_file = st.file_uploader("Upload Master File", type=["xlsx", "csv"], key="master_upload")
+
+    extension_mode_options = [EXTENSION_MODE_SKIP, EXTENSION_MODE_USE]
+    if "extension_mode_choice" not in st.session_state:
+        st.session_state.extension_mode_choice = EXTENSION_MODE_SKIP
+
+    st.selectbox(
+        "Capture Mode",
+        extension_mode_options,
+        key="extension_mode_choice",
+        help=(
+            "Skip extension and go straight to batch/load, or use the extension to capture retailer raw HTML TXT, "
+            "upload that TXT, and run batch from uploaded raw HTML."
+        ),
+    )
+
+    selected_capture_mode = normalize_selected_retailer_mode_name(
+        st.session_state.get("extension_mode_choice", EXTENSION_MODE_SKIP)
+    )
+
     captured_html_workbook = st.file_uploader("Upload Captured Retailer HTML Workbook / TXT (optional)", type=["xlsx", "csv", "txt"], key="captured_html_workbook")
 
 with top_download_col:
@@ -6375,20 +6417,26 @@ bridge_required_urls = set()
 
 
 
+
 def parse_raw_html_text_capture(text_value: str) -> pd.DataFrame:
     records = []
     text_value = str(text_value or "")
     chunks = text_value.split("=== RECORD START ===")
+
     for chunk in chunks:
         chunk = chunk.strip()
         if not chunk:
             continue
+
         if "=== RECORD END ===" in chunk:
             chunk = chunk.split("=== RECORD END ===", 1)[0].strip()
+
         if "RAW_HTML_START" not in chunk or "RAW_HTML_END" not in chunk:
             continue
+
         header_part, remainder = chunk.split("RAW_HTML_START", 1)
         raw_html, _ = remainder.split("RAW_HTML_END", 1)
+
         row = {
             "url": "",
             "raw_html": str(raw_html or "").strip(),
@@ -6401,6 +6449,7 @@ def parse_raw_html_text_capture(text_value: str) -> pd.DataFrame:
             "fetched_at": "",
             "rpc": "",
         }
+
         for line in header_part.splitlines():
             line = str(line or "").strip()
             if not line or ":" not in line:
@@ -6422,42 +6471,52 @@ def parse_raw_html_text_capture(text_value: str) -> pd.DataFrame:
                 row["batch_id"] = value
             elif key == "fetched_at":
                 row["fetched_at"] = value
-        if row["url"] and row["raw_html"]:
+            elif key == "status":
+                row["status"] = value
+            elif key == "error":
+                row["error"] = value
+
+        row["url"] = normalize_uploaded_capture_url(row.get("url", ""), row.get("retailer", ""))
+        if row["url"]:
+            if not row["raw_html"] and not row["error"]:
+                row["status"] = row.get("status") or "error"
+                row["error"] = "Uploaded TXT record had no raw HTML between RAW_HTML_START and RAW_HTML_END."
             records.append(row)
+
     return pd.DataFrame(records)
 
 
 def load_uploaded_raw_html_capture(upload_obj):
     if upload_obj is None:
-        return 0, ""
+        return {"loaded_html_count": 0, "record_count": 0, "blank_html_count": 0, "filename": ""}
     try:
         raw_bytes = upload_obj.getvalue()
     except Exception:
-        return 0, ""
+        return {"loaded_html_count": 0, "record_count": 0, "blank_html_count": 0, "filename": ""}
+
     upload_hash = hashlib.md5(raw_bytes).hexdigest()
     upload_name = str(getattr(upload_obj, "name", "") or "")
-    if (
-        st.session_state.get("raw_html_upload_hash", "") == upload_hash
-        and st.session_state.get("raw_html_upload_filename", "") == upload_name
-        and isinstance(st.session_state.get("uploaded_raw_html_by_url"), dict)
-        and st.session_state.get("uploaded_raw_html_by_url")
-    ):
-        return len(st.session_state.get("uploaded_raw_html_by_url", {})), upload_name
 
     ext = Path(upload_name).suffix.lower()
-    if ext == ".txt":
+    if ext in [".txt", ".raw_html"]:
         decoded_text = raw_bytes.decode("utf-8", errors="replace")
         uploaded_capture_df = parse_raw_html_text_capture(decoded_text)
     else:
         uploaded_capture_df = read_uploaded_file_from_bytes(raw_bytes, upload_name)
 
     uploaded_capture_df = normalize_raw_html_capture_df(uploaded_capture_df)
+
     uploaded_map = {}
+    blank_html_count = 0
     for _, row in uploaded_capture_df.iterrows():
-        url = str(row.get("url", "") or "").strip()
+        url = normalize_uploaded_capture_url(row.get("url", ""), row.get("retailer", ""))
         raw_html = str(row.get("raw_html", "") or "")
-        if url and raw_html:
+        if not url:
+            continue
+        if raw_html.strip():
             uploaded_map[url] = raw_html
+        else:
+            blank_html_count += 1
 
     st.session_state["uploaded_raw_html_by_url"] = dict(uploaded_map)
     bridge_map = get_session_bridged_html_map()
@@ -6465,8 +6524,13 @@ def load_uploaded_raw_html_capture(upload_obj):
     bridge_map.update(uploaded_map)
     st.session_state["raw_html_upload_hash"] = upload_hash
     st.session_state["raw_html_upload_filename"] = upload_name
-    return len(uploaded_map), upload_name
 
+    return {
+        "loaded_html_count": len(uploaded_map),
+        "record_count": len(uploaded_capture_df),
+        "blank_html_count": blank_html_count,
+        "filename": upload_name,
+    }
 
 def normalize_raw_html_capture_df(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -6495,698 +6559,52 @@ def normalize_raw_html_capture_df(df: pd.DataFrame) -> pd.DataFrame:
             rename_map[col] = "batch_id"
         elif c in ["fetched_at", "captured_at"]:
             rename_map[col] = "fetched_at"
+        elif c in ["rpc", "retailer_rpc", "upc"]:
+            if "rpc" not in rename_map.values():
+                rename_map[col] = "rpc"
 
     if rename_map:
         df = df.rename(columns=rename_map)
 
-    for required in ["url", "raw_html", "label", "retailer", "title", "status", "error", "batch_id", "fetched_at"]:
+    for required in ["url", "raw_html", "label", "retailer", "title", "status", "error", "batch_id", "fetched_at", "rpc"]:
         if required not in df.columns:
             df[required] = ""
 
-    df["url"] = df["url"].astype(str).str.strip()
+    df["retailer"] = df["retailer"].astype(str).str.strip()
+    df["url"] = [normalize_uploaded_capture_url(u, r) for u, r in zip(df["url"].astype(str), df["retailer"].astype(str))]
     df["raw_html"] = df["raw_html"].astype(str)
+    df["label"] = df["label"].astype(str).str.strip()
+    df["rpc"] = df["rpc"].astype(str).str.strip()
+    df["status"] = df["status"].astype(str).str.strip().replace("", "ok")
+    df["error"] = df["error"].astype(str)
     df = df[df["url"].astype(str).str.strip().ne("")].copy()
     return df
-
 
 def get_uploaded_raw_html_map():
     if "uploaded_raw_html_by_url" not in st.session_state or not isinstance(st.session_state.get("uploaded_raw_html_by_url"), dict):
         st.session_state["uploaded_raw_html_by_url"] = {}
     return st.session_state["uploaded_raw_html_by_url"]
 
+
 if captured_html_workbook is not None:
+    captured_html_loaded_count = 0
+    captured_html_record_count = 0
+    captured_html_blank_count = 0
+    captured_html_upload_name = ""
     try:
-        captured_html_loaded_count, captured_html_upload_name = load_uploaded_raw_html_capture(captured_html_workbook)
-        if captured_html_loaded_count:
-            with top_upload_col:
-                st.caption(
-                    f"Captured retailer HTML loaded: {captured_html_loaded_count} URL(s) from {captured_html_upload_name}."
-                )
-    except Exception as capture_upload_error:
-        with top_upload_col:
-            st.warning(f"Could not read captured retailer HTML upload: {capture_upload_error}")
-
-if uploaded_file:
-    try:
-        file_bytes = uploaded_file.getvalue()
-        st.session_state.uploaded_file_bytes = file_bytes
-        file_hash = hashlib.md5(file_bytes).hexdigest()
-
-        if st.session_state.last_file_hash != file_hash:
-            st.session_state.summary_rows = []
-            st.session_state.export_rows = []
-            st.session_state.debug_rows = []
-            st.session_state.summary_skus = set()
-            st.session_state.detail_skus = set()
-            st.session_state.debug_skus = set()
-            st.session_state.start_idx = 0
-            st.session_state.processing_done = False
-            st.session_state.progress_bar = None
-            st.session_state.last_file_hash = file_hash
-            st.session_state.selected_retailer = "-- Select Retailer --"
-            st.session_state.selected_brand_visual = "All"
-            st.session_state.active_batch_key = ""
-            st.session_state.completed_batch_key = ""
-            st.session_state.auto_download_done = False
-            st.session_state.report_bytes = None
-            st.session_state.report_filename = None
-            st.session_state.report_batch_key = ""
-            clear_in_memory_caches()
-            st.session_state.bridged_html_by_url = {}
-            st.session_state.bridge_batch_id = ""
-            st.session_state.bridge_last_result_signature = ""
-            st.session_state.bridge_ready_batch_key = ""
-            st.session_state.processed_bridge_chunks = set()
-            st.cache_data.clear()
-
-        master_df = read_uploaded_file_from_bytes(file_bytes, uploaded_file.name)
-        master_df = prepare_input_df(master_df)
-        all_retailers = sorted(master_df["retailer"].dropna().astype(str).unique().tolist()) if "retailer" in master_df.columns else ["CVS"]
-        if not all_retailers:
-            all_retailers = ["CVS"]
-        multi_retailer = len(all_retailers) > 1
-
-        with top_upload_col:
-            st.caption("Detected retailers in upload: " + ", ".join(all_retailers))
-
-        with top_upload_col:
-            if multi_retailer:
-                retailer_options = ["-- Select Retailer --"] + all_retailers
-                if st.session_state.selected_retailer not in retailer_options:
-                    st.session_state.selected_retailer = "-- Select Retailer --"
-                selected_retailer = st.selectbox(
-                    "🏪 Select Retailer",
-                    retailer_options,
-                    key="selected_retailer",
-                    help="Select retailer to run batch.",
-                )
-                if selected_retailer == "-- Select Retailer --":
-                    st.info("Select retailer to run batch.")
-                else:
-                    file_ready_for_batch = True
-            else:
-                st.session_state.selected_retailer = all_retailers[0]
-                selected_retailer = st.selectbox(
-                    "🏪 Select Retailer",
-                    all_retailers,
-                    index=0,
-                    key="selected_retailer",
-                    disabled=True,
-                )
-                file_ready_for_batch = True
-
-        if file_ready_for_batch:
-            retailer_df = master_df[master_df["retailer"].astype(str) == selected_retailer].copy()
-            current_batch_key = f"{file_hash}::{selected_retailer}"
-            bridge_rows = build_bridge_rows_from_retailer_df(retailer_df, selected_retailer)
-            bridge_required_urls = get_bridge_required_urls(bridge_rows)
-            st.session_state.bridge_batch_id = current_batch_key
-
-            if st.session_state.active_batch_key != current_batch_key:
-                st.session_state.summary_rows = []
-                st.session_state.export_rows = []
-                st.session_state.debug_rows = []
-                st.session_state.summary_skus = set()
-                st.session_state.detail_skus = set()
-                st.session_state.debug_skus = set()
-                st.session_state.start_idx = 0
-                st.session_state.processing_done = False
-                st.session_state.progress_bar = None
-                st.session_state.active_batch_key = current_batch_key
-                st.session_state.completed_batch_key = ""
-                st.session_state.selected_brand_visual = "All"
-                st.session_state.auto_download_done = False
-                st.session_state.report_batch_key = ""
-                st.session_state.bridged_html_by_url = {}
-                st.session_state.bridge_batch_id = current_batch_key
-                st.session_state.bridge_last_result_signature = ""
-                st.session_state.bridge_ready_batch_key = ""
-                st.session_state.processed_bridge_chunks = set()
-
-
-            if uses_extension_bridge_for_retailer(selected_retailer):
-                render_bridge_config_beacon(current_batch_key, selected_retailer, bridge_rows)
-
-                bridge_payload = extension_bridge(
-                    rows=bridge_rows,
-                    retailer=selected_retailer,
-                    batch_id=current_batch_key,
-                    auto_show_status=True,
-                    key=f"bridge_{current_batch_key}",
-                )
-
-                if bridge_payload and isinstance(bridge_payload, dict):
-                    event_type = str(bridge_payload.get("event_type", "") or "").strip().lower()
-                    if event_type == "chunk":
-                        chunk_id = str(bridge_payload.get("chunk_id", "") or "").strip()
-                        processed_chunks = get_processed_bridge_chunks()
-                        if chunk_id and chunk_id not in processed_chunks:
-                            bridged_map = get_session_bridged_html_map()
-                            for item in bridge_payload.get("results", []) or []:
-                                url = str(item.get("url", "") or "").strip()
-                                if not url:
-                                    continue
-                                bridged_map[url] = str(item.get("html", "") or "")
-                            st.session_state.bridged_html_by_url = bridged_map
-                            processed_chunks.add(chunk_id)
-                            st.session_state.processed_bridge_chunks = processed_chunks
-                    elif event_type in ["complete", "cancelled"]:
-                        payload_signature = hashlib.md5(json.dumps(bridge_payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
-                        if st.session_state.bridge_last_result_signature != payload_signature:
-                            st.session_state.bridge_last_result_signature = payload_signature
-                            if str(bridge_payload.get("batch_id", "") or "") == current_batch_key:
-                                st.session_state.bridge_ready_batch_key = current_batch_key
-                    elif event_type == "error":
-                        st.warning(f"Bridge error: {bridge_payload.get('bridge_error', 'Unknown error')}")
-
-                bridged_map = get_session_bridged_html_map()
-                bridged_ready_count = len([url for url in bridge_required_urls if url in bridged_map])
-                if BRIDGE_EXTENSION_MODE:
-                    st.caption(
-                        f"Bridge retailer HTML ready for this batch: {bridged_ready_count}/{len(bridge_required_urls)} URLs. "
-                        f"Salsify now loads directly in-app for speed. After choosing the retailer, click the Edge extension once to fetch the retailer batch, or upload a captured raw HTML workbook / TXT instead."
-                    )
-
+        upload_info = load_uploaded_raw_html_capture(captured_html_workbook)
+        captured_html_loaded_count = int(upload_info.get("loaded_html_count", 0) or 0)
+        captured_html_record_count = int(upload_info.get("record_count", 0) or 0)
+        captured_html_blank_count = int(upload_info.get("blank_html_count", 0) or 0)
+        captured_html_upload_name = str(upload_info.get("filename", "") or "")
+        top_upload_col.caption(
+            f"Captured retailer HTML loaded: {captured_html_loaded_count} usable URL(s) from {captured_html_record_count} TXT / workbook record(s) in {captured_html_upload_name}."
+        )
+        if captured_html_blank_count > 0:
+            top_upload_col.warning(
+                f"{captured_html_blank_count} uploaded record(s) had blank raw HTML. Those rows cannot drive batch parsing until the extension captures real HTML."
+            )
     except EmptyDataError:
-        st.error("🔥 CRITICAL APP ERROR")
-        st.text("The uploaded file is empty or could not be read.")
-    except ValueError as e:
-        st.error("❌ INPUT FILE ERROR")
-        st.text(str(e))
+        pass
     except Exception as e:
-        st.error("🔥 CRITICAL APP ERROR")
-        st.text(str(e))
-        st.text(traceback.format_exc())
-
-# =========================================
-# VIEW + FILTER CONTROLS
-# =========================================
-st.markdown("## 🔎 QA Viewer Controls")
-show_only_issues = st.checkbox("❌ Show ONLY Issues", key="show_issues")
-hide_good = st.checkbox("✅ Hide Strong Matches (80%+)", key="hide_good")
-show_below_90_only = st.checkbox("🔎 Show Only Scores Below 90%", key="show_below_90_only")
-
-
-st.markdown("### 🧪 Debug Controls")
-
-show_html_debugger = st.checkbox(
-    "Debug HTML",
-    key="show_html_debugger",
-)
-
-# Keep downstream variables defined so the rest of the app keeps working unchanged.
-debugger_source = "Retailer page"
-debug_only_sku = ""
-use_manual_html_override = False
-manual_html_file = None
-manual_html_text = ""
-debug_marker_start = ""
-debug_marker_end = ""
-debug_marker_target = "Raw HTML"
-
-standalone_debug_url = st.text_input(
-    "URL to pull raw HTML",
-    key="standalone_debug_url",
-).strip()
-
-debug_timeout_override = st.number_input(
-    "Timeout (s)",
-    min_value=1,
-    max_value=120,
-    value=30,
-    step=1,
-    key="debug_timeout_override",
-)
-
-debug_headers_text = st.text_area(
-    "Custom headers (optional)",
-    placeholder="Either JSON, e.g. {'Accept-Language': 'en-US'} or one per line: Key: Value",
-    height=100,
-    key="debug_headers_text",
-)
-
-col_debug_1, col_debug_2 = st.columns(2)
-with col_debug_1:
-    debug_use_mobile = st.checkbox("Use mobile User-Agent", value=False, key="debug_use_mobile")
-with col_debug_2:
-    debug_proxy_url = st.text_input(
-        "Proxy URL (optional)",
-        key="debug_proxy_url",
-        placeholder="http://user:pass@host:port",
-    ).strip()
-
-st.caption(
-    "Paste a URL and the debugger will fetch the raw HTML response so you can inspect the exact source before we build a retailer-specific parser."
-)
-
-if show_html_debugger and standalone_debug_url:
-    standalone_retailer_name = infer_retailer_name_from_url(standalone_debug_url)
-    standalone_debug_views = resolve_debug_views(
-        standalone_debug_url,
-        retailer_name=standalone_retailer_name,
-        use_manual_html_override=False,
-        manual_html_text="",
-        manual_html_file=None,
-        headers_text=debug_headers_text,
-        timeout_override=int(debug_timeout_override),
-        use_mobile=debug_use_mobile,
-        proxy_url=debug_proxy_url,
-    )
-
-    with st.expander("🔎 Debug HTML", expanded=True):
-        render_debugger_panel(
-            standalone_debug_views,
-            sku="top_debugger",
-            marker_start="",
-            marker_end="",
-            marker_target="Raw HTML",
-            use_manual_html_override=False,
-        )
-
-
-if retailer_df is not None and st.session_state.processing_done and st.session_state.completed_batch_key == current_batch_key:
-    visual_brands = sorted(retailer_df["brand"].dropna().astype(str).unique().tolist()) if "brand" in retailer_df.columns else []
-    visual_brand_options = ["All"] + visual_brands
-    if st.session_state.selected_brand_visual not in visual_brand_options:
-        st.session_state.selected_brand_visual = "All"
-    st.markdown("### 🏷️ Select Brand")
-    st.selectbox(
-        "",
-        visual_brand_options,
-        key="selected_brand_visual",
-        label_visibility="collapsed",
-    )
-
-# =========================================
-# FILE + PROCESSING
-# =========================================
-# REQUIRE UPLOADED RAW HTML WORKBOOK BEFORE QA FOR EXTENSION RETAILERS
-# Paste this block into your app to replace the current extension wait gate.
-# This makes Kroger / Sam's Club STOP before Visual QA until the captured raw HTML CSV/XLSX is uploaded.
-# CVS / Walgreens stay on their direct path.
-
-# Replace your current gate block inside:
-# if retailer_df is not None and file_ready_for_batch:
-# with this version.
-
-if retailer_df is not None and file_ready_for_batch:
-    try:
-        if retailer_df.empty:
-            st.warning("No rows found for the selected retailer.")
-            st.stop()
-
-        # Option A gate: for extension-based retailers, require uploaded captured raw HTML
-        # before continuing into batch processing / visual QA.
-        if uses_extension_bridge_for_retailer(selected_retailer):
-            uploaded_map = get_uploaded_raw_html_map()
-            uploaded_urls = set(uploaded_map.keys()) if isinstance(uploaded_map, dict) else set()
-            missing_uploaded_urls = [url for url in bridge_required_urls if url not in uploaded_urls]
-
-            if not uploaded_urls:
-                st.info(
-                    "Optional step: Run the Edge extension and upload the captured HTML file above as CSV, XLSX, or TXT. "
-                    "The app can continue without it, but uploaded raw HTML is preferred for Kroger and Sam's Club."
-                )
-                st.caption(
-                    f"No uploaded captured retailer HTML detected yet for {len(bridge_required_urls)} retailer URL(s). Continuing with any live/bridged HTML that is available."
-                )
-
-            if missing_uploaded_urls:
-                st.warning(
-                    f"The uploaded captured HTML workbook contains {len(uploaded_urls)} URL(s), but {len(missing_uploaded_urls)} retailer URL(s) are still missing. "
-                    "The app will continue with the uploaded pages only, and missing rows may still show as Missing."
-                )
-            else:
-                st.success(
-                    f"Captured retailer HTML workbook loaded for {len(uploaded_urls)} / {len(bridge_required_urls)} URL(s). Continuing into batch processing."
-                )
-
-        start = st.session_state.start_idx
-        end = start + BATCH_SIZE
-
-        if start >= len(retailer_df):
-            st.session_state.processing_done = True
-            st.session_state.completed_batch_key = current_batch_key
-
-        batch_df = retailer_df.iloc[start:end]
-
-        if not st.session_state.processing_done:
-            st.write(f"Processing SKUs {start + 1} to {min(end, len(retailer_df))} of {len(retailer_df)}")
-            st.caption(f"Batch Size: {BATCH_SIZE} | Workers: {MAX_WORKERS}")
-
-            if st.session_state.progress_bar is None:
-                st.session_state.progress_bar = st.progress(0)
-            progress_bar = st.session_state.progress_bar
-            status_text = st.empty()
-            st.write("### Overall Progress")
-            overall_progress_bar = st.progress(0)
-
-            total = len(batch_df)
-            completed = 0
-            batch_records = batch_df.to_dict("records")
-
-            # ...keep the rest of your existing processing block unchanged below this point...
-
-    except Exception as e:
-        st.error(str(e))
-
-# =========================================
-# TOP EXPORT SECTION
-# =========================================
-if (
-    st.session_state.processing_done
-    and st.session_state.completed_batch_key
-    and st.session_state.report_batch_key != st.session_state.completed_batch_key
-):
-    summary_df = pd.DataFrame(st.session_state.summary_rows)
-    detail_df = pd.DataFrame(st.session_state.export_rows)
-    debug_df = pd.DataFrame(st.session_state.debug_rows)
-
-    output = BytesIO()
-
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        summary_df.to_excel(writer, sheet_name="Summary", index=False)
-        detail_df.to_excel(writer, sheet_name="Details", index=False)
-        debug_df.to_excel(writer, sheet_name="Debug", index=False)
-
-        wb = writer.book
-
-        green_fill = PatternFill(fill_type="solid", fgColor="C6EFCE")
-        yellow_fill = PatternFill(fill_type="solid", fgColor="FFEB9C")
-        red_fill = PatternFill(fill_type="solid", fgColor="FFC7CE")
-
-        for sheet_name in ["Summary", "Details"]:
-            ws = wb[sheet_name]
-
-            header_map = {}
-            for cell in ws[1]:
-                header_map[str(cell.value).strip()] = cell.column
-
-            for col_name, col_idx in header_map.items():
-                if "%" in col_name:
-                    for row_idx in range(2, ws.max_row + 1):
-                        cell = ws.cell(row=row_idx, column=col_idx)
-                        value = cell.value
-
-                        if value is None or value == "":
-                            continue
-
-                        try:
-                            score_val = float(value)
-                        except Exception:
-                            continue
-
-                        if score_val >= 80:
-                            cell.fill = green_fill
-                        elif score_val >= 50:
-                            cell.fill = yellow_fill
-                        else:
-                            cell.fill = red_fill
-
-            for col_cells in ws.columns:
-                max_length = 0
-                col_letter = col_cells[0].column_letter
-
-                for cell in col_cells:
-                    try:
-                        cell_len = len(str(cell.value or ""))
-                        if cell_len > max_length:
-                            max_length = cell_len
-                    except Exception:
-                        pass
-
-                adjusted_width = min(max(max_length + 2, 12), 60)
-                ws.column_dimensions[col_letter].width = adjusted_width
-
-    safe_retailer = re.sub(
-        r"[^a-z0-9]+",
-        "_",
-        str(selected_retailer or "retailer").lower().strip(),
-    ).strip("_") or "retailer"
-
-    st.session_state.report_bytes = output.getvalue()
-    st.session_state.report_filename = f"pdp_qa_results_{safe_retailer}_all_brands.xlsx"
-    st.session_state.report_batch_key = st.session_state.completed_batch_key
-    st.session_state.auto_download_done = False
-    st.rerun()
-        
-# =========================================
-# FULL VISUAL MODE
-# =========================================
-if (
-    retailer_df is not None
-    and st.session_state.processing_done
-    and st.session_state.completed_batch_key == current_batch_key
-):
-    try:
-        visual_df = retailer_df.copy()
-
-        selected_visual_brand = st.session_state.selected_brand_visual
-        if selected_visual_brand != "All" and "brand" in visual_df.columns:
-            visual_df = visual_df[visual_df["brand"].astype(str) == selected_visual_brand].copy()
-
-        if visual_df.empty:
-            st.warning("No rows found for the selected retailer / brand.")
-            st.stop()
-
-        invalid_retail_values = {"", "n/a", "#n/a", "na", "nan", "none"}
-        visual_df["retail_url_clean"] = (
-            visual_df["retail_url"]
-            .fillna("")
-            .astype(str)
-            .str.strip()
-            .str.lower()
-        )
-        hidden_count = int(visual_df["retail_url_clean"].isin(invalid_retail_values).sum())
-        visual_df = visual_df[
-            ~visual_df["retail_url_clean"].isin(invalid_retail_values)
-        ].copy()
-        visual_df.drop(columns=["retail_url_clean"], inplace=True, errors="ignore")
-
-        st.markdown(
-            "<style>.block-container{max-width:1700px;padding-top:1rem;padding-bottom:1rem;} img{max-width:100%;height:auto;}</style>",
-            unsafe_allow_html=True,
-        )
-        st.markdown("## 👁️ Full Visual QA Review")
-
-        if hidden_count > 0:
-            st.caption(
-                f"Excluded from Full Visual QA only: {hidden_count} item(s) with missing retailer URLs."
-            )
-        if visual_df.empty:
-            st.info(
-                "No visually reviewable items found. Products without retailer URLs are still included in the extract."
-            )
-            st.stop()
-
-        for _, row in visual_df.iterrows():
-            sku = row.get("sku", "Missing SKU")
-            retail_url = row.get("retail_url", "")
-            salsify_url = row.get("salsify_url", "")
-            retailer_name = row.get("retailer", "") or infer_retailer_name_from_url(retail_url)
-
-            current_rpc = row.get("retailer_rpc", "")
-            current_target_sku = get_target_sku_from_inputs(
-                retail_url=retail_url,
-                cvs_rpc=current_rpc,
-            )
-            
-            visual_payload = get_visual_row_payload(
-                salsify_url,
-                retailer_name,
-                retail_url,
-                current_target_sku,
-                sku=sku,
-            )
-            s_text = visual_payload["s_text"]
-            s_images = visual_payload["s_images"]
-            r_text = visual_payload["r_text"]
-            r_images = visual_payload["r_images"]
-
-            s_title = s_text.get("title") or ""
-            r_title = r_text.get("title") or ""
-            s_desc = s_text.get("description") or ""
-            r_desc = r_text.get("description") or ""
-            retailer_features = r_text.get("features") or []
-            feature_fields = ["feature1", "feature2", "feature3", "feature4", "feature5"]
-
-            title_score = keyword_score(s_title, r_title)
-            desc_score = description_similarity_score(s_desc, r_desc)
-
-            max_features = max(len(feature_fields), len(retailer_features))
-            feature_scores = []
-            feature_rows = []
-            for i in range(max_features):
-                s_val = s_text.get(feature_fields[i], "") if i < len(feature_fields) else ""
-                r_val = retailer_features[i] if i < len(retailer_features) else ""
-                row_score = keyword_score(s_val, r_val)
-                feature_scores.append(row_score)
-                feature_rows.append((s_val, r_val, row_score))
-
-            avg_feature_score = int(sum(feature_scores) / len(feature_scores)) if feature_scores else 0
-            copy_avg_score = int((title_score + desc_score + avg_feature_score) / 3)
-
-            s_images, r_images = trim_trailing_empty_image_slots(s_images, r_images)
-            max_images = min(max(len(s_images), len(r_images)), MAX_IMAGE_SLOTS_TO_COMPARE)
-            
-            # Compute image score before applying row filters.
-            avg_img_score, _image_position_scores = build_image_score_fields(
-                s_images,
-                r_images,
-                max_slots=MAX_IMAGE_SLOTS_TO_SCORE,
-            )
-            
-            overall_score = int((title_score + desc_score + avg_feature_score + avg_img_score) / 4)
-            
-            if show_only_issues and overall_score >= 80:
-                continue
-            if hide_good and overall_score >= 80:
-                continue
-            if show_below_90_only and overall_score >= 90:
-                continue
-
-            left, right = st.columns([2.72, 0.95], gap="small")
-        
-            with left:
-                raw_rpc = current_target_sku or current_rpc
-                clean_rpc = clean_item_number(raw_rpc)
-
-                salsify_header_html = column_header_link_html("Salsify", sku, salsify_url)
-                retailer_header_html = column_header_link_html(
-                    retailer_name,
-                    clean_rpc,
-                    retail_url,
-                )
-
-                rating_html = ""
-                if str(retailer_name or "").strip().lower() == "walgreens":
-                    rating_value = (r_text.get("rating", "") if isinstance(r_text, dict) else "") or row.get("rating", "") or "4.5"
-                    review_count_value = (r_text.get("review_count", "") if isinstance(r_text, dict) else "") or row.get("review_count", "") or "4201"
-                    rating_html = rating_stars_html(rating_value, review_count_value, font_size_px=18)
-
-                st.markdown(
-                    locked_visual_header_row_html(
-                        salsify_header_html,
-                        retailer_header_html,
-                        rating_html=rating_html,
-                        retailer_name=retailer_name,
-                    ),
-                    unsafe_allow_html=True,
-                )
-
-                st.markdown(
-                    avg_score_bar_html("Copy — Avg", copy_avg_score),
-                    unsafe_allow_html=True,
-                )
-
-                st.markdown(section_header_html("Title", title_score), unsafe_allow_html=True)
-                t1, t2 = st.columns(2, gap="small")
-                with t1:
-                    st.markdown(
-                        "<div style='margin-bottom:4px'>" + equal_height_block(s_title or "Missing", min_height=56) + "</div>",
-                        unsafe_allow_html=True,
-                    )
-                with t2:
-                    st.markdown(
-                        "<div style='margin-bottom:4px'>" + equal_height_block(r_title or "Missing", min_height=56) + "</div>",
-                        unsafe_allow_html=True,
-                    )
-
-                st.markdown(f"<div style='height:{TITLE_TO_DESCRIPTION_GAP_PX}px'></div>", unsafe_allow_html=True)
-
-                st.markdown(section_header_html("Description", desc_score), unsafe_allow_html=True)
-                d1, d2 = st.columns(2, gap="small")
-                with d1:
-                    st.markdown(
-                        "<div style='margin-bottom:4px'>" + equal_height_block(s_desc or "Missing", min_height=150) + "</div>",
-                        unsafe_allow_html=True,
-                    )
-                with d2:
-                    st.markdown(
-                        "<div style='margin-bottom:4px'>" + equal_height_block(r_desc or "Missing", min_height=150) + "</div>",
-                        unsafe_allow_html=True,
-                    )
-
-                st.markdown(f"<div style='height:{DESCRIPTION_TO_FEATURES_GAP_PX}px'></div>", unsafe_allow_html=True)
-
-                st.markdown(section_header_html("Features", avg_feature_score), unsafe_allow_html=True)
-                for s_val, r_val, row_score in feature_rows:
-                    f1, f2 = st.columns(2, gap="small")
-                    with f1:
-                        st.markdown(
-                            "<div style='margin-bottom:4px'>" + equal_feature_block(s_val or "Missing", min_height=40) + "</div>",
-                            unsafe_allow_html=True,
-                        )
-                    with f2:
-                        st.markdown(
-                            "<div style='margin-bottom:4px'>" + equal_feature_block(r_val or "Missing", min_height=40) + "</div>",
-                            unsafe_allow_html=True,
-                        )
-                    st.markdown(
-                        f"<div style='margin:0 0 {SECTION_VERTICAL_GAP}px 0; font-size:14px; font-weight:700;'>{score_text_html(row_score)}</div>",
-                        unsafe_allow_html=True,
-                    )
-
-            with right:
-                head_i1, head_i2 = st.columns(2, gap="small")
-                head_i1.markdown(image_header_html("Salsify"), unsafe_allow_html=True)
-                head_i2.markdown(
-                    f"<div style='margin-left:-42px;'>" + image_header_html(retailer_name) + "</div>",
-                    unsafe_allow_html=True,
-                )
-                st.markdown(
-                    avg_score_bar_html("Images — Avg", avg_img_score),
-                    unsafe_allow_html=True,
-                )
-
-                img_scores = []
-                max_images_to_score = min(max_images, MAX_IMAGE_SLOTS_TO_SCORE)
-                
-                for i in range(max_images):
-                    s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else ""
-                    r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else ""
-                
-                    slot_score = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
-                
-                    if i < max_images_to_score:
-                        img_scores.append(slot_score)
-                
-                    st.markdown(
-                        image_compare_row_html(s_url, r_url, slot_score),
-                        unsafe_allow_html=True,
-                    )
-                
-                avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
-                overall_score = int((title_score + desc_score + avg_feature_score + avg_img_score) / 4)
-
-            if show_html_debugger:
-                should_render_debugger = (not debug_only_sku) or (
-                    str(sku).strip() == str(debug_only_sku).strip()
-                )
-            
-                if should_render_debugger:
-                    debug_url = retail_url if debugger_source == "Retailer page" else salsify_url
-                    debug_retailer_name = retailer_name if debugger_source == "Retailer page" else "salsify"
-            
-                    debug_views = resolve_debug_views(
-                        debug_url,
-                        retailer_name=debug_retailer_name,
-                        use_manual_html_override=use_manual_html_override,
-                        manual_html_text=manual_html_text,
-                        manual_html_file=manual_html_file,
-                    )
-            
-                    with st.expander(f"🔎 HTML / DOM Debugger — {sku}", expanded=True):
-                        render_debugger_panel(
-                            debug_views,
-                            sku=sku,
-                            marker_start=debug_marker_start,
-                            marker_end=debug_marker_end,
-                            marker_target=debug_marker_target,
-                            use_manual_html_override=use_manual_html_override,
-                        )
-            st.divider()
-    except Exception as e:
-        st.error("🔥 CRITICAL APP ERROR")
-        st.text(str(e))
-        st.text(traceback.format_exc())
+        top_upload_col.warning(f"Could not read captured retailer HTML upload: {e}")
