@@ -120,22 +120,28 @@ BRIDGE_COMPONENT_HTML = r'''<!doctype html>
 ${p.url || ""}`);
         return;
       }
+      if (data && data.source === "pdp-extension" && data.type === "PDP_BATCH_CHUNK") {
+        const payload = data.payload || {};
+        showStatus(`Received chunk ${payload.chunk_index || 0} • ${payload.results ? payload.results.length : 0} page(s)`);
+        setComponentValue({ event_type: "chunk", ...payload });
+        return;
+      }
       if (data && data.source === "pdp-extension" && data.type === "PDP_BATCH_COMPLETE") {
         const payload = data.payload || {};
-        showStatus(`Finished ${payload.results ? payload.results.length : 0} pages.`);
-        setComponentValue(payload);
+        showStatus(`Finished ${payload.completed_count || 0} pages.`);
+        setComponentValue({ event_type: "complete", ...payload });
+        return;
+      }
+      if (data && data.source === "pdp-extension" && data.type === "PDP_BATCH_CANCELLED") {
+        const payload = data.payload || {};
+        showStatus(`Stopped. Received ${payload.completed_count || 0} pages so far.`);
+        setComponentValue({ event_type: "cancelled", ...payload });
         return;
       }
       if (data && data.source === "pdp-extension" && data.type === "PDP_BATCH_ERROR") {
         const payload = data.payload || {};
         showStatus(`Bridge error: ${payload.message || "Unknown error"}`);
-        setComponentValue({ bridge_error: payload.message || "Unknown error", results: [], retailer: currentArgs.retailer, batch_id: currentArgs.batch_id });
-        return;
-      }
-      if (data && data.source === "pdp-extension" && data.type === "PDP_BATCH_CANCELLED") {
-        const payload = data.payload || {};
-        showStatus(`Stopped. Returned ${payload.results ? payload.results.length : 0} pages so far.`);
-        setComponentValue(payload);
+        setComponentValue({ event_type: "error", bridge_error: payload.message || "Unknown error", results: [], retailer: currentArgs.retailer, batch_id: currentArgs.batch_id });
       }
     });
 
@@ -174,13 +180,26 @@ def get_extension_bridge_component():
 
 def extension_bridge(rows, retailer="", batch_id="", auto_show_status=False, key="pdp_extension_bridge"):
     component = get_extension_bridge_component()
-    return component(rows=rows or [], retailer=retailer or "", batch_id=batch_id or "", auto_show_status=bool(auto_show_status), default=None, key=key)
+    return component(
+        rows=rows or [],
+        retailer=retailer or "",
+        batch_id=batch_id or "",
+        auto_show_status=bool(auto_show_status),
+        default=None,
+        key=key,
+    )
 
 
 def get_session_bridged_html_map():
     if "bridged_html_by_url" not in st.session_state or not isinstance(st.session_state.get("bridged_html_by_url"), dict):
         st.session_state["bridged_html_by_url"] = {}
     return st.session_state["bridged_html_by_url"]
+
+
+def get_processed_bridge_chunks():
+    if "processed_bridge_chunks" not in st.session_state or not isinstance(st.session_state.get("processed_bridge_chunks"), set):
+        st.session_state["processed_bridge_chunks"] = set()
+    return st.session_state["processed_bridge_chunks"]
 
 
 def is_salsify_url(url):
@@ -193,7 +212,7 @@ def build_bridge_rows_from_retailer_df(retailer_df):
     seen = set()
     if retailer_df is None or getattr(retailer_df, "empty", True):
         return rows
-    # Safe speed patch: bridge only retailer URLs. Salsify is fetched directly in-app.
+    # Chunked speed patch: bridge only retailer URLs. Salsify is fetched directly in-app.
     for _, row in retailer_df.iterrows():
         sku = str(row.get("sku", "") or "").strip()
         url = str(row.get("retail_url", "") or "").strip()
@@ -6416,6 +6435,7 @@ if uploaded_file:
             st.session_state.bridge_batch_id = ""
             st.session_state.bridge_last_result_signature = ""
             st.session_state.bridge_ready_batch_key = ""
+            st.session_state.processed_bridge_chunks = set()
             st.cache_data.clear()
 
         master_df = read_uploaded_file_from_bytes(file_bytes, uploaded_file.name)
@@ -6480,6 +6500,7 @@ if uploaded_file:
                 st.session_state.bridge_batch_id = current_batch_key
                 st.session_state.bridge_last_result_signature = ""
                 st.session_state.bridge_ready_batch_key = ""
+                st.session_state.processed_bridge_chunks = set()
 
                 # Tell the local fetch server this is now the active retailer,
                 # so the extension's auto-pilot only works on this retailer's
@@ -6508,18 +6529,28 @@ if uploaded_file:
             )
 
             if bridge_payload and isinstance(bridge_payload, dict):
-                payload_signature = hashlib.md5(json.dumps(bridge_payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
-                if st.session_state.bridge_last_result_signature != payload_signature:
-                    bridged_map = get_session_bridged_html_map()
-                    for item in bridge_payload.get("results", []) or []:
-                        url = str(item.get("url", "") or "").strip()
-                        if not url:
-                            continue
-                        bridged_map[url] = str(item.get("html", "") or "")
-                    st.session_state.bridged_html_by_url = bridged_map
-                    st.session_state.bridge_last_result_signature = payload_signature
-                    if str(bridge_payload.get("batch_id", "") or "") == current_batch_key:
-                        st.session_state.bridge_ready_batch_key = current_batch_key
+                event_type = str(bridge_payload.get("event_type", "") or "").strip().lower()
+                if event_type == "chunk":
+                    chunk_id = str(bridge_payload.get("chunk_id", "") or "").strip()
+                    processed_chunks = get_processed_bridge_chunks()
+                    if chunk_id and chunk_id not in processed_chunks:
+                        bridged_map = get_session_bridged_html_map()
+                        for item in bridge_payload.get("results", []) or []:
+                            url = str(item.get("url", "") or "").strip()
+                            if not url:
+                                continue
+                            bridged_map[url] = str(item.get("html", "") or "")
+                        st.session_state.bridged_html_by_url = bridged_map
+                        processed_chunks.add(chunk_id)
+                        st.session_state.processed_bridge_chunks = processed_chunks
+                elif event_type in ["complete", "cancelled"]:
+                    payload_signature = hashlib.md5(json.dumps(bridge_payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+                    if st.session_state.bridge_last_result_signature != payload_signature:
+                        st.session_state.bridge_last_result_signature = payload_signature
+                        if str(bridge_payload.get("batch_id", "") or "") == current_batch_key:
+                            st.session_state.bridge_ready_batch_key = current_batch_key
+                elif event_type == "error":
+                    st.warning(f"Bridge error: {bridge_payload.get('bridge_error', 'Unknown error')}")
 
             bridged_map = get_session_bridged_html_map()
             bridged_ready_count = len([url for url in bridge_required_urls if url in bridged_map])
