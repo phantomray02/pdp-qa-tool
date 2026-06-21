@@ -76,7 +76,14 @@ WALGREENS_API_TIMEOUT = 10
 # Higher parallelism for faster batch processing without changing
 # copy/image extraction logic.
 BATCH_SIZE = 32
-MAX_WORKERS = 12
+# Lowered from 12: the extension fetches one page at a time no matter how
+# many threads ask for HTML concurrently (that one-at-a-time pacing is what
+# avoids looking like a bot). More threads here just means more of them
+# sit waiting in line, which adds polling overhead without speeding
+# anything up, and makes each row's worst-case wait longer since more rows
+# queue up ahead of it. If you later split fast (non-blocked) retailers
+# back to direct requests, MAX_WORKERS can go back up for those.
+MAX_WORKERS = 4
 UI_UPDATE_EVERY = 5
 
 # Faster image compare via tiny difference hash.
@@ -819,6 +826,79 @@ def clear_in_memory_caches():
 # =========================================
 # HTML FETCH
 # =========================================
+FETCH_SERVER_BASE = "http://localhost:8765"
+
+# Set once per batch (see the retailer-selectbox handling further down,
+# alongside the set-active-retailer server call) so fetch_html_via_extension
+# can tag each enqueued job with which retailer it belongs to, without
+# having to change the signature of get_html() or every parser function
+# that calls it.
+CURRENT_FETCH_RETAILER = ""
+
+# How long to wait for ONE page before giving up. This must be generous
+# enough to account for queue depth, not just one page's own fetch time.
+# The extension fetches one page at a time (by design, so it looks human),
+# roughly every 8-12 seconds including page-load + settle + delay. If
+# MAX_WORKERS threads all enqueue around the same time, a row near the
+# back of the queue can wait MAX_WORKERS x ~10s before its turn.
+EXTENSION_FETCH_TIMEOUT_SECONDS = 180
+EXTENSION_POLL_INTERVAL_SECONDS = 1.5
+
+
+def fetch_html_via_extension(url):
+    """
+    Asks the local fetch server (paired with the Raw HTML Fetcher Edge
+    extension) to retrieve a page's HTML, then polls until it's ready.
+
+    Requires:
+      1. html_fetch_server.py running on localhost:8765
+      2. The Raw HTML Fetcher extension loaded in Edge with auto-pilot
+         started (so it's actively polling and working the queue)
+
+    Server-side dedup means calling this multiple times for the same URL
+    (e.g. the same Salsify URL shared across many retailer rows, or two
+    threads racing on the same row) won't create duplicate fetch jobs.
+
+    Tags the job with CURRENT_FETCH_RETAILER so the server can scope the
+    extension's queue to one retailer at a time (see set-active-retailer).
+    """
+    if not url:
+        return ""
+
+    try:
+        enqueue_resp = requests.post(
+            f"{FETCH_SERVER_BASE}/enqueue",
+            json={"rows": [{"url": url, "label": "", "retailer": CURRENT_FETCH_RETAILER}]},
+            timeout=5,
+        )
+        enqueue_resp.raise_for_status()
+    except Exception:
+        # Fetch server not running / unreachable — fail soft.
+        return ""
+
+    deadline = time.monotonic() + EXTENSION_FETCH_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        try:
+            result_resp = requests.get(
+                f"{FETCH_SERVER_BASE}/html/by-url",
+                params={"url": url},
+                timeout=5,
+            )
+            if result_resp.status_code == 200:
+                data = result_resp.json()
+                if data.get("status") == "ok" and data.get("html"):
+                    return data["html"]
+                if data.get("status") == "error":
+                    return ""
+            # A 404 here just means "not fetched yet" — keep polling.
+        except Exception:
+            pass
+
+        time.sleep(EXTENSION_POLL_INTERVAL_SECONDS)
+
+    return ""  # timed out waiting for the extension to fetch it
+
+
 def get_html(url):
     global html_cache
 
@@ -832,18 +912,14 @@ def get_html(url):
     if cached:
         return cached
 
-    try:
-        session = get_session()
-        r = session.get(url, timeout=REQUEST_TIMEOUT)
-        if r.status_code == 200 and r.text:
-            html_cache[url] = r.text
-            while len(html_cache) > HTML_CACHE_MAX:
-                html_cache.pop(next(iter(html_cache)))
-            return r.text
-    except Exception:
-        pass
+    html_text = fetch_html_via_extension(url)
 
-    return ""
+    if html_text:
+        html_cache[url] = html_text
+        while len(html_cache) > HTML_CACHE_MAX:
+            html_cache.pop(next(iter(html_cache)))
+
+    return html_text
 
 def fetch_html_with_timeout(url, timeout_seconds):
     if not url:
@@ -864,6 +940,10 @@ def get_walgreens_html(url):
     """
     Walgreens-specific fetch path with a longer timeout and shared HTML cache.
     This avoids refetching the same PDP across batch processing + visual review.
+
+    Now routed through the extension (fetch_html_via_extension) instead of a
+    direct request, same as Salsify/CVS/Kroger/Sam's Club, since Walgreens
+    may also be subject to bot-detection blocking.
     """
     global html_cache
     if "html_cache" not in globals() or not isinstance(globals().get("html_cache"), dict):
@@ -878,7 +958,7 @@ def get_walgreens_html(url):
         html_cache[cache_key] = html_cache.pop(cache_key)
         return html_cache[cache_key]
 
-    html_text = fetch_html_with_timeout(url, WALGREENS_REQUEST_TIMEOUT)
+    html_text = fetch_html_via_extension(url)
     if html_text:
         html_cache[cache_key] = html_text
         while len(html_cache) > HTML_CACHE_MAX:
@@ -3852,7 +3932,7 @@ def get_walgreens_prod_desc_html(product_id):
     Lightweight Walgreens copy endpoint. Often more reliable than the full PDP HTML for prod... items.
     """
     url = get_walgreens_prod_desc_url(product_id)
-    return fetch_html_with_timeout(url, WALGREENS_REQUEST_TIMEOUT)
+    return fetch_html_via_extension(url)
     
 def get_walgreens_prod_desc_html(product_id):
     """
@@ -3860,7 +3940,7 @@ def get_walgreens_prod_desc_html(product_id):
     Often more reliable than the full PDP HTML for prod... items.
     """
     url = get_walgreens_prod_desc_url(product_id)
-    return fetch_html_with_timeout(url, WALGREENS_REQUEST_TIMEOUT)
+    return fetch_html_via_extension(url)
 
 
 def build_walgreens_title_from_url_slug(retail_url, description_html=""):
@@ -6187,6 +6267,22 @@ if uploaded_file:
                 st.session_state.selected_brand_visual = "All"
                 st.session_state.auto_download_done = False
                 st.session_state.report_batch_key = ""
+
+                # Tell the local fetch server this is now the active retailer,
+                # so the extension's auto-pilot only works on this retailer's
+                # queued pages — switching retailers cancels any not-yet-fetched
+                # jobs left over from the previous selection. Pages already
+                # fetched successfully (for this or any other retailer) are
+                # left alone, so switching back later won't refetch them.
+                CURRENT_FETCH_RETAILER = selected_retailer
+                try:
+                    requests.post(
+                        f"{FETCH_SERVER_BASE}/queue/set-active-retailer",
+                        json={"retailer": selected_retailer},
+                        timeout=5,
+                    )
+                except Exception:
+                    pass  # fetch server may not be running yet — non-fatal
 
     except EmptyDataError:
         st.error("🔥 CRITICAL APP ERROR")
