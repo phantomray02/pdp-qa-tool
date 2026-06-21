@@ -1,0 +1,127 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>PDP Extension Bridge</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: transparent;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      color: #111827;
+      font-size: 12px;
+    }
+    #root {
+      padding: 0;
+      margin: 0;
+    }
+    #status {
+      display: none;
+      padding: 8px 10px;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      background: #f9fafb;
+      margin: 0;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <div id="root">
+    <div id="status"></div>
+  </div>
+  <script>
+    const statusEl = document.getElementById('status');
+    let currentArgs = {
+      batch_id: '',
+      retailer: '',
+      rows: [],
+      auto_show_status: false,
+    };
+
+    function sendToStreamlit(type, value) {
+      window.parent.postMessage({
+        isStreamlitMessage: true,
+        type,
+        value,
+      }, '*');
+    }
+
+    function setFrameHeight(height) {
+      sendToStreamlit('streamlit:setFrameHeight', { height });
+    }
+
+    function setComponentValue(value) {
+      sendToStreamlit('streamlit:setComponentValue', value);
+    }
+
+    function showStatus(text) {
+      statusEl.style.display = currentArgs.auto_show_status ? 'block' : 'none';
+      statusEl.textContent = text || '';
+      setFrameHeight(currentArgs.auto_show_status ? 56 : 0);
+    }
+
+    function normalizeArgs(payload) {
+      const args = payload && payload.args ? payload.args : payload || {};
+      currentArgs = {
+        batch_id: String(args.batch_id || ''),
+        retailer: String(args.retailer || ''),
+        rows: Array.isArray(args.rows) ? args.rows : [],
+        auto_show_status: Boolean(args.auto_show_status),
+      };
+      showStatus(currentArgs.batch_id
+        ? `Bridge ready for ${currentArgs.retailer || 'Retailer'} (${currentArgs.rows.length} URLs). Click the extension once to start.`
+        : 'Bridge idle.');
+
+      // Make the batch visible to the content script running in this iframe.
+      window.__PDP_BRIDGE_CONFIG__ = currentArgs;
+      window.postMessage({
+        source: 'pdp-streamlit-bridge',
+        type: 'PDP_BRIDGE_CONFIG_READY',
+        payload: currentArgs,
+      }, '*');
+    }
+
+    // Streamlit plain component render channel.
+    window.addEventListener('message', (event) => {
+      const data = event.data || {};
+      if (data.type === 'streamlit:render') {
+        normalizeArgs(data);
+        return;
+      }
+      if (data.isStreamlitMessage && data.type === 'streamlit:render') {
+        normalizeArgs(data);
+        return;
+      }
+
+      // Extension -> iframe component result channel.
+      if (data && data.source === 'pdp-extension' && data.type === 'PDP_BATCH_PROGRESS') {
+        const p = data.payload || {};
+        showStatus(`Fetching ${p.index || 0}/${p.total || 0}\n${p.url || ''}`);
+        return;
+      }
+      if (data && data.source === 'pdp-extension' && data.type === 'PDP_BATCH_COMPLETE') {
+        const payload = data.payload || {};
+        showStatus(`Finished ${payload.results ? payload.results.length : 0} pages.`);
+        setComponentValue(payload);
+        return;
+      }
+      if (data && data.source === 'pdp-extension' && data.type === 'PDP_BATCH_ERROR') {
+        const payload = data.payload || {};
+        showStatus(`Bridge error: ${payload.message || 'Unknown error'}`);
+        setComponentValue({
+          bridge_error: payload.message || 'Unknown error',
+          results: [],
+          retailer: currentArgs.retailer,
+          batch_id: currentArgs.batch_id,
+        });
+      }
+    });
+
+    // Ask Streamlit to render us.
+    sendToStreamlit('streamlit:componentReady', { apiVersion: 1 });
+    setFrameHeight(0);
+  </script>
+</body>
+</html>
