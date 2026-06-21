@@ -57,12 +57,17 @@ BRIDGE_COMPONENT_HTML = r'''<!doctype html>
     const statusEl = document.getElementById("status");
     let currentArgs = { batch_id: "", retailer: "", rows: [], auto_show_status: false };
 
-    function sendToStreamlit(type, value) {
-      window.parent.postMessage({
+    function sendToStreamlit(type, payload) {
+      const message = {
         isStreamlitMessage: true,
         type,
-        value,
-      }, "*");
+      };
+      if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+        Object.assign(message, payload);
+      } else if (payload !== undefined) {
+        message.value = payload;
+      }
+      window.parent.postMessage(message, "*");
     }
 
     function setFrameHeight(height) {
@@ -70,7 +75,7 @@ BRIDGE_COMPONENT_HTML = r'''<!doctype html>
     }
 
     function setComponentValue(value) {
-      sendToStreamlit("streamlit:setComponentValue", value);
+      sendToStreamlit("streamlit:setComponentValue", { value });
     }
 
     function showStatus(text) {
@@ -88,11 +93,17 @@ BRIDGE_COMPONENT_HTML = r'''<!doctype html>
         auto_show_status: Boolean(args.auto_show_status),
       };
       window.__PDP_BRIDGE_CONFIG__ = currentArgs;
-      window.postMessage({
+      const bridgeConfigMessage = {
         source: "pdp-streamlit-bridge",
         type: "PDP_BRIDGE_CONFIG_READY",
         payload: currentArgs,
-      }, "*");
+      };
+      window.postMessage(bridgeConfigMessage, "*");
+      try {
+        if (window.top && window.top !== window) {
+          window.top.postMessage(bridgeConfigMessage, "*");
+        }
+      } catch (err) {}
       showStatus(
         currentArgs.batch_id
           ? `Bridge ready for ${currentArgs.retailer || "Retailer"} (${currentArgs.rows.length} URLs). Click the extension once to start.`
@@ -108,7 +119,8 @@ BRIDGE_COMPONENT_HTML = r'''<!doctype html>
       }
       if (data && data.source === "pdp-extension" && data.type === "PDP_BATCH_PROGRESS") {
         const p = data.payload || {};
-        showStatus(`Fetching ${p.index || 0}/${p.total || 0}\n${p.url || ""}`);
+        showStatus(`Fetching ${p.index || 0}/${p.total || 0}
+${p.url || ""}`);
         return;
       }
       if (data && data.source === "pdp-extension" && data.type === "PDP_BATCH_COMPLETE") {
