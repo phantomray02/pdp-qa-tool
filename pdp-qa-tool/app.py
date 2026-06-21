@@ -1066,6 +1066,17 @@ def get_html(url):
     if cached:
         return cached
 
+    # Check the extension bridge first: if this URL was already fetched via
+    # the Edge extension (real browser session, avoids bot-detection), use
+    # that HTML instead of making a direct request that may get blocked.
+    bridged_map = get_session_bridged_html_map()
+    bridged_html = bridged_map.get(url, "")
+    if bridged_html:
+        html_cache[url] = bridged_html
+        while len(html_cache) > HTML_CACHE_MAX:
+            html_cache.pop(next(iter(html_cache)))
+        return bridged_html
+
     try:
         session = get_session()
         r = session.get(url, timeout=REQUEST_TIMEOUT)
@@ -1098,6 +1109,9 @@ def get_walgreens_html(url):
     """
     Walgreens-specific fetch path with a longer timeout and shared HTML cache.
     This avoids refetching the same PDP across batch processing + visual review.
+
+    Checks the extension bridge map first (see get_html()) before falling
+    back to a direct request.
     """
     global html_cache
     if "html_cache" not in globals() or not isinstance(globals().get("html_cache"), dict):
@@ -1111,6 +1125,14 @@ def get_walgreens_html(url):
     if cache_key in html_cache:
         html_cache[cache_key] = html_cache.pop(cache_key)
         return html_cache[cache_key]
+
+    bridged_map = get_session_bridged_html_map()
+    bridged_html = bridged_map.get(url, "")
+    if bridged_html:
+        html_cache[cache_key] = bridged_html
+        while len(html_cache) > HTML_CACHE_MAX:
+            html_cache.pop(next(iter(html_cache)))
+        return bridged_html
 
     html_text = fetch_html_with_timeout(url, WALGREENS_REQUEST_TIMEOUT)
     if html_text:
@@ -6322,7 +6344,7 @@ top_upload_col, top_download_col = st.columns([2.4, 1.1], gap="small")
 
 with top_upload_col:
     uploaded_file = st.file_uploader("Upload Master File", type=["xlsx", "csv"], key="master_upload")
-    captured_html_workbook = st.file_uploader("Upload Captured Retailer HTML Workbook (optional)", type=["xlsx", "csv"], key="captured_html_workbook")
+    captured_html_workbook = st.file_uploader("Upload Captured Retailer HTML Workbook / TXT (optional)", type=["xlsx", "csv", "txt"], key="captured_html_workbook")
 
 with top_download_col:
     st.markdown("<div style='height: 30px;'></div>", unsafe_allow_html=True)
@@ -6350,6 +6372,100 @@ bridge_required_urls = set()
 # HOTFIX FOR NameError: get_uploaded_raw_html_map
 # Paste this block ABOVE the line that starts with:
 # captured_html_loaded_count = 0
+
+
+
+def parse_raw_html_text_capture(text_value: str) -> pd.DataFrame:
+    records = []
+    text_value = str(text_value or "")
+    chunks = text_value.split("=== RECORD START ===")
+    for chunk in chunks:
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if "=== RECORD END ===" in chunk:
+            chunk = chunk.split("=== RECORD END ===", 1)[0].strip()
+        if "RAW_HTML_START" not in chunk or "RAW_HTML_END" not in chunk:
+            continue
+        header_part, remainder = chunk.split("RAW_HTML_START", 1)
+        raw_html, _ = remainder.split("RAW_HTML_END", 1)
+        row = {
+            "url": "",
+            "raw_html": str(raw_html or "").strip(),
+            "label": "",
+            "retailer": "",
+            "title": "",
+            "status": "ok",
+            "error": "",
+            "batch_id": "",
+            "fetched_at": "",
+            "rpc": "",
+        }
+        for line in header_part.splitlines():
+            line = str(line or "").strip()
+            if not line or ":" not in line:
+                continue
+            key, value = line.split(":", 1)
+            key = key.strip().lower()
+            value = value.strip()
+            if key == "retailer":
+                row["retailer"] = value
+            elif key == "rpc":
+                row["rpc"] = value
+            elif key == "sku":
+                row["label"] = value
+            elif key == "retailer_url":
+                row["url"] = value
+            elif key == "title":
+                row["title"] = value
+            elif key == "batch_id":
+                row["batch_id"] = value
+            elif key == "fetched_at":
+                row["fetched_at"] = value
+        if row["url"] and row["raw_html"]:
+            records.append(row)
+    return pd.DataFrame(records)
+
+
+def load_uploaded_raw_html_capture(upload_obj):
+    if upload_obj is None:
+        return 0, ""
+    try:
+        raw_bytes = upload_obj.getvalue()
+    except Exception:
+        return 0, ""
+    upload_hash = hashlib.md5(raw_bytes).hexdigest()
+    upload_name = str(getattr(upload_obj, "name", "") or "")
+    if (
+        st.session_state.get("raw_html_upload_hash", "") == upload_hash
+        and st.session_state.get("raw_html_upload_filename", "") == upload_name
+        and isinstance(st.session_state.get("uploaded_raw_html_by_url"), dict)
+        and st.session_state.get("uploaded_raw_html_by_url")
+    ):
+        return len(st.session_state.get("uploaded_raw_html_by_url", {})), upload_name
+
+    ext = Path(upload_name).suffix.lower()
+    if ext == ".txt":
+        decoded_text = raw_bytes.decode("utf-8", errors="replace")
+        uploaded_capture_df = parse_raw_html_text_capture(decoded_text)
+    else:
+        uploaded_capture_df = read_uploaded_file_from_bytes(raw_bytes, upload_name)
+
+    uploaded_capture_df = normalize_raw_html_capture_df(uploaded_capture_df)
+    uploaded_map = {}
+    for _, row in uploaded_capture_df.iterrows():
+        url = str(row.get("url", "") or "").strip()
+        raw_html = str(row.get("raw_html", "") or "")
+        if url and raw_html:
+            uploaded_map[url] = raw_html
+
+    st.session_state["uploaded_raw_html_by_url"] = dict(uploaded_map)
+    bridge_map = get_session_bridged_html_map()
+    bridge_map.clear()
+    bridge_map.update(uploaded_map)
+    st.session_state["raw_html_upload_hash"] = upload_hash
+    st.session_state["raw_html_upload_filename"] = upload_name
+    return len(uploaded_map), upload_name
 
 
 def normalize_raw_html_capture_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -6397,6 +6513,18 @@ def get_uploaded_raw_html_map():
     if "uploaded_raw_html_by_url" not in st.session_state or not isinstance(st.session_state.get("uploaded_raw_html_by_url"), dict):
         st.session_state["uploaded_raw_html_by_url"] = {}
     return st.session_state["uploaded_raw_html_by_url"]
+
+if captured_html_workbook is not None:
+    try:
+        captured_html_loaded_count, captured_html_upload_name = load_uploaded_raw_html_capture(captured_html_workbook)
+        if captured_html_loaded_count:
+            with top_upload_col:
+                st.caption(
+                    f"Captured retailer HTML loaded: {captured_html_loaded_count} URL(s) from {captured_html_upload_name}."
+                )
+    except Exception as capture_upload_error:
+        with top_upload_col:
+            st.warning(f"Could not read captured retailer HTML upload: {capture_upload_error}")
 
 if uploaded_file:
     try:
@@ -6536,7 +6664,7 @@ if uploaded_file:
                 if BRIDGE_EXTENSION_MODE:
                     st.caption(
                         f"Bridge retailer HTML ready for this batch: {bridged_ready_count}/{len(bridge_required_urls)} URLs. "
-                        f"Salsify now loads directly in-app for speed. After choosing the retailer, click the Edge extension once to fetch the retailer batch, or upload a captured raw HTML workbook instead."
+                        f"Salsify now loads directly in-app for speed. After choosing the retailer, click the Edge extension once to fetch the retailer batch, or upload a captured raw HTML workbook / TXT instead."
                     )
 
     except EmptyDataError:
@@ -6676,13 +6804,12 @@ if retailer_df is not None and file_ready_for_batch:
 
             if not uploaded_urls:
                 st.info(
-                    "Step 2: Run the Edge extension, click Download Excel CSV, then upload that captured HTML file above. "
-                    "The app will not continue into Visual QA for this retailer until the captured raw HTML workbook is uploaded."
+                    "Optional step: Run the Edge extension and upload the captured HTML file above as CSV, XLSX, or TXT. "
+                    "The app can continue without it, but uploaded raw HTML is preferred for Kroger and Sam's Club."
                 )
                 st.caption(
-                    f"Waiting for uploaded captured retailer HTML workbook for {len(bridge_required_urls)} retailer URL(s)."
+                    f"No uploaded captured retailer HTML detected yet for {len(bridge_required_urls)} retailer URL(s). Continuing with any live/bridged HTML that is available."
                 )
-                st.stop()
 
             if missing_uploaded_urls:
                 st.warning(
