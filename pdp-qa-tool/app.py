@@ -263,7 +263,7 @@ def get_salsify_html_direct(url):
 # APP SETUP
 # =========================================
 st.set_page_config(layout="wide")
-st.title("PDP QA Tool 🚀")
+st.title("Ians Brand Compliance Report 🚀")
 
 st.markdown(
     "<style>"
