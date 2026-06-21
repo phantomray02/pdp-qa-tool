@@ -1,31 +1,32 @@
 """
 Local raw-HTML fetch server, paired with the "Raw HTML Fetcher" Edge extension.
 
-This replaces a paid HTML-extraction API (e.g. Apify's dataguru/html-extractor)
-for sites that block direct HTTP requests. The extension fetches pages inside
-your real, logged-in browser session (so it isn't blocked the way a bot/script
-would be); this server just queues URLs and stores whatever HTML comes back.
+This is the localhost relay used by the legacy extension flow:
+- Streamlit app -> enqueue URLs here.
+- Edge extension -> claims jobs, loads pages in the real browser session,
+  sends raw HTML back here.
+- Streamlit app -> reads HTML back by URL.
 
-It does NOT parse anything — that's left to your existing Streamlit app's
-parsing logic. This server's job is purely: take a list of URLs in, hand raw
-HTML out, in a shape your app can consume.
+Important:
+- This file is for the LOCAL relay flow only.
+- Do not deploy this as your Streamlit Cloud app entrypoint.
+- Your hosted Streamlit app should stay a Streamlit app, not a Flask app.
 
-Run:
-    pip install flask requests
+Run locally:
+    pip install flask requests flask-cors
     python html_fetch_server.py
-
-Two ways your existing Streamlit app can get the HTML:
-    1. Call GET /html/<job_id> or GET /html/by-url?url=... once status is "ok".
-    2. Or just read straight from fetched_pages.db (SQLite) yourself —
-       table `pages`, column `html` holds the full page source.
 """
 
+from __future__ import annotations
+
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Dict, Iterable, Optional
 from urllib.parse import unquote
 
-from flask import Flask, request, jsonify
+from flask import Flask, jsonify, request
 
 try:
     from flask_cors import CORS
@@ -33,9 +34,9 @@ try:
 except ImportError:
     HAS_CORS = False
 
-DB_PATH = Path(__file__).parent / "fetched_pages.db"
-
+DB_PATH = Path(__file__).resolve().parent / "fetched_pages.db"
 app = Flask(__name__)
+
 if HAS_CORS:
     CORS(app)
 else:
@@ -47,299 +48,396 @@ else:
         return response
 
 
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS jobs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            url TEXT NOT NULL,
-            label TEXT,                      -- optional: your SKU or any tag you want carried through
-            retailer TEXT,                   -- which retailer this URL belongs to (CVS, Walgreens, etc.)
-            status TEXT DEFAULT 'queued',    -- queued, in_progress, done, failed
-            created_at TEXT
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def db_connect() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db() -> None:
+    with closing(db_connect()) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                url TEXT NOT NULL,
+                label TEXT,
+                retailer TEXT,
+                status TEXT DEFAULT 'queued',
+                created_at TEXT,
+                started_at TEXT,
+                finished_at TEXT
+            )
+            """
         )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS pages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            job_id INTEGER,
-            url TEXT NOT NULL,
-            label TEXT,
-            retailer TEXT,
-            html TEXT,
-            status TEXT,           -- ok, error
-            error_detail TEXT,
-            html_length INTEGER,
-            fetched_at TEXT,
-            received_at TEXT
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS pages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id INTEGER,
+                url TEXT NOT NULL,
+                label TEXT,
+                retailer TEXT,
+                html TEXT,
+                status TEXT,
+                error_detail TEXT,
+                html_length INTEGER,
+                fetched_at TEXT,
+                received_at TEXT
+            )
+            """
         )
-    """)
-    conn.commit()
-
-    # Lightweight migration for existing databases created before the
-    # `retailer` column existed, so upgrading doesn't require deleting
-    # fetched_pages.db and losing prior history.
-    for table in ("jobs", "pages"):
-        cols = [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]
-        if "retailer" not in cols:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN retailer TEXT")
-    conn.commit()
-    conn.close()
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_url_status ON jobs(url, status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pages_url ON pages(url)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pages_job_id ON pages(job_id)")
+        conn.commit()
 
 
-# ---------------------------------------------------------------------------
-# Enqueue / status (your Streamlit app -> here)
-# ---------------------------------------------------------------------------
+def existing_success_page(conn: sqlite3.Connection, url: str) -> Optional[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT id, url, retailer, fetched_at
+        FROM pages
+        WHERE url=? AND status='ok'
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (url,),
+    ).fetchone()
+
+
+def existing_open_job(conn: sqlite3.Connection, url: str) -> Optional[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT id, url, retailer, status
+        FROM jobs
+        WHERE url=? AND status IN ('queued', 'in_progress')
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (url,),
+    ).fetchone()
+
+
+def normalize_rows(rows: Iterable[Dict[str, Any]]) -> list[dict[str, str]]:
+    normalized = []
+    for row in rows or []:
+        url = str((row or {}).get("url", "") or "").strip()
+        if not url:
+            continue
+        normalized.append(
+            {
+                "url": url,
+                "label": str((row or {}).get("label", "") or "").strip(),
+                "retailer": str((row or {}).get("retailer", "") or "").strip(),
+            }
+        )
+    return normalized
+
 
 @app.route("/enqueue", methods=["POST"])
 def enqueue():
-    """Body: {"rows": [{"url": "...", "label": "optional-sku-or-tag", "retailer": "CVS"}, ...]}
-
-    Dedupes against URLs that are already queued/in_progress, or already
-    have a successful (status='ok') result in `pages` — so calling this
-    repeatedly for the same URL (e.g. a Salsify URL shared by many rows,
-    or concurrent threads racing each other) doesn't pile up duplicate
-    jobs for the extension to redo.
-    """
-    rows = request.get_json(force=True).get("rows", [])
+    """Body: {"rows": [{"url": "...", "label": "optional", "retailer": "CVS"}, ...]}"""
+    data = request.get_json(force=True) or {}
+    rows = normalize_rows(data.get("rows", []))
     if not rows:
-        return jsonify({"error": "No rows provided"}), 400
+        return jsonify({"error": "Missing or empty rows"}), 400
 
-    conn = sqlite3.connect(DB_PATH)
-    now = datetime.now(timezone.utc).isoformat()
-    inserted = 0
-    skipped = 0
+    created = 0
+    skipped_existing_job = 0
+    skipped_existing_page = 0
+    created_job_ids: list[int] = []
 
-    for row in rows:
-        url = (row.get("url") or "").strip()
-        if not url:
-            continue
+    with closing(db_connect()) as conn:
+        for row in rows:
+            url = row["url"]
+            label = row["label"]
+            retailer = row["retailer"]
 
-        already_pending = conn.execute(
-            "SELECT 1 FROM jobs WHERE url=? AND status IN ('queued', 'in_progress') LIMIT 1",
-            (url,),
-        ).fetchone()
-        already_succeeded = conn.execute(
-            "SELECT 1 FROM pages WHERE url=? AND status='ok' LIMIT 1",
-            (url,),
-        ).fetchone()
+            if existing_open_job(conn, url):
+                skipped_existing_job += 1
+                continue
+            if existing_success_page(conn, url):
+                skipped_existing_page += 1
+                continue
 
-        if already_pending or already_succeeded:
-            skipped += 1
-            continue
+            cur = conn.execute(
+                """
+                INSERT INTO jobs (url, label, retailer, status, created_at)
+                VALUES (?, ?, ?, 'queued', ?)
+                """,
+                (url, label, retailer, utc_now_iso()),
+            )
+            created += 1
+            created_job_ids.append(int(cur.lastrowid))
 
-        conn.execute(
-            "INSERT INTO jobs (url, label, retailer, status, created_at) VALUES (?, ?, ?, 'queued', ?)",
-            (url, row.get("label", ""), row.get("retailer", ""), now),
-        )
-        inserted += 1
+        conn.commit()
 
-    conn.commit()
-    count = conn.execute("SELECT COUNT(*) FROM jobs WHERE status='queued'").fetchone()[0]
-    conn.close()
-    return jsonify({"status": "ok", "queued_total": count, "inserted": inserted, "skipped_duplicates": skipped}), 200
+    return jsonify(
+        {
+            "status": "ok",
+            "created": created,
+            "skipped_existing_job": skipped_existing_job,
+            "skipped_existing_page": skipped_existing_page,
+            "job_ids": created_job_ids,
+        }
+    ), 200
 
 
 @app.route("/queue/set-active-retailer", methods=["POST"])
 def set_active_retailer():
-    """
-    Body: {"retailer": "CVS"}
-
-    Call this BEFORE enqueueing a new retailer's batch. It cancels any
-    queued/in_progress jobs for OTHER retailers so the extension's
-    auto-pilot only works on the currently selected retailer — this is
-    what makes "select one retailer at a time" actually scoped end to end,
-    not just in the Streamlit UI's filtering.
-
-    Jobs already completed (done/failed) for other retailers are left
-    alone — only pending work for other retailers is cancelled, so nothing
-    already-fetched gets lost, and switching back to a previous retailer
-    later won't need to refetch pages that already succeeded.
-    """
-    retailer = (request.get_json(force=True).get("retailer") or "").strip()
+    """Body: {"retailer": "CVS"}. Cancels queued/in-progress jobs from other retailers."""
+    data = request.get_json(force=True) or {}
+    retailer = str(data.get("retailer", "") or "").strip()
     if not retailer:
         return jsonify({"error": "Missing retailer"}), 400
 
-    conn = sqlite3.connect(DB_PATH)
-    cancelled = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE retailer != ? AND status IN ('queued', 'in_progress')",
-        (retailer,),
-    ).fetchone()[0]
-    conn.execute(
-        "DELETE FROM jobs WHERE retailer != ? AND status IN ('queued', 'in_progress')",
-        (retailer,),
-    )
-    conn.commit()
-    conn.close()
-    return jsonify({"status": "ok", "active_retailer": retailer, "cancelled_other_retailer_jobs": cancelled}), 200
+    with closing(db_connect()) as conn:
+        cur = conn.execute(
+            """
+            DELETE FROM jobs
+            WHERE status IN ('queued', 'in_progress')
+              AND COALESCE(retailer, '') != ?
+            """,
+            (retailer,),
+        )
+        conn.commit()
+        deleted = cur.rowcount if cur.rowcount is not None else 0
+
+    return jsonify({"status": "ok", "active_retailer": retailer, "cancelled": deleted}), 200
 
 
 @app.route("/refetch", methods=["POST"])
 def refetch():
-    """
-    Force re-queue a URL even if a successful page already exists —
-    use this for a manual retry (e.g. after fixing a selector or if a
-    page was fetched while logged out). Body: {"url": "...", "retailer": "CVS"}
-    """
-    data = request.get_json(force=True)
-    url = (data.get("url") or "").strip()
+    """Body: {"url": "...", "retailer": "CVS", "label": "optional"}"""
+    data = request.get_json(force=True) or {}
+    url = str(data.get("url", "") or "").strip()
+    retailer = str(data.get("retailer", "") or "").strip()
+    label = str(data.get("label", "") or "").strip()
     if not url:
         return jsonify({"error": "Missing url"}), 400
 
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute(
-        "INSERT INTO jobs (url, label, retailer, status, created_at) VALUES (?, '', ?, 'queued', ?)",
-        (url, data.get("retailer", ""), datetime.now(timezone.utc).isoformat()),
-    )
-    conn.commit()
-    conn.close()
-    return jsonify({"status": "ok"}), 200
+    with closing(db_connect()) as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO jobs (url, label, retailer, status, created_at)
+            VALUES (?, ?, ?, 'queued', ?)
+            """,
+            (url, label, retailer, utc_now_iso()),
+        )
+        conn.commit()
+        job_id = int(cur.lastrowid)
+
+    return jsonify({"status": "ok", "job_id": job_id}), 200
 
 
 @app.route("/queue/status", methods=["GET"])
 def queue_status():
-    """
-    Optional ?retailer=CVS query param scopes counts to one retailer.
-    Without it, returns overall counts plus a by_retailer breakdown so the
-    dashboard can show "what's actually queued right now" at a glance.
-    """
-    retailer_filter = (request.args.get("retailer") or "").strip()
+    retailer_filter = str(request.args.get("retailer", "") or "").strip()
 
-    conn = sqlite3.connect(DB_PATH)
-    counts = {}
-    for status in ("queued", "in_progress", "done", "failed"):
-        if retailer_filter:
-            counts[status] = conn.execute(
-                "SELECT COUNT(*) FROM jobs WHERE status=? AND retailer=?", (status, retailer_filter)
-            ).fetchone()[0]
-        else:
-            counts[status] = conn.execute("SELECT COUNT(*) FROM jobs WHERE status=?", (status,)).fetchone()[0]
+    base_sql = "SELECT status, COUNT(*) AS cnt FROM jobs"
+    params: tuple[Any, ...] = ()
+    if retailer_filter:
+        base_sql += " WHERE COALESCE(retailer, '') = ?"
+        params = (retailer_filter,)
+    base_sql += " GROUP BY status"
 
-    by_retailer = {}
-    rows = conn.execute(
-        "SELECT COALESCE(retailer, ''), status, COUNT(*) FROM jobs GROUP BY retailer, status"
-    ).fetchall()
-    for retailer, status, count in rows:
-        by_retailer.setdefault(retailer or "(unspecified)", {}).setdefault(status, 0)
-        by_retailer[retailer or "(unspecified)"][status] = count
+    with closing(db_connect()) as conn:
+        rows = conn.execute(base_sql, params).fetchall()
+        counts = {"queued": 0, "in_progress": 0, "done": 0, "failed": 0}
+        for row in rows:
+            counts[str(row["status"])] = int(row["cnt"])
 
-    conn.close()
-    counts["by_retailer"] = by_retailer
-    return jsonify(counts), 200
+        by_retailer_rows = conn.execute(
+            """
+            SELECT COALESCE(retailer, '') AS retailer, status, COUNT(*) AS cnt
+            FROM jobs
+            GROUP BY COALESCE(retailer, ''), status
+            ORDER BY COALESCE(retailer, ''), status
+            """
+        ).fetchall()
+
+    by_retailer: dict[str, dict[str, int]] = {}
+    for row in by_retailer_rows:
+        retailer = str(row["retailer"])
+        status = str(row["status"])
+        cnt = int(row["cnt"])
+        if retailer not in by_retailer:
+            by_retailer[retailer] = {"queued": 0, "in_progress": 0, "done": 0, "failed": 0}
+        by_retailer[retailer][status] = cnt
+
+    return jsonify({"status": "ok", **counts, "by_retailer": by_retailer}), 200
 
 
 @app.route("/queue/clear", methods=["POST"])
 def queue_clear():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("DELETE FROM jobs WHERE status IN ('queued', 'in_progress')")
-    conn.commit()
-    conn.close()
-    return jsonify({"status": "ok"}), 200
+    with closing(db_connect()) as conn:
+        cur = conn.execute("DELETE FROM jobs WHERE status IN ('queued', 'in_progress')")
+        conn.commit()
+        deleted = cur.rowcount if cur.rowcount is not None else 0
+    return jsonify({"status": "ok", "cleared": deleted}), 200
 
-
-# ---------------------------------------------------------------------------
-# Worker endpoints (extension <-> here)
-# ---------------------------------------------------------------------------
 
 @app.route("/job/next", methods=["GET"])
 def next_job():
-    conn = sqlite3.connect(DB_PATH)
-    row = conn.execute(
-        "SELECT id, url, label, retailer FROM jobs WHERE status='queued' ORDER BY id ASC LIMIT 1"
-    ).fetchone()
-    if not row:
-        conn.close()
-        return jsonify({"job": None}), 200
+    with closing(db_connect()) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            """
+            SELECT id, url, label, retailer
+            FROM jobs
+            WHERE status='queued'
+            ORDER BY id ASC
+            LIMIT 1
+            """
+        ).fetchone()
+        if not row:
+            conn.commit()
+            return jsonify({"job": None}), 200
 
-    job_id = row[0]
-    conn.execute("UPDATE jobs SET status='in_progress' WHERE id=?", (job_id,))
-    conn.commit()
-    conn.close()
-    return jsonify({"job": {"id": job_id, "url": row[1], "label": row[2], "retailer": row[3]}}), 200
+        conn.execute(
+            "UPDATE jobs SET status='in_progress', started_at=? WHERE id=?",
+            (utc_now_iso(), int(row["id"])),
+        )
+        conn.commit()
+
+    return jsonify(
+        {
+            "job": {
+                "id": int(row["id"]),
+                "url": str(row["url"]),
+                "label": str(row["label"] or ""),
+                "retailer": str(row["retailer"] or ""),
+            }
+        }
+    ), 200
 
 
 @app.route("/job/complete", methods=["POST"])
 def complete_job():
-    data = request.get_json(force=True)
+    data = request.get_json(force=True) or {}
     job_id = data.get("job_id")
     if not job_id:
         return jsonify({"error": "Missing job_id"}), 400
 
-    conn = sqlite3.connect(DB_PATH)
-    job = conn.execute("SELECT url, label, retailer FROM jobs WHERE id=?", (job_id,)).fetchone()
-    if not job:
-        conn.close()
-        return jsonify({"error": "Unknown job_id"}), 404
+    html_text = str(data.get("html", "") or "")
+    status = str(data.get("status", "ok") or "ok").strip().lower()
+    if status not in {"ok", "error"}:
+        status = "ok" if html_text else "error"
+    error_detail = str(data.get("error_detail", "") or "").strip()
+    fetched_at = str(data.get("fetched_at", "") or "").strip() or utc_now_iso()
 
-    url, label, retailer = job
-    status = data.get("status", "error")
-    html = data.get("html", "")
+    with closing(db_connect()) as conn:
+        job = conn.execute(
+            "SELECT id, url, label, retailer FROM jobs WHERE id=? LIMIT 1",
+            (int(job_id),),
+        ).fetchone()
+        if not job:
+            return jsonify({"error": "Unknown job_id"}), 404
 
-    conn.execute(
-        """
-        INSERT INTO pages (job_id, url, label, retailer, html, status, error_detail, html_length, fetched_at, received_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            job_id, data.get("url", url), label, retailer, html, status,
-            data.get("errorDetail", ""), len(html), data.get("fetchedAt", ""),
-            datetime.now(timezone.utc).isoformat(),
-        ),
-    )
-    conn.execute("UPDATE jobs SET status=? WHERE id=?", ("done" if status == "ok" else "failed", job_id))
-    conn.commit()
-    conn.close()
+        conn.execute(
+            """
+            INSERT INTO pages (job_id, url, label, retailer, html, status, error_detail, html_length, fetched_at, received_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(job["id"]),
+                str(job["url"]),
+                str(job["label"] or ""),
+                str(job["retailer"] or ""),
+                html_text,
+                status,
+                error_detail,
+                len(html_text),
+                fetched_at,
+                utc_now_iso(),
+            ),
+        )
+        conn.execute(
+            "UPDATE jobs SET status=?, finished_at=? WHERE id=?",
+            ("done" if status == "ok" else "failed", utc_now_iso(), int(job["id"])),
+        )
+        conn.commit()
 
-    print(f"Job {job_id} [{status}] ({retailer or '?'}): {url} ({len(html):,} chars)")
     return jsonify({"status": "ok"}), 200
 
 
-# ---------------------------------------------------------------------------
-# Read endpoints (your Streamlit app <- here)
-# ---------------------------------------------------------------------------
-
 @app.route("/html/<int:job_id>", methods=["GET"])
-def get_html_by_job(job_id):
-    conn = sqlite3.connect(DB_PATH)
-    row = conn.execute(
-        "SELECT url, label, html, status, error_detail, fetched_at FROM pages WHERE job_id=? ORDER BY id DESC LIMIT 1",
-        (job_id,),
-    ).fetchone()
-    conn.close()
+def get_html_by_job(job_id: int):
+    with closing(db_connect()) as conn:
+        row = conn.execute(
+            """
+            SELECT url, label, retailer, html, status, error_detail, fetched_at
+            FROM pages
+            WHERE job_id=?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (job_id,),
+        ).fetchone()
+
     if not row:
         return jsonify({"error": "No page found for that job_id"}), 404
-    return jsonify({
-        "url": row[0], "label": row[1], "html": row[2],
-        "status": row[3], "error_detail": row[4], "fetched_at": row[5],
-    }), 200
+
+    return jsonify(
+        {
+            "url": str(row["url"]),
+            "label": str(row["label"] or ""),
+            "retailer": str(row["retailer"] or ""),
+            "html": str(row["html"] or ""),
+            "status": str(row["status"] or ""),
+            "error_detail": str(row["error_detail"] or ""),
+            "fetched_at": str(row["fetched_at"] or ""),
+        }
+    ), 200
 
 
 @app.route("/html/by-url", methods=["GET"])
 def get_html_by_url():
-    url = unquote(request.args.get("url", ""))
+    url = unquote(str(request.args.get("url", "") or "")).strip()
     if not url:
         return jsonify({"error": "Missing url query param"}), 400
-    conn = sqlite3.connect(DB_PATH)
-    row = conn.execute(
-        "SELECT url, label, html, status, error_detail, fetched_at FROM pages WHERE url=? ORDER BY id DESC LIMIT 1",
-        (url,),
-    ).fetchone()
-    conn.close()
+
+    with closing(db_connect()) as conn:
+        row = conn.execute(
+            """
+            SELECT url, label, retailer, html, status, error_detail, fetched_at
+            FROM pages
+            WHERE url=?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (url,),
+        ).fetchone()
+
     if not row:
         return jsonify({"error": "No page found for that url"}), 404
-    return jsonify({
-        "url": row[0], "label": row[1], "html": row[2],
-        "status": row[3], "error_detail": row[4], "fetched_at": row[5],
-    }), 200
+
+    return jsonify(
+        {
+            "url": str(row["url"]),
+            "label": str(row["label"] or ""),
+            "retailer": str(row["retailer"] or ""),
+            "html": str(row["html"] or ""),
+            "status": str(row["status"] or ""),
+            "error_detail": str(row["error_detail"] or ""),
+            "fetched_at": str(row["fetched_at"] or ""),
+        }
+    ), 200
 
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "running"}), 200
+    return jsonify({"status": "running", "db_path": str(DB_PATH)}), 200
 
 
 if __name__ == "__main__":
     init_db()
-    print(f"Storing fetched pages in {DB_PATH}")
+    print(f"Storing fetched pages in: {DB_PATH}")
     print("Listening on http://localhost:8765 ... leave this running.")
     app.run(host="localhost", port=8765, debug=False)
