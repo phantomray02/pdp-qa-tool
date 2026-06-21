@@ -67,13 +67,8 @@ BRIDGE_COMPONENT_HTML = r'''<!doctype html>
       window.parent.postMessage(message, "*");
     }
 
-    function setFrameHeight(height) {
-      sendToStreamlit("streamlit:setFrameHeight", { height });
-    }
-
-    function setComponentValue(value) {
-      sendToStreamlit("streamlit:setComponentValue", { value });
-    }
+    function setFrameHeight(height) { sendToStreamlit("streamlit:setFrameHeight", { height }); }
+    function setComponentValue(value) { sendToStreamlit("streamlit:setComponentValue", { value }); }
 
     function showStatus(text) {
       statusEl.style.display = currentArgs.auto_show_status ? "block" : "none";
@@ -97,15 +92,9 @@ BRIDGE_COMPONENT_HTML = r'''<!doctype html>
       };
       window.postMessage(bridgeConfigMessage, "*");
       try {
-        if (window.top && window.top !== window) {
-          window.top.postMessage(bridgeConfigMessage, "*");
-        }
+        if (window.top && window.top !== window) { window.top.postMessage(bridgeConfigMessage, "*"); }
       } catch (err) {}
-      showStatus(
-        currentArgs.batch_id
-          ? `Bridge ready for ${currentArgs.retailer || "Retailer"} (${currentArgs.rows.length} URLs). Click the extension once to start.`
-          : "Bridge idle."
-      );
+      showStatus(currentArgs.batch_id ? `Bridge ready for ${currentArgs.retailer || "Retailer"} (${currentArgs.rows.length} URLs). Click the extension once to start.` : "Bridge idle.");
     }
 
     window.addEventListener("message", (event) => {
@@ -116,8 +105,7 @@ BRIDGE_COMPONENT_HTML = r'''<!doctype html>
       }
       if (data && data.source === "pdp-extension" && data.type === "PDP_BATCH_PROGRESS") {
         const p = data.payload || {};
-        showStatus(`Fetching ${p.completed || 0}/${p.total || 0}
-${p.url || ""}`);
+        showStatus(`Fetching ${p.completed || 0}/${p.total || 0}\n${p.url || ""}`);
         return;
       }
       if (data && data.source === "pdp-extension" && data.type === "PDP_BATCH_CHUNK") {
@@ -149,8 +137,7 @@ ${p.url || ""}`);
     setFrameHeight(0);
   </script>
 </body>
-</html>
-'''
+</html>'''
 
 
 def ensure_bridge_component_dir():
@@ -180,14 +167,7 @@ def get_extension_bridge_component():
 
 def extension_bridge(rows, retailer="", batch_id="", auto_show_status=False, key="pdp_extension_bridge"):
     component = get_extension_bridge_component()
-    return component(
-        rows=rows or [],
-        retailer=retailer or "",
-        batch_id=batch_id or "",
-        auto_show_status=bool(auto_show_status),
-        default=None,
-        key=key,
-    )
+    return component(rows=rows or [], retailer=retailer or "", batch_id=batch_id or "", auto_show_status=bool(auto_show_status), default=None, key=key)
 
 
 def get_session_bridged_html_map():
@@ -212,7 +192,6 @@ def build_bridge_rows_from_retailer_df(retailer_df):
     seen = set()
     if retailer_df is None or getattr(retailer_df, "empty", True):
         return rows
-    # Chunked speed patch: bridge only retailer URLs. Salsify is fetched directly in-app.
     for _, row in retailer_df.iterrows():
         sku = str(row.get("sku", "") or "").strip()
         url = str(row.get("retail_url", "") or "").strip()
@@ -225,6 +204,15 @@ def build_bridge_rows_from_retailer_df(retailer_df):
 
 def get_bridge_required_urls(rows):
     return {str((row or {}).get("url", "") or "").strip() for row in (rows or []) if str((row or {}).get("url", "") or "").strip()}
+
+
+def render_bridge_config_beacon(batch_id, retailer, rows):
+    payload = {"batch_id": batch_id or "", "retailer": retailer or "", "rows": rows or []}
+    json_text = html.escape(json.dumps(payload, separators=(",", ":")))
+    st.markdown(
+        f'<div id="pdp-bridge-config" data-bridge-batch="{html.escape(str(batch_id or ""), quote=True)}" data-bridge-retailer="{html.escape(str(retailer or ""), quote=True)}" style="display:none">{json_text}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def get_salsify_html_direct(url):
@@ -243,6 +231,7 @@ def get_salsify_html_direct(url):
         while len(html_cache) > HTML_CACHE_MAX:
             html_cache.pop(next(iter(html_cache)))
     return html_text
+
 
 # =========================================
 # APP SETUP
@@ -6520,6 +6509,9 @@ if uploaded_file:
                         pass  # fetch server may not be running yet — non-fatal
 
 
+            render_bridge_config_beacon(current_batch_key, selected_retailer, bridge_rows)
+            st.markdown(f"<div style='padding:6px 10px;border:1px solid #d1d5db;border-radius:8px;background:#f9fafb;color:#111827;margin-top:8px;'>Bridge ready for {html.escape(selected_retailer)} ({len(bridge_rows)} URLs). Click the extension once to start.</div>", unsafe_allow_html=True)
+
             bridge_payload = extension_bridge(
                 rows=bridge_rows,
                 retailer=selected_retailer,
@@ -6684,8 +6676,7 @@ if retailer_df is not None and file_ready_for_batch:
             missing_bridge_urls = [url for url in bridge_required_urls if url not in bridged_map]
             if missing_bridge_urls:
                 st.info(
-                    "Step 2: Click the Raw HTML Fetcher Edge extension once while this Streamlit tab is open. "
-                    "The app will start processing after the extension returns this retailer batch."
+                    "Step 2: Click the Raw HTML Fetcher Edge extension once while this Streamlit tab is open. The app will start processing after the extension returns this retailer batch."
                 )
                 st.caption(f"Still waiting on {len(missing_bridge_urls)} retailer URL(s) from the extension bridge.")
                 st.stop()
