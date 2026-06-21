@@ -202,10 +202,22 @@ def is_salsify_url(url):
     return bool(url_lc and ("salsify.com" in url_lc or "app.salsify.com" in url_lc or "shop.salsify.com" in url_lc))
 
 
-def build_bridge_rows_from_retailer_df(retailer_df):
+def uses_extension_bridge_for_retailer(retailer_name):
+    retailer_key = str(retailer_name or "").strip().lower()
+    return retailer_key in {"kroger", "sam's club", "sams club", "samsclub"}
+
+
+def should_skip_extension_for_retailer(retailer_name):
+    retailer_key = str(retailer_name or "").strip().lower()
+    return retailer_key in {"cvs", "walgreens"}
+
+
+def build_bridge_rows_from_retailer_df(retailer_df, retailer_name=""):
     rows = []
     seen = set()
     if retailer_df is None or getattr(retailer_df, "empty", True):
+        return rows
+    if not uses_extension_bridge_for_retailer(retailer_name):
         return rows
     for _, row in retailer_df.iterrows():
         sku = str(row.get("sku", "") or "").strip()
@@ -6400,7 +6412,7 @@ if uploaded_file:
         if file_ready_for_batch:
             retailer_df = master_df[master_df["retailer"].astype(str) == selected_retailer].copy()
             current_batch_key = f"{file_hash}::{selected_retailer}"
-            bridge_rows = build_bridge_rows_from_retailer_df(retailer_df)
+            bridge_rows = build_bridge_rows_from_retailer_df(retailer_df, selected_retailer)
             bridge_required_urls = get_bridge_required_urls(bridge_rows)
             st.session_state.bridge_batch_id = current_batch_key
 
@@ -6426,47 +6438,48 @@ if uploaded_file:
                 st.session_state.processed_bridge_chunks = set()
 
 
-            render_bridge_config_beacon(current_batch_key, selected_retailer, bridge_rows)
+            if uses_extension_bridge_for_retailer(selected_retailer):
+                render_bridge_config_beacon(current_batch_key, selected_retailer, bridge_rows)
 
-            bridge_payload = extension_bridge(
-                rows=bridge_rows,
-                retailer=selected_retailer,
-                batch_id=current_batch_key,
-                auto_show_status=True,
-                key=f"bridge_{current_batch_key}",
-            )
-
-            if bridge_payload and isinstance(bridge_payload, dict):
-                event_type = str(bridge_payload.get("event_type", "") or "").strip().lower()
-                if event_type == "chunk":
-                    chunk_id = str(bridge_payload.get("chunk_id", "") or "").strip()
-                    processed_chunks = get_processed_bridge_chunks()
-                    if chunk_id and chunk_id not in processed_chunks:
-                        bridged_map = get_session_bridged_html_map()
-                        for item in bridge_payload.get("results", []) or []:
-                            url = str(item.get("url", "") or "").strip()
-                            if not url:
-                                continue
-                            bridged_map[url] = str(item.get("html", "") or "")
-                        st.session_state.bridged_html_by_url = bridged_map
-                        processed_chunks.add(chunk_id)
-                        st.session_state.processed_bridge_chunks = processed_chunks
-                elif event_type in ["complete", "cancelled"]:
-                    payload_signature = hashlib.md5(json.dumps(bridge_payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
-                    if st.session_state.bridge_last_result_signature != payload_signature:
-                        st.session_state.bridge_last_result_signature = payload_signature
-                        if str(bridge_payload.get("batch_id", "") or "") == current_batch_key:
-                            st.session_state.bridge_ready_batch_key = current_batch_key
-                elif event_type == "error":
-                    st.warning(f"Bridge error: {bridge_payload.get('bridge_error', 'Unknown error')}")
-
-            bridged_map = get_session_bridged_html_map()
-            bridged_ready_count = len([url for url in bridge_required_urls if url in bridged_map])
-            if BRIDGE_EXTENSION_MODE:
-                st.caption(
-                    f"Bridge retailer HTML ready for this batch: {bridged_ready_count}/{len(bridge_required_urls)} URLs. "
-                    f"Salsify now loads directly in-app for speed. After choosing the retailer, click the Edge extension once to fetch the retailer batch."
+                bridge_payload = extension_bridge(
+                    rows=bridge_rows,
+                    retailer=selected_retailer,
+                    batch_id=current_batch_key,
+                    auto_show_status=True,
+                    key=f"bridge_{current_batch_key}",
                 )
+
+                if bridge_payload and isinstance(bridge_payload, dict):
+                    event_type = str(bridge_payload.get("event_type", "") or "").strip().lower()
+                    if event_type == "chunk":
+                        chunk_id = str(bridge_payload.get("chunk_id", "") or "").strip()
+                        processed_chunks = get_processed_bridge_chunks()
+                        if chunk_id and chunk_id not in processed_chunks:
+                            bridged_map = get_session_bridged_html_map()
+                            for item in bridge_payload.get("results", []) or []:
+                                url = str(item.get("url", "") or "").strip()
+                                if not url:
+                                    continue
+                                bridged_map[url] = str(item.get("html", "") or "")
+                            st.session_state.bridged_html_by_url = bridged_map
+                            processed_chunks.add(chunk_id)
+                            st.session_state.processed_bridge_chunks = processed_chunks
+                    elif event_type in ["complete", "cancelled"]:
+                        payload_signature = hashlib.md5(json.dumps(bridge_payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+                        if st.session_state.bridge_last_result_signature != payload_signature:
+                            st.session_state.bridge_last_result_signature = payload_signature
+                            if str(bridge_payload.get("batch_id", "") or "") == current_batch_key:
+                                st.session_state.bridge_ready_batch_key = current_batch_key
+                    elif event_type == "error":
+                        st.warning(f"Bridge error: {bridge_payload.get('bridge_error', 'Unknown error')}")
+
+                bridged_map = get_session_bridged_html_map()
+                bridged_ready_count = len([url for url in bridge_required_urls if url in bridged_map])
+                if BRIDGE_EXTENSION_MODE:
+                    st.caption(
+                        f"Bridge retailer HTML ready for this batch: {bridged_ready_count}/{len(bridge_required_urls)} URLs. "
+                        f"Salsify now loads directly in-app for speed. After choosing the retailer, click the Edge extension once to fetch the retailer batch."
+                    )
 
     except EmptyDataError:
         st.error("🔥 CRITICAL APP ERROR")
@@ -6587,7 +6600,7 @@ if retailer_df is not None and file_ready_for_batch:
             st.warning("No rows found for the selected retailer.")
             st.stop()
 
-        if BRIDGE_EXTENSION_MODE:
+        if BRIDGE_EXTENSION_MODE and uses_extension_bridge_for_retailer(selected_retailer):
             bridged_map = get_session_bridged_html_map()
             missing_bridge_urls = [url for url in bridge_required_urls if url not in bridged_map]
             bridge_batch_done = st.session_state.bridge_ready_batch_key == current_batch_key
