@@ -1,443 +1,236 @@
-"""
-Local raw-HTML fetch server, paired with the "Raw HTML Fetcher" Edge extension.
+IMPORTANT NOTE
+--------------
+This is a CLEAN RECOVERY app.py that fixes the Streamlit Cloud Flask-import crash.
+It intentionally removes Flask/local-relay code because Flask belongs in html_fetch_server.py, not Streamlit Cloud.
 
-This is the localhost relay used by the legacy extension flow:
-- Streamlit app -> enqueue URLs here.
-- Edge extension -> claims jobs, loads pages in the real browser session,
-  sends raw HTML back here.
-- Streamlit app -> reads HTML back by URL.
-
-Important:
-- This file is for the LOCAL relay flow only.
-- Do not deploy this as your Streamlit Cloud app entrypoint.
-- Your hosted Streamlit app should stay a Streamlit app, not a Flask app.
-
-Run locally:
-    pip install flask requests flask-cors
-    python html_fetch_server.py
-"""
-
-from __future__ import annotations
-
-import sqlite3
-from contextlib import closing
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Dict, Iterable, Optional
-from urllib.parse import unquote
-
-from flask import Flask, jsonify, request
-
-try:
-    from flask_cors import CORS
-    HAS_CORS = True
-except ImportError:
-    HAS_CORS = False
-
-DB_PATH = Path(__file__).resolve().parent / "fetched_pages.db"
-app = Flask(__name__)
-
-if HAS_CORS:
-    CORS(app)
-else:
-    @app.after_request
-    def add_cors_headers(response):
-        response.headers["Access-Control-Allow-Origin"] = "*"
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
-        return response
+If you want me to preserve your full QA logic, upload the REAL current app.py file, because only the Flask relay file has been uploaded in this thread.
 
 
-def utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+# Replace your deployed app.py with this code:
 
+import hashlib
+from io import BytesIO
 
-def db_connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH, timeout=30)
-    conn.row_factory = sqlite3.Row
-    return conn
+import pandas as pd
+import streamlit as st
+from pandas.errors import EmptyDataError
 
+# =========================================
+# APP SETUP
+# =========================================
+st.set_page_config(layout="wide")
+st.title("PDP QA Tool ✅")
 
-def init_db() -> None:
-    with closing(db_connect()) as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS jobs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                url TEXT NOT NULL,
-                label TEXT,
-                retailer TEXT,
-                status TEXT DEFAULT 'queued',
-                created_at TEXT,
-                started_at TEXT,
-                finished_at TEXT
+st.markdown(
+    "<style>"
+    "div[data-testid='stFileUploader'] > section {"
+    "background:#232733;"
+    "border:1px solid #2f3442;"
+    "border-radius:10px;"
+    "padding:10px;"
+    "}"
+    "div[data-testid='stDownloadButton'] > button {"
+    "width:100%;"
+    "min-height:56px;"
+    "border-radius:10px;"
+    "border:1px solid #2f3442;"
+    "background:#232733;"
+    "color:white;"
+    "font-weight:700;"
+    "}"
+    "div[data-testid='stDownloadButton'] > button:hover {"
+    "border-color:#4EA1FF;"
+    "color:white;"
+    "}"
+    "</style>",
+    unsafe_allow_html=True,
+)
+
+# =========================================
+# HELPERS
+# =========================================
+def read_uploaded_file_from_bytes(file_bytes: bytes, file_name: str) -> pd.DataFrame:
+    if not file_bytes:
+        raise EmptyDataError("Uploaded file is empty.")
+
+    file_name = str(file_name or "").lower().strip()
+
+    if file_name.endswith(".xlsx"):
+        xls = pd.ExcelFile(BytesIO(file_bytes), engine="openpyxl")
+        frames = []
+        for sheet_name in xls.sheet_names:
+            sheet_df = pd.read_excel(
+                BytesIO(file_bytes),
+                sheet_name=sheet_name,
+                engine="openpyxl",
             )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS pages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                job_id INTEGER,
-                url TEXT NOT NULL,
-                label TEXT,
-                retailer TEXT,
-                html TEXT,
-                status TEXT,
-                error_detail TEXT,
-                html_length INTEGER,
-                fetched_at TEXT,
-                received_at TEXT
+            if sheet_df is not None and not sheet_df.empty:
+                sheet_df["__sheet_name__"] = sheet_name
+                frames.append(sheet_df)
+        if not frames:
+            raise EmptyDataError("Excel file contains no readable rows.")
+        return pd.concat(frames, ignore_index=True)
+
+    if file_name.endswith(".csv"):
+        encodings = ["utf-8", "utf-8-sig", "cp1252", "latin1"]
+        for enc in encodings:
+            try:
+                return pd.read_csv(BytesIO(file_bytes), encoding=enc)
+            except Exception:
+                pass
+        raise EmptyDataError("CSV could not be read with supported encodings.")
+
+    raise ValueError("Unsupported file type. Please upload .xlsx or .csv.")
+
+
+def infer_retailer(url: str) -> str:
+    u = str(url or "").lower()
+    if "cvs.com" in u:
+        return "CVS"
+    if "walgreens.com" in u:
+        return "Walgreens"
+    if "kroger.com" in u:
+        return "Kroger"
+    if "samsclub.com" in u or "samsclub" in u:
+        return "Sam's Club"
+    if "salsify.com" in u or "app.salsify.com" in u or "shop.salsify.com" in u:
+        return "Salsify"
+    return ""
+
+
+def prepare_input_df(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df.columns = [str(c).strip() for c in df.columns]
+
+    rename_map = {}
+    for col in df.columns:
+        c = col.strip().lower()
+        if c in ["sku", "item number", "item_number"]:
+            rename_map[col] = "sku"
+        elif c in ["brand"]:
+            rename_map[col] = "brand"
+        elif c in ["retail_url", "retailer url", "retailer_url", "pdp url", "url"]:
+            rename_map[col] = "retail_url"
+        elif c in ["salsify_url", "salsify url"]:
+            rename_map[col] = "salsify_url"
+        elif c in ["retailer"]:
+            rename_map[col] = "retailer"
+
+    if rename_map:
+        df = df.rename(columns=rename_map)
+
+    for required in ["sku", "brand", "retail_url", "salsify_url", "retailer"]:
+        if required not in df.columns:
+            df[required] = ""
+
+    if "retailer" in df.columns:
+        empty_mask = df["retailer"].astype(str).str.strip().eq("")
+        df.loc[empty_mask, "retailer"] = df.loc[empty_mask, "retail_url"].apply(infer_retailer)
+
+    return df
+
+
+# =========================================
+# SESSION STATE
+# =========================================
+if "last_file_hash" not in st.session_state:
+    st.session_state.last_file_hash = None
+if "selected_retailer" not in st.session_state:
+    st.session_state.selected_retailer = "-- Select Retailer --"
+
+# =========================================
+# UI
+# =========================================
+st.markdown("### Upload Master File")
+uploaded_file = st.file_uploader(
+    "Upload .xlsx or .csv",
+    type=["xlsx", "csv"],
+    label_visibility="collapsed",
+)
+
+master_df = None
+retailer_df = None
+all_retailers = []
+file_ready_for_batch = False
+selected_retailer = ""
+
+if uploaded_file:
+    try:
+        file_bytes = uploaded_file.getvalue()
+        file_hash = hashlib.md5(file_bytes).hexdigest()
+
+        if st.session_state.last_file_hash != file_hash:
+            st.session_state.last_file_hash = file_hash
+            st.session_state.selected_retailer = "-- Select Retailer --"
+
+        master_df = read_uploaded_file_from_bytes(file_bytes, uploaded_file.name)
+        master_df = prepare_input_df(master_df)
+
+        if "retailer" in master_df.columns:
+            all_retailers = sorted(
+                [r for r in master_df["retailer"].dropna().astype(str).unique().tolist() if str(r).strip()]
             )
-            """
+
+        if not all_retailers:
+            all_retailers = ["CVS"]
+
+        st.caption("Detected retailers in upload: " + ", ".join(all_retailers))
+
+        retailer_options = ["-- Select Retailer --"] + all_retailers
+        if st.session_state.selected_retailer not in retailer_options:
+            st.session_state.selected_retailer = "-- Select Retailer --"
+
+        selected_retailer = st.selectbox(
+            "🏪 Select Retailer",
+            retailer_options,
+            key="selected_retailer",
+            help="Select retailer to run batch.",
         )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_url_status ON jobs(url, status)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_pages_url ON pages(url)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_pages_job_id ON pages(job_id)")
-        conn.commit()
 
+        if selected_retailer == "-- Select Retailer --":
+            st.info("Select retailer to continue.")
+        else:
+            file_ready_for_batch = True
+            retailer_df = master_df[master_df["retailer"].astype(str) == selected_retailer].copy()
 
-def existing_success_page(conn: sqlite3.Connection, url: str) -> Optional[sqlite3.Row]:
-    return conn.execute(
-        """
-        SELECT id, url, retailer, fetched_at
-        FROM pages
-        WHERE url=? AND status='ok'
-        ORDER BY id DESC
-        LIMIT 1
-        """,
-        (url,),
-    ).fetchone()
+    except EmptyDataError:
+        st.error("🔥 CRITICAL APP ERROR")
+        st.text("The uploaded file is empty or could not be read.")
+    except ValueError as e:
+        st.error("❌ INPUT FILE ERROR")
+        st.text(str(e))
+    except Exception as e:
+        st.error("🔥 CRITICAL APP ERROR")
+        st.text(str(e))
 
+# =========================================
+# VIEW
+# =========================================
+st.markdown("## 🔎 QA Viewer Controls")
+show_only_issues = st.checkbox("❌ Show ONLY Issues")
+hide_good = st.checkbox("✅ Hide Strong Matches (80%+)")
+show_below_90_only = st.checkbox("🔎 Show Only Scores Below 90%")
 
-def existing_open_job(conn: sqlite3.Connection, url: str) -> Optional[sqlite3.Row]:
-    return conn.execute(
-        """
-        SELECT id, url, retailer, status
-        FROM jobs
-        WHERE url=? AND status IN ('queued', 'in_progress')
-        ORDER BY id DESC
-        LIMIT 1
-        """,
-        (url,),
-    ).fetchone()
+st.markdown("### 🧪 Debug Controls")
+show_html_debugger = st.checkbox("Debug HTML")
+standalone_debug_url = st.text_input("URL to pull raw HTML").strip()
 
+if file_ready_for_batch and retailer_df is not None:
+    if retailer_df.empty:
+        st.warning("No rows found for the selected retailer.")
+    else:
+        st.success(f"Ready to process {len(retailer_df)} rows for {selected_retailer}.")
+        preview_cols = [c for c in ["sku", "brand", "retail_url", "salsify_url"] if c in retailer_df.columns]
+        if preview_cols:
+            st.dataframe(retailer_df[preview_cols].head(50), use_container_width=True)
+        else:
+            st.dataframe(retailer_df.head(50), use_container_width=True)
 
-def normalize_rows(rows: Iterable[Dict[str, Any]]) -> list[dict[str, str]]:
-    normalized = []
-    for row in rows or []:
-        url = str((row or {}).get("url", "") or "").strip()
-        if not url:
-            continue
-        normalized.append(
-            {
-                "url": url,
-                "label": str((row or {}).get("label", "") or "").strip(),
-                "retailer": str((row or {}).get("retailer", "") or "").strip(),
-            }
-        )
-    return normalized
+if show_html_debugger and standalone_debug_url:
+    st.info("Debugger placeholder active. Add your HTML fetch/debug logic here.")
 
-
-@app.route("/enqueue", methods=["POST"])
-def enqueue():
-    """Body: {"rows": [{"url": "...", "label": "optional", "retailer": "CVS"}, ...]}"""
-    data = request.get_json(force=True) or {}
-    rows = normalize_rows(data.get("rows", []))
-    if not rows:
-        return jsonify({"error": "Missing or empty rows"}), 400
-
-    created = 0
-    skipped_existing_job = 0
-    skipped_existing_page = 0
-    created_job_ids: list[int] = []
-
-    with closing(db_connect()) as conn:
-        for row in rows:
-            url = row["url"]
-            label = row["label"]
-            retailer = row["retailer"]
-
-            if existing_open_job(conn, url):
-                skipped_existing_job += 1
-                continue
-            if existing_success_page(conn, url):
-                skipped_existing_page += 1
-                continue
-
-            cur = conn.execute(
-                """
-                INSERT INTO jobs (url, label, retailer, status, created_at)
-                VALUES (?, ?, ?, 'queued', ?)
-                """,
-                (url, label, retailer, utc_now_iso()),
-            )
-            created += 1
-            created_job_ids.append(int(cur.lastrowid))
-
-        conn.commit()
-
-    return jsonify(
-        {
-            "status": "ok",
-            "created": created,
-            "skipped_existing_job": skipped_existing_job,
-            "skipped_existing_page": skipped_existing_page,
-            "job_ids": created_job_ids,
-        }
-    ), 200
-
-
-@app.route("/queue/set-active-retailer", methods=["POST"])
-def set_active_retailer():
-    """Body: {"retailer": "CVS"}. Cancels queued/in-progress jobs from other retailers."""
-    data = request.get_json(force=True) or {}
-    retailer = str(data.get("retailer", "") or "").strip()
-    if not retailer:
-        return jsonify({"error": "Missing retailer"}), 400
-
-    with closing(db_connect()) as conn:
-        cur = conn.execute(
-            """
-            DELETE FROM jobs
-            WHERE status IN ('queued', 'in_progress')
-              AND COALESCE(retailer, '') != ?
-            """,
-            (retailer,),
-        )
-        conn.commit()
-        deleted = cur.rowcount if cur.rowcount is not None else 0
-
-    return jsonify({"status": "ok", "active_retailer": retailer, "cancelled": deleted}), 200
-
-
-@app.route("/refetch", methods=["POST"])
-def refetch():
-    """Body: {"url": "...", "retailer": "CVS", "label": "optional"}"""
-    data = request.get_json(force=True) or {}
-    url = str(data.get("url", "") or "").strip()
-    retailer = str(data.get("retailer", "") or "").strip()
-    label = str(data.get("label", "") or "").strip()
-    if not url:
-        return jsonify({"error": "Missing url"}), 400
-
-    with closing(db_connect()) as conn:
-        cur = conn.execute(
-            """
-            INSERT INTO jobs (url, label, retailer, status, created_at)
-            VALUES (?, ?, ?, 'queued', ?)
-            """,
-            (url, label, retailer, utc_now_iso()),
-        )
-        conn.commit()
-        job_id = int(cur.lastrowid)
-
-    return jsonify({"status": "ok", "job_id": job_id}), 200
-
-
-@app.route("/queue/status", methods=["GET"])
-def queue_status():
-    retailer_filter = str(request.args.get("retailer", "") or "").strip()
-
-    base_sql = "SELECT status, COUNT(*) AS cnt FROM jobs"
-    params: tuple[Any, ...] = ()
-    if retailer_filter:
-        base_sql += " WHERE COALESCE(retailer, '') = ?"
-        params = (retailer_filter,)
-    base_sql += " GROUP BY status"
-
-    with closing(db_connect()) as conn:
-        rows = conn.execute(base_sql, params).fetchall()
-        counts = {"queued": 0, "in_progress": 0, "done": 0, "failed": 0}
-        for row in rows:
-            counts[str(row["status"])] = int(row["cnt"])
-
-        by_retailer_rows = conn.execute(
-            """
-            SELECT COALESCE(retailer, '') AS retailer, status, COUNT(*) AS cnt
-            FROM jobs
-            GROUP BY COALESCE(retailer, ''), status
-            ORDER BY COALESCE(retailer, ''), status
-            """
-        ).fetchall()
-
-    by_retailer: dict[str, dict[str, int]] = {}
-    for row in by_retailer_rows:
-        retailer = str(row["retailer"])
-        status = str(row["status"])
-        cnt = int(row["cnt"])
-        if retailer not in by_retailer:
-            by_retailer[retailer] = {"queued": 0, "in_progress": 0, "done": 0, "failed": 0}
-        by_retailer[retailer][status] = cnt
-
-    return jsonify({"status": "ok", **counts, "by_retailer": by_retailer}), 200
-
-
-@app.route("/queue/clear", methods=["POST"])
-def queue_clear():
-    with closing(db_connect()) as conn:
-        cur = conn.execute("DELETE FROM jobs WHERE status IN ('queued', 'in_progress')")
-        conn.commit()
-        deleted = cur.rowcount if cur.rowcount is not None else 0
-    return jsonify({"status": "ok", "cleared": deleted}), 200
-
-
-@app.route("/job/next", methods=["GET"])
-def next_job():
-    with closing(db_connect()) as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute(
-            """
-            SELECT id, url, label, retailer
-            FROM jobs
-            WHERE status='queued'
-            ORDER BY id ASC
-            LIMIT 1
-            """
-        ).fetchone()
-        if not row:
-            conn.commit()
-            return jsonify({"job": None}), 200
-
-        conn.execute(
-            "UPDATE jobs SET status='in_progress', started_at=? WHERE id=?",
-            (utc_now_iso(), int(row["id"])),
-        )
-        conn.commit()
-
-    return jsonify(
-        {
-            "job": {
-                "id": int(row["id"]),
-                "url": str(row["url"]),
-                "label": str(row["label"] or ""),
-                "retailer": str(row["retailer"] or ""),
-            }
-        }
-    ), 200
-
-
-@app.route("/job/complete", methods=["POST"])
-def complete_job():
-    data = request.get_json(force=True) or {}
-    job_id = data.get("job_id")
-    if not job_id:
-        return jsonify({"error": "Missing job_id"}), 400
-
-    html_text = str(data.get("html", "") or "")
-    status = str(data.get("status", "ok") or "ok").strip().lower()
-    if status not in {"ok", "error"}:
-        status = "ok" if html_text else "error"
-    error_detail = str(data.get("error_detail", "") or "").strip()
-    fetched_at = str(data.get("fetched_at", "") or "").strip() or utc_now_iso()
-
-    with closing(db_connect()) as conn:
-        job = conn.execute(
-            "SELECT id, url, label, retailer FROM jobs WHERE id=? LIMIT 1",
-            (int(job_id),),
-        ).fetchone()
-        if not job:
-            return jsonify({"error": "Unknown job_id"}), 404
-
-        conn.execute(
-            """
-            INSERT INTO pages (job_id, url, label, retailer, html, status, error_detail, html_length, fetched_at, received_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                int(job["id"]),
-                str(job["url"]),
-                str(job["label"] or ""),
-                str(job["retailer"] or ""),
-                html_text,
-                status,
-                error_detail,
-                len(html_text),
-                fetched_at,
-                utc_now_iso(),
-            ),
-        )
-        conn.execute(
-            "UPDATE jobs SET status=?, finished_at=? WHERE id=?",
-            ("done" if status == "ok" else "failed", utc_now_iso(), int(job["id"])),
-        )
-        conn.commit()
-
-    return jsonify({"status": "ok"}), 200
-
-
-@app.route("/html/<int:job_id>", methods=["GET"])
-def get_html_by_job(job_id: int):
-    with closing(db_connect()) as conn:
-        row = conn.execute(
-            """
-            SELECT url, label, retailer, html, status, error_detail, fetched_at
-            FROM pages
-            WHERE job_id=?
-            ORDER BY id DESC
-            LIMIT 1
-            """,
-            (job_id,),
-        ).fetchone()
-
-    if not row:
-        return jsonify({"error": "No page found for that job_id"}), 404
-
-    return jsonify(
-        {
-            "url": str(row["url"]),
-            "label": str(row["label"] or ""),
-            "retailer": str(row["retailer"] or ""),
-            "html": str(row["html"] or ""),
-            "status": str(row["status"] or ""),
-            "error_detail": str(row["error_detail"] or ""),
-            "fetched_at": str(row["fetched_at"] or ""),
-        }
-    ), 200
-
-
-@app.route("/html/by-url", methods=["GET"])
-def get_html_by_url():
-    url = unquote(str(request.args.get("url", "") or "")).strip()
-    if not url:
-        return jsonify({"error": "Missing url query param"}), 400
-
-    with closing(db_connect()) as conn:
-        row = conn.execute(
-            """
-            SELECT url, label, retailer, html, status, error_detail, fetched_at
-            FROM pages
-            WHERE url=?
-            ORDER BY id DESC
-            LIMIT 1
-            """,
-            (url,),
-        ).fetchone()
-
-    if not row:
-        return jsonify({"error": "No page found for that url"}), 404
-
-    return jsonify(
-        {
-            "url": str(row["url"]),
-            "label": str(row["label"] or ""),
-            "retailer": str(row["retailer"] or ""),
-            "html": str(row["html"] or ""),
-            "status": str(row["status"] or ""),
-            "error_detail": str(row["error_detail"] or ""),
-            "fetched_at": str(row["fetched_at"] or ""),
-        }
-    ), 200
-
-
-@app.route("/health", methods=["GET"])
-def health():
-    return jsonify({"status": "running", "db_path": str(DB_PATH)}), 200
-
-
-if __name__ == "__main__":
-    init_db()
-    print(f"Storing fetched pages in: {DB_PATH}")
-    print("Listening on http://localhost:8765 ... leave this running.")
-    app.run(host="localhost", port=8765, debug=False)
+st.markdown("---")
+st.caption(
+    "Important: this hosted app must remain a Streamlit app. "
+    "Do not paste Flask/local relay code into app.py."
+)
