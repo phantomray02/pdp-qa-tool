@@ -1,13 +1,3 @@
-IMPORTANT NOTE
---------------
-This is a CLEAN RECOVERY app.py that fixes the Streamlit Cloud Flask-import crash.
-It intentionally removes Flask/local-relay code because Flask belongs in html_fetch_server.py, not Streamlit Cloud.
-
-If you want me to preserve your full QA logic, upload the REAL current app.py file, because only the Flask relay file has been uploaded in this thread.
-
-
-# Replace your deployed app.py with this code:
-
 import hashlib
 from io import BytesIO
 
