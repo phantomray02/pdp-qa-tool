@@ -58,10 +58,7 @@ BRIDGE_COMPONENT_HTML = r'''<!doctype html>
     let currentArgs = { batch_id: "", retailer: "", rows: [], auto_show_status: false };
 
     function sendToStreamlit(type, payload) {
-      const message = {
-        isStreamlitMessage: true,
-        type,
-      };
+      const message = { isStreamlitMessage: true, type };
       if (payload && typeof payload === "object" && !Array.isArray(payload)) {
         Object.assign(message, payload);
       } else if (payload !== undefined) {
@@ -119,7 +116,7 @@ BRIDGE_COMPONENT_HTML = r'''<!doctype html>
       }
       if (data && data.source === "pdp-extension" && data.type === "PDP_BATCH_PROGRESS") {
         const p = data.payload || {};
-        showStatus(`Fetching ${p.index || 0}/${p.total || 0}
+        showStatus(`Fetching ${p.completed || 0}/${p.total || 0}
 ${p.url || ""}`);
         return;
       }
@@ -132,12 +129,13 @@ ${p.url || ""}`);
       if (data && data.source === "pdp-extension" && data.type === "PDP_BATCH_ERROR") {
         const payload = data.payload || {};
         showStatus(`Bridge error: ${payload.message || "Unknown error"}`);
-        setComponentValue({
-          bridge_error: payload.message || "Unknown error",
-          results: [],
-          retailer: currentArgs.retailer,
-          batch_id: currentArgs.batch_id,
-        });
+        setComponentValue({ bridge_error: payload.message || "Unknown error", results: [], retailer: currentArgs.retailer, batch_id: currentArgs.batch_id });
+        return;
+      }
+      if (data && data.source === "pdp-extension" && data.type === "PDP_BATCH_CANCELLED") {
+        const payload = data.payload || {};
+        showStatus(`Stopped. Returned ${payload.results ? payload.results.length : 0} pages so far.`);
+        setComponentValue(payload);
       }
     });
 
@@ -176,14 +174,7 @@ def get_extension_bridge_component():
 
 def extension_bridge(rows, retailer="", batch_id="", auto_show_status=False, key="pdp_extension_bridge"):
     component = get_extension_bridge_component()
-    return component(
-        rows=rows or [],
-        retailer=retailer or "",
-        batch_id=batch_id or "",
-        auto_show_status=bool(auto_show_status),
-        default=None,
-        key=key,
-    )
+    return component(rows=rows or [], retailer=retailer or "", batch_id=batch_id or "", auto_show_status=bool(auto_show_status), default=None, key=key)
 
 
 def get_session_bridged_html_map():
@@ -192,31 +183,47 @@ def get_session_bridged_html_map():
     return st.session_state["bridged_html_by_url"]
 
 
+def is_salsify_url(url):
+    url_lc = str(url or "").strip().lower()
+    return bool(url_lc and ("salsify.com" in url_lc or "app.salsify.com" in url_lc or "shop.salsify.com" in url_lc))
+
+
 def build_bridge_rows_from_retailer_df(retailer_df):
     rows = []
     seen = set()
     if retailer_df is None or getattr(retailer_df, "empty", True):
         return rows
+    # Safe speed patch: bridge only retailer URLs. Salsify is fetched directly in-app.
     for _, row in retailer_df.iterrows():
         sku = str(row.get("sku", "") or "").strip()
-        sources = [
-            ("salsify_url", "salsify"),
-            ("retail_url", "retailer"),
-        ]
-        for url_key, label_suffix in sources:
-            url = str(row.get(url_key, "") or "").strip()
-            if not url or url in seen:
-                continue
-            seen.add(url)
-            rows.append({
-                "url": url,
-                "label": f"{sku} | {label_suffix}".strip(" |"),
-            })
+        url = str(row.get("retail_url", "") or "").strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        rows.append({"url": url, "label": sku})
     return rows
 
 
 def get_bridge_required_urls(rows):
     return {str((row or {}).get("url", "") or "").strip() for row in (rows or []) if str((row or {}).get("url", "") or "").strip()}
+
+
+def get_salsify_html_direct(url):
+    url = str(url or "").strip()
+    if not url:
+        return ""
+    global html_cache
+    if "html_cache" not in globals() or not isinstance(globals().get("html_cache"), dict):
+        html_cache = {}
+    cache_key = f"salsify::{url}"
+    if cache_key in html_cache:
+        return html_cache[cache_key]
+    html_text = fetch_html_with_timeout(url, REQUEST_TIMEOUT)
+    if html_text:
+        html_cache[cache_key] = html_text
+        while len(html_cache) > HTML_CACHE_MAX:
+            html_cache.pop(next(iter(html_cache)))
+    return html_text
 
 # =========================================
 # APP SETUP
@@ -1765,7 +1772,7 @@ def _parse_salsify_page(html_text):
 
 @st.cache_data(show_spinner=False)
 def get_salsify_bundle(url):
-    html_text = get_html(url)
+    html_text = get_salsify_html_direct(url) if BRIDGE_EXTENSION_MODE and is_salsify_url(url) else get_html(url)
     return _parse_salsify_page(html_text)
 
 
@@ -6331,14 +6338,6 @@ if "last_file_hash" not in st.session_state:
     st.session_state.last_file_hash = None
 if "uploaded_file_bytes" not in st.session_state:
     st.session_state.uploaded_file_bytes = None
-if "bridged_html_by_url" not in st.session_state:
-    st.session_state.bridged_html_by_url = {}
-if "bridge_batch_id" not in st.session_state:
-    st.session_state.bridge_batch_id = ""
-if "bridge_last_result_signature" not in st.session_state:
-    st.session_state.bridge_last_result_signature = ""
-if "bridge_ready_batch_key" not in st.session_state:
-    st.session_state.bridge_ready_batch_key = ""
 if "selected_retailer" not in st.session_state:
     st.session_state.selected_retailer = "-- Select Retailer --"
 if "selected_brand_visual" not in st.session_state:
@@ -6489,14 +6488,15 @@ if uploaded_file:
                 # fetched successfully (for this or any other retailer) are
                 # left alone, so switching back later won't refetch them.
                 CURRENT_FETCH_RETAILER = selected_retailer
-                try:
-                    requests.post(
-                        f"{FETCH_SERVER_BASE}/queue/set-active-retailer",
-                        json={"retailer": selected_retailer},
-                        timeout=5,
-                    )
-                except Exception:
-                    pass  # fetch server may not be running yet — non-fatal
+                if not BRIDGE_EXTENSION_MODE:
+                    try:
+                        requests.post(
+                            f"{FETCH_SERVER_BASE}/queue/set-active-retailer",
+                            json={"retailer": selected_retailer},
+                            timeout=5,
+                        )
+                    except Exception:
+                        pass  # fetch server may not be running yet — non-fatal
 
 
             bridge_payload = extension_bridge(
@@ -6508,9 +6508,7 @@ if uploaded_file:
             )
 
             if bridge_payload and isinstance(bridge_payload, dict):
-                payload_signature = hashlib.md5(
-                    json.dumps(bridge_payload, sort_keys=True, default=str).encode("utf-8")
-                ).hexdigest()
+                payload_signature = hashlib.md5(json.dumps(bridge_payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
                 if st.session_state.bridge_last_result_signature != payload_signature:
                     bridged_map = get_session_bridged_html_map()
                     for item in bridge_payload.get("results", []) or []:
@@ -6527,8 +6525,8 @@ if uploaded_file:
             bridged_ready_count = len([url for url in bridge_required_urls if url in bridged_map])
             if BRIDGE_EXTENSION_MODE:
                 st.caption(
-                    f"Bridge HTML ready for this batch: {bridged_ready_count}/{len(bridge_required_urls)} URLs. "
-                    f"After choosing the retailer, click the Edge extension once to fetch the batch."
+                    f"Bridge retailer HTML ready for this batch: {bridged_ready_count}/{len(bridge_required_urls)} URLs. "
+                    f"Salsify now loads directly in-app for speed. After choosing the retailer, click the Edge extension once to fetch the retailer batch."
                 )
 
     except EmptyDataError:
@@ -6656,9 +6654,9 @@ if retailer_df is not None and file_ready_for_batch:
             if missing_bridge_urls:
                 st.info(
                     "Step 2: Click the Raw HTML Fetcher Edge extension once while this Streamlit tab is open. "
-                    "The app will start processing after the extension returns this batch."
+                    "The app will start processing after the extension returns this retailer batch."
                 )
-                st.caption(f"Still waiting on {len(missing_bridge_urls)} URL(s) from the extension bridge.")
+                st.caption(f"Still waiting on {len(missing_bridge_urls)} retailer URL(s) from the extension bridge.")
                 st.stop()
 
         start = st.session_state.start_idx
