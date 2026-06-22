@@ -699,11 +699,8 @@ def build_locked_salsify_slots(s_images, lock_top_three=True, max_slots=MAX_IMAG
 
 def prepare_input_df(df):
     df = df.copy()
-
-    # Normalize incoming column names.
     df.columns = [str(c).strip().lower() for c in df.columns]
 
-    # Rename safe one-to-one columns first.
     df.rename(
         columns={
             "salsify url": "salsify_url",
@@ -712,19 +709,15 @@ def prepare_input_df(df):
             "product sku": "sku",
             "retailer name": "retailer",
             "retailer_name": "retailer",
+            "kroger url": "retail_url",
+            "kroger_url": "retail_url",
+            "kroger rpc": "kroger_rpc",
         },
         inplace=True,
     )
 
-    # Build one normalized retailer_rpc column.
     rpc_candidates = []
-
-    for rpc_col in [
-        "retailer_rpc",
-        "cvs rpc",
-        "walgreens rpc",
-        "sams club rpc",
-    ]:
+    for rpc_col in ["retailer_rpc", "kroger_rpc", "cvs rpc", "walgreens rpc", "sams club rpc"]:
         if rpc_col in df.columns:
             rpc_candidates.append(
                 df[rpc_col]
@@ -743,56 +736,24 @@ def prepare_input_df(df):
     else:
         df["retailer_rpc"] = ""
 
-    # Drop retailer-specific RPC columns after combining.
-    for rpc_col in [
-        "cvs rpc",
-        "walgreens rpc",
-        "sams club rpc",
-    ]:
+    for rpc_col in ["kroger_rpc", "cvs rpc", "walgreens rpc", "sams club rpc"]:
         if rpc_col in df.columns:
             df.drop(columns=[rpc_col], inplace=True)
 
-    # Ensure required working columns exist.
-    for col in [
-        "sku",
-        "salsify_url",
-        "retail_url",
-        "brand",
-        "retailer_rpc",
-        "rating",
-        "review_count",
-    ]:
+    for col in ["sku", "salsify_url", "retail_url", "brand", "retailer_rpc", "rating", "review_count"]:
         if col not in df.columns:
             df[col] = ""
-    
-    # Clean standard text columns safely.
-    for col in [
-        "sku",
-        "salsify_url",
-        "retail_url",
-        "brand",
-        "retailer_rpc",
-        "rating",
-        "review_count",
-    ]:
+
+    for col in ["sku", "salsify_url", "retail_url", "brand", "retailer_rpc", "rating", "review_count"]:
         df[col] = (
-            df[col]
-            .replace("#N/A", "")
-            .fillna("")
-            .astype(str)
-            .str.strip()
+            df[col].replace("#N/A", "").fillna("").astype(str).str.strip()
         )
 
-    # Normalize retailer column.
     if "retailer" not in df.columns:
         df["retailer"] = df["retail_url"].apply(infer_retailer_name_from_url)
     else:
         df["retailer"] = (
-            df["retailer"]
-            .replace("#N/A", "")
-            .fillna("")
-            .astype(str)
-            .str.strip()
+            df["retailer"].replace("#N/A", "").fillna("").astype(str).str.strip()
         )
     df["retailer"] = df["retailer"].apply(normalize_retailer_name)
 
@@ -800,9 +761,8 @@ def prepare_input_df(df):
     missing = [c for c in required if c not in df.columns]
     if missing:
         raise ValueError(f"Missing required columns: {missing}")
-
     return df
-    
+
 def clear_in_memory_caches():
     global html_cache, image_hash_cache, image_compare_cache, walgreens_api_cache
 
@@ -1277,44 +1237,37 @@ def parse_uploaded_raw_html_map(raw_text):
     raw_text = str(raw_text or "")
     if not raw_text.strip():
         return {}
-    label_pattern = re.compile(r'(?im)^(?:requested\s+url|final\s+url|retail\s+url|retailer\s+url|url)\s*:\s*(https?://\S+)\s*$')
-    matches = list(label_pattern.finditer(raw_text))
-    if not matches:
-        alt_pattern = re.compile(r'(?im)^(https?://\S+)\s*$')
-        matches = list(alt_pattern.finditer(raw_text))
-    html_map = {}
-    html_start_tokens = ['<!doctype', '<html', '<head', '<body', '<script', '<div']
-    for i, match in enumerate(matches):
-        url = normalize_uploaded_capture_url(match.group(1))
-        if not url:
-            continue
-        start = match.end()
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(raw_text)
-        block = raw_text[start:end].strip()
-        lower_block = block.lower()
-        html_start = -1
-        for token in html_start_tokens:
-            idx = lower_block.find(token)
-            if idx != -1 and (html_start == -1 or idx < html_start):
-                html_start = idx
-        html_text = block[html_start:] if html_start != -1 else block
-        html_text = html_text.strip()
-        if len(html_text) < 80:
-            continue
-        for key in uploaded_capture_url_candidates(url):
-            if len(html_text) > len(html_map.get(key, "")):
-                html_map[key] = html_text
-    return html_map
 
+    html_map = {}
+    block_pattern = re.compile(
+        r'(?is)Requested\s+URL\s*:\s*(https?://\S+).*?-----BEGIN HTML-----(.*?)-----END HTML-----'
+    )
+
+    for match in block_pattern.finditer(raw_text):
+        requested_url = str(match.group(1) or "").strip()
+        html_text = html.unescape(str(match.group(2) or "").strip())
+        if not requested_url or len(html_text) < 30:
+            continue
+        key = normalize_uploaded_capture_url(requested_url)
+        if key:
+            html_map[key] = html_text
+    return html_map
 
 def lookup_uploaded_raw_html(uploaded_html_map, retail_url):
     uploaded_html_map = uploaded_html_map or {}
+    retail_url = str(retail_url or "").strip()
+    if not retail_url:
+        return ""
+
+    if "kroger.com" in retail_url.lower():
+        key = normalize_uploaded_capture_url(retail_url)
+        return str(uploaded_html_map.get(key, "") or "")
+
     for key in uploaded_capture_url_candidates(retail_url):
         html_text = uploaded_html_map.get(key, "")
         if html_text:
             return html_text
     return ""
-
 
 def build_extension_batch_payload(retailer_df, retailer_name, current_batch_key, capture_mode, txt_ready=False):
     retailer_df = retailer_df.copy() if retailer_df is not None else pd.DataFrame()
@@ -1473,6 +1426,8 @@ def normalize_kroger_url(url):
     url = str(url or "").strip()
     if not url:
         return ""
+    url = html.unescape(url)
+    url = url.split("#", 1)[0].strip()
     url = re.sub(r'([?&])msockid=[^&]+', r'\1', url, flags=re.IGNORECASE)
     url = re.sub(r'([?&])searchType=[^&]+', r'\1', url, flags=re.IGNORECASE)
     url = re.sub(r'([?&])fulfillment=[^&]+', r'\1', url, flags=re.IGNORECASE)
@@ -1482,8 +1437,7 @@ def normalize_kroger_url(url):
     url = re.sub(r'\?&', '?', url)
     url = re.sub(r'[?&]+$', '', url)
     url = re.sub(r'\?{2,}', '?', url)
-    return url
-
+    return url.strip()
 
 def resolve_debug_views(
     debug_url,
@@ -3102,22 +3056,28 @@ def extract_kroger_description_and_features_from_html(html_text):
         return "", [], debug
 
     working = html.unescape(str(html_text or ""))
+    soup = BeautifulSoup(working, "html.parser")
 
-    # 1. Direct strong match (your TXT structure)
-    match = re.search(
-        r'product-details-romance-description[^>]*>(.*?)</ul>',
-        working,
-        flags=re.IGNORECASE | re.DOTALL
-    )
+    romance = soup.select_one('[data-testid="product-details-romance-description"]')
+    if romance is not None:
+        description = ""
+        p_tag = romance.find('p')
+        if p_tag is not None:
+            description = clean_kroger_text(p_tag.get_text(' ', strip=True))
+        if not description:
+            text_parts = []
+            for child in romance.find_all(recursive=False):
+                if getattr(child, 'name', None) == 'ul':
+                    continue
+                child_text = clean_kroger_text(getattr(child, 'get_text', lambda *a, **k: '')(' ', strip=True))
+                if child_text:
+                    text_parts.append(child_text)
+            description = normalize_space(' '.join(text_parts))
 
-    if match:
-        block = match.group(1)
-
-        desc_match = re.search(r'<p>(.*?)</p>', block, flags=re.I | re.S)
-        description = clean_kroger_text(desc_match.group(1)) if desc_match else ""
-
-        raw_features = re.findall(r'<li>(.*?)</li>', block, flags=re.I | re.S)
-        features = normalize_kroger_features(raw_features, max_features=10)
+        ul_tag = romance.find('ul')
+        features = []
+        if ul_tag is not None:
+            features = normalize_kroger_features([li.get_text(' ', strip=True) for li in ul_tag.find_all('li')], max_features=10)
 
         debug["description_marker_found"] = bool(description)
         debug["description_end_marker_found"] = bool(description)
@@ -3125,230 +3085,127 @@ def extract_kroger_description_and_features_from_html(html_text):
         debug["feature_count"] = len(features)
         debug["description_excerpt"] = description[:500]
         debug["features_excerpt"] = " | ".join(features[:5])[:1000]
-        debug["parser_path"] = "kroger_html_ul_li_strong"
-
-        return description, features, debug
-
-    # 2. Loose fallback
-    loose_match = re.search(
-        r'product-details-romance-description.*?<p>(.*?)</p>.*?<ul>(.*?)</ul>',
-        working,
-        flags=re.IGNORECASE | re.DOTALL
-    )
-
-    if loose_match:
-        description = clean_kroger_text(loose_match.group(1))
-        raw_features = re.findall(r'<li>(.*?)</li>', loose_match.group(2), flags=re.I | re.S)
-        features = normalize_kroger_features(raw_features, max_features=10)
-
-        debug["parser_path"] = "kroger_html_ul_li_loose"
-        debug["feature_count"] = len(features)
-
-        return description, features, debug
-
-    return "", [], debug
-
-    working = html.unescape(str(html_text or ""))
-
-    desc_start_marker = 'product-details-romance-description"><p>'
-    desc_end_marker = '</p><ul><li>'
-    feat_start_marker = '<ul><li>'
-    feat_end_marker = '</li></ul></div>'
-
-    start_idx = working.find(desc_start_marker)
-    if start_idx != -1:
-        debug["description_marker_found"] = True
-        desc_body_start = start_idx + len(desc_start_marker)
-        desc_end_idx = working.find(desc_end_marker, desc_body_start)
-        if desc_end_idx != -1:
-            debug["description_end_marker_found"] = True
-            raw_desc = working[desc_body_start:desc_end_idx]
-            description = clean_kroger_text(raw_desc)
-            feat_block_start = working.find(feat_start_marker, desc_end_idx)
-            if feat_block_start != -1:
-                feat_body_start = feat_block_start + len(feat_start_marker)
-                feat_end_idx = working.find(feat_end_marker, feat_body_start)
-                if feat_end_idx != -1:
-                    debug["feature_block_found"] = True
-                    raw_feat_block = working[feat_body_start:feat_end_idx]
-                    raw_features = re.split(r"</li>\s*<li>", raw_feat_block, flags=re.IGNORECASE)
-                    features = normalize_kroger_features(raw_features, max_features=10)
-                    debug["feature_count"] = len(features)
-                    debug["description_excerpt"] = description[:500]
-                    debug["features_excerpt"] = " | ".join(features[:5])[:1000]
-                    debug["parser_path"] = "kroger_exact_markers"
-                    return description, features, debug
-
-    romance_match = re.search(
-        r'product-details-romance-description[^>]*>\s*<p>(.*?)</p>\s*<ul>(.*?)</ul>\s*</div>',
-        working,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-    if romance_match:
-        raw_desc = romance_match.group(1)
-        raw_ul = romance_match.group(2)
-        description = clean_kroger_text(raw_desc)
-        raw_features = re.findall(r'<li[^>]*>(.*?)</li>', raw_ul, flags=re.IGNORECASE | re.DOTALL)
-        features = normalize_kroger_features(raw_features, max_features=10)
-        debug["description_marker_found"] = True
-        debug["description_end_marker_found"] = True
-        debug["feature_block_found"] = True
-        debug["feature_count"] = len(features)
-        debug["description_excerpt"] = description[:500]
-        debug["features_excerpt"] = " | ".join(features[:5])[:1000]
-        debug["parser_path"] = "kroger_regex_fallback"
-        return description, features, debug
-
-    soup = BeautifulSoup(working, "html.parser")
-    romance = None
-    romance_selectors = [
-        '[data-testid="product-details-romance-description"]',
-        '.product-details-romance-description',
-        '#product-details-romance-description',
-        '[data-testid*="romance"]',
-        '[class*="romance"]',
-    ]
-    for selector in romance_selectors:
-        romance = soup.select_one(selector)
-        if romance is not None:
-            break
-
-    if romance:
-        ul_tag = romance.find('ul')
-        if ul_tag is None:
-            next_ul = romance.find_next('ul')
-            if next_ul is not None:
-                ul_tag = next_ul
-
-        desc_parts = []
-        for child in romance.find_all(['p', 'div', 'span'], recursive=False):
-            if child.find_parent('li'):
-                continue
-            child_text = clean_kroger_text(child.get_text(' ', strip=True))
-            if child_text:
-                desc_parts.append(child_text)
-        if not desc_parts:
-            for string_value in romance.stripped_strings:
-                cleaned = clean_kroger_text(string_value)
-                if cleaned:
-                    desc_parts.append(cleaned)
-                if len(desc_parts) >= 4:
-                    break
-        description = normalize_space(' '.join(desc_parts))
-        features = []
-        if ul_tag:
-            features = normalize_kroger_features(
-                [li.get_text(' ', strip=True) for li in ul_tag.find_all('li')],
-                max_features=10,
-            )
+        debug["parser_path"] = "kroger_data_testid_romance_div"
         if description or features:
-            debug["description_marker_found"] = bool(description)
-            debug["description_end_marker_found"] = bool(description)
-            debug["feature_block_found"] = bool(features)
-            debug["feature_count"] = len(features)
-            debug["description_excerpt"] = description[:500]
-            debug["features_excerpt"] = " | ".join(features[:5])[:1000]
-            debug["parser_path"] = "kroger_dom_fallback"
             return description, features, debug
 
-    for pattern_name, pattern in [
-        ("kroger_json_romance_description", r'"romanceDescription"\s*:\s*"((?:\.|[^"\])*)"'),
-        ("kroger_json_description", r'"description"\s*:\s*"((?:\.|[^"\])*)"'),
-    ]:
-        match = re.search(pattern, working, flags=re.IGNORECASE | re.DOTALL)
-        if match:
-            raw_desc = match.group(1)
-            try:
-                raw_desc = json.loads(f'"{raw_desc}"')
-            except Exception:
-                pass
-            description = clean_kroger_text(raw_desc)
-            if description:
-                raw_features = re.findall(r'"(?:features|bullets)"\s*:\s*\[(.*?)\]', working, flags=re.IGNORECASE | re.DOTALL)
-                features = []
-                if raw_features:
-                    quoted = re.findall(r'"((?:\.|[^"\])*)"', raw_features[0], flags=re.DOTALL)
-                    decoded = []
-                    for item in quoted:
-                        try:
-                            decoded.append(json.loads(f'"{item}"'))
-                        except Exception:
-                            decoded.append(item)
-                    features = normalize_kroger_features(decoded, max_features=10)
-                debug["description_marker_found"] = True
-                debug["description_end_marker_found"] = True
-                debug["feature_block_found"] = bool(features)
-                debug["feature_count"] = len(features)
-                debug["description_excerpt"] = description[:500]
-                debug["features_excerpt"] = " | ".join(features[:5])[:1000]
-                debug["parser_path"] = pattern_name
-                return description, features, debug
-
+    for script in soup.find_all('script', attrs={'type': 'application/ld+json'}):
+        raw = (script.string or script.get_text(' ', strip=True) or '').strip()
+        if not raw:
+            continue
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            continue
+        nodes = payload if isinstance(payload, list) else [payload]
+        for node in nodes:
+            if isinstance(node, dict) and str(node.get('@type', '')).lower() == 'product':
+                description = clean_kroger_text(node.get('description', ''))
+                if description:
+                    debug["description_marker_found"] = True
+                    debug["description_end_marker_found"] = True
+                    debug["description_excerpt"] = description[:500]
+                    debug["parser_path"] = "kroger_jsonld_product_description"
+                    return description, [], debug
     return "", [], debug
-
 
 def extract_kroger_text_from_html(html_text, retail_url="", target_rpc=""):
     debug = {
         "Title Path": "",
         "Description Path": "",
         "Features Path": "",
-        "Source Used": "kroger_html",
+        "Source Used": "uploaded_txt_html",
         "Retailer": "Kroger",
     }
-    if not html_text:
-        return {
-            "title": "",
-            "description": "",
-            "features": [],
-            "rating": "",
-            "review_count": "",
-            "debug": debug,
-        }
 
-    soup = BeautifulSoup(html_text, "html.parser")
+    if not html_text:
+        debug["Title Path"] = "kroger_txt_missing"
+        debug["Description Path"] = "kroger_txt_missing"
+        debug["Features Path"] = "kroger_txt_missing"
+        return {"title": "", "description": "", "features": [], "rating": "", "review_count": "", "debug": debug}
+
+    working = html.unescape(str(html_text or ""))
+    soup = BeautifulSoup(working, "html.parser")
 
     title = ""
-    h1 = soup.find("h1")
+    h1 = soup.find('h1')
     if h1:
-        title = normalize_space(h1.get_text(" ", strip=True))
+        title = normalize_space(h1.get_text(' ', strip=True))
         debug["Title Path"] = "h1"
-    elif soup.title:
-        title = normalize_space(soup.title.get_text(" ", strip=True))
+    if not title:
+        heading_match = re.search(r'(?m)^##\s+(.+?)\s*$', working)
+        if heading_match:
+            title = normalize_space(heading_match.group(1))
+            debug["Title Path"] = "txt_markdown_h2"
+    if not title:
+        for script in soup.find_all('script', attrs={'type': 'application/ld+json'}):
+            raw = (script.string or script.get_text(' ', strip=True) or '').strip()
+            if not raw:
+                continue
+            try:
+                payload = json.loads(raw)
+            except Exception:
+                continue
+            nodes = payload if isinstance(payload, list) else [payload]
+            for node in nodes:
+                if isinstance(node, dict) and str(node.get('@type', '')).lower() == 'product':
+                    title = normalize_space(node.get('name', ''))
+                    if title:
+                        debug["Title Path"] = "kroger_jsonld_product_name"
+                        break
+            if title:
+                break
+    if not title and soup.title:
+        title = normalize_space(soup.title.get_text(' ', strip=True))
+        title = re.sub(r'\s*-\s*Kroger\s*$', '', title, flags=re.IGNORECASE)
         debug["Title Path"] = "html_title"
-    else:
+    if not title:
         debug["Title Path"] = "kroger_title_missing"
 
-    description, features, kroger_debug = extract_kroger_description_and_features_from_html(html_text)
-
+    description, features, kroger_debug = extract_kroger_description_and_features_from_html(working)
     debug["Description Path"] = kroger_debug.get("parser_path", "") if description else "kroger_description_missing"
     debug["Features Path"] = kroger_debug.get("parser_path", "") if features else "kroger_features_missing"
     debug["Kroger Parser Debug"] = kroger_debug
+    debug["Retail URL Lookup"] = normalize_kroger_url(retail_url)
+    if target_rpc:
+        debug["Retailer RPC"] = str(target_rpc or "").strip()
+
+    rating = ""
+    review_count = ""
+    for script in soup.find_all('script', attrs={'type': 'application/ld+json'}):
+        raw = (script.string or script.get_text(' ', strip=True) or '').strip()
+        if not raw:
+            continue
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            continue
+        nodes = payload if isinstance(payload, list) else [payload]
+        for node in nodes:
+            if isinstance(node, dict) and str(node.get('@type', '')).lower() == 'product':
+                agg = node.get('aggregateRating', {})
+                if isinstance(agg, dict):
+                    rating = str(agg.get('ratingValue', '') or '').strip()
+                    review_count = str(agg.get('reviewCount', '') or '').strip()
+                if rating or review_count:
+                    debug["Rating Path"] = "kroger_jsonld_aggregateRating"
+                    break
+        if rating or review_count:
+            break
 
     return {
         "title": title,
         "description": description,
-        "features": features[:10],
-        "rating": "",
-        "review_count": "",
+        "features": (features or [])[:10],
+        "rating": rating,
+        "review_count": review_count,
         "debug": debug,
     }
 
-
 @st.cache_data(show_spinner=False)
 def get_kroger_bundle(retail_url, target_rpc=""):
-    html_text = get_html(retail_url)
-    return {
-        "text": extract_kroger_text_from_html(
-            html_text,
-            retail_url=retail_url,
-            target_rpc=target_rpc,
-        ),
-        "images": [],
-    }
+    return build_empty_retailer_bundle("Kroger", "kroger_txt_only_no_live_fetch")
 
-# =========================================
-# WALGREENS PARSERS
-# =========================================
 def _safe_json_loads(text):
     try:
         return json.loads(text)
@@ -5275,33 +5132,27 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
     retailer = normalize_retailer_name(retailer_name).strip().lower()
     uploaded_html = str(row_source_code or "")
 
-    if uploaded_html.strip():
-        if retailer == "cvs":
-            bundle = {
-                "text": _extract_cvs_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc),
-                "images": extract_cvs_images_from_html(uploaded_html),
-            }
-            bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
-            return bundle
-        if retailer == "walgreens":
-            bundle = {
-                "text": extract_walgreens_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc),
-                "images": extract_walgreens_images_from_html(uploaded_html),
-            }
-            bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
-            return bundle
-        if retailer == "sam's club":
-            bundle = {
-                "text": extract_sams_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc),
-                "images": extract_sams_images_from_html(uploaded_html),
-            }
-            bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
-            return bundle
-        if retailer == "kroger":
+    if retailer == "kroger":
+        if uploaded_html.strip():
             bundle = {
                 "text": extract_kroger_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc),
                 "images": [],
             }
+            bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
+            return bundle
+        return build_empty_retailer_bundle("Kroger", "kroger_txt_required_missing_or_url_not_found")
+
+    if uploaded_html.strip():
+        if retailer == "cvs":
+            bundle = {"text": _extract_cvs_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_cvs_images_from_html(uploaded_html)}
+            bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
+            return bundle
+        if retailer == "walgreens":
+            bundle = {"text": extract_walgreens_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_walgreens_images_from_html(uploaded_html)}
+            bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
+            return bundle
+        if retailer == "sam's club":
+            bundle = {"text": extract_sams_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_sams_images_from_html(uploaded_html)}
             bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
             return bundle
 
@@ -5311,16 +5162,11 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
         "sam's club": lambda: get_sams_bundle(retail_url, target_rpc, sku=sku),
         "kroger": lambda: get_kroger_bundle(retail_url, target_rpc),
     }
-
     fetcher = retailer_fetchers.get(retailer)
     if fetcher is None:
         return build_empty_retailer_bundle(retailer_name or "Retailer", "retailer_not_supported_no_default_cvs_fallback")
-
     return fetcher()
 
-# =========================================
-# RETAILER-SPECIFIC FINAL COPY CLEANUP
-# =========================================
 def strip_walgreens_description_tail(text):
     """
     Keep live Walgreens marketing description exactly as shown on site,
@@ -6744,6 +6590,15 @@ if uploaded_file:
             if st.session_state.raw_html_upload_hash:
                 capture_batch_key_part += f"::{st.session_state.raw_html_upload_hash}"
             retailer_df = master_df[master_df["retailer"].astype(str) == selected_retailer].copy()
+
+            # Kroger sheet rules:
+            # - only rows from the Kroger sheet.
+            # - do not display/process rows with blank retail_url.
+            if selected_retailer == "Kroger":
+                retailer_df = retailer_df.copy()
+                retailer_df["retail_url"] = retailer_df["retail_url"].fillna("").astype(str).str.strip()
+                retailer_df = retailer_df[retailer_df["retail_url"] != ""].copy()
+
             if "copy_source_code" not in retailer_df.columns:
                 retailer_df["copy_source_code"] = ""
             if uploaded_raw_html_map:
@@ -6783,7 +6638,7 @@ if uploaded_file:
                     txt_ready=txt_ready_for_batch,
                 )
                 render_extension_batch_bridge(extension_payload)
-                st.caption(f"Extension bridge ready for {selected_retailer}. Upload the TXT after the extension run, then batch will run from captured HTML.")
+                st.caption(f"Extension bridge ready for {selected_retailer}. For Kroger, upload the TXT capture and the app will match each Kroger retail_url to Requested URL blocks and parse only the HTML between BEGIN HTML and END HTML.")
             elif selected_retailer in AUTO_SKIP_EXTENSION_RETAILERS:
                 st.caption(f"{selected_retailer} is in skip-extension mode, so the app can auto-run straight to batch with live retailer fetches.")
 
