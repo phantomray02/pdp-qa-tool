@@ -7485,3 +7485,52 @@ def lookup_uploaded_raw_html(uploaded_html_map, retail_url):
     return html_text
 
 # ================= END FIX =================
+
+
+# ===================== KROGER STRICT OVERRIDE =====================
+# Forces Kroger to ONLY use uploaded TXT HTML and never fetch live HTML or reuse other retailer logic
+
+def get_kroger_bundle(retail_url, target_rpc=""):
+    # Disabled live fetching entirely
+    return {
+        "text": {
+            "title": "",
+            "description": "",
+            "features": [],
+            "rating": "",
+            "review_count": "",
+            "debug": {
+                "Title Path": "kroger_txt_required",
+                "Description Path": "kroger_txt_required",
+                "Features Path": "kroger_txt_required",
+                "Source Used": "kroger_blocked_no_txt",
+            },
+        },
+        "images": [],
+    }
+
+# Patch retailer router to enforce Kroger TXT-only behavior
+_old_get_retailer_bundle = get_retailer_bundle
+
+def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_source_code=""):
+    retailer = normalize_retailer_name(retailer_name).strip().lower()
+    uploaded_html = str(row_source_code or "")
+
+    # STRICT KROGER LOGIC
+    if retailer == "kroger":
+        if not uploaded_html.strip():
+            return build_empty_retailer_bundle("Kroger", "kroger_requires_txt_upload")
+
+        return {
+            "text": extract_kroger_text_from_html(
+                uploaded_html,
+                retail_url=retail_url,
+                target_rpc=target_rpc
+            ),
+            "images": [],
+        }
+
+    # all other retailers use original logic
+    return _old_get_retailer_bundle(retailer_name, retail_url, target_rpc, sku, row_source_code)
+
+# ===================== END KROGER STRICT OVERRIDE =====================
