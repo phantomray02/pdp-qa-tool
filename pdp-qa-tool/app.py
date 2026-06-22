@@ -6934,6 +6934,24 @@ else:
 # =========================================
 # BATCH EXECUTION + REPORT EXPORT
 # =========================================
+if "batch_run_requested" not in st.session_state:
+    st.session_state.batch_run_requested = False
+if "batch_run_source" not in st.session_state:
+    st.session_state.batch_run_source = ""
+if "batch_error_text" not in st.session_state:
+    st.session_state.batch_error_text = ""
+if "batch_status_message" not in st.session_state:
+    st.session_state.batch_status_message = ""
+if "matched_uploaded_html_count" not in st.session_state:
+    st.session_state.matched_uploaded_html_count = 0
+if "missing_uploaded_html_count" not in st.session_state:
+    st.session_state.missing_uploaded_html_count = 0
+if "matched_uploaded_html_urls" not in st.session_state:
+    st.session_state.matched_uploaded_html_urls = []
+if "missing_uploaded_html_urls" not in st.session_state:
+    st.session_state.missing_uploaded_html_urls = []
+
+
 def build_excel_report_bytes(summary_rows, detail_rows, debug_rows):
     summary_df = pd.DataFrame(summary_rows or [])
     detail_df = pd.DataFrame(detail_rows or [])
@@ -6967,7 +6985,41 @@ def build_excel_report_bytes(summary_rows, detail_rows, debug_rows):
     return final_output.getvalue()
 
 
-def run_batch_processing(retailer_df_to_process, selected_retailer_name, batch_key, batch_label):
+def get_selected_retailer_normalized_urls(retailer_df_to_process, retailer_name):
+    if retailer_df_to_process is None or getattr(retailer_df_to_process, "empty", True):
+        return []
+    urls = []
+    for _, row in retailer_df_to_process.iterrows():
+        norm_url = normalize_uploaded_capture_url(str(row.get("retail_url", "") or "").strip(), retailer_name)
+        if norm_url:
+            urls.append(norm_url)
+    return dedupe_preserve_order(urls)
+
+
+def compute_uploaded_html_match_stats(retailer_df_to_process, retailer_name):
+    selected_urls = get_selected_retailer_normalized_urls(retailer_df_to_process, retailer_name)
+    uploaded_map = get_uploaded_raw_html_map()
+    matched_urls = [url for url in selected_urls if str((uploaded_map or {}).get(url, "") or "").strip()]
+    missing_urls = [url for url in selected_urls if url not in matched_urls]
+    return {
+        "selected_urls": selected_urls,
+        "matched_urls": matched_urls,
+        "missing_urls": missing_urls,
+        "selected_count": len(selected_urls),
+        "matched_count": len(matched_urls),
+        "missing_count": len(missing_urls),
+        "uploaded_count": len(uploaded_map or {}),
+    }
+
+
+def queue_batch_run(source_label):
+    st.session_state.batch_run_requested = True
+    st.session_state.batch_run_source = str(source_label or "manual")
+    st.session_state.batch_error_text = ""
+    st.session_state.batch_status_message = ""
+
+
+def run_batch_processing(retailer_df_to_process, selected_retailer_name, batch_key, batch_label, force_sequential=False):
     rows = [] if retailer_df_to_process is None else retailer_df_to_process.to_dict("records")
     if not rows:
         return {
@@ -6991,42 +7043,52 @@ def run_batch_processing(retailer_df_to_process, selected_retailer_name, batch_k
 
     clear_in_memory_caches()
 
-    max_workers = max(1, min(int(MAX_WORKERS or 1), total_rows))
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_map = {executor.submit(process_row, row): idx for idx, row in enumerate(rows)}
-        completed = 0
-        for future in as_completed(future_map):
-            idx = future_map[future]
-            try:
-                ordered_results[idx] = future.result()
-            except Exception as e:
-                row = rows[idx] if idx < len(rows) else {}
-                ordered_results[idx] = {
-                    "summary": {
-                        "SKU": row.get("sku", ""),
-                        "Retailer": selected_retailer_name,
-                        "Retail URL": row.get("retail_url", ""),
-                        "Salsify URL": row.get("salsify_url", ""),
-                        "Status": f"Processing error: {e}",
-                    },
-                    "detail": {
-                        "SKU": row.get("sku", ""),
-                        "Retailer": selected_retailer_name,
-                        "Retail URL": row.get("retail_url", ""),
-                        "Salsify URL": row.get("salsify_url", ""),
-                        "Status": f"Processing error: {e}",
-                    },
-                    "debug": {
-                        "SKU": row.get("sku", ""),
-                        "Retailer": selected_retailer_name,
-                        "Retail URL": row.get("retail_url", ""),
-                        "Salsify URL": row.get("salsify_url", ""),
-                        "Status": f"Processing error: {e}",
-                    },
-                }
-            completed += 1
+    def safe_process_row(row, row_index):
+        try:
+            return process_row(row)
+        except Exception as e:
+            return {
+                "summary": {
+                    "SKU": row.get("sku", ""),
+                    "Retailer": selected_retailer_name,
+                    "Retail URL": row.get("retail_url", ""),
+                    "Salsify URL": row.get("salsify_url", ""),
+                    "Status": f"Processing error: {e}",
+                },
+                "detail": {
+                    "SKU": row.get("sku", ""),
+                    "Retailer": selected_retailer_name,
+                    "Retail URL": row.get("retail_url", ""),
+                    "Salsify URL": row.get("salsify_url", ""),
+                    "Status": f"Processing error: {e}",
+                },
+                "debug": {
+                    "SKU": row.get("sku", ""),
+                    "Retailer": selected_retailer_name,
+                    "Retail URL": row.get("retail_url", ""),
+                    "Salsify URL": row.get("salsify_url", ""),
+                    "Status": f"Processing error: {e}",
+                    "Row Index": row_index,
+                },
+            }
+
+    if force_sequential:
+        for idx, row in enumerate(rows):
+            ordered_results[idx] = safe_process_row(row, idx)
+            completed = idx + 1
             progress_bar.progress(min(completed / total_rows, 1.0))
             status_placeholder.caption(f"Running batch for {selected_retailer_name}: {completed} of {total_rows} row(s) complete.")
+    else:
+        max_workers = max(1, min(int(MAX_WORKERS or 1), total_rows))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_map = {executor.submit(safe_process_row, row, idx): idx for idx, row in enumerate(rows)}
+            completed = 0
+            for future in as_completed(future_map):
+                idx = future_map[future]
+                ordered_results[idx] = future.result()
+                completed += 1
+                progress_bar.progress(min(completed / total_rows, 1.0))
+                status_placeholder.caption(f"Running batch for {selected_retailer_name}: {completed} of {total_rows} row(s) complete.")
 
     for result in ordered_results:
         if not isinstance(result, dict):
@@ -7057,6 +7119,15 @@ raw_html_upload_hash = str(st.session_state.get("raw_html_upload_hash", "") or "
 use_extension_mode = selected_capture_mode == EXTENSION_MODE_USE
 retailer_requires_extension = uses_extension_bridge_for_retailer(selected_retailer)
 retailer_can_skip_extension = should_skip_extension_for_retailer(selected_retailer)
+
+upload_match_stats = compute_uploaded_html_match_stats(retailer_df, selected_retailer)
+matched_uploaded_html_count = int(upload_match_stats.get("matched_count", 0) or 0)
+missing_uploaded_html_count = int(upload_match_stats.get("missing_count", 0) or 0)
+st.session_state.matched_uploaded_html_count = matched_uploaded_html_count
+st.session_state.missing_uploaded_html_count = missing_uploaded_html_count
+st.session_state.matched_uploaded_html_urls = list(upload_match_stats.get("matched_urls", []) or [])
+st.session_state.missing_uploaded_html_urls = list(upload_match_stats.get("missing_urls", []) or [])
+
 uploaded_txt_ready_for_direct_batch = (
     use_extension_mode
     and bool(selected_retailer)
@@ -7064,6 +7135,7 @@ uploaded_txt_ready_for_direct_batch = (
     and bool(file_ready_for_batch)
     and captured_html_workbook is not None
     and captured_html_loaded_count > 0
+    and matched_uploaded_html_count > 0
 )
 
 auto_batch_upload_key = (
@@ -7092,66 +7164,94 @@ batch_can_run_now = allow_direct_batch_without_txt or allow_direct_batch_from_up
 
 run_controls_col, run_status_col = st.columns([1.25, 3.75])
 with run_controls_col:
-    manual_run_requested = st.button(
+    st.button(
         "Run Batch",
         key="run_batch_after_uploads",
-        disabled=not batch_can_run_now,
+        disabled=not batch_has_rows_ready,
         use_container_width=True,
+        on_click=queue_batch_run,
+        args=("manual",),
     )
 
 with run_status_col:
-    if batch_has_rows_ready and allow_direct_batch_from_uploaded_txt:
-        st.success(
-            f"Uploaded TXT raw HTML is ready for {captured_html_loaded_count} URL(s). Starting batch automatically from uploaded retailer HTML."
-        )
+    if batch_has_rows_ready and use_extension_mode:
+        if captured_html_loaded_count > 0:
+            st.success(
+                f"Uploaded TXT raw HTML loaded: {captured_html_loaded_count} URL(s). Matched to selected retailer rows: {matched_uploaded_html_count}. Missing matches: {missing_uploaded_html_count}."
+            )
+        elif retailer_requires_extension:
+            st.warning("Batch cannot start yet because this retailer is set to use uploaded TXT raw HTML, and no usable TXT capture is loaded yet.")
     elif batch_has_rows_ready and allow_direct_batch_without_txt:
         st.info(f"Batch is ready for {selected_retailer}. Click Run Batch to process the selected retailer rows.")
-    elif retailer_requires_extension and use_extension_mode and not uploaded_txt_ready_for_direct_batch:
-        st.warning("Batch cannot start yet because this retailer is set to use uploaded TXT raw HTML, and no usable TXT capture is loaded yet.")
 
+if batch_has_rows_ready and use_extension_mode and captured_html_loaded_count > 0 and matched_uploaded_html_count == 0:
+    st.error("Uploaded TXT was loaded, but none of those normalized URLs matched the selected retailer rows in the master file. Batch would not parse any uploaded HTML for this retailer.")
+
+if st.session_state.get("batch_error_text", ""):
+    st.error(st.session_state.get("batch_error_text", ""))
+if st.session_state.get("batch_status_message", ""):
+    st.success(st.session_state.get("batch_status_message", ""))
 
 auto_run_requested = (
     bool(auto_batch_upload_key)
     and st.session_state.get("auto_batch_upload_key", "") == auto_batch_upload_key
     and st.session_state.get("auto_batch_upload_completed_key", "") != auto_batch_upload_key
 )
-run_batch_requested = bool(batch_can_run_now) and (manual_run_requested or auto_run_requested)
+manual_run_requested = bool(st.session_state.get("batch_run_requested", False)) and str(st.session_state.get("batch_run_source", "") or "") == "manual"
+run_batch_requested = bool(batch_has_rows_ready) and (manual_run_requested or auto_run_requested)
 
 if run_batch_requested:
-    st.session_state.processing_done = False
-    st.session_state.summary_rows = []
-    st.session_state.export_rows = []
-    st.session_state.debug_rows = []
-    st.session_state.summary_skus = set()
-    st.session_state.detail_skus = set()
-    st.session_state.debug_skus = set()
-    st.session_state.active_batch_key = current_batch_key
+    st.session_state.batch_run_requested = False
+    st.session_state.batch_run_source = ""
+    st.session_state.batch_error_text = ""
+    st.session_state.batch_status_message = ""
 
-    batch_result = run_batch_processing(
-        retailer_df_to_process=retailer_df,
-        selected_retailer_name=selected_retailer,
-        batch_key=current_batch_key,
-        batch_label=file_hash or current_batch_key,
-    )
+    if use_extension_mode and retailer_requires_extension and matched_uploaded_html_count <= 0:
+        st.session_state.batch_error_text = (
+            "Run Batch was requested, but there are 0 matched uploaded TXT URLs for the selected retailer rows. "
+            "Please make sure the TXT came from the same retailer URLs as the uploaded master file."
+        )
+    elif not batch_can_run_now:
+        st.session_state.batch_error_text = "Run Batch was requested, but the batch is not ready yet for the current inputs."
+    else:
+        st.session_state.processing_done = False
+        st.session_state.summary_rows = []
+        st.session_state.export_rows = []
+        st.session_state.debug_rows = []
+        st.session_state.summary_skus = set()
+        st.session_state.detail_skus = set()
+        st.session_state.debug_skus = set()
+        st.session_state.active_batch_key = current_batch_key
 
-    st.session_state.summary_rows = list(batch_result.get("summary_rows", []) or [])
-    st.session_state.export_rows = list(batch_result.get("detail_rows", []) or [])
-    st.session_state.debug_rows = list(batch_result.get("debug_rows", []) or [])
-    st.session_state.processing_done = True
-    st.session_state.completed_batch_key = current_batch_key
-    st.session_state.report_batch_key = current_batch_key
-    st.session_state.report_bytes = batch_result.get("report_bytes")
-    st.session_state.report_filename = batch_result.get("report_filename")
-    st.session_state.auto_download_done = False
+        force_sequential = bool(use_extension_mode and matched_uploaded_html_count > 0)
+        batch_result = run_batch_processing(
+            retailer_df_to_process=retailer_df,
+            selected_retailer_name=selected_retailer,
+            batch_key=current_batch_key,
+            batch_label=file_hash or current_batch_key,
+            force_sequential=force_sequential,
+        )
 
-    if auto_batch_upload_key:
-        st.session_state.auto_batch_upload_completed_key = auto_batch_upload_key
-        if st.session_state.get("auto_batch_upload_key", "") == auto_batch_upload_key:
-            st.session_state.auto_batch_upload_key = ""
+        st.session_state.summary_rows = list(batch_result.get("summary_rows", []) or [])
+        st.session_state.export_rows = list(batch_result.get("detail_rows", []) or [])
+        st.session_state.debug_rows = list(batch_result.get("debug_rows", []) or [])
+        st.session_state.processing_done = True
+        st.session_state.completed_batch_key = current_batch_key
+        st.session_state.report_batch_key = current_batch_key
+        st.session_state.report_bytes = batch_result.get("report_bytes")
+        st.session_state.report_filename = batch_result.get("report_filename")
+        st.session_state.auto_download_done = False
+        processed_count = int(batch_result.get("processed_count", 0) or 0)
+        st.session_state.batch_status_message = f"Batch finished for {selected_retailer}. Processed {processed_count} row(s)."
 
-    st.session_state.active_batch_key = ""
+        if auto_batch_upload_key:
+            st.session_state.auto_batch_upload_completed_key = auto_batch_upload_key
+            if st.session_state.get("auto_batch_upload_key", "") == auto_batch_upload_key:
+                st.session_state.auto_batch_upload_key = ""
 
-    try:
-        st.rerun()
-    except Exception:
-        pass
+        st.session_state.active_batch_key = ""
+
+        try:
+            st.rerun()
+        except Exception:
+            pass
