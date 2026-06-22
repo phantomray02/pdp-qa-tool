@@ -7349,10 +7349,12 @@ if (
 
                 rating_html = ""
                 if str(retailer_name or "").strip().lower() in {"walgreens", "kroger"}:
+                    retailer_name_norm = str(retailer_name or "").strip().lower()
                     rating_value = (r_text.get("rating", "") if isinstance(r_text, dict) else "") or row.get("rating", "") or ""
                     review_count_value = (r_text.get("review_count", "") if isinstance(r_text, dict) else "") or row.get("review_count", "") or ""
                     if rating_value or review_count_value:
-                        rating_html = rating_stars_html(rating_value, review_count_value, font_size_px=18)
+                        kroger_star_size = 28 if retailer_name_norm == "kroger" else 18
+                        rating_html = rating_stars_html(rating_value, review_count_value, font_size_px=kroger_star_size)
 
                 st.markdown(
                     locked_visual_header_row_html(
