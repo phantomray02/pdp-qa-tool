@@ -6265,6 +6265,14 @@ if "report_filename" not in st.session_state:
     st.session_state.report_filename = None
 if "report_batch_key" not in st.session_state:
     st.session_state.report_batch_key = ""
+if "batch_run_requested" not in st.session_state:
+    st.session_state.batch_run_requested = False
+if "batch_started_key" not in st.session_state:
+    st.session_state.batch_started_key = ""
+if "batch_status_message" not in st.session_state:
+    st.session_state.batch_status_message = ""
+if "batch_error_text" not in st.session_state:
+    st.session_state.batch_error_text = ""
 
 # =========================================
 # TOP UPLOAD + DOWNLOAD UI
@@ -6320,6 +6328,10 @@ if uploaded_file:
             st.session_state.report_bytes = None
             st.session_state.report_filename = None
             st.session_state.report_batch_key = ""
+            st.session_state.batch_run_requested = False
+            st.session_state.batch_started_key = ""
+            st.session_state.batch_status_message = ""
+            st.session_state.batch_error_text = ""
             clear_in_memory_caches()
             st.cache_data.clear()
 
@@ -6378,6 +6390,48 @@ if uploaded_file:
                 st.session_state.selected_brand_visual = "All"
                 st.session_state.auto_download_done = False
                 st.session_state.report_batch_key = ""
+                st.session_state.batch_run_requested = False
+                st.session_state.batch_started_key = ""
+                st.session_state.batch_status_message = ""
+                st.session_state.batch_error_text = ""
+
+
+            run_button_col, run_msg_col = st.columns([1.2, 3.8], gap="small")
+            with run_button_col:
+                if st.button(
+                    "Run Batch",
+                    key=f"run_batch_btn::{current_batch_key}",
+                    use_container_width=True,
+                ):
+                    st.session_state.batch_run_requested = True
+                    st.session_state.batch_started_key = current_batch_key
+                    st.session_state.batch_status_message = ""
+                    st.session_state.batch_error_text = ""
+                    st.session_state.processing_done = False
+                    st.session_state.completed_batch_key = ""
+                    st.session_state.start_idx = 0
+                    st.session_state.summary_rows = []
+                    st.session_state.export_rows = []
+                    st.session_state.debug_rows = []
+                    st.session_state.summary_skus = set()
+                    st.session_state.detail_skus = set()
+                    st.session_state.debug_skus = set()
+                    st.session_state.progress_bar = None
+                    st.session_state.report_bytes = None
+                    st.session_state.report_filename = None
+                    st.session_state.report_batch_key = ""
+                    st.session_state.auto_download_done = False
+                    clear_in_memory_caches()
+                    st.cache_data.clear()
+                    st.rerun()
+
+            with run_msg_col:
+                if st.session_state.batch_error_text:
+                    st.error(st.session_state.batch_error_text)
+                elif st.session_state.processing_done and st.session_state.completed_batch_key == current_batch_key:
+                    st.success(st.session_state.batch_status_message or f"Batch finished for {selected_retailer}. Visual QA review is ready below.")
+                else:
+                    st.info(f"Top section stays in the new app flow. Click Run Batch for {selected_retailer}, then the visual QA review will appear below after the extract/report finishes.")
 
     except EmptyDataError:
         st.error("🔥 CRITICAL APP ERROR")
@@ -6492,7 +6546,7 @@ if retailer_df is not None and st.session_state.processing_done and st.session_s
 # =========================================
 # FILE + PROCESSING
 # =========================================
-if retailer_df is not None and file_ready_for_batch:
+if retailer_df is not None and file_ready_for_batch and st.session_state.batch_started_key == current_batch_key:
     try:
         if retailer_df.empty:
             st.warning("No rows found for the selected retailer.")
@@ -6556,8 +6610,11 @@ if retailer_df is not None and file_ready_for_batch:
             else:
                 st.session_state.processing_done = True
                 st.session_state.completed_batch_key = current_batch_key
+                st.session_state.batch_status_message = f"Batch finished for {selected_retailer}. Extract/report generated successfully."
+                st.session_state.batch_run_requested = False
                 st.rerun()
     except Exception as e:
+        st.session_state.batch_error_text = str(e)
         st.error("🔥 CRITICAL APP ERROR")
         st.text(str(e))
         st.text(traceback.format_exc())
@@ -6640,6 +6697,8 @@ if (
     st.session_state.report_filename = f"pdp_qa_results_{safe_retailer}_all_brands.xlsx"
     st.session_state.report_batch_key = st.session_state.completed_batch_key
     st.session_state.auto_download_done = False
+    if not st.session_state.batch_status_message:
+        st.session_state.batch_status_message = f"Batch finished for {selected_retailer}. Extract/report generated successfully."
     st.rerun()
         
 # =========================================
@@ -6680,6 +6739,7 @@ if (
             unsafe_allow_html=True,
         )
         st.markdown("## 👁️ Full Visual QA Review")
+        st.caption("This full visual UI appears only after the new top-section batch run finishes and the extract/report rows are ready.")
 
         if hidden_count > 0:
             st.caption(
