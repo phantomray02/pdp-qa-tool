@@ -1234,11 +1234,10 @@ def parse_uploaded_raw_html_map(raw_text):
         return {}
 
     html_map = {}
-
-    # Preferred format produced by the extension downloader.
     block_pattern = re.compile(
         r'(?is)Requested\s+URL\s*:\s*(https?://\S+).*?-----BEGIN HTML-----(.*?)-----END HTML-----'
     )
+
     for match in block_pattern.finditer(raw_text):
         requested_url = str(match.group(1) or "").strip()
         html_text = html.unescape(str(match.group(2) or "").strip())
@@ -1247,31 +1246,6 @@ def parse_uploaded_raw_html_map(raw_text):
         key = normalize_uploaded_capture_url(requested_url)
         if key:
             html_map[key] = html_text
-
-    # Fallback legacy parser if no BEGIN/END HTML blocks are found.
-    if not html_map:
-        label_pattern = re.compile(r'(?im)^(?:requested\s+url|final\s+url|retail\s+url|retailer\s+url|url)\s*:\s*(https?://\S+)\s*$')
-        matches = list(label_pattern.finditer(raw_text))
-        if not matches:
-            alt_pattern = re.compile(r'(?im)^(https?://\S+)\s*$')
-            matches = list(alt_pattern.finditer(raw_text))
-
-        html_start_tokens = ['<!doctype', '<html', '<head', '<body', '<script', '<div']
-        for i, match in enumerate(matches):
-            requested_url = str(match.group(1) or "").strip()
-            start = match.end()
-            end = matches[i + 1].start() if i + 1 < len(matches) else len(raw_text)
-            block = raw_text[start:end]
-            block_lower = block.lower()
-            first_pos = min([pos for pos in [block_lower.find(tok) for tok in html_start_tokens] if pos != -1], default=-1)
-            html_text = block[first_pos:] if first_pos != -1 else block
-            html_text = html.unescape(str(html_text or "").strip())
-            if not requested_url or len(html_text) < 30:
-                continue
-            key = normalize_uploaded_capture_url(requested_url)
-            if key:
-                html_map[key] = html_text
-
     return html_map
 
 def lookup_uploaded_raw_html(uploaded_html_map, retail_url, target_rpc=""):
@@ -1279,16 +1253,17 @@ def lookup_uploaded_raw_html(uploaded_html_map, retail_url, target_rpc=""):
     retail_url = str(retail_url or "").strip()
     target_rpc = str(target_rpc or "").strip()
 
-    # Kroger strict path.
     if retail_url and "kroger.com" in retail_url.lower():
         key = normalize_uploaded_capture_url(retail_url)
         html_text = str(uploaded_html_map.get(key, "") or "")
         if html_text:
             return html_text
+        matched_key = find_kroger_url_in_uploaded_map(uploaded_html_map, target_rpc=target_rpc)
+        if matched_key:
+            return str(uploaded_html_map.get(matched_key, "") or "")
+        return ""
 
-    # Kroger fallback: if the exact URL is not available or retail_url is blank,
-    # connect Kroger RPC to the first matching Requested URL in the TXT map.
-    if target_rpc:
+    if not retail_url and target_rpc:
         matched_key = find_kroger_url_in_uploaded_map(uploaded_html_map, target_rpc=target_rpc)
         if matched_key:
             return str(uploaded_html_map.get(matched_key, "") or "")
@@ -1497,54 +1472,12 @@ def find_kroger_url_in_uploaded_map(uploaded_html_map, target_rpc=""):
     rpc_values = kroger_rpc_candidates(target_rpc)
     if not rpc_values:
         return ""
-
     for key in uploaded_html_map.keys():
         key_str = normalize_uploaded_capture_url(key)
         for rpc in rpc_values:
-            if not rpc:
-                continue
-            if rpc in key_str:
+            if rpc and rpc in key_str:
                 return key_str
     return ""
-
-
-
-def resolve_kroger_row_from_uploaded_map(retail_url="", target_rpc="", row_source_code="", uploaded_html_map=None):
-    uploaded_html_map = uploaded_html_map or {}
-    retail_url = str(retail_url or "").strip()
-    target_rpc = str(target_rpc or "").strip()
-    row_source_code = str(row_source_code or "")
-
-    matched_url = retail_url
-    matched_html = row_source_code
-    debug = {
-        "kroger_retail_url_input": retail_url,
-        "kroger_rpc_input": target_rpc,
-        "kroger_matched_url": "",
-        "kroger_lookup_mode": "",
-    }
-
-    if matched_html.strip():
-        debug["kroger_matched_url"] = retail_url
-        debug["kroger_lookup_mode"] = "row_source_code_preloaded"
-        return matched_url, matched_html, debug
-
-    if retail_url:
-        html_by_url = lookup_uploaded_raw_html(uploaded_html_map, retail_url, target_rpc=target_rpc)
-        if html_by_url:
-            debug["kroger_matched_url"] = normalize_uploaded_capture_url(retail_url)
-            debug["kroger_lookup_mode"] = "retail_url_exact_or_rpc_fallback"
-            return normalize_uploaded_capture_url(retail_url), html_by_url, debug
-
-    matched_url = find_kroger_url_in_uploaded_map(uploaded_html_map, target_rpc=target_rpc)
-    if matched_url:
-        matched_html = str(uploaded_html_map.get(matched_url, "") or "")
-        debug["kroger_matched_url"] = matched_url
-        debug["kroger_lookup_mode"] = "rpc_to_requested_url"
-        return matched_url, matched_html, debug
-
-    debug["kroger_lookup_mode"] = "no_match"
-    return retail_url, row_source_code, debug
 
 def resolve_debug_views(
     debug_url,
@@ -3228,17 +3161,9 @@ def extract_kroger_text_from_html(html_text, retail_url="", target_rpc=""):
         debug["Title Path"] = "kroger_txt_missing"
         debug["Description Path"] = "kroger_txt_missing"
         debug["Features Path"] = "kroger_txt_missing"
-        return {
-            "title": "",
-            "description": "",
-            "features": [],
-            "rating": "",
-            "review_count": "",
-            "debug": debug,
-        }
+        return {"title": "", "description": "", "features": [], "rating": "", "review_count": "", "debug": debug}
 
-    # Double-unescape so encoded HTML in TXT still becomes DOM nodes.
-    working = html.unescape(html.unescape(str(html_text or "")))
+    working = html.unescape(str(html_text or ""))
     soup = BeautifulSoup(working, "html.parser")
 
     title = ""
@@ -3316,6 +3241,7 @@ def extract_kroger_text_from_html(html_text, retail_url="", target_rpc=""):
         "debug": debug,
     }
 
+@st.cache_data(show_spinner=False)
 def get_kroger_bundle(retail_url, target_rpc=""):
     return build_empty_retailer_bundle("Kroger", "kroger_txt_only_no_live_fetch")
 
@@ -6180,14 +6106,32 @@ def get_visual_row_payload(
     retail_url,
     current_target_sku="",
     sku="",
+    row_source_code="",
 ):
     s_bundle = get_salsify_bundle(salsify_url)
+
+    retailer_norm = normalize_retailer_name(retailer_name).strip().lower()
+    retail_url = str(retail_url or "").strip()
+    row_source_code = str(row_source_code or "")
+    uploaded_html_map = st.session_state.uploaded_raw_html_map or {}
+
+    # Visual QA must reuse the same Kroger TXT-matched HTML used in batch processing.
+    if retailer_norm == "kroger":
+        if not retail_url and current_target_sku:
+            retail_url = find_kroger_url_in_uploaded_map(uploaded_html_map, target_rpc=current_target_sku)
+        if not row_source_code:
+            row_source_code = lookup_uploaded_raw_html(
+                uploaded_html_map,
+                retail_url,
+                target_rpc=current_target_sku,
+            )
 
     r_bundle = get_retailer_bundle(
         retailer_name,
         retail_url,
         current_target_sku,
         sku=sku,
+        row_source_code=row_source_code,
     )
 
     visual_max_slots = MAX_IMAGE_SLOTS_TO_COMPARE
@@ -6219,9 +6163,7 @@ def get_visual_row_payload(
         "r_text": r_text,
         "r_images": r_images,
     }
-# =========================================
-# PROCESS ROW
-# =========================================
+
 def process_row(row):
     try:
         retail_url = row.get("retail_url", "")
@@ -6235,16 +6177,9 @@ def process_row(row):
         salsify_url = str(salsify_url or "").strip()
         retail_url = str(retail_url or "").strip()
         cvs_rpc = str(cvs_rpc or "").strip()
-        row_source_code = str(row_source_code or "")
 
-        kroger_row_debug = {}
-        if str(retailer_name).strip().lower() == "kroger":
-            retail_url, row_source_code, kroger_row_debug = resolve_kroger_row_from_uploaded_map(
-                retail_url=retail_url,
-                target_rpc=cvs_rpc,
-                row_source_code=row_source_code,
-                uploaded_html_map=st.session_state.uploaded_raw_html_map or {},
-            )
+        if str(retailer_name).strip().lower() == "kroger" and not retail_url and cvs_rpc:
+            retail_url = find_kroger_url_in_uploaded_map(st.session_state.uploaded_raw_html_map or {}, target_rpc=cvs_rpc)
 
         title_score = 0
         desc_score = 0
@@ -6308,7 +6243,6 @@ def process_row(row):
                     "Review Count": review_count_value,
                     "Salsify URL": salsify_url,
                     "Status": ", ".join(status_notes),
-                    **kroger_row_debug,
                 },
             }
 
@@ -6721,7 +6655,7 @@ if uploaded_file:
                 retailer_df["retail_url"] = retailer_df["retail_url"].fillna("").astype(str).str.strip()
                 if uploaded_raw_html_map and "retailer_rpc" in retailer_df.columns:
                     retailer_df["retail_url"] = retailer_df.apply(
-                        lambda row: row.get("retail_url", "") if str(row.get("retail_url", "")).strip() else find_kroger_url_in_uploaded_map(uploaded_raw_html_map, target_rpc=row.get("retailer_rpc", "")),
+                        lambda row: row["retail_url"] if str(row.get("retail_url", "")).strip() else find_kroger_url_in_uploaded_map(uploaded_raw_html_map, target_rpc=row.get("retailer_rpc", "")),
                         axis=1,
                     )
                 retailer_df = retailer_df[retailer_df["retail_url"].astype(str).str.strip() != ""].copy()
@@ -6729,10 +6663,7 @@ if uploaded_file:
             if "copy_source_code" not in retailer_df.columns:
                 retailer_df["copy_source_code"] = ""
             if uploaded_raw_html_map:
-                retailer_df["copy_source_code"] = retailer_df.apply(
-                    lambda row: lookup_uploaded_raw_html(uploaded_raw_html_map, row.get("retail_url", ""), target_rpc=row.get("retailer_rpc", "")),
-                    axis=1,
-                )
+                retailer_df["copy_source_code"] = retailer_df.apply(lambda row: lookup_uploaded_raw_html(uploaded_raw_html_map, row.get("retail_url", ""), target_rpc=row.get("retailer_rpc", "")), axis=1)
                 matched_uploaded_html_count = int((retailer_df["copy_source_code"].astype(str).str.len() > 0).sum())
                 missing_uploaded_html_count = max(len(retailer_df) - matched_uploaded_html_count, 0)
             current_batch_key = f"{file_hash}::{selected_retailer}::{capture_batch_key_part}"
@@ -7162,7 +7093,7 @@ if (
         )
         st.markdown("## 👁️ Full Visual QA Review")
         st.caption("This full visual UI appears only after the top batch run finishes and the extract/report rows are ready.")
-        st.caption("This full visual UI appears only after the new top-section batch run finishes and the extract/report rows are ready.")
+        st.caption("This full visual UI appears only after the new top-section batch run finishes and the extract/report rows are ready. Kroger visual rows reuse the uploaded TXT-matched HTML instead of live fetch.")
 
         if hidden_count > 0:
             st.caption(
@@ -7192,6 +7123,7 @@ if (
                 retail_url,
                 current_target_sku,
                 sku=sku,
+                row_source_code=row.get("copy_source_code", ""),
             )
             s_text = visual_payload["s_text"]
             s_images = visual_payload["s_images"]
