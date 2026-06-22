@@ -758,6 +758,36 @@ def prepare_input_df(df):
         raise ValueError(f"Missing required columns: {missing}")
     return df
 
+
+
+def strict_filter_rows_for_selected_retailer(df, selected_retailer, dedupe_by_url=False):
+    """
+    Hard retailer isolation guard.
+
+    This prevents any CVS, Walgreens, Kroger, or Sam's Club rows from leaking into a
+    different retailer batch, even if the uploaded file contains multiple retailers.
+    """
+    selected_retailer_norm = normalize_retailer_name(selected_retailer)
+    if df is None:
+        return pd.DataFrame()
+
+    out = df.copy()
+    if "retailer" not in out.columns:
+        out["retailer"] = "Retailer"
+
+    out["retailer"] = out["retailer"].astype(str).apply(normalize_retailer_name)
+    out = out[out["retailer"] == selected_retailer_norm].copy()
+
+    if "retail_url" not in out.columns:
+        out["retail_url"] = ""
+
+    out["retail_url"] = out["retail_url"].fillna("").astype(str).str.strip()
+    out = out[out["retail_url"] != ""].copy()
+
+    if dedupe_by_url and not out.empty:
+        out = out.drop_duplicates(subset=["retail_url"], keep="first").copy()
+
+    return out
 def clear_in_memory_caches():
     global html_cache, image_hash_cache, image_compare_cache, walgreens_api_cache
 
@@ -1275,18 +1305,43 @@ def lookup_uploaded_raw_html(uploaded_html_map, retail_url, target_rpc=""):
     return ""
 
 def build_extension_batch_payload(retailer_df, retailer_name, current_batch_key, capture_mode, txt_ready=False):
-    retailer_df = retailer_df.copy() if retailer_df is not None else pd.DataFrame()
+    retailer_name_norm = normalize_retailer_name(retailer_name)
+    retailer_df = strict_filter_rows_for_selected_retailer(
+        retailer_df,
+        retailer_name_norm,
+        dedupe_by_url=True,
+    )
+
     retail_urls = []
-    if retailer_df is not None and not retailer_df.empty and "retail_url" in retailer_df.columns:
-        retail_urls = [str(x).strip() for x in retailer_df["retail_url"].fillna("").astype(str).tolist() if str(x).strip()]
+    row_payload = []
+    if retailer_df is not None and not retailer_df.empty:
+        retail_urls = [
+            str(x).strip()
+            for x in retailer_df["retail_url"].fillna("").astype(str).tolist()
+            if str(x).strip()
+        ]
+        row_payload = [
+            {
+                "sku": str(row.get("sku", "") or "").strip(),
+                "retail_url": str(row.get("retail_url", "") or "").strip(),
+                "retailer_rpc": str(row.get("retailer_rpc", "") or "").strip(),
+                "retailer": retailer_name_norm,
+            }
+            for _, row in retailer_df.iterrows()
+            if str(row.get("retail_url", "") or "").strip()
+        ]
+
     return {
         "ready": True,
-        "retailer": str(retailer_name or ""),
+        "retailer": retailer_name_norm,
+        "retailerGuard": retailer_name_norm,
         "batchKey": str(current_batch_key or ""),
         "captureMode": str(capture_mode or ""),
         "txtReady": bool(txt_ready),
-        "totalRows": int(len(retailer_df)) if retailer_df is not None else 0,
+        "totalRows": int(len(retail_urls)),
+        "uniqueRetailUrlCount": int(len(retail_urls)),
         "retailUrls": retail_urls,
+        "rows": row_payload,
         "timestamp": int(time.time()),
     }
 
@@ -6818,7 +6873,11 @@ if uploaded_file:
             capture_batch_key_part = "use_ext" if selected_capture_mode == CAPTURE_MODE_USE_EXTENSION else "skip_ext"
             if st.session_state.raw_html_upload_hash:
                 capture_batch_key_part += f"::{st.session_state.raw_html_upload_hash}"
-            retailer_df = master_df[master_df["retailer"].astype(str) == selected_retailer].copy()
+            retailer_df = strict_filter_rows_for_selected_retailer(
+                master_df,
+                selected_retailer,
+                dedupe_by_url=(selected_capture_mode == CAPTURE_MODE_USE_EXTENSION),
+            )
 
             if selected_retailer == "Kroger":
                 retailer_df = retailer_df.copy()
@@ -6828,7 +6887,11 @@ if uploaded_file:
                         lambda row: row["retail_url"] if str(row.get("retail_url", "")).strip() else find_kroger_url_in_uploaded_map(uploaded_raw_html_map, target_rpc=row.get("retailer_rpc", "")),
                         axis=1,
                     )
-                retailer_df = retailer_df[retailer_df["retail_url"].astype(str).str.strip() != ""].copy()
+                retailer_df = strict_filter_rows_for_selected_retailer(
+                    retailer_df,
+                    selected_retailer,
+                    dedupe_by_url=(selected_capture_mode == CAPTURE_MODE_USE_EXTENSION),
+                )
 
             if "copy_source_code" not in retailer_df.columns:
                 retailer_df["copy_source_code"] = ""
@@ -6860,6 +6923,8 @@ if uploaded_file:
                 st.session_state.auto_batch_upload_key = ""
 
             txt_ready_for_batch = bool(matched_uploaded_html_count > 0)
+            isolated_unique_url_count = int(retailer_df["retail_url"].fillna("").astype(str).str.strip().replace("", pd.NA).dropna().nunique()) if retailer_df is not None and not retailer_df.empty and "retail_url" in retailer_df.columns else 0
+            st.caption(f"Strict retailer isolation active: {selected_retailer} only. Rows queued: {len(retailer_df)}. Unique retailer URLs queued: {isolated_unique_url_count}.")
             if selected_capture_mode == CAPTURE_MODE_USE_EXTENSION:
                 extension_payload = build_extension_batch_payload(
                     retailer_df=retailer_df,
@@ -7153,6 +7218,16 @@ if (
     summary_df = pd.DataFrame(st.session_state.summary_rows)
     detail_df = pd.DataFrame(st.session_state.export_rows)
     debug_df = pd.DataFrame(st.session_state.debug_rows)
+
+    selected_retailer_rpc_header = f"{str(selected_retailer or '').strip() or 'Retailer'} RPC"
+    for _df in [summary_df, detail_df, debug_df]:
+        _df.rename(
+            columns={
+                "CVS RPC": selected_retailer_rpc_header,
+                "Retailer RPC": selected_retailer_rpc_header,
+            },
+            inplace=True,
+        )
 
     output = BytesIO()
 
