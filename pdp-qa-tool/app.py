@@ -3241,6 +3241,93 @@ def extract_kroger_text_from_html(html_text, retail_url="", target_rpc=""):
         "debug": debug,
     }
 
+def _absolutize_kroger_image_url(url):
+    url = html.unescape(str(url or "").strip())
+    if not url:
+        return ""
+    if url.startswith("//"):
+        url = "https:" + url
+    elif url.startswith("/"):
+        url = "https://www.kroger.com" + url
+    if not re.match(r'^https?://', url, flags=re.IGNORECASE):
+        return ""
+    lowered = url.lower()
+    if "/product/images/" not in lowered:
+        return ""
+    url = url.split("?", 1)[0].strip()
+    return url
+
+
+def _extract_kroger_perspective_from_text(text):
+    text = normalize_space(text).lower()
+    if not text:
+        return ""
+    for key in ["front", "back", "left", "right", "top", "bottom"]:
+        if re.search(rf'{re.escape(key)}', text, flags=re.IGNORECASE):
+            return key
+    return ""
+
+
+def _extract_kroger_perspective_from_url(url):
+    url = str(url or "")
+    m = re.search(r'/product/images/(?:large|medium|small)/([^/]+)/', url, flags=re.IGNORECASE)
+    if m:
+        return str(m.group(1) or "").strip().lower()
+    return ""
+
+
+def extract_kroger_images_from_html(html_text):
+    if not html_text:
+        return []
+
+    working = html.unescape(str(html_text or ""))
+    soup = BeautifulSoup(working, "html.parser")
+
+    perspective_rank = {
+        "front": 0,
+        "back": 1,
+        "left": 2,
+        "right": 3,
+        "top": 4,
+        "bottom": 5,
+    }
+
+    candidates = []
+    seen = set()
+
+    def add_candidate(url, slot_index=999, perspective_hint=""):
+        clean_url = _absolutize_kroger_image_url(url)
+        if not clean_url or clean_url in seen:
+            return
+        perspective = perspective_hint or _extract_kroger_perspective_from_url(clean_url)
+        rank = perspective_rank.get(perspective, 999)
+        candidates.append((slot_index, rank, clean_url))
+        seen.add(clean_url)
+
+    slide_nodes = soup.select('[data-testid="main-image-perspective"]')
+    for idx, slide in enumerate(slide_nodes):
+        aria_label = str(slide.get('aria-label', '') or '')
+        perspective_hint = _extract_kroger_perspective_from_text(aria_label)
+        preferred_imgs = slide.select('img.ProductImages-image[src], img[src]')
+        for img in preferred_imgs:
+            src = img.get('src', '')
+            alt = str(img.get('alt', '') or '')
+            img_perspective = perspective_hint or _extract_kroger_perspective_from_text(alt)
+            add_candidate(src, slot_index=idx, perspective_hint=img_perspective)
+
+    if not candidates:
+        raw_urls = re.findall(
+            r"https://www\.kroger\.com/product/images/(?:large|medium|small)/[^\s"'<>]+",
+            working,
+            flags=re.IGNORECASE,
+        )
+        for idx, raw_url in enumerate(raw_urls):
+            add_candidate(raw_url, slot_index=idx)
+
+    candidates.sort(key=lambda item: (item[0], item[1], item[2]))
+    ordered_urls = [url for _, _, url in candidates]
+    return ordered_urls[:MAX_IMAGE_SLOTS_TO_COMPARE]
+
 @st.cache_data(show_spinner=False)
 def get_kroger_bundle(retail_url, target_rpc=""):
     return build_empty_retailer_bundle("Kroger", "kroger_txt_only_no_live_fetch")
@@ -5175,9 +5262,10 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
         if uploaded_html.strip():
             bundle = {
                 "text": extract_kroger_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc),
-                "images": [],
+                "images": extract_kroger_images_from_html(uploaded_html),
             }
             bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
+            bundle.setdefault("text", {}).setdefault("debug", {})["Image Path"] = "kroger_main_image_perspective"
             return bundle
         return build_empty_retailer_bundle("Kroger", "kroger_txt_required_missing_or_rpc_not_matched")
 
