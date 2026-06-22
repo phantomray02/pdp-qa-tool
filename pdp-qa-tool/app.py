@@ -727,7 +727,6 @@ def prepare_input_df(df):
                 .str.replace(".0", "", regex=False)
                 .str.strip()
             )
-
     if rpc_candidates:
         retailer_rpc = rpc_candidates[0].copy()
         for series in rpc_candidates[1:]:
@@ -745,16 +744,12 @@ def prepare_input_df(df):
             df[col] = ""
 
     for col in ["sku", "salsify_url", "retail_url", "brand", "retailer_rpc", "rating", "review_count"]:
-        df[col] = (
-            df[col].replace("#N/A", "").fillna("").astype(str).str.strip()
-        )
+        df[col] = df[col].replace("#N/A", "").fillna("").astype(str).str.strip()
 
     if "retailer" not in df.columns:
         df["retailer"] = df["retail_url"].apply(infer_retailer_name_from_url)
     else:
-        df["retailer"] = (
-            df["retailer"].replace("#N/A", "").fillna("").astype(str).str.strip()
-        )
+        df["retailer"] = df["retailer"].replace("#N/A", "").fillna("").astype(str).str.strip()
     df["retailer"] = df["retailer"].apply(normalize_retailer_name)
 
     required = ["sku", "salsify_url", "retail_url"]
@@ -1253,15 +1248,25 @@ def parse_uploaded_raw_html_map(raw_text):
             html_map[key] = html_text
     return html_map
 
-def lookup_uploaded_raw_html(uploaded_html_map, retail_url):
+def lookup_uploaded_raw_html(uploaded_html_map, retail_url, target_rpc=""):
     uploaded_html_map = uploaded_html_map or {}
     retail_url = str(retail_url or "").strip()
-    if not retail_url:
+    target_rpc = str(target_rpc or "").strip()
+
+    if retail_url and "kroger.com" in retail_url.lower():
+        key = normalize_uploaded_capture_url(retail_url)
+        html_text = str(uploaded_html_map.get(key, "") or "")
+        if html_text:
+            return html_text
+        matched_key = find_kroger_url_in_uploaded_map(uploaded_html_map, target_rpc=target_rpc)
+        if matched_key:
+            return str(uploaded_html_map.get(matched_key, "") or "")
         return ""
 
-    if "kroger.com" in retail_url.lower():
-        key = normalize_uploaded_capture_url(retail_url)
-        return str(uploaded_html_map.get(key, "") or "")
+    if not retail_url and target_rpc:
+        matched_key = find_kroger_url_in_uploaded_map(uploaded_html_map, target_rpc=target_rpc)
+        if matched_key:
+            return str(uploaded_html_map.get(matched_key, "") or "")
 
     for key in uploaded_capture_url_candidates(retail_url):
         html_text = uploaded_html_map.get(key, "")
@@ -1438,6 +1443,41 @@ def normalize_kroger_url(url):
     url = re.sub(r'[?&]+$', '', url)
     url = re.sub(r'\?{2,}', '?', url)
     return url.strip()
+
+def clean_kroger_rpc(value):
+    value = str(value or "").strip()
+    value = value.replace(".0", "")
+    value = re.sub(r"[^0-9A-Za-z]", "", value)
+    return value
+
+
+def kroger_rpc_candidates(value):
+    rpc = clean_kroger_rpc(value)
+    if not rpc:
+        return []
+    out = [rpc]
+    if rpc.isdigit() and len(rpc) < 13:
+        out.append(rpc.zfill(13))
+    if rpc.isdigit() and len(rpc) < 12:
+        out.append(rpc.zfill(12))
+    deduped = []
+    for item in out:
+        if item and item not in deduped:
+            deduped.append(item)
+    return deduped
+
+
+def find_kroger_url_in_uploaded_map(uploaded_html_map, target_rpc=""):
+    uploaded_html_map = uploaded_html_map or {}
+    rpc_values = kroger_rpc_candidates(target_rpc)
+    if not rpc_values:
+        return ""
+    for key in uploaded_html_map.keys():
+        key_str = normalize_uploaded_capture_url(key)
+        for rpc in rpc_values:
+            if rpc and rpc in key_str:
+                return key_str
+    return ""
 
 def resolve_debug_views(
     debug_url,
@@ -1888,7 +1928,6 @@ def get_target_sku_from_inputs(retail_url="", cvs_rpc=""):
         return m.group(1).strip()
 
     return cvs_rpc
-
 
 def clean_cvs_text_refined(text):
     return clean_cvs_text(text)
@@ -3057,8 +3096,8 @@ def extract_kroger_description_and_features_from_html(html_text):
 
     working = html.unescape(str(html_text or ""))
     soup = BeautifulSoup(working, "html.parser")
-
     romance = soup.select_one('[data-testid="product-details-romance-description"]')
+
     if romance is not None:
         description = ""
         p_tag = romance.find('p')
@@ -5140,7 +5179,7 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
             }
             bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
             return bundle
-        return build_empty_retailer_bundle("Kroger", "kroger_txt_required_missing_or_url_not_found")
+        return build_empty_retailer_bundle("Kroger", "kroger_txt_required_missing_or_rpc_not_matched")
 
     if uploaded_html.strip():
         if retailer == "cvs":
@@ -6121,6 +6160,10 @@ def process_row(row):
 
         salsify_url = str(salsify_url or "").strip()
         retail_url = str(retail_url or "").strip()
+        cvs_rpc = str(cvs_rpc or "").strip()
+
+        if str(retailer_name).strip().lower() == "kroger" and not retail_url and cvs_rpc:
+            retail_url = find_kroger_url_in_uploaded_map(st.session_state.uploaded_raw_html_map or {}, target_rpc=cvs_rpc)
 
         title_score = 0
         desc_score = 0
@@ -6591,18 +6634,20 @@ if uploaded_file:
                 capture_batch_key_part += f"::{st.session_state.raw_html_upload_hash}"
             retailer_df = master_df[master_df["retailer"].astype(str) == selected_retailer].copy()
 
-            # Kroger sheet rules:
-            # - only rows from the Kroger sheet.
-            # - do not display/process rows with blank retail_url.
             if selected_retailer == "Kroger":
                 retailer_df = retailer_df.copy()
                 retailer_df["retail_url"] = retailer_df["retail_url"].fillna("").astype(str).str.strip()
-                retailer_df = retailer_df[retailer_df["retail_url"] != ""].copy()
+                if uploaded_raw_html_map and "retailer_rpc" in retailer_df.columns:
+                    retailer_df["retail_url"] = retailer_df.apply(
+                        lambda row: row["retail_url"] if str(row.get("retail_url", "")).strip() else find_kroger_url_in_uploaded_map(uploaded_raw_html_map, target_rpc=row.get("retailer_rpc", "")),
+                        axis=1,
+                    )
+                retailer_df = retailer_df[retailer_df["retail_url"].astype(str).str.strip() != ""].copy()
 
             if "copy_source_code" not in retailer_df.columns:
                 retailer_df["copy_source_code"] = ""
             if uploaded_raw_html_map:
-                retailer_df["copy_source_code"] = retailer_df["retail_url"].apply(lambda value: lookup_uploaded_raw_html(uploaded_raw_html_map, value))
+                retailer_df["copy_source_code"] = retailer_df.apply(lambda row: lookup_uploaded_raw_html(uploaded_raw_html_map, row.get("retail_url", ""), target_rpc=row.get("retailer_rpc", "")), axis=1)
                 matched_uploaded_html_count = int((retailer_df["copy_source_code"].astype(str).str.len() > 0).sum())
                 missing_uploaded_html_count = max(len(retailer_df) - matched_uploaded_html_count, 0)
             current_batch_key = f"{file_hash}::{selected_retailer}::{capture_batch_key_part}"
@@ -6638,7 +6683,7 @@ if uploaded_file:
                     txt_ready=txt_ready_for_batch,
                 )
                 render_extension_batch_bridge(extension_payload)
-                st.caption(f"Extension bridge ready for {selected_retailer}. For Kroger, upload the TXT capture and the app will match each Kroger retail_url to Requested URL blocks and parse only the HTML between BEGIN HTML and END HTML.")
+                st.caption(f"Extension bridge ready for {selected_retailer}. For Kroger, the app can now connect Kroger RPC to the matching Requested URL in the TXT file, fill retail_url from that match, and use that matched retail_url for lookup and display.")
             elif selected_retailer in AUTO_SKIP_EXTENSION_RETAILERS:
                 st.caption(f"{selected_retailer} is in skip-extension mode, so the app can auto-run straight to batch with live retailer fetches.")
 
