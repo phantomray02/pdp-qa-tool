@@ -294,8 +294,14 @@ def render_bridge_config_beacon(batch_id, retailer, rows):
 
 def render_extension_bridge_status(selected_capture_mode, selected_retailer, bridge_payload):
     total_urls = len((bridge_payload or {}).get("rows", []) or [])
+    uploaded_map = st.session_state.get("uploaded_raw_html_by_url", {})
+    uploaded_ready_count = len(uploaded_map) if isinstance(uploaded_map, dict) else 0
     if selected_capture_mode == EXTENSION_MODE_USE and uses_extension_bridge_for_retailer(selected_retailer):
-        if total_urls > 0:
+        if uploaded_ready_count > 0:
+            top_upload_col.success(
+                f"Uploaded TXT raw HTML is ready for {uploaded_ready_count} URL(s). Batch will use the uploaded retailer HTML directly, so you do not need to run the extension again unless you want a fresh capture."
+            )
+        elif total_urls > 0:
             top_upload_col.success(
                 f"Extension batch ready for {total_urls} {selected_retailer} URL(s). Open the extension popup and click Start retailer batch."
             )
@@ -3069,6 +3075,40 @@ def normalize_kroger_features(items, max_features=10):
     return dedupe_preserve_order(out[:max_features])
 
 
+def extract_kroger_images_from_html(html_text, retail_url="", target_rpc=""):
+    if not html_text:
+        return []
+    working = html.unescape(str(html_text or ""))
+    upc_hint = ""
+    retail_url = str(retail_url or "").strip()
+    upc_match = re.search(r'(\d{13})$', retail_url)
+    if upc_match:
+        upc_hint = upc_match.group(1)
+    elif str(target_rpc or "").strip():
+        rpc_value = re.sub(r'\D+', '', str(target_rpc or ''))
+        if len(rpc_value) >= 8:
+            upc_hint = rpc_value
+    urls = re.findall(r'https://www\.kroger\.com/product/images/medium/[A-Za-z]+/\d+', working, flags=re.IGNORECASE)
+    urls = [str(u or '').strip() for u in urls if str(u or '').strip()]
+    if upc_hint:
+        filtered = [u for u in urls if u.rstrip('/').split('/')[-1] == upc_hint]
+        if filtered:
+            urls = filtered
+    preferred_angles = ["front", "back", "left", "right", "top", "bottom"]
+    ordered = []
+    seen = set()
+    for angle in preferred_angles:
+        for url in urls:
+            if f'/medium/{angle}/' in url.lower() and url not in seen:
+                ordered.append(url)
+                seen.add(url)
+    for url in urls:
+        if url not in seen:
+            ordered.append(url)
+            seen.add(url)
+    return ordered[:MAX_IMAGE_SLOTS_TO_COMPARE]
+
+
 def extract_kroger_description_and_features_from_html(html_text):
     debug = {
         "description_marker_found": False,
@@ -3215,7 +3255,11 @@ def get_kroger_bundle(retail_url, target_rpc=""):
             retail_url=retail_url,
             target_rpc=target_rpc,
         ),
-        "images": [],
+        "images": extract_kroger_images_from_html(
+            html_text,
+            retail_url=retail_url,
+            target_rpc=target_rpc,
+        ),
     }
 
 # =========================================
@@ -5144,6 +5188,10 @@ def get_sams_bundle(retail_url, target_rpc="", sku=""):
     }
     
 def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_source_code=""):
+    uploaded_bundle = get_uploaded_raw_html_bundle_for_row(retailer_name, retail_url, target_rpc=target_rpc, sku=sku)
+    if uploaded_bundle:
+        return uploaded_bundle
+
     retailer = normalize_retailer_name(retailer_name).strip().lower()
 
     retailer_fetchers = {
@@ -6662,18 +6710,32 @@ def load_uploaded_raw_html_capture(upload_obj):
     uploaded_capture_df = normalize_raw_html_capture_df(uploaded_capture_df)
 
     uploaded_map = {}
+    uploaded_meta_map = {}
     blank_html_count = 0
     for _, row in uploaded_capture_df.iterrows():
         url = normalize_uploaded_capture_url(row.get("url", ""), row.get("retailer", ""))
         raw_html = str(row.get("raw_html", "") or "")
         if not url:
             continue
+        uploaded_meta_map[url] = {
+            "url": url,
+            "raw_html": raw_html,
+            "label": str(row.get("label", "") or "").strip(),
+            "retailer": str(row.get("retailer", "") or "").strip(),
+            "title": str(row.get("title", "") or "").strip(),
+            "status": str(row.get("status", "") or "ok").strip(),
+            "error": str(row.get("error", "") or "").strip(),
+            "batch_id": str(row.get("batch_id", "") or "").strip(),
+            "fetched_at": str(row.get("fetched_at", "") or "").strip(),
+            "rpc": str(row.get("rpc", "") or "").strip(),
+        }
         if raw_html.strip():
             uploaded_map[url] = raw_html
         else:
             blank_html_count += 1
 
     st.session_state["uploaded_raw_html_by_url"] = dict(uploaded_map)
+    st.session_state["uploaded_raw_html_meta_by_url"] = dict(uploaded_meta_map)
     bridge_map = get_session_bridged_html_map()
     bridge_map.clear()
     bridge_map.update(uploaded_map)
@@ -6739,6 +6801,53 @@ def get_uploaded_raw_html_map():
     if "uploaded_raw_html_by_url" not in st.session_state or not isinstance(st.session_state.get("uploaded_raw_html_by_url"), dict):
         st.session_state["uploaded_raw_html_by_url"] = {}
     return st.session_state["uploaded_raw_html_by_url"]
+
+
+def get_uploaded_raw_html_meta_map():
+    if "uploaded_raw_html_meta_by_url" not in st.session_state or not isinstance(st.session_state.get("uploaded_raw_html_meta_by_url"), dict):
+        st.session_state["uploaded_raw_html_meta_by_url"] = {}
+    return st.session_state["uploaded_raw_html_meta_by_url"]
+
+
+def get_uploaded_raw_html_bundle_for_row(retailer_name, retail_url, target_rpc="", sku=""):
+    retailer_label = normalize_retailer_name(retailer_name)
+    normalized_url = normalize_uploaded_capture_url(retail_url, retailer_label)
+    uploaded_map = get_uploaded_raw_html_map()
+    raw_html = str((uploaded_map or {}).get(normalized_url, "") or "")
+    if not raw_html.strip():
+        return None
+
+    retailer_key = retailer_label.strip().lower()
+    if retailer_key == "kroger":
+        bundle = {
+            "text": extract_kroger_text_from_html(raw_html, retail_url=normalized_url, target_rpc=target_rpc),
+            "images": extract_kroger_images_from_html(raw_html, retail_url=normalized_url, target_rpc=target_rpc),
+        }
+    elif retailer_key == "cvs":
+        bundle = {
+            "text": _extract_cvs_text_from_html(raw_html, retail_url=normalized_url, target_rpc=target_rpc),
+            "images": extract_cvs_images_from_html(raw_html),
+        }
+    elif retailer_key == "walgreens":
+        bundle = {
+            "text": extract_walgreens_text_from_html(raw_html, retail_url=normalized_url, target_rpc=target_rpc),
+            "images": extract_walgreens_images_from_html(raw_html),
+        }
+    elif retailer_key == "sam's club":
+        bundle = {
+            "text": extract_sams_text_from_html(raw_html, retail_url=normalized_url, target_rpc=target_rpc),
+            "images": extract_sams_images_from_html(raw_html),
+        }
+    else:
+        return None
+
+    bundle_text = bundle.get("text", {}) or {}
+    bundle_debug = dict(bundle_text.get("debug", {}) or {})
+    source_used = str(bundle_debug.get("Source Used", "") or "").strip()
+    bundle_debug["Source Used"] = f"{source_used} | uploaded_raw_html_txt".strip(" |") if source_used else "uploaded_raw_html_txt"
+    bundle_text["debug"] = bundle_debug
+    bundle["text"] = bundle_text
+    return bundle
 
 
 if captured_html_workbook is not None:
