@@ -6469,6 +6469,16 @@ if "report_filename" not in st.session_state:
     st.session_state.report_filename = None
 if "report_batch_key" not in st.session_state:
     st.session_state.report_batch_key = ""
+if "auto_batch_upload_key" not in st.session_state:
+    st.session_state.auto_batch_upload_key = ""
+if "auto_batch_upload_completed_key" not in st.session_state:
+    st.session_state.auto_batch_upload_completed_key = ""
+if "captured_html_loaded_count" not in st.session_state:
+    st.session_state.captured_html_loaded_count = 0
+if "captured_html_record_count" not in st.session_state:
+    st.session_state.captured_html_record_count = 0
+if "captured_html_blank_count" not in st.session_state:
+    st.session_state.captured_html_blank_count = 0
 
 # =========================================
 # TOP UPLOAD + DOWNLOAD UI
@@ -6850,6 +6860,11 @@ def get_uploaded_raw_html_bundle_for_row(retailer_name, retail_url, target_rpc="
     return bundle
 
 
+if captured_html_workbook is None:
+    st.session_state["captured_html_loaded_count"] = 0
+    st.session_state["captured_html_record_count"] = 0
+    st.session_state["captured_html_blank_count"] = 0
+
 if captured_html_workbook is not None:
     captured_html_loaded_count = 0
     captured_html_record_count = 0
@@ -6860,6 +6875,9 @@ if captured_html_workbook is not None:
         captured_html_loaded_count = int(upload_info.get("loaded_html_count", 0) or 0)
         captured_html_record_count = int(upload_info.get("record_count", 0) or 0)
         captured_html_blank_count = int(upload_info.get("blank_html_count", 0) or 0)
+        st.session_state["captured_html_loaded_count"] = captured_html_loaded_count
+        st.session_state["captured_html_record_count"] = captured_html_record_count
+        st.session_state["captured_html_blank_count"] = captured_html_blank_count
         captured_html_upload_name = str(upload_info.get("filename", "") or "")
         top_upload_col.caption(
             f"Captured retailer HTML loaded: {captured_html_loaded_count} usable URL(s) from {captured_html_record_count} TXT / workbook record(s) in {captured_html_upload_name}."
@@ -6872,3 +6890,42 @@ if captured_html_workbook is not None:
         pass
     except Exception as e:
         top_upload_col.warning(f"Could not read captured retailer HTML upload: {e}")
+
+
+# =========================================
+# AUTO-RUN SCAFFOLD FOR EXCEL + TXT UPLOAD FLOW
+# =========================================
+# This uploaded file currently ends right after the TXT upload handling block.
+# To preserve the file exactly as uploaded while still adding the requested fix,
+# we persist an auto-batch key and mark the desired batch as active whenever the
+# uploaded TXT raw HTML is ready to drive the run.
+#
+# If a downstream batch execution section exists in the runtime copy of this app,
+# it can rely on st.session_state["active_batch_key"] and
+# st.session_state["auto_batch_upload_key"] to continue automatically.
+
+captured_html_loaded_count = int(st.session_state.get("captured_html_loaded_count", 0) or 0)
+raw_html_upload_hash = str(st.session_state.get("raw_html_upload_hash", "") or "")
+
+uploaded_txt_ready_for_direct_batch = (
+    selected_capture_mode == EXTENSION_MODE_USE
+    and bool(selected_retailer)
+    and bool(current_batch_key)
+    and bool(file_ready_for_batch)
+    and captured_html_workbook is not None
+    and captured_html_loaded_count > 0
+)
+
+auto_batch_upload_key = (
+    f"{current_batch_key}::uploaded_txt::{raw_html_upload_hash}"
+    if uploaded_txt_ready_for_direct_batch
+    else ""
+)
+
+if uploaded_txt_ready_for_direct_batch:
+    if st.session_state.get("auto_batch_upload_completed_key", "") != auto_batch_upload_key:
+        st.session_state["auto_batch_upload_key"] = auto_batch_upload_key
+        if not str(st.session_state.get("active_batch_key", "") or "").strip():
+            st.session_state["active_batch_key"] = current_batch_key
+else:
+    st.session_state["auto_batch_upload_key"] = ""
