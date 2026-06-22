@@ -1335,31 +1335,13 @@ def build_extension_batch_payload(retailer_df, retailer_name, current_batch_key,
 
 def render_extension_batch_bridge(payload):
     payload_json = json.dumps(payload or {}, ensure_ascii=False)
-    payload_html = html.escape(payload_json, quote=True)
-    retailer_html = html.escape(str((payload or {}).get('retailer', '') or ''), quote=True)
-    batch_key_html = html.escape(str((payload or {}).get('batchKey', '') or ''), quote=True)
-    capture_mode_html = html.escape(str((payload or {}).get('captureMode', '') or ''), quote=True)
 
-    st.markdown(
-        f"""
-        <div id="pdp-extension-batch-ready"
-             data-pdp-extension-batch-ready="1"
-             data-pdp-extension-batch-payload="{payload_html}"
-             data-pdp-extension-retailer="{retailer_html}"
-             data-pdp-extension-batch-key="{batch_key_html}"
-             data-pdp-extension-capture-mode="{capture_mode_html}"
-             style="display:none !important; visibility:hidden !important; width:0; height:0; overflow:hidden;"
-        ></div>
-        <textarea id="pdp-extension-batch-payload-text"
-                  style="display:none !important; visibility:hidden !important; width:0; height:0; overflow:hidden;"
-        >{payload_html}</textarea>
-        <pre id="pdp-extension-batch-payload-json"
-             style="display:none !important; visibility:hidden !important; width:0; height:0; overflow:hidden;"
-        >{payload_html}</pre>
-        """,
-        unsafe_allow_html=True,
-    )
-
+    # IMPORTANT:
+    # - Do NOT use st.markdown for the hidden payload beacon because Streamlit may
+    #   display the escaped JSON text visibly on the page.
+    # - Instead, inject everything through a zero-size components.html bridge and
+    #   publish the payload into the parent/top page DOM, globals, storage, and
+    #   custom events so the extension can discover it without showing URLs.
     bridge_html = f"""
     <script>
     (function() {{
@@ -1372,51 +1354,100 @@ def render_extension_batch_bridge(payload):
         '__RAW_HTML_BATCH__',
         'pdpExtensionBatch',
         'rawHtmlExtensionBatch',
-        'streamlitExtensionBatch'
-      ];
-      const TARGET_EVENTS = [
-        'pdp-extension-batch-ready',
-        'raw-html-extension-batch-ready',
-        'streamlit-extension-batch-ready',
-        'extension-batch-ready'
+        'streamlitExtensionBatch',
+        'extensionBatch'
       ];
       const STORAGE_KEYS = [
+        '__PDP_EXTENSION_BATCH__',
+        '__RAW_HTML_EXTENSION_BATCH__',
+        '__STREAMLIT_EXTENSION_BATCH__',
         'pdpExtensionBatch',
         'rawHtmlExtensionBatch',
         'streamlitExtensionBatch',
-        '__PDP_EXTENSION_BATCH__'
+        'extensionBatch'
+      ];
+      const EVENT_NAMES = [
+        'pdp-extension-batch-ready',
+        'raw-html-extension-batch-ready',
+        'streamlit-extension-batch-ready',
+        'extension-batch-ready',
+        'PDP_EXTENSION_BATCH_READY'
       ];
 
-      function safeSetStorage(targetWindow) {{
-        for (const storageName of ['localStorage', 'sessionStorage']) {{
+      function uniqueTargets() {{
+        const out = [];
+        for (const candidate of [window, window.parent, window.top]) {{
           try {{
-            const storage = targetWindow[storageName];
-            if (!storage) continue;
-            for (const key of STORAGE_KEYS) {{
-              storage.setItem(key, JSON.stringify(payload));
-            }}
+            if (candidate && !out.includes(candidate)) out.push(candidate);
           }} catch (e) {{}}
         }}
+        return out;
       }}
 
-      function safeSetDom(targetWindow) {{
+      function ensureDomBeacon(targetWindow) {{
         try {{
           const doc = targetWindow.document;
           if (!doc) return;
           const root = doc.documentElement || doc.body;
           const body = doc.body || doc.documentElement;
+          const payloadText = JSON.stringify(payload);
+
           if (root) {{
             root.setAttribute('data-pdp-extension-batch-ready', payload && payload.ready ? '1' : '0');
+            root.setAttribute('data-pdp-extension-batch-payload', payloadText);
             root.setAttribute('data-pdp-extension-retailer', payload && payload.retailer ? String(payload.retailer) : '');
             root.setAttribute('data-pdp-extension-batch-key', payload && payload.batchKey ? String(payload.batchKey) : '');
             root.setAttribute('data-pdp-extension-capture-mode', payload && payload.captureMode ? String(payload.captureMode) : '');
-            root.setAttribute('data-pdp-extension-batch-payload', JSON.stringify(payload));
           }}
           if (body) {{
             body.setAttribute('data-pdp-extension-batch-ready', payload && payload.ready ? '1' : '0');
-            body.setAttribute('data-pdp-extension-retailer', payload && payload.retailer ? String(payload.retailer) : '');
-            body.setAttribute('data-pdp-extension-batch-key', payload && payload.batchKey ? String(payload.batchKey) : '');
+            body.setAttribute('data-pdp-extension-batch-payload', payloadText);
           }}
+
+          let beacon = doc.getElementById('pdp-extension-batch-ready');
+          if (!beacon) {{
+            beacon = doc.createElement('div');
+            beacon.id = 'pdp-extension-batch-ready';
+            beacon.style.display = 'none';
+            beacon.style.visibility = 'hidden';
+            beacon.style.width = '0';
+            beacon.style.height = '0';
+            beacon.style.overflow = 'hidden';
+            (doc.body || doc.documentElement).appendChild(beacon);
+          }}
+          beacon.setAttribute('data-pdp-extension-batch-ready', payload && payload.ready ? '1' : '0');
+          beacon.setAttribute('data-pdp-extension-batch-payload', payloadText);
+          beacon.setAttribute('data-pdp-extension-retailer', payload && payload.retailer ? String(payload.retailer) : '');
+          beacon.setAttribute('data-pdp-extension-batch-key', payload && payload.batchKey ? String(payload.batchKey) : '');
+          beacon.setAttribute('data-pdp-extension-capture-mode', payload && payload.captureMode ? String(payload.captureMode) : '');
+
+          let textarea = doc.getElementById('pdp-extension-batch-payload-text');
+          if (!textarea) {{
+            textarea = doc.createElement('textarea');
+            textarea.id = 'pdp-extension-batch-payload-text';
+            textarea.style.display = 'none';
+            textarea.style.visibility = 'hidden';
+            textarea.style.width = '0';
+            textarea.style.height = '0';
+            textarea.style.overflow = 'hidden';
+            (doc.body || doc.documentElement).appendChild(textarea);
+          }}
+          textarea.value = payloadText;
+          textarea.textContent = payloadText;
+
+          let pre = doc.getElementById('pdp-extension-batch-payload-json');
+          if (!pre) {{
+            pre = doc.createElement('pre');
+            pre.id = 'pdp-extension-batch-payload-json';
+            pre.style.display = 'none';
+            pre.style.visibility = 'hidden';
+            pre.style.width = '0';
+            pre.style.height = '0';
+            pre.style.overflow = 'hidden';
+            (doc.body || doc.documentElement).appendChild(pre);
+          }}
+          pre.textContent = payloadText;
+
           let scriptTag = doc.getElementById('pdp-extension-batch-json');
           if (!scriptTag) {{
             scriptTag = doc.createElement('script');
@@ -1424,13 +1455,24 @@ def render_extension_batch_bridge(payload):
             scriptTag.id = 'pdp-extension-batch-json';
             (doc.body || doc.documentElement).appendChild(scriptTag);
           }}
-          scriptTag.textContent = JSON.stringify(payload);
+          scriptTag.textContent = payloadText;
         }} catch (e) {{}}
       }}
 
-      function safeDispatch(targetWindow) {{
+      function publishToTarget(targetWindow) {{
+        if (!targetWindow) return;
         try {{
-          for (const eventName of TARGET_EVENTS) {{
+          for (const key of TARGET_KEYS) targetWindow[key] = payload;
+        }} catch (e) {{}}
+        try {{
+          for (const key of STORAGE_KEYS) {{
+            try {{ if (targetWindow.localStorage) targetWindow.localStorage.setItem(key, JSON.stringify(payload)); }} catch (e) {{}}
+            try {{ if (targetWindow.sessionStorage) targetWindow.sessionStorage.setItem(key, JSON.stringify(payload)); }} catch (e) {{}}
+          }}
+        }} catch (e) {{}}
+        ensureDomBeacon(targetWindow);
+        try {{
+          for (const eventName of EVENT_NAMES) {{
             targetWindow.dispatchEvent(new CustomEvent(eventName, {{ detail: payload }}));
           }}
         }} catch (e) {{}}
@@ -1443,39 +1485,16 @@ def render_extension_batch_bridge(payload):
         }} catch (e) {{}}
       }}
 
-      function safeAssign(targetWindow) {{
-        if (!targetWindow) return;
-        try {{
-          for (const key of TARGET_KEYS) {{
-            targetWindow[key] = payload;
-          }}
-        }} catch (e) {{}}
-        safeSetStorage(targetWindow);
-        safeSetDom(targetWindow);
-        safeDispatch(targetWindow);
+      function publishAll() {{
+        for (const target of uniqueTargets()) publishToTarget(target);
       }}
 
-      function allTargets() {{
-        const targets = [];
-        for (const candidate of [window, window.parent, window.top]) {{
-          if (!candidate) continue;
-          if (!targets.includes(candidate)) targets.push(candidate);
-        }}
-        return targets;
-      }}
-
-      function publish() {{
-        for (const target of allTargets()) {{
-          safeAssign(target);
-        }}
-      }}
-
-      publish();
+      publishAll();
       let publishCount = 0;
-      const intervalId = setInterval(() => {{
-        publish();
+      const timer = setInterval(() => {{
+        publishAll();
         publishCount += 1;
-        if (publishCount >= 40) clearInterval(intervalId);
+        if (publishCount >= 40) clearInterval(timer);
       }}, 500);
 
       try {{
@@ -1489,7 +1508,7 @@ def render_extension_batch_bridge(payload):
             msgType === 'extension-batch-request' ||
             msgType === 'PDP_EXTENSION_BATCH_REQUEST'
           ) {{
-            publish();
+            publishAll();
           }}
         }});
       }} catch (e) {{}}
