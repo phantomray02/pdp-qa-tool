@@ -7534,3 +7534,266 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
     return _old_get_retailer_bundle(retailer_name, retail_url, target_rpc, sku, row_source_code)
 
 # ===================== END KROGER STRICT OVERRIDE =====================
+
+
+# ===================== KROGER STRICT ISOLATION PATCH =====================
+# Kroger rules enforced by this patch:
+# 1) Kroger uses ONLY the uploaded TXT capture.
+# 2) Kroger lookup key is retailer_url (normalized Kroger URL) against Requested URL blocks in TXT.
+# 3) Kroger never uses live fetch, and never falls back to CVS/Walgreens/shared retailer logic.
+# 4) Kroger sheet-specific "kroger rpc" is promoted into retailer_rpc during input prep.
+# 5) Non-Kroger retailers keep their original behavior.
+
+import re as _kc_re
+import html as _kc_html
+
+
+def _kc_normalize_kroger_url(url):
+    url = str(url or "").strip()
+    if not url:
+        return ""
+    url = _kc_html.unescape(url)
+    url = url.split('#', 1)[0].strip()
+    url = _kc_re.sub(r'([?&])msockid=[^&]+', r'\1', url, flags=_kc_re.IGNORECASE)
+    url = _kc_re.sub(r'([?&])searchType=[^&]+', r'\1', url, flags=_kc_re.IGNORECASE)
+    url = _kc_re.sub(r'([?&])fulfillment=[^&]+', r'\1', url, flags=_kc_re.IGNORECASE)
+    url = _kc_re.sub(r'([?&])campaign=[^&]+', r'\1', url, flags=_kc_re.IGNORECASE)
+    url = _kc_re.sub(r'([?&])adgroup=[^&]+', r'\1', url, flags=_kc_re.IGNORECASE)
+    url = _kc_re.sub(r'([?&])pid=[^&]+', r'\1', url, flags=_kc_re.IGNORECASE)
+    url = _kc_re.sub(r'\?&', '?', url)
+    url = _kc_re.sub(r'[?&]+$', '', url)
+    url = _kc_re.sub(r'\?{2,}', '?', url)
+    return url.strip()
+
+
+def parse_uploaded_raw_html_map(raw_text):
+    raw_text = str(raw_text or "")
+    if not raw_text.strip():
+        return {}
+
+    html_map = {}
+    block_pattern = _kc_re.compile(
+        r'(?is)Requested\s+URL\s*:\s*(https?://\S+).*?-----BEGIN HTML-----(.*?)-----END HTML-----'
+    )
+
+    for match in block_pattern.finditer(raw_text):
+        requested_url = str(match.group(1) or "").strip()
+        html_text = _kc_html.unescape(str(match.group(2) or "").strip())
+        if not requested_url:
+            continue
+        if len(html_text) < 50:
+            continue
+        if _kc_re.fullmatch(r'\s*</body>\s*</html>\s*', html_text, flags=_kc_re.IGNORECASE):
+            continue
+        html_map[_kc_normalize_kroger_url(requested_url)] = html_text
+
+    return html_map
+
+
+def get_kroger_html_from_uploaded_map(retail_url, uploaded_html_map):
+    retail_url_norm = _kc_normalize_kroger_url(retail_url)
+    if not retail_url_norm or not isinstance(uploaded_html_map, dict):
+        return ""
+    return str(uploaded_html_map.get(retail_url_norm, "") or "")
+
+
+def lookup_uploaded_raw_html(uploaded_html_map, retail_url):
+    uploaded_html_map = uploaded_html_map or {}
+    retail_url = str(retail_url or "").strip()
+    if not retail_url:
+        return ""
+
+    # Kroger is strict: exact normalized retailer_url against Requested URL in TXT map only.
+    if 'kroger.com' in retail_url.lower():
+        return get_kroger_html_from_uploaded_map(retail_url, uploaded_html_map)
+
+    # Non-Kroger retailers retain original candidate behavior.
+    for key in uploaded_capture_url_candidates(retail_url):
+        html_text = uploaded_html_map.get(key, "")
+        if html_text:
+            return html_text
+    return ""
+
+
+def _kc_extract_kroger_title_from_html_text(html_text):
+    working = _kc_html.unescape(str(html_text or ""))
+    soup = BeautifulSoup(working, 'html.parser')
+
+    h1 = soup.find('h1')
+    if h1:
+        return normalize_space(h1.get_text(' ', strip=True))
+
+    heading_match = _kc_re.search(r'(?m)^##\s+(.+?)\s*$', working)
+    if heading_match:
+        return normalize_space(heading_match.group(1))
+
+    if soup.title:
+        title_text = normalize_space(soup.title.get_text(' ', strip=True))
+        title_text = _kc_re.sub(r'\s*-\s*Kroger\s*$', '', title_text, flags=_kc_re.IGNORECASE)
+        return title_text
+
+    return ""
+
+
+def extract_kroger_text_from_html(html_text, retail_url="", target_rpc=""):
+    debug = {
+        'Title Path': '',
+        'Description Path': '',
+        'Features Path': '',
+        'Source Used': 'kroger_txt_only',
+        'Retailer': 'Kroger',
+    }
+
+    if not html_text:
+        debug['Title Path'] = 'kroger_txt_missing'
+        debug['Description Path'] = 'kroger_txt_missing'
+        debug['Features Path'] = 'kroger_txt_missing'
+        return {
+            'title': '',
+            'description': '',
+            'features': [],
+            'rating': '',
+            'review_count': '',
+            'debug': debug,
+        }
+
+    title = _kc_extract_kroger_title_from_html_text(html_text)
+    description, features, parser_debug = extract_kroger_description_and_features_from_html(html_text)
+
+    debug['Title Path'] = 'kroger_txt_h1_or_heading' if title else 'kroger_title_missing'
+    debug['Description Path'] = parser_debug.get('parser_path', '') if description else 'kroger_description_missing'
+    debug['Features Path'] = parser_debug.get('parser_path', '') if features else 'kroger_features_missing'
+    debug['Kroger Parser Debug'] = parser_debug
+    debug['Retail URL Lookup'] = _kc_normalize_kroger_url(retail_url)
+    if target_rpc:
+        debug['Retailer RPC'] = str(target_rpc or '').strip()
+
+    return {
+        'title': title,
+        'description': description,
+        'features': (features or [])[:10],
+        'rating': '',
+        'review_count': '',
+        'debug': debug,
+    }
+
+
+def _kc_find_uploaded_kroger_html_map():
+    try:
+        state_items = list(st.session_state.items())
+    except Exception:
+        state_items = []
+
+    # Prefer an already-parsed dict that contains Kroger URL keys.
+    for key, value in state_items:
+        if isinstance(value, dict) and value:
+            sample_keys = list(value.keys())[:5]
+            if any('kroger.com' in str(k).lower() for k in sample_keys):
+                return value
+
+    # Otherwise, parse any raw uploaded TXT content found in session state.
+    for key, value in state_items:
+        raw_text = ''
+        if isinstance(value, str) and 'Requested URL:' in value and '-----BEGIN HTML-----' in value:
+            raw_text = value
+        elif hasattr(value, 'getvalue'):
+            try:
+                raw = value.getvalue()
+                if isinstance(raw, bytes):
+                    for enc in ('utf-8', 'utf-8-sig', 'latin1'):
+                        try:
+                            raw_text = raw.decode(enc)
+                            break
+                        except Exception:
+                            pass
+                else:
+                    raw_text = str(raw)
+            except Exception:
+                raw_text = ''
+
+        if raw_text and 'Requested URL:' in raw_text and '-----BEGIN HTML-----' in raw_text:
+            parsed = parse_uploaded_raw_html_map(raw_text)
+            if parsed:
+                return parsed
+
+    return {}
+
+
+# Preserve original input preparation and add Kroger RPC support in front of it.
+try:
+    _kc_old_prepare_input_df = prepare_input_df
+except Exception:
+    _kc_old_prepare_input_df = None
+
+if _kc_old_prepare_input_df is not None:
+    def prepare_input_df(df):
+        df = df.copy()
+        df.columns = [str(c).strip().lower() for c in df.columns]
+
+        if 'kroger rpc' in df.columns and 'retailer_rpc' not in df.columns:
+            df['retailer_rpc'] = (
+                df['kroger rpc']
+                .replace('#N/A', '')
+                .fillna('')
+                .astype(str)
+                .str.replace('.0', '', regex=False)
+                .str.strip()
+            )
+        elif 'kroger rpc' in df.columns and 'retailer_rpc' in df.columns:
+            kroger_rpc_series = (
+                df['kroger rpc']
+                .replace('#N/A', '')
+                .fillna('')
+                .astype(str)
+                .str.replace('.0', '', regex=False)
+                .str.strip()
+            )
+            df['retailer_rpc'] = (
+                df['retailer_rpc']
+                .replace('#N/A', '')
+                .fillna('')
+                .astype(str)
+                .str.replace('.0', '', regex=False)
+                .str.strip()
+            )
+            df['retailer_rpc'] = df['retailer_rpc'].where(df['retailer_rpc'] != '', kroger_rpc_series)
+
+        return _kc_old_prepare_input_df(df)
+
+
+# Preserve original router for non-Kroger but hard-isolate Kroger.
+try:
+    _kc_old_get_retailer_bundle = get_retailer_bundle
+except Exception:
+    _kc_old_get_retailer_bundle = None
+
+if _kc_old_get_retailer_bundle is not None:
+    def get_retailer_bundle(retailer_name, retail_url, target_rpc='', sku='', row_source_code=''):
+        retailer_norm = normalize_retailer_name(retailer_name).strip().lower()
+
+        if retailer_norm == 'kroger':
+            uploaded_html = str(row_source_code or '').strip()
+            if not uploaded_html:
+                kroger_map = _kc_find_uploaded_kroger_html_map()
+                uploaded_html = lookup_uploaded_raw_html(kroger_map, retail_url)
+
+            if not uploaded_html:
+                return build_empty_retailer_bundle('Kroger', 'kroger_txt_required_missing_or_url_not_found')
+
+            return {
+                'text': extract_kroger_text_from_html(
+                    uploaded_html,
+                    retail_url=retail_url,
+                    target_rpc=target_rpc,
+                ),
+                'images': [],
+            }
+
+        return _kc_old_get_retailer_bundle(retailer_name, retail_url, target_rpc, sku, row_source_code)
+
+
+# Disable the native Kroger live bundle path so nothing can accidentally fall back to it.
+def get_kroger_bundle(retail_url, target_rpc=''):
+    return build_empty_retailer_bundle('Kroger', 'kroger_live_fetch_disabled_use_txt_only')
+
+# ===================== END KROGER STRICT ISOLATION PATCH =====================
