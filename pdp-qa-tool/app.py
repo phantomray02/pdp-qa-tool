@@ -3317,7 +3317,7 @@ def extract_kroger_images_from_html(html_text):
 
     if not candidates:
         raw_urls = re.findall(
-            r"https://www\.kroger\.com/product/images/(?:large|medium|small)/[^\s"'<>]+",
+            r'https://www\.kroger\.com/product/images/(?:large|medium|small)/[^\s<>]+',
             working,
             flags=re.IGNORECASE,
         )
