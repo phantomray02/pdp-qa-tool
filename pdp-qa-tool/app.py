@@ -1631,6 +1631,8 @@ def _parse_salsify_page(html_text):
             "feature3": "",
             "feature4": "",
             "feature5": "",
+            "features": [],
+            "retailer_overrides": {},
         },
         "images": [],
     }
@@ -1704,15 +1706,21 @@ def _parse_salsify_page(html_text):
         if raw_value not in property_values[normalized_name]:
             property_values[normalized_name].append(raw_value)
 
-    def first_property(*keys):
+    def collect_property_values(*keys):
+        out = []
+        seen = set()
         for key in keys:
             normalized_key = normalize_prop_name(key)
-            values = property_values.get(normalized_key, []) or []
-            for value in values:
+            for value in property_values.get(normalized_key, []) or []:
                 clean_value = normalize_space(value)
-                if clean_value:
-                    return clean_value
-        return ""
+                if clean_value and clean_value not in seen:
+                    seen.add(clean_value)
+                    out.append(clean_value)
+        return out
+
+    def first_property(*keys):
+        values = collect_property_values(*keys)
+        return values[0] if values else ""
 
     title = first_property(
         "PRODUCT_TITLE",
@@ -1737,6 +1745,7 @@ def _parse_salsify_page(html_text):
                 clean_value = normalize_space(value)
                 if clean_value:
                     feature_candidates.append(clean_value)
+
     if not feature_candidates:
         for fallback_key in [
             "FEATURES",
@@ -1774,6 +1783,29 @@ def _parse_salsify_page(html_text):
         if meta_desc and meta_desc.get("content"):
             description = normalize_space(meta_desc.get("content", ""))
 
+    # Retailer-specific Salsify copy overrides.
+    # Kroger should prefer Kroger Product Title / Kroger Description / Kroger Feature N
+    # instead of generic deck placeholders such as "Kroger PDP Deck" when those fields exist.
+    kroger_feature_values = []
+    for i in range(1, 11):
+        kroger_feature_values.extend(
+            collect_property_values(
+                f"Kroger Feature {i}",
+                f"Kroger Feature{i}",
+                f"Kroger Bullet {i}",
+                f"Kroger Bullet{i}",
+            )
+        )
+    kroger_feature_values = dedupe_preserve_order(kroger_feature_values)
+
+    retailer_overrides = {
+        "kroger": {
+            "title": first_property("Kroger Product Title", "Kroger Title"),
+            "description": first_property("Kroger Description", "Kroger Product Description"),
+            "features": kroger_feature_values,
+        }
+    }
+
     text_bundle = {
         "title": title,
         "description": description,
@@ -1782,6 +1814,8 @@ def _parse_salsify_page(html_text):
         "feature3": feature_candidates[2] if len(feature_candidates) > 2 else "",
         "feature4": feature_candidates[3] if len(feature_candidates) > 3 else "",
         "feature5": feature_candidates[4] if len(feature_candidates) > 4 else "",
+        "features": feature_candidates[:10],
+        "retailer_overrides": retailer_overrides,
     }
 
     asset_lookup = {}
@@ -5800,10 +5834,37 @@ def split_walgreens_description_into_features(description_text, existing_feature
 def finalize_salsify_copy_for_retailer(retailer_name, s_text):
     """
     Normalize Salsify copy for retailer-specific comparison only.
-    For Walgreens, do NOT strip 'Also check out our ...' anymore.
+
+    Kroger-specific Salsify retailer fields should win when present so Kroger visual
+    compare does not fall back to generic deck placeholders such as "Kroger PDP Deck".
     """
     retailer = str(retailer_name or "").strip().lower()
     out = dict(s_text or {})
+
+    def generic_feature_list():
+        return [
+            normalize_space(out.get(f"feature{i}", ""))
+            for i in range(1, 6)
+            if normalize_space(out.get(f"feature{i}", ""))
+        ]
+
+    retailer_overrides = out.get("retailer_overrides", {}) or {}
+
+    if retailer == "kroger":
+        kroger_override = retailer_overrides.get("kroger", {}) or {}
+        selected_title = normalize_space(kroger_override.get("title", "") or out.get("title", ""))
+        selected_description = clean_kroger_text(kroger_override.get("description", "") or out.get("description", ""))
+        selected_features = normalize_kroger_features(
+            kroger_override.get("features", []) or generic_feature_list(),
+            max_features=10,
+        )
+
+        out["title"] = selected_title
+        out["description"] = selected_description
+        out["features"] = selected_features
+        for i in range(1, 6):
+            out[f"feature{i}"] = selected_features[i - 1] if i - 1 < len(selected_features) else ""
+        return out
 
     if retailer == "walgreens":
         out["title"] = normalize_space(out.get("title", ""))
@@ -5811,7 +5872,7 @@ def finalize_salsify_copy_for_retailer(retailer_name, s_text):
         return out
 
     return out
-    
+
 def finalize_retailer_copy(retailer_name, r_text):
     retailer = str(retailer_name or "").strip().lower()
     out = dict(r_text or {})
