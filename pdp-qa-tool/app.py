@@ -3103,6 +3103,53 @@ def extract_kroger_description_and_features_from_html(html_text):
 
     working = html.unescape(str(html_text or ""))
 
+    # 1. Direct strong match (your TXT structure)
+    match = re.search(
+        r'product-details-romance-description[^>]*>(.*?)</ul>',
+        working,
+        flags=re.IGNORECASE | re.DOTALL
+    )
+
+    if match:
+        block = match.group(1)
+
+        desc_match = re.search(r'<p>(.*?)</p>', block, flags=re.I | re.S)
+        description = clean_kroger_text(desc_match.group(1)) if desc_match else ""
+
+        raw_features = re.findall(r'<li>(.*?)</li>', block, flags=re.I | re.S)
+        features = normalize_kroger_features(raw_features, max_features=10)
+
+        debug["description_marker_found"] = bool(description)
+        debug["description_end_marker_found"] = bool(description)
+        debug["feature_block_found"] = bool(features)
+        debug["feature_count"] = len(features)
+        debug["description_excerpt"] = description[:500]
+        debug["features_excerpt"] = " | ".join(features[:5])[:1000]
+        debug["parser_path"] = "kroger_html_ul_li_strong"
+
+        return description, features, debug
+
+    # 2. Loose fallback
+    loose_match = re.search(
+        r'product-details-romance-description.*?<p>(.*?)</p>.*?<ul>(.*?)</ul>',
+        working,
+        flags=re.IGNORECASE | re.DOTALL
+    )
+
+    if loose_match:
+        description = clean_kroger_text(loose_match.group(1))
+        raw_features = re.findall(r'<li>(.*?)</li>', loose_match.group(2), flags=re.I | re.S)
+        features = normalize_kroger_features(raw_features, max_features=10)
+
+        debug["parser_path"] = "kroger_html_ul_li_loose"
+        debug["feature_count"] = len(features)
+
+        return description, features, debug
+
+    return "", [], debug
+
+    working = html.unescape(str(html_text or ""))
+
     desc_start_marker = 'product-details-romance-description"><p>'
     desc_end_marker = '</p><ul><li>'
     feat_start_marker = '<ul><li>'
