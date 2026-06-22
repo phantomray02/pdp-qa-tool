@@ -3304,20 +3304,56 @@ def extract_kroger_images_from_html(html_text):
         candidates.append((slot_index, rank, clean_url))
         seen.add(clean_url)
 
+    def choose_single_slide_image(slide):
+        """
+        Kroger slide 1 often contains both:
+        - img.ProductImages-image (real visual slot image)
+        - img.iiz__zoom-img (zoom duplicate of the same front image)
+
+        We only want one retailer image per slide, so prefer ProductImages-image
+        and skip zoom-image duplicates.
+        """
+        main_imgs = slide.select('img.ProductImages-image[src]')
+        if main_imgs:
+            return main_imgs[0]
+
+        # Fallback only if the main class is missing in the captured HTML.
+        for img in slide.select('img[src]'):
+            class_tokens = [str(x or '').strip().lower() for x in (img.get('class') or [])]
+            if any('zoom' in token for token in class_tokens):
+                continue
+            src = str(img.get('src', '') or '')
+            if '/product/images/' not in src.lower():
+                continue
+            return img
+        return None
+
+    # Primary path: use one chosen image per visible slide, in site order.
     slide_nodes = soup.select('[data-testid="main-image-perspective"]')
     for idx, slide in enumerate(slide_nodes):
         aria_label = str(slide.get('aria-label', '') or '')
         perspective_hint = _extract_kroger_perspective_from_text(aria_label)
-        preferred_imgs = slide.select('img.ProductImages-image[src], img[src]')
-        for img in preferred_imgs:
+        chosen_img = choose_single_slide_image(slide)
+        if chosen_img is None:
+            continue
+        src = chosen_img.get('src', '')
+        alt = str(chosen_img.get('alt', '') or '')
+        img_perspective = perspective_hint or _extract_kroger_perspective_from_text(alt)
+        add_candidate(src, slot_index=idx, perspective_hint=img_perspective)
+
+    # Secondary path: if the main slide nodes are missing, use the thumbnail carousel.
+    if not candidates:
+        thumb_imgs = soup.select('[data-testid="product-thumbnail-carousel"] img[src]')
+        for idx, img in enumerate(thumb_imgs):
             src = img.get('src', '')
             alt = str(img.get('alt', '') or '')
-            img_perspective = perspective_hint or _extract_kroger_perspective_from_text(alt)
-            add_candidate(src, slot_index=idx, perspective_hint=img_perspective)
+            perspective_hint = _extract_kroger_perspective_from_text(alt)
+            add_candidate(src, slot_index=idx, perspective_hint=perspective_hint)
 
+    # Final fallback: raw URL regex.
     if not candidates:
         raw_urls = re.findall(
-            r'https://www\.kroger\.com/product/images/(?:large|medium|small)/[^\s<>]+',
+            r'https://www\.kroger\.com/product/images/(?:large|medium|small|thumbnail)/[^\s<>]+',
             working,
             flags=re.IGNORECASE,
         )
