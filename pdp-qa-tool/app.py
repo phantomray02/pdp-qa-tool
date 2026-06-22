@@ -6345,6 +6345,8 @@ if "raw_html_upload_filename" not in st.session_state:
     st.session_state.raw_html_upload_filename = ""
 if "selected_retailer" not in st.session_state:
     st.session_state.selected_retailer = "-- Select Retailer --"
+if "selected_retailer_top" not in st.session_state:
+    st.session_state.selected_retailer_top = ""
 if "selected_brand_visual" not in st.session_state:
     st.session_state.selected_brand_visual = "All"
 if "active_batch_key" not in st.session_state:
@@ -6386,6 +6388,20 @@ with top_upload_col:
         st.session_state.get("extension_mode_choice", EXTENSION_MODE_SKIP)
     )
 
+    top_retailer_options = st.session_state.get("top_retailer_options", []) or []
+    if top_retailer_options:
+        default_top_retailer = st.session_state.get("selected_retailer_top", "")
+        if default_top_retailer not in top_retailer_options:
+            default_top_retailer = top_retailer_options[0]
+            st.session_state.selected_retailer_top = default_top_retailer
+        st.selectbox(
+            "Select Retailer",
+            top_retailer_options,
+            index=top_retailer_options.index(default_top_retailer) if default_top_retailer in top_retailer_options else 0,
+            key="selected_retailer_top",
+            help="Choose the retailer for direct batch/load or the extension TXT upload path.",
+        )
+
     captured_html_workbook = st.file_uploader("Upload Captured Retailer HTML Workbook / TXT (optional)", type=["xlsx", "csv", "txt"], key="captured_html_workbook")
 
 with top_download_col:
@@ -6410,6 +6426,51 @@ file_hash = ""
 file_ready_for_batch = False
 bridge_rows = []
 bridge_required_urls = set()
+
+
+# =========================================
+# TOP MASTER FILE LOAD + RETAILER SELECT SYNC
+# =========================================
+if uploaded_file is not None:
+    try:
+        uploaded_bytes = uploaded_file.getvalue()
+        file_hash = hashlib.md5(uploaded_bytes).hexdigest()
+        master_df = prepare_input_df(read_uploaded_file_from_bytes(uploaded_bytes, getattr(uploaded_file, "name", "uploaded_master.xlsx")))
+        retailer_values = []
+        if master_df is not None and not master_df.empty and "retailer" in master_df.columns:
+            retailer_values = [normalize_retailer_name(x) for x in master_df["retailer"].fillna("").astype(str).tolist() if str(x).strip()]
+        all_retailers = sorted(dict.fromkeys([x for x in retailer_values if x]))
+        st.session_state["top_retailer_options"] = list(all_retailers)
+
+        if all_retailers:
+            default_retailer = st.session_state.get("selected_retailer_top", "")
+            if default_retailer not in all_retailers:
+                default_retailer = all_retailers[0]
+                st.session_state.selected_retailer_top = default_retailer
+            selected_retailer = st.session_state.get("selected_retailer_top", default_retailer) or default_retailer
+            if selected_retailer not in all_retailers:
+                selected_retailer = default_retailer
+            st.session_state.selected_retailer = selected_retailer
+            multi_retailer = len(all_retailers) > 1
+            retailer_df = master_df[master_df["retailer"].astype(str).eq(selected_retailer)].copy() if "retailer" in master_df.columns else master_df.copy()
+            current_batch_key = f"{file_hash}::{selected_retailer}"
+            file_ready_for_batch = retailer_df is not None and not retailer_df.empty
+            bridge_rows = build_bridge_rows_from_retailer_df(retailer_df, selected_retailer) if file_ready_for_batch else []
+            bridge_required_urls = get_bridge_required_urls(bridge_rows, selected_retailer) if bridge_rows else set()
+        else:
+            selected_retailer = ""
+            st.session_state["top_retailer_options"] = []
+            retailer_df = master_df.copy() if master_df is not None else None
+            file_ready_for_batch = retailer_df is not None and not retailer_df.empty
+
+    except EmptyDataError:
+        top_upload_col.warning("The uploaded master file is empty.")
+        st.session_state["top_retailer_options"] = []
+    except Exception as e:
+        top_upload_col.warning(f"Could not read master file: {e}")
+        st.session_state["top_retailer_options"] = []
+else:
+    st.session_state["top_retailer_options"] = []
 
 # HOTFIX FOR NameError: get_uploaded_raw_html_map
 # Paste this block ABOVE the line that starts with:
