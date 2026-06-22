@@ -1335,6 +1335,31 @@ def build_extension_batch_payload(retailer_df, retailer_name, current_batch_key,
 
 def render_extension_batch_bridge(payload):
     payload_json = json.dumps(payload or {}, ensure_ascii=False)
+    payload_html = html.escape(payload_json, quote=True)
+    retailer_html = html.escape(str((payload or {}).get('retailer', '') or ''), quote=True)
+    batch_key_html = html.escape(str((payload or {}).get('batchKey', '') or ''), quote=True)
+    capture_mode_html = html.escape(str((payload or {}).get('captureMode', '') or ''), quote=True)
+
+    st.markdown(
+        f"""
+        <div id="pdp-extension-batch-ready"
+             data-pdp-extension-batch-ready="1"
+             data-pdp-extension-batch-payload="{payload_html}"
+             data-pdp-extension-retailer="{retailer_html}"
+             data-pdp-extension-batch-key="{batch_key_html}"
+             data-pdp-extension-capture-mode="{capture_mode_html}"
+             style="display:none !important; visibility:hidden !important; width:0; height:0; overflow:hidden;"
+        ></div>
+        <textarea id="pdp-extension-batch-payload-text"
+                  style="display:none !important; visibility:hidden !important; width:0; height:0; overflow:hidden;"
+        >{payload_html}</textarea>
+        <pre id="pdp-extension-batch-payload-json"
+             style="display:none !important; visibility:hidden !important; width:0; height:0; overflow:hidden;"
+        >{payload_html}</pre>
+        """,
+        unsafe_allow_html=True,
+    )
+
     bridge_html = f"""
     <script>
     (function() {{
@@ -1385,6 +1410,7 @@ def render_extension_batch_bridge(payload):
             root.setAttribute('data-pdp-extension-retailer', payload && payload.retailer ? String(payload.retailer) : '');
             root.setAttribute('data-pdp-extension-batch-key', payload && payload.batchKey ? String(payload.batchKey) : '');
             root.setAttribute('data-pdp-extension-capture-mode', payload && payload.captureMode ? String(payload.captureMode) : '');
+            root.setAttribute('data-pdp-extension-batch-payload', JSON.stringify(payload));
           }}
           if (body) {{
             body.setAttribute('data-pdp-extension-batch-ready', payload && payload.ready ? '1' : '0');
@@ -1413,6 +1439,7 @@ def render_extension_batch_bridge(payload):
           targetWindow.postMessage({{ type: 'raw-html-extension-batch-ready', payload }}, '*');
           targetWindow.postMessage({{ type: 'streamlit-extension-batch-ready', payload }}, '*');
           targetWindow.postMessage({{ type: 'extension-batch-ready', payload }}, '*');
+          targetWindow.postMessage({{ type: 'PDP_EXTENSION_BATCH_READY', payload }}, '*');
         }} catch (e) {{}}
       }}
 
@@ -1430,8 +1457,7 @@ def render_extension_batch_bridge(payload):
 
       function allTargets() {{
         const targets = [];
-        const candidates = [window, window.parent, window.top];
-        for (const candidate of candidates) {{
+        for (const candidate of [window, window.parent, window.top]) {{
           if (!candidate) continue;
           if (!targets.includes(candidate)) targets.push(candidate);
         }}
@@ -1449,16 +1475,20 @@ def render_extension_batch_bridge(payload):
       const intervalId = setInterval(() => {{
         publish();
         publishCount += 1;
-        if (publishCount >= 40) {{
-          clearInterval(intervalId);
-        }}
+        if (publishCount >= 40) clearInterval(intervalId);
       }}, 500);
 
       try {{
         window.addEventListener('message', function(event) {{
           const data = event && event.data ? event.data : {{}};
           const msgType = data && data.type ? String(data.type) : '';
-          if (msgType === 'pdp-extension-batch-request' || msgType === 'raw-html-extension-batch-request' || msgType === 'streamlit-extension-batch-request' || msgType === 'extension-batch-request') {{
+          if (
+            msgType === 'pdp-extension-batch-request' ||
+            msgType === 'raw-html-extension-batch-request' ||
+            msgType === 'streamlit-extension-batch-request' ||
+            msgType === 'extension-batch-request' ||
+            msgType === 'PDP_EXTENSION_BATCH_REQUEST'
+          ) {{
             publish();
           }}
         }});
