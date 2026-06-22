@@ -1784,11 +1784,12 @@ def _parse_salsify_page(html_text):
         "feature5": feature_candidates[4] if len(feature_candidates) > 4 else "",
     }
 
-    asset_lookup = {}
+    asset_entries = []
     try:
         properties = data["props"]["pageProps"]["product"]["digitalAssets"]["properties"]
+        seen_asset_names = set()
         for prop in properties:
-            raw_name = prop.get("property", "")
+            raw_name = str(prop.get("property", "") or "").strip()
             normalized_name = normalize_salsify_asset_name(raw_name)
             values = prop.get("values", [])
             if not normalized_name or not values:
@@ -1799,11 +1800,24 @@ def _parse_salsify_page(html_text):
                 val = str(first.get("value", "") or "")
             elif isinstance(first, str):
                 val = str(first or "")
+            val = str(val or "").strip()
             if not val:
                 continue
-            asset_lookup[normalized_name] = val.split("?")[0]
+            clean_url = val.split("?", 1)[0].strip()
+            if not re.match(r'^https?://', clean_url, flags=re.IGNORECASE):
+                continue
+            if normalized_name in seen_asset_names:
+                continue
+            asset_entries.append({
+                "name": raw_name or normalized_name,
+                "normalized_name": normalized_name,
+                "url": clean_url,
+            })
+            seen_asset_names.add(normalized_name)
     except Exception:
         pass
+
+    asset_lookup = {entry["normalized_name"]: entry["url"] for entry in asset_entries}
 
     def find_asset(*queries):
         for query in queries:
@@ -1815,16 +1829,19 @@ def _parse_salsify_page(html_text):
                     return value
         return ""
 
+    # Keep explicitly named image slots so retailer-specific alignment logic can
+    # make better decisions later (for example Kroger grocery-vs-generic online art).
     ordered_candidates = [
-        ("online", find_asset("online optimized image", "online image", "online", "front")),
-        ("back", find_asset("flat back 2d", "flat back", "back 2d", "back")),
-        ("left", find_asset("flat left 2d", "flat left", "left 2d", "left")),
-        ("atf io", find_asset("atf i o generic", "atf io generic", "atf i o", "atf io")),
-        ("atf 2", find_asset("atf 2")),
-        ("atf 3", find_asset("atf 3")),
-        ("atf 4", find_asset("atf 4")),
-        ("atf 5", find_asset("atf 5")),
-        ("atf 6", find_asset("atf 6")),
+        ("Online Optimized Image-Grocery", find_asset("online optimized image grocery")),
+        ("Online Optimized Image", find_asset("online optimized image")),
+        ("Flat Back_2D", find_asset("flat back 2d", "flat back", "back 2d", "back")),
+        ("Flat Left_2D", find_asset("flat left 2d", "flat left", "left 2d", "left")),
+        ("ATF I/O-Generic", find_asset("atf i o generic", "atf io generic", "atf i o", "atf io")),
+        ("ATF 2-Generic", find_asset("atf 2 generic", "atf 2")),
+        ("ATF 3-Generic", find_asset("atf 3 generic", "atf 3")),
+        ("ATF 4-Generic", find_asset("atf 4 generic", "atf 4")),
+        ("ATF 5-Generic", find_asset("atf 5 generic", "atf 5")),
+        ("ATF 6-Generic", find_asset("atf 6 generic", "atf 6")),
     ]
 
     images = []
@@ -1836,10 +1853,19 @@ def _parse_salsify_page(html_text):
         images.append({"name": name, "url": url})
         seen_urls.add(url)
 
+    # Preserve any remaining Salsify image assets after the known comparison slots.
+    for entry in asset_entries:
+        entry_url = str(entry.get("url", "") or "").strip()
+        if not entry_url or entry_url in seen_urls:
+            continue
+        images.append({"name": entry.get("name", ""), "url": entry_url})
+        seen_urls.add(entry_url)
+
     return {
         "text": text_bundle,
         "images": images[:MAX_IMAGE_SLOTS_TO_COMPARE],
     }
+
 
 @st.cache_data(show_spinner=False)
 def get_salsify_bundle(url):
@@ -3270,10 +3296,11 @@ def _extract_kroger_perspective_from_text(text):
 
 def _extract_kroger_perspective_from_url(url):
     url = str(url or "")
-    m = re.search(r'/product/images/(?:xlarge|large|medium|small|thumbnail)/([^/]+)/', url, flags=re.IGNORECASE)
+    m = re.search(r'/product/images/(?:large|medium|small)/([^/]+)/', url, flags=re.IGNORECASE)
     if m:
         return str(m.group(1) or "").strip().lower()
     return ""
+
 
 def extract_kroger_images_from_html(html_text):
     if not html_text:
@@ -3316,6 +3343,7 @@ def extract_kroger_images_from_html(html_text):
         if main_imgs:
             return main_imgs[0]
 
+        # Fallback only if the main class is missing in the captured HTML.
         for img in slide.select('img[src]'):
             class_tokens = [str(x or '').strip().lower() for x in (img.get('class') or [])]
             if any('zoom' in token for token in class_tokens):
@@ -3326,6 +3354,7 @@ def extract_kroger_images_from_html(html_text):
             return img
         return None
 
+    # Primary path: use one chosen image per visible slide, in site order.
     slide_nodes = soup.select('[data-testid="main-image-perspective"]')
     for idx, slide in enumerate(slide_nodes):
         aria_label = str(slide.get('aria-label', '') or '')
@@ -3338,6 +3367,7 @@ def extract_kroger_images_from_html(html_text):
         img_perspective = perspective_hint or _extract_kroger_perspective_from_text(alt)
         add_candidate(src, slot_index=idx, perspective_hint=img_perspective)
 
+    # Secondary path: if the main slide nodes are missing, use the thumbnail carousel.
     if not candidates:
         thumb_imgs = soup.select('[data-testid="product-thumbnail-carousel"] img[src]')
         for idx, img in enumerate(thumb_imgs):
@@ -3346,9 +3376,10 @@ def extract_kroger_images_from_html(html_text):
             perspective_hint = _extract_kroger_perspective_from_text(alt)
             add_candidate(src, slot_index=idx, perspective_hint=perspective_hint)
 
+    # Final fallback: raw URL regex.
     if not candidates:
         raw_urls = re.findall(
-            r'https://www\.kroger\.com/product/images/(?:xlarge|large|medium|small|thumbnail)/[^\s<>]+',
+            r'https://www\.kroger\.com/product/images/(?:large|medium|small|thumbnail)/[^\s<>]+',
             working,
             flags=re.IGNORECASE,
         )
@@ -3359,6 +3390,7 @@ def extract_kroger_images_from_html(html_text):
     ordered_urls = [url for _, _, url in candidates]
     return ordered_urls[:MAX_IMAGE_SLOTS_TO_COMPARE]
 
+@st.cache_data(show_spinner=False)
 def get_kroger_bundle(retail_url, target_rpc=""):
     return build_empty_retailer_bundle("Kroger", "kroger_txt_only_no_live_fetch")
 
@@ -6048,56 +6080,123 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
     """
     Build the retailer-specific Salsify comparison image list.
 
-    Salsify-only rule:
+    Default Salsify behavior:
     - Lock slots 1-3 to Online Optimized Image, Flat Back_2D, Flat Left_2D.
     - If any of those are missing, keep a blank Salsify slot so later ATF / lifestyle
       images shift down instead of moving up into the first three slots.
-    - Retailer images are not changed by this rule.
 
-    Beyond the top three locked Salsify slots, optional ATF I/O still behaves naturally.
-    If ATF I/O is missing, later ATF slots move up behind the locked top three.
+    Kroger-specific Salsify behavior:
+    - Do not apply the locked back/left blank-slot rule.
+    - Order only by the requested comparison priority:
+      1. Online Optimized Image-Grocery.
+      2. If that is missing, Online Optimized Image.
+      3. ATF I/O-Generic.
+      4. ATF 2-Generic.
+      5. ATF 3-Generic.
+      6. ATF 4-Generic.
+      7. ATF 5-Generic.
+    - If Online Optimized Image-Grocery exists, do not also include Online Optimized Image.
     """
     retailer = str(retailer_name or "").strip().lower()
-    s_images = build_locked_salsify_slots(
-        s_images,
+    raw_images = [img for img in (s_images or []) if isinstance(img, dict)]
+
+    def choose_first(images, queries, used_urls=None, exact=False):
+        used_urls = used_urls or set()
+        query_norms = [normalize_salsify_asset_name(q) for q in (queries or []) if normalize_salsify_asset_name(q)]
+        if not query_norms:
+            return None
+        for img in images:
+            url = str(img.get("url", "") or "").strip()
+            if not url or url in used_urls:
+                continue
+            name_norm = normalize_salsify_asset_name(img.get("name", ""))
+            if not name_norm:
+                continue
+            for q_norm in query_norms:
+                if exact:
+                    if name_norm == q_norm:
+                        return img
+                else:
+                    if q_norm in name_norm:
+                        return img
+        return None
+
+    if retailer == "kroger":
+        aligned = []
+        used_urls = set()
+
+        grocery_online = choose_first(
+            raw_images,
+            ["Online Optimized Image-Grocery"],
+            used_urls=used_urls,
+            exact=True,
+        )
+        default_online = None
+        if grocery_online is None:
+            default_online = choose_first(
+                raw_images,
+                ["Online Optimized Image"],
+                used_urls=used_urls,
+                exact=True,
+            )
+
+        first_slot = grocery_online or default_online
+        if first_slot is not None:
+            aligned.append(first_slot)
+            used_urls.add(str(first_slot.get("url", "") or "").strip())
+
+        for queries in [
+            ["ATF I/O-Generic"],
+            ["ATF 2-Generic"],
+            ["ATF 3-Generic"],
+            ["ATF 4-Generic"],
+            ["ATF 5-Generic"],
+        ]:
+            img = choose_first(raw_images, queries, used_urls=used_urls, exact=True)
+            if img is not None:
+                aligned.append(img)
+                used_urls.add(str(img.get("url", "") or "").strip())
+
+        return aligned[:max_slots]
+
+    locked_images = build_locked_salsify_slots(
+        raw_images,
         lock_top_three=True,
         max_slots=max_slots,
     )
 
     if retailer != "walgreens":
-        return s_images[:max_slots]
+        return locked_images[:max_slots]
 
-    by_name = {}
-    for img in s_images:
-        if not isinstance(img, dict):
-            continue
-        name = normalize_salsify_asset_name(img.get("name", ""))
-        if name and name not in by_name:
-            by_name[name] = img
+    aligned = []
+    used_urls = set()
 
-    aligned = [
-        by_name.get("online") or make_blank_salsify_image_slot("online"),
-        by_name.get("back") or make_blank_salsify_image_slot("back"),
-        by_name.get("left") or make_blank_salsify_image_slot("left"),
-    ]
+    for queries, blank_name in [
+        (["Online Optimized Image-Grocery", "Online Optimized Image", "Online Image", "Online", "Front"], "online"),
+        (["Flat Back_2D", "Flat Back", "Back 2D", "Back"], "back"),
+        (["Flat Left_2D", "Flat Left", "Left 2D", "Left"], "left"),
+    ]:
+        img = choose_first(raw_images, queries, used_urls=used_urls, exact=False)
+        if img is not None:
+            aligned.append(img)
+            used_urls.add(str(img.get("url", "") or "").strip())
+        else:
+            aligned.append(make_blank_salsify_image_slot(blank_name))
 
-    def add_if_present(*queries):
-        for query in queries:
-            q_norm = normalize_salsify_asset_name(query)
-            img = by_name.get(q_norm)
-            if img and img not in aligned:
-                aligned.append(img)
-                return
-
-    add_if_present("atf io")
-    add_if_present("atf 2")
-    add_if_present("atf 3")
-    add_if_present("atf 4")
-    add_if_present("atf 5")
-    add_if_present("atf 6")
+    for queries in [
+        ["ATF I/O-Generic", "ATF I/O", "ATF IO-Generic", "ATF IO"],
+        ["ATF 2-Generic", "ATF 2"],
+        ["ATF 3-Generic", "ATF 3"],
+        ["ATF 4-Generic", "ATF 4"],
+        ["ATF 5-Generic", "ATF 5"],
+        ["ATF 6-Generic", "ATF 6"],
+    ]:
+        img = choose_first(raw_images, queries, used_urls=used_urls, exact=False)
+        if img is not None:
+            aligned.append(img)
+            used_urls.add(str(img.get("url", "") or "").strip())
 
     return aligned[:min(max_slots, 6)]
-
 
 def align_image_slots_for_comparison(s_images, r_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE, strong_threshold=80):
     """
