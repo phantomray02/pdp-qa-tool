@@ -6447,6 +6447,9 @@ def process_row(row):
 
         debug_data = r_text.get("debug", {})
 
+        output_rating_value = (r_text.get("rating", "") if isinstance(r_text, dict) else "") or rating_value
+        output_review_count_value = (r_text.get("review_count", "") if isinstance(r_text, dict) else "") or review_count_value
+
         title_score = keyword_score(s_text.get("title", ""), r_text.get("title", ""))
 
         s_desc_debug = debug_description(s_text.get("description", ""))
@@ -6493,6 +6496,8 @@ def process_row(row):
                 "Brand": row.get("brand", ""),
                 "Salsify URL": salsify_url,
                 "Retail URL": retail_url,
+                "Rating": output_rating_value,
+                "Review Count": output_review_count_value,
                 "Title %": title_score,
                 "Description %": desc_score,
                 "Feature %": avg_feature_score,
@@ -6509,6 +6514,8 @@ def process_row(row):
                 "Brand": row.get("brand", ""),
                 "Salsify URL": salsify_url,
                 "Retail URL": retail_url,
+                "Rating": output_rating_value,
+                "Review Count": output_review_count_value,
                 "Title %": title_score,
                 "Description %": desc_score,
                 "Feature %": avg_feature_score,
@@ -6556,6 +6563,8 @@ def process_row(row):
                 "CVS RPC": cvs_rpc,
                 "Brand": row.get("brand", ""),
                 "Retail URL": retail_url,
+                "Rating": output_rating_value,
+                "Review Count": output_review_count_value,
                 "Salsify URL": salsify_url,
                 "Retailer Title": r_text.get("title", ""),
                     "Retailer Description": r_text.get("description", ""),
