@@ -7428,3 +7428,60 @@ if (
         st.error("🔥 CRITICAL APP ERROR")
         st.text(str(e))
         st.text(traceback.format_exc())
+
+
+# ================= FIX OVERRIDES (SAFE PATCH) =================
+
+def parse_uploaded_raw_html_map(raw_text):
+    import re, html as _html
+    raw_text = str(raw_text or "")
+    if not raw_text.strip():
+        return {}
+
+    html_map = {}
+
+    url_pattern = re.compile(r'(?im)^(?:requested\s+url|final\s+url|retail(?:er)?\s+url|url)\s*:\s*(https?://\S+)')
+    matches = list(url_pattern.finditer(raw_text))
+
+    for i, match in enumerate(matches):
+        url = match.group(1).strip()
+        start = match.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(raw_text)
+        section = raw_text[start:end]
+
+        html_match = re.search(r"-----BEGIN HTML-----(.*?)-----END HTML-----", section, re.DOTALL | re.IGNORECASE)
+        html_text = html_match.group(1).strip() if html_match else section.strip()
+        html_text = _html.unescape(html_text)
+
+        if len(html_text) < 200 or html_text.strip() in ["</body></html>", ""]:
+            continue
+
+        for candidate in uploaded_capture_url_candidates(url):
+            html_map[candidate] = html_text
+
+    return html_map
+
+
+def get_kroger_html_from_uploaded_map(retail_url, uploaded_html_map):
+    if not retail_url or not uploaded_html_map:
+        return ""
+
+    normalized = normalize_kroger_url(retail_url)
+
+    for key, html_text in uploaded_html_map.items():
+        key_norm = normalize_kroger_url(key)
+        if key_norm == normalized or key_norm in normalized or normalized in key_norm:
+            return html_text
+
+    return ""
+
+# force fallback wrapper
+_old_lookup = lookup_uploaded_raw_html
+
+def lookup_uploaded_raw_html(uploaded_html_map, retail_url):
+    html_text = _old_lookup(uploaded_html_map, retail_url)
+    if not html_text or len(html_text) < 200:
+        return get_html(retail_url)
+    return html_text
+
+# ================= END FIX =================
