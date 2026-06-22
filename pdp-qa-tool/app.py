@@ -329,7 +329,7 @@ def locked_visual_header_row_html(
 ):
     retailer_name = str(retailer_name or "").strip().lower()
 
-    if retailer_name == "walgreens":
+    if retailer_name in {"walgreens", "kroger"}:
         return (
             '<div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);column-gap:18px;align-items:start;margin:0 0 6px 0;">'
             f'<div style="min-width:0;display:flex;align-items:flex-start;justify-content:flex-start;overflow:visible;">{salsify_header_html}</div>'
@@ -1622,29 +1622,17 @@ def render_debugger_panel(
 # SALSIFY PARSERS
 # =========================================
 def _parse_salsify_page(html_text):
-    
     empty = {
-    "text": {
-        "title": "",
-        "description": "",
-        "feature1": "",
-        "feature2": "",
-        "feature3": "",
-        "feature4": "",
-        "feature5": "",
-        "feature6": "",
-        "feature7": "",
-        "kroger_product_title": "",
-        "kroger_description": "",
-        "kroger_feature1": "",
-        "kroger_feature2": "",
-        "kroger_feature3": "",
-        "kroger_feature4": "",
-        "kroger_feature5": "",
-        "kroger_feature6": "",
-        "kroger_feature7": "",
-    },
-    "images": [],
+        "text": {
+            "title": "",
+            "description": "",
+            "feature1": "",
+            "feature2": "",
+            "feature3": "",
+            "feature4": "",
+            "feature5": "",
+        },
+        "images": [],
     }
     if not html_text:
         return empty
@@ -1786,43 +1774,6 @@ def _parse_salsify_page(html_text):
         if meta_desc and meta_desc.get("content"):
             description = normalize_space(meta_desc.get("content", ""))
 
-    kroger_product_title = first_property(
-
-
-        "Kroger Product Title",
-
-
-        "KROGER_PRODUCT_TITLE",
-
-
-    )
-
-
-    kroger_description = first_property(
-
-
-        "Kroger Description",
-
-
-        "KROGER_DESCRIPTION",
-
-
-    )
-
-
-    kroger_feature_values = [
-
-
-        first_property(f"Kroger Feature {i}", f"KROGER_FEATURE_{i}", f"KROGER_FEATURE{i}")
-
-
-        for i in range(1, 8)
-
-
-    ]
-
-
-    
     text_bundle = {
         "title": title,
         "description": description,
@@ -1831,26 +1782,13 @@ def _parse_salsify_page(html_text):
         "feature3": feature_candidates[2] if len(feature_candidates) > 2 else "",
         "feature4": feature_candidates[3] if len(feature_candidates) > 3 else "",
         "feature5": feature_candidates[4] if len(feature_candidates) > 4 else "",
-        "feature6": feature_candidates[5] if len(feature_candidates) > 5 else "",
-        "feature7": feature_candidates[6] if len(feature_candidates) > 6 else "",
-        "kroger_product_title": kroger_product_title,
-        "kroger_description": kroger_description,
-        "kroger_feature1": kroger_feature_values[0] if len(kroger_feature_values) > 0 else "",
-        "kroger_feature2": kroger_feature_values[1] if len(kroger_feature_values) > 1 else "",
-        "kroger_feature3": kroger_feature_values[2] if len(kroger_feature_values) > 2 else "",
-        "kroger_feature4": kroger_feature_values[3] if len(kroger_feature_values) > 3 else "",
-        "kroger_feature5": kroger_feature_values[4] if len(kroger_feature_values) > 4 else "",
-        "kroger_feature6": kroger_feature_values[5] if len(kroger_feature_values) > 5 else "",
-        "kroger_feature7": kroger_feature_values[6] if len(kroger_feature_values) > 6 else "",
     }
 
-    
-    asset_entries = []
+    asset_lookup = {}
     try:
         properties = data["props"]["pageProps"]["product"]["digitalAssets"]["properties"]
-        seen_asset_names = set()
         for prop in properties:
-            raw_name = str(prop.get("property", "") or "").strip()
+            raw_name = prop.get("property", "")
             normalized_name = normalize_salsify_asset_name(raw_name)
             values = prop.get("values", [])
             if not normalized_name or not values:
@@ -1863,21 +1801,9 @@ def _parse_salsify_page(html_text):
                 val = str(first or "")
             if not val:
                 continue
-            clean_url = str(val).split("?", 1)[0].strip()
-            if not re.match(r'^https?://', clean_url, flags=re.IGNORECASE):
-                continue
-            if normalized_name in seen_asset_names:
-                continue
-            asset_entries.append({
-                "name": raw_name or normalized_name,
-                "normalized_name": normalized_name,
-                "url": clean_url,
-            })
-            seen_asset_names.add(normalized_name)
+            asset_lookup[normalized_name] = val.split("?")[0]
     except Exception:
         pass
-
-    asset_lookup = {entry["normalized_name"]: entry["url"] for entry in asset_entries}
 
     def find_asset(*queries):
         for query in queries:
@@ -1890,16 +1816,15 @@ def _parse_salsify_page(html_text):
         return ""
 
     ordered_candidates = [
-        ("Online Optimized Image-Grocery", find_asset("online optimized image grocery")),
-        ("Online Optimized Image", find_asset("online optimized image")),
-        ("Flat Back_2D", find_asset("flat back 2d", "flat back", "back 2d", "back")),
-        ("Flat Left_2D", find_asset("flat left 2d", "flat left", "left 2d", "left")),
-        ("ATF I/O-Generic", find_asset("atf i o generic", "atf io generic", "atf i o", "atf io")),
-        ("ATF 2-Generic", find_asset("atf 2 generic", "atf 2")),
-        ("ATF 3-Generic", find_asset("atf 3 generic", "atf 3")),
-        ("ATF 4-Generic", find_asset("atf 4 generic", "atf 4")),
-        ("ATF 5-Generic", find_asset("atf 5 generic", "atf 5")),
-        ("ATF 6-Generic", find_asset("atf 6 generic", "atf 6")),
+        ("online", find_asset("online optimized image", "online image", "online", "front")),
+        ("back", find_asset("flat back 2d", "flat back", "back 2d", "back")),
+        ("left", find_asset("flat left 2d", "flat left", "left 2d", "left")),
+        ("atf io", find_asset("atf i o generic", "atf io generic", "atf i o", "atf io")),
+        ("atf 2", find_asset("atf 2")),
+        ("atf 3", find_asset("atf 3")),
+        ("atf 4", find_asset("atf 4")),
+        ("atf 5", find_asset("atf 5")),
+        ("atf 6", find_asset("atf 6")),
     ]
 
     images = []
@@ -1911,18 +1836,10 @@ def _parse_salsify_page(html_text):
         images.append({"name": name, "url": url})
         seen_urls.add(url)
 
-    for entry in asset_entries:
-        entry_url = str(entry.get("url", "") or "").strip()
-        if not entry_url or entry_url in seen_urls:
-            continue
-        images.append({"name": entry.get("name", ""), "url": entry_url})
-        seen_urls.add(entry_url)
-
     return {
         "text": text_bundle,
         "images": images[:MAX_IMAGE_SLOTS_TO_COMPARE],
     }
-
 
 @st.cache_data(show_spinner=False)
 def get_salsify_bundle(url):
@@ -3314,6 +3231,24 @@ def extract_kroger_text_from_html(html_text, retail_url="", target_rpc=""):
                     break
         if rating or review_count:
             break
+
+    if not rating and not review_count:
+        rating_match = re.search(
+            r'"aggregateRating"\s*:\s*\{.*?"ratingValue"\s*:\s*"?([0-9]+(?:\.[0-9]+)?)"?',
+            working,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        review_count_match = re.search(
+            r'"aggregateRating"\s*:\s*\{.*?"reviewCount"\s*:\s*"?([0-9][0-9,]*)"?',
+            working,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if rating_match:
+            rating = str(rating_match.group(1) or '').strip()
+        if review_count_match:
+            review_count = str(review_count_match.group(1) or '').strip()
+        if rating or review_count:
+            debug["Rating Path"] = "kroger_raw_aggregateRating_regex"
 
     return {
         "title": title,
@@ -5865,33 +5800,10 @@ def split_walgreens_description_into_features(description_text, existing_feature
 def finalize_salsify_copy_for_retailer(retailer_name, s_text):
     """
     Normalize Salsify copy for retailer-specific comparison only.
-
-    Kroger Salsify copy should use retailer-specific Kroger deck fields when present:
-    - Title: Kroger Product Title.
-    - Description: Kroger Description.
-    - Features: Kroger Feature 1 through Kroger Feature 7.
-
-    Walgreens keeps its existing normalization behavior.
+    For Walgreens, do NOT strip 'Also check out our ...' anymore.
     """
     retailer = str(retailer_name or "").strip().lower()
     out = dict(s_text or {})
-
-    if retailer == "kroger":
-        out["title"] = normalize_space(
-            out.get("kroger_product_title", "") or out.get("title", "")
-        )
-        out["description"] = clean_kroger_text(
-            out.get("kroger_description", "") or out.get("description", "")
-        )
-
-        kroger_features = []
-        for i in range(1, 8):
-            val = normalize_space(out.get(f"kroger_feature{i}", ""))
-            out[f"feature{i}"] = val
-            kroger_features.append(val)
-
-        out["features"] = [x for x in kroger_features if x]
-        return out
 
     if retailer == "walgreens":
         out["title"] = normalize_space(out.get("title", ""))
@@ -5899,7 +5811,7 @@ def finalize_salsify_copy_for_retailer(retailer_name, s_text):
         return out
 
     return out
-
+    
 def finalize_retailer_copy(retailer_name, r_text):
     retailer = str(retailer_name or "").strip().lower()
     out = dict(r_text or {})
@@ -6160,123 +6072,56 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
     """
     Build the retailer-specific Salsify comparison image list.
 
-    Default Salsify behavior:
+    Salsify-only rule:
     - Lock slots 1-3 to Online Optimized Image, Flat Back_2D, Flat Left_2D.
     - If any of those are missing, keep a blank Salsify slot so later ATF / lifestyle
       images shift down instead of moving up into the first three slots.
+    - Retailer images are not changed by this rule.
 
-    Kroger-specific Salsify behavior:
-    - Do not apply the locked back/left blank-slot rule.
-    - Order only by the requested comparison priority:
-      1. Online Optimized Image-Grocery.
-      2. If that is missing, Online Optimized Image.
-      3. ATF I/O-Generic.
-      4. ATF 2-Generic.
-      5. ATF 3-Generic.
-      6. ATF 4-Generic.
-      7. ATF 5-Generic.
-      8. Use ATF 6-Generic only when ATF I/O-Generic is missing.
-    - If Online Optimized Image-Grocery exists, do not also include Online Optimized Image.
+    Beyond the top three locked Salsify slots, optional ATF I/O still behaves naturally.
+    If ATF I/O is missing, later ATF slots move up behind the locked top three.
     """
     retailer = str(retailer_name or "").strip().lower()
-    raw_images = [img for img in (s_images or []) if isinstance(img, dict)]
-
-    def choose_first(images, queries, used_urls=None, exact=False):
-        used_urls = used_urls or set()
-        query_norms = []
-        for q in (queries or []):
-            q_norm = normalize_salsify_asset_name(q)
-            if q_norm:
-                query_norms.append(q_norm)
-        if not query_norms:
-            return None
-        for img in images:
-            url = str(img.get("url", "") or "").strip()
-            if not url or url in used_urls:
-                continue
-            name_norm = normalize_salsify_asset_name(img.get("name", ""))
-            if not name_norm:
-                continue
-            for q_norm in query_norms:
-                if exact:
-                    if name_norm == q_norm:
-                        return img
-                else:
-                    if q_norm in name_norm:
-                        return img
-        return None
-
-    if retailer == "kroger":
-        aligned = []
-        used_urls = set()
-
-        grocery_online = choose_first(raw_images, ["Online Optimized Image-Grocery"], used_urls=used_urls, exact=True)
-        default_online = None
-        if grocery_online is None:
-            default_online = choose_first(raw_images, ["Online Optimized Image"], used_urls=used_urls, exact=True)
-
-        first_slot = grocery_online or default_online
-        if first_slot is not None:
-            aligned.append(first_slot)
-            used_urls.add(str(first_slot.get("url", "") or "").strip())
-
-        atf_io_present = False
-        for queries in [
-            ["ATF I/O-Generic"],
-            ["ATF 2-Generic"],
-            ["ATF 3-Generic"],
-            ["ATF 4-Generic"],
-            ["ATF 5-Generic"],
-        ]:
-            img = choose_first(raw_images, queries, used_urls=used_urls, exact=True)
-            if img is not None:
-                aligned.append(img)
-                used_urls.add(str(img.get("url", "") or "").strip())
-                if normalize_salsify_asset_name(img.get("name", "")) == normalize_salsify_asset_name("ATF I/O-Generic"):
-                    atf_io_present = True
-
-        if not atf_io_present:
-            img = choose_first(raw_images, ["ATF 6-Generic"], used_urls=used_urls, exact=True)
-            if img is not None:
-                aligned.append(img)
-                used_urls.add(str(img.get("url", "") or "").strip())
-
-        return aligned[:max_slots]
-
-    locked_images = build_locked_salsify_slots(raw_images, lock_top_three=True, max_slots=max_slots)
+    s_images = build_locked_salsify_slots(
+        s_images,
+        lock_top_three=True,
+        max_slots=max_slots,
+    )
 
     if retailer != "walgreens":
-        return locked_images[:max_slots]
+        return s_images[:max_slots]
 
-    aligned = []
-    used_urls = set()
+    by_name = {}
+    for img in s_images:
+        if not isinstance(img, dict):
+            continue
+        name = normalize_salsify_asset_name(img.get("name", ""))
+        if name and name not in by_name:
+            by_name[name] = img
 
-    for queries, blank_name in [
-        (["Online Optimized Image-Grocery", "Online Optimized Image", "Online Image", "Online", "Front"], "online"),
-        (["Flat Back_2D", "Flat Back", "Back 2D", "Back"], "back"),
-        (["Flat Left_2D", "Flat Left", "Left 2D", "Left"], "left"),
-    ]:
-        img = choose_first(raw_images, queries, used_urls=used_urls, exact=False)
-        if img is not None:
-            aligned.append(img)
-            used_urls.add(str(img.get("url", "") or "").strip())
-        else:
-            aligned.append(make_blank_salsify_image_slot(blank_name))
+    aligned = [
+        by_name.get("online") or make_blank_salsify_image_slot("online"),
+        by_name.get("back") or make_blank_salsify_image_slot("back"),
+        by_name.get("left") or make_blank_salsify_image_slot("left"),
+    ]
 
-    for queries in [
-        ["ATF I/O-Generic", "ATF I/O", "ATF IO-Generic", "ATF IO"],
-        ["ATF 2-Generic", "ATF 2"],
-        ["ATF 3-Generic", "ATF 3"],
-        ["ATF 4-Generic", "ATF 4"],
-        ["ATF 5-Generic", "ATF 5"],
-        ["ATF 6-Generic", "ATF 6"],
-    ]:
-        img = choose_first(raw_images, queries, used_urls=used_urls, exact=False)
-        if img is not None:
-            aligned.append(img)
-            used_urls.add(str(img.get("url", "") or "").strip())
+    def add_if_present(*queries):
+        for query in queries:
+            q_norm = normalize_salsify_asset_name(query)
+            img = by_name.get(q_norm)
+            if img and img not in aligned:
+                aligned.append(img)
+                return
+
+    add_if_present("atf io")
+    add_if_present("atf 2")
+    add_if_present("atf 3")
+    add_if_present("atf 4")
+    add_if_present("atf 5")
+    add_if_present("atf 6")
 
     return aligned[:min(max_slots, 6)]
+
 
 def align_image_slots_for_comparison(s_images, r_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE, strong_threshold=80):
     """
@@ -6596,11 +6441,8 @@ def process_row(row):
             r_text.get("description", ""),
         )
 
-        
         retailer_features = r_text.get("features", []) if isinstance(r_text, dict) else []
-        retailer_name_lc = str(retailer_name or "").strip().lower()
-        feature_count = 7 if retailer_name_lc == "kroger" else 5
-        feature_fields = [f"feature{i}" for i in range(1, feature_count + 1)]
+        feature_fields = ["feature1", "feature2", "feature3", "feature4", "feature5"]
 
         feature_scores = []
         feature_score_fields = {}
@@ -6662,14 +6504,11 @@ def process_row(row):
                 "Salsify Description": s_text.get("description", ""),
                 "Retailer Description": r_text.get("description", ""),
                     "CVS Description": r_text.get("description", ""),
-                
                 "Salsify Feature 1": s_text.get("feature1", ""),
                 "Salsify Feature 2": s_text.get("feature2", ""),
                 "Salsify Feature 3": s_text.get("feature3", ""),
                 "Salsify Feature 4": s_text.get("feature4", ""),
                 "Salsify Feature 5": s_text.get("feature5", ""),
-                "Salsify Feature 6": s_text.get("feature6", ""),
-                "Salsify Feature 7": s_text.get("feature7", ""),
                 "Retailer Features": " | ".join(r_text.get("features", [])),
                     "CVS Features": " | ".join(r_text.get("features", [])),
                 "Salsify Images": " | ".join([img.get("url", "") for img in s_images if isinstance(img, dict)]),
@@ -7489,10 +7328,11 @@ if (
                 )
 
                 rating_html = ""
-                if str(retailer_name or "").strip().lower() == "walgreens":
-                    rating_value = (r_text.get("rating", "") if isinstance(r_text, dict) else "") or row.get("rating", "") or "4.5"
-                    review_count_value = (r_text.get("review_count", "") if isinstance(r_text, dict) else "") or row.get("review_count", "") or "4201"
-                    rating_html = rating_stars_html(rating_value, review_count_value, font_size_px=18)
+                if str(retailer_name or "").strip().lower() in {"walgreens", "kroger"}:
+                    rating_value = (r_text.get("rating", "") if isinstance(r_text, dict) else "") or row.get("rating", "") or ""
+                    review_count_value = (r_text.get("review_count", "") if isinstance(r_text, dict) else "") or row.get("review_count", "") or ""
+                    if rating_value or review_count_value:
+                        rating_html = rating_stars_html(rating_value, review_count_value, font_size_px=18)
 
                 st.markdown(
                     locked_visual_header_row_html(
