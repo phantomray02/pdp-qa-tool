@@ -3270,11 +3270,10 @@ def _extract_kroger_perspective_from_text(text):
 
 def _extract_kroger_perspective_from_url(url):
     url = str(url or "")
-    m = re.search(r'/product/images/(?:large|medium|small)/([^/]+)/', url, flags=re.IGNORECASE)
+    m = re.search(r'/product/images/(?:xlarge|large|medium|small|thumbnail)/([^/]+)/', url, flags=re.IGNORECASE)
     if m:
         return str(m.group(1) or "").strip().lower()
     return ""
-
 
 def extract_kroger_images_from_html(html_text):
     if not html_text:
@@ -3317,7 +3316,6 @@ def extract_kroger_images_from_html(html_text):
         if main_imgs:
             return main_imgs[0]
 
-        # Fallback only if the main class is missing in the captured HTML.
         for img in slide.select('img[src]'):
             class_tokens = [str(x or '').strip().lower() for x in (img.get('class') or [])]
             if any('zoom' in token for token in class_tokens):
@@ -3328,7 +3326,6 @@ def extract_kroger_images_from_html(html_text):
             return img
         return None
 
-    # Primary path: use one chosen image per visible slide, in site order.
     slide_nodes = soup.select('[data-testid="main-image-perspective"]')
     for idx, slide in enumerate(slide_nodes):
         aria_label = str(slide.get('aria-label', '') or '')
@@ -3341,7 +3338,6 @@ def extract_kroger_images_from_html(html_text):
         img_perspective = perspective_hint or _extract_kroger_perspective_from_text(alt)
         add_candidate(src, slot_index=idx, perspective_hint=img_perspective)
 
-    # Secondary path: if the main slide nodes are missing, use the thumbnail carousel.
     if not candidates:
         thumb_imgs = soup.select('[data-testid="product-thumbnail-carousel"] img[src]')
         for idx, img in enumerate(thumb_imgs):
@@ -3350,10 +3346,9 @@ def extract_kroger_images_from_html(html_text):
             perspective_hint = _extract_kroger_perspective_from_text(alt)
             add_candidate(src, slot_index=idx, perspective_hint=perspective_hint)
 
-    # Final fallback: raw URL regex.
     if not candidates:
         raw_urls = re.findall(
-            r'https://www\.kroger\.com/product/images/(?:large|medium|small|thumbnail)/[^\s<>]+',
+            r'https://www\.kroger\.com/product/images/(?:xlarge|large|medium|small|thumbnail)/[^\s<>]+',
             working,
             flags=re.IGNORECASE,
         )
@@ -3364,7 +3359,6 @@ def extract_kroger_images_from_html(html_text):
     ordered_urls = [url for _, _, url in candidates]
     return ordered_urls[:MAX_IMAGE_SLOTS_TO_COMPARE]
 
-@st.cache_data(show_spinner=False)
 def get_kroger_bundle(retail_url, target_rpc=""):
     return build_empty_retailer_bundle("Kroger", "kroger_txt_only_no_live_fetch")
 
