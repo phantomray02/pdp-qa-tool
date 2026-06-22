@@ -1762,25 +1762,141 @@ def _parse_salsify_page(html_text):
     except Exception:
         return empty
 
-    text_map = {}
-    try:
-        props = data["props"]["pageProps"]["product"]["propertySets"][0]["properties"]
-        for p in props:
-            key = p.get("property")
-            values = p.get("values", [])
-            if values:
-                text_map[key] = values[0]
-    except Exception:
-        pass
+    def iter_nodes(obj):
+        if isinstance(obj, dict):
+            yield obj
+            for value in obj.values():
+                yield from iter_nodes(value)
+        elif isinstance(obj, list):
+            for item in obj:
+                yield from iter_nodes(item)
+
+    def looks_like_image_url(value):
+        value = str(value or "").strip().lower()
+        return bool(
+            value
+            and (value.startswith("http://") or value.startswith("https://"))
+            and any(value.endswith(ext) or f"{ext}?" in value for ext in [".jpg", ".jpeg", ".png", ".webp", ".avif"])
+        )
+
+    def extract_node_value(node):
+        if not isinstance(node, dict):
+            return ""
+        if isinstance(node.get("value"), str):
+            return str(node.get("value") or "")
+        values = node.get("values", [])
+        if isinstance(values, list) and values:
+            first = values[0]
+            if isinstance(first, dict):
+                if isinstance(first.get("value"), str):
+                    return str(first.get("value") or "")
+                if isinstance(first.get("label"), str):
+                    return str(first.get("label") or "")
+            if isinstance(first, str):
+                return str(first or "")
+        if isinstance(node.get("label"), str):
+            return str(node.get("label") or "")
+        return ""
+
+    def normalize_prop_name(value):
+        value = normalize_salsify_asset_name(value)
+        value = value.replace(" ", "_")
+        return value.strip("_")
+
+    property_values = {}
+    for node in iter_nodes(data):
+        if not isinstance(node, dict):
+            continue
+        prop_name = node.get("property") or node.get("name") or node.get("key")
+        if not isinstance(prop_name, str) or not prop_name.strip():
+            continue
+        normalized_name = normalize_prop_name(prop_name)
+        raw_value = extract_node_value(node)
+        raw_value = html.unescape(str(raw_value or "")).strip()
+        if not raw_value or looks_like_image_url(raw_value):
+            continue
+        property_values.setdefault(normalized_name, [])
+        if raw_value not in property_values[normalized_name]:
+            property_values[normalized_name].append(raw_value)
+
+    def first_property(*keys):
+        for key in keys:
+            normalized_key = normalize_prop_name(key)
+            values = property_values.get(normalized_key, []) or []
+            for value in values:
+                clean_value = normalize_space(value)
+                if clean_value:
+                    return clean_value
+        return ""
+
+    title = first_property(
+        "PRODUCT_TITLE",
+        "TITLE",
+        "PRODUCT NAME",
+        "PRODUCT_NAME",
+        "NAME",
+        "Display Name",
+    )
+    description = first_property(
+        "DESCRIPTION",
+        "LONG_DESCRIPTION",
+        "PRODUCT_DESCRIPTION",
+        "MARKETING_DESCRIPTION",
+        "ROMANCE_COPY",
+    )
+
+    feature_candidates = []
+    for key, values in property_values.items():
+        if key.startswith("feature_") or key.startswith("bullet_") or key.startswith("benefit_"):
+            for value in values:
+                clean_value = normalize_space(value)
+                if clean_value:
+                    feature_candidates.append(clean_value)
+    if not feature_candidates:
+        for fallback_key in [
+            "FEATURES",
+            "BULLETS",
+            "BULLET_POINTS",
+            "BENEFITS",
+            "HIGHLIGHTS",
+            "KEY_FEATURES",
+        ]:
+            values = property_values.get(normalize_prop_name(fallback_key), []) or []
+            for value in values:
+                if "|" in value:
+                    parts = [normalize_space(x) for x in value.split("|")]
+                    feature_candidates.extend([x for x in parts if x])
+                else:
+                    clean_value = normalize_space(value)
+                    if clean_value:
+                        feature_candidates.append(clean_value)
+
+    feature_candidates = dedupe_preserve_order(feature_candidates)
+
+    if not title:
+        meta_title = soup.find("meta", attrs={"property": "og:title"}) or soup.find("meta", attrs={"name": "twitter:title"})
+        if meta_title and meta_title.get("content"):
+            title = normalize_space(meta_title.get("content", ""))
+    if not title:
+        h1 = soup.find("h1")
+        if h1:
+            title = normalize_space(h1.get_text(" ", strip=True))
+    if not title and soup.title:
+        title = normalize_space(soup.title.get_text(" ", strip=True))
+
+    if not description:
+        meta_desc = soup.find("meta", attrs={"property": "og:description"}) or soup.find("meta", attrs={"name": "description"})
+        if meta_desc and meta_desc.get("content"):
+            description = normalize_space(meta_desc.get("content", ""))
 
     text_bundle = {
-        "title": text_map.get("PRODUCT_TITLE", ""),
-        "description": text_map.get("DESCRIPTION", ""),
-        "feature1": text_map.get("FEATURE_1", ""),
-        "feature2": text_map.get("FEATURE_2", ""),
-        "feature3": text_map.get("FEATURE_3", ""),
-        "feature4": text_map.get("FEATURE_4", ""),
-        "feature5": text_map.get("FEATURE_5", ""),
+        "title": title,
+        "description": description,
+        "feature1": feature_candidates[0] if len(feature_candidates) > 0 else "",
+        "feature2": feature_candidates[1] if len(feature_candidates) > 1 else "",
+        "feature3": feature_candidates[2] if len(feature_candidates) > 2 else "",
+        "feature4": feature_candidates[3] if len(feature_candidates) > 3 else "",
+        "feature5": feature_candidates[4] if len(feature_candidates) > 4 else "",
     }
 
     asset_lookup = {}
@@ -1792,7 +1908,12 @@ def _parse_salsify_page(html_text):
             values = prop.get("values", [])
             if not normalized_name or not values:
                 continue
-            val = values[0].get("value", "")
+            val = ""
+            first = values[0]
+            if isinstance(first, dict):
+                val = str(first.get("value", "") or "")
+            elif isinstance(first, str):
+                val = str(first or "")
             if not val:
                 continue
             asset_lookup[normalized_name] = val.split("?")[0]
@@ -3139,7 +3260,6 @@ def extract_kroger_description_and_features_from_html(html_text):
             debug["description_end_marker_found"] = True
             raw_desc = working[desc_body_start:desc_end_idx]
             description = clean_kroger_text(raw_desc)
-
             feat_block_start = working.find(feat_start_marker, desc_end_idx)
             if feat_block_start != -1:
                 feat_body_start = feat_block_start + len(feat_start_marker)
@@ -3176,25 +3296,89 @@ def extract_kroger_description_and_features_from_html(html_text):
         return description, features, debug
 
     soup = BeautifulSoup(working, "html.parser")
-    romance = soup.select_one('.product-details-romance-description')
+    romance = None
+    romance_selectors = [
+        '[data-testid="product-details-romance-description"]',
+        '.product-details-romance-description',
+        '#product-details-romance-description',
+        '[data-testid*="romance"]',
+        '[class*="romance"]',
+    ]
+    for selector in romance_selectors:
+        romance = soup.select_one(selector)
+        if romance is not None:
+            break
+
     if romance:
-        p_tag = romance.find('p')
         ul_tag = romance.find('ul')
-        description = clean_kroger_text(p_tag.get_text(" ", strip=True) if p_tag else "")
+        if ul_tag is None:
+            next_ul = romance.find_next('ul')
+            if next_ul is not None and next_ul.find_previous() == romance:
+                ul_tag = next_ul
+
+        desc_parts = []
+        for child in romance.find_all(['p', 'div', 'span'], recursive=False):
+            if child.find_parent('li'):
+                continue
+            child_text = clean_kroger_text(child.get_text(' ', strip=True))
+            if child_text:
+                desc_parts.append(child_text)
+        if not desc_parts:
+            for string_value in romance.stripped_strings:
+                cleaned = clean_kroger_text(string_value)
+                if cleaned:
+                    desc_parts.append(cleaned)
+                if len(desc_parts) >= 4:
+                    break
+        description = normalize_space(' '.join(desc_parts))
         features = []
         if ul_tag:
             features = normalize_kroger_features(
-                [li.get_text(" ", strip=True) for li in ul_tag.find_all('li')],
+                [li.get_text(' ', strip=True) for li in ul_tag.find_all('li')],
                 max_features=10,
             )
-        debug["description_marker_found"] = bool(p_tag)
-        debug["description_end_marker_found"] = bool(p_tag)
-        debug["feature_block_found"] = bool(ul_tag)
-        debug["feature_count"] = len(features)
-        debug["description_excerpt"] = description[:500]
-        debug["features_excerpt"] = " | ".join(features[:5])[:1000]
-        debug["parser_path"] = "kroger_dom_fallback"
-        return description, features, debug
+        if description or features:
+            debug["description_marker_found"] = bool(description)
+            debug["description_end_marker_found"] = bool(description)
+            debug["feature_block_found"] = bool(features)
+            debug["feature_count"] = len(features)
+            debug["description_excerpt"] = description[:500]
+            debug["features_excerpt"] = " | ".join(features[:5])[:1000]
+            debug["parser_path"] = "kroger_dom_fallback"
+            return description, features, debug
+
+    for pattern_name, pattern in [
+        ("kroger_json_romance_description", r'"romanceDescription"\s*:\s*"((?:\.|[^"\])*)"'),
+        ("kroger_json_description", r'"description"\s*:\s*"((?:\.|[^"\])*)"'),
+    ]:
+        match = re.search(pattern, working, flags=re.IGNORECASE | re.DOTALL)
+        if match:
+            raw_desc = match.group(1)
+            try:
+                raw_desc = json.loads(f'"{raw_desc}"')
+            except Exception:
+                pass
+            description = clean_kroger_text(raw_desc)
+            if description:
+                raw_features = re.findall(r'"(?:features|bullets)"\s*:\s*\[(.*?)\]', working, flags=re.IGNORECASE | re.DOTALL)
+                features = []
+                if raw_features:
+                    quoted = re.findall(r'"((?:\.|[^"\])*)"', raw_features[0], flags=re.DOTALL)
+                    decoded = []
+                    for item in quoted:
+                        try:
+                            decoded.append(json.loads(f'"{item}"'))
+                        except Exception:
+                            decoded.append(item)
+                    features = normalize_kroger_features(decoded, max_features=10)
+                debug["description_marker_found"] = True
+                debug["description_end_marker_found"] = True
+                debug["feature_block_found"] = bool(features)
+                debug["feature_count"] = len(features)
+                debug["description_excerpt"] = description[:500]
+                debug["features_excerpt"] = " | ".join(features[:5])[:1000]
+                debug["parser_path"] = pattern_name
+                return description, features, debug
 
     return "", [], debug
 
@@ -6314,7 +6498,7 @@ def process_row(row):
             "summary": {
                 "SKU": row.get("sku", ""),
                 "Retailer": retailer_name,
-                "CVS RPC": cvs_rpc,
+                "Retailer RPC": cvs_rpc,
                 "Brand": row.get("brand", ""),
                 "Salsify URL": salsify_url,
                 "Retail URL": retail_url,
@@ -6330,7 +6514,7 @@ def process_row(row):
             "detail": {
                 "SKU": row.get("sku", ""),
                 "Retailer": retailer_name,
-                "CVS RPC": cvs_rpc,
+                "Retailer RPC": cvs_rpc,
                 "Brand": row.get("brand", ""),
                 "Salsify URL": salsify_url,
                 "Retail URL": retail_url,
@@ -6339,18 +6523,22 @@ def process_row(row):
                 "Feature %": avg_feature_score,
                 "Image Match %": avg_img_score,
                 "Overall %": overall,
-                "Status": "",
+                "Status": ", ".join(status_notes),
                 "Salsify Title": s_text.get("title", ""),
+                "Retailer Title": r_text.get("title", ""),
                 "CVS Title": r_text.get("title", ""),
                 "Salsify Description": s_text.get("description", ""),
+                "Retailer Description": r_text.get("description", ""),
                 "CVS Description": r_text.get("description", ""),
                 "Salsify Feature 1": s_text.get("feature1", ""),
                 "Salsify Feature 2": s_text.get("feature2", ""),
                 "Salsify Feature 3": s_text.get("feature3", ""),
                 "Salsify Feature 4": s_text.get("feature4", ""),
                 "Salsify Feature 5": s_text.get("feature5", ""),
+                "Retailer Features": " | ".join(r_text.get("features", [])),
                 "CVS Features": " | ".join(r_text.get("features", [])),
                 "Salsify Images": " | ".join([img.get("url", "") for img in s_images if isinstance(img, dict)]),
+                "Retailer Images": " | ".join(r_images),
                 "CVS Images": " | ".join(r_images),
                 "Title Path": debug_data.get("Title Path", ""),
                 "Description Path": debug_data.get("Description Path", ""),
@@ -6372,10 +6560,13 @@ def process_row(row):
             "debug": {
                 "SKU": row.get("sku", ""),
                 "Retailer": retailer_name,
-                "CVS RPC": cvs_rpc,
+                "Retailer RPC": cvs_rpc,
                 "Brand": row.get("brand", ""),
                 "Retail URL": retail_url,
                 "Salsify URL": salsify_url,
+                "Retailer Title": r_text.get("title", ""),
+                "Retailer Description": r_text.get("description", ""),
+                "Retailer Features": " | ".join(r_text.get("features", [])),
                 "Desc Final": r_text.get("description", ""),
                 "Desc Quality Score": r_desc_debug["quality_score"],
                 "Desc Length": r_desc_debug["length"],
@@ -6950,6 +7141,8 @@ if "matched_uploaded_html_urls" not in st.session_state:
     st.session_state.matched_uploaded_html_urls = []
 if "missing_uploaded_html_urls" not in st.session_state:
     st.session_state.missing_uploaded_html_urls = []
+if "selected_visual_sku" not in st.session_state:
+    st.session_state.selected_visual_sku = ""
 
 
 def build_excel_report_bytes(summary_rows, detail_rows, debug_rows):
@@ -7114,6 +7307,28 @@ def run_batch_processing(retailer_df_to_process, selected_retailer_name, batch_k
     }
 
 
+def get_visual_retailer_value(row_dict, generic_key, legacy_key=""):
+    if not isinstance(row_dict, dict):
+        return ""
+    value = str(row_dict.get(generic_key, "") or "").strip()
+    if value:
+        return value
+    if legacy_key:
+        return str(row_dict.get(legacy_key, "") or "").strip()
+    return ""
+
+
+def parse_pipe_images(value):
+    if not value:
+        return []
+    out = []
+    for part in str(value or "").split(" | "):
+        part = str(part or "").strip()
+        if part:
+            out.append(part)
+    return out
+
+
 captured_html_loaded_count = int(st.session_state.get("captured_html_loaded_count", 0) or 0)
 raw_html_upload_hash = str(st.session_state.get("raw_html_upload_hash", "") or "")
 use_extension_mode = selected_capture_mode == EXTENSION_MODE_USE
@@ -7147,6 +7362,8 @@ auto_batch_upload_key = (
 if uploaded_txt_ready_for_direct_batch:
     if st.session_state.get("auto_batch_upload_completed_key", "") != auto_batch_upload_key:
         st.session_state["auto_batch_upload_key"] = auto_batch_upload_key
+        if not str(st.session_state.get("active_batch_key", "") or "").strip():
+            st.session_state["active_batch_key"] = current_batch_key
 else:
     st.session_state["auto_batch_upload_key"] = ""
 
@@ -7255,3 +7472,140 @@ if run_batch_requested:
             st.rerun()
         except Exception:
             pass
+
+
+# =========================================
+# VISUAL REVIEW UI
+# =========================================
+if st.session_state.get("processing_done", False) and (st.session_state.get("export_rows", []) or st.session_state.get("summary_rows", [])):
+    st.markdown("---")
+    st.subheader("Visual Comparison Review")
+
+    visual_rows = list(st.session_state.get("export_rows", []) or [])
+    summary_rows_for_visual = list(st.session_state.get("summary_rows", []) or [])
+    if not visual_rows and summary_rows_for_visual:
+        visual_rows = summary_rows_for_visual
+
+    brand_options = ["All"] + sorted({str((row or {}).get("Brand", "") or "").strip() for row in visual_rows if str((row or {}).get("Brand", "") or "").strip()})
+    if st.session_state.get("selected_brand_visual", "All") not in brand_options:
+        st.session_state.selected_brand_visual = "All"
+    st.selectbox("Brand Filter", brand_options, key="selected_brand_visual")
+
+    selected_brand_visual = st.session_state.get("selected_brand_visual", "All")
+    filtered_visual_rows = [
+        row for row in visual_rows
+        if selected_brand_visual == "All" or str((row or {}).get("Brand", "") or "").strip() == selected_brand_visual
+    ]
+
+    st.caption(
+        f"Visual review rows available: {len(filtered_visual_rows)} of {len(visual_rows)}. Uploaded TXT matches: {st.session_state.get('matched_uploaded_html_count', 0)}. Missing uploaded TXT matches: {st.session_state.get('missing_uploaded_html_count', 0)}."
+    )
+
+    summary_table_rows = []
+    for row in filtered_visual_rows:
+        summary_table_rows.append({
+            "SKU": row.get("SKU", ""),
+            "Brand": row.get("Brand", ""),
+            "Retailer": row.get("Retailer", ""),
+            "Title %": row.get("Title %", 0),
+            "Description %": row.get("Description %", 0),
+            "Feature %": row.get("Feature %", 0),
+            "Image Match %": row.get("Image Match %", 0),
+            "Overall %": row.get("Overall %", 0),
+            "Status": row.get("Status", ""),
+        })
+    if summary_table_rows:
+        st.dataframe(pd.DataFrame(summary_table_rows), use_container_width=True, hide_index=True)
+
+    sku_options = [str((row or {}).get("SKU", "") or "").strip() for row in filtered_visual_rows if str((row or {}).get("SKU", "") or "").strip()]
+    sku_options = dedupe_preserve_order(sku_options)
+    if sku_options:
+        if st.session_state.get("selected_visual_sku", "") not in sku_options:
+            st.session_state.selected_visual_sku = sku_options[0]
+        st.selectbox("Select SKU for detailed visual review", sku_options, key="selected_visual_sku")
+        selected_visual_sku = st.session_state.get("selected_visual_sku", sku_options[0])
+        selected_row = next((row for row in filtered_visual_rows if str((row or {}).get("SKU", "") or "").strip() == selected_visual_sku), filtered_visual_rows[0])
+
+        retailer_label = str(selected_row.get("Retailer", "Retailer") or "Retailer").strip() or "Retailer"
+        salsify_title = str(selected_row.get("Salsify Title", "") or "").strip()
+        retailer_title = get_visual_retailer_value(selected_row, "Retailer Title", "CVS Title")
+        salsify_description = str(selected_row.get("Salsify Description", "") or "").strip()
+        retailer_description = get_visual_retailer_value(selected_row, "Retailer Description", "CVS Description")
+        retailer_features_text = get_visual_retailer_value(selected_row, "Retailer Features", "CVS Features")
+        retailer_features = [normalize_space(x) for x in retailer_features_text.split(" | ") if normalize_space(x)]
+        salsify_features = [
+            str(selected_row.get(f"Salsify Feature {i}", "") or "").strip()
+            for i in range(1, 6)
+            if str(selected_row.get(f"Salsify Feature {i}", "") or "").strip()
+        ]
+        salsify_image_urls = parse_pipe_images(str(selected_row.get("Salsify Images", "") or ""))
+        retailer_image_urls = parse_pipe_images(get_visual_retailer_value(selected_row, "Retailer Images", "CVS Images"))
+        salsify_images_for_panel = [{"name": f"Salsify {idx+1}", "url": url} for idx, url in enumerate(salsify_image_urls)]
+
+        header_cols = st.columns(2)
+        with header_cols[0]:
+            st.markdown(column_header_link_html("Salsify", str(selected_row.get("SKU", "") or ""), str(selected_row.get("Salsify URL", "") or "")), unsafe_allow_html=True)
+        with header_cols[1]:
+            st.markdown(column_header_link_html(retailer_label, str(selected_row.get("SKU", "") or ""), str(selected_row.get("Retail URL", "") or "")), unsafe_allow_html=True)
+
+        title_cols = st.columns(2)
+        with title_cols[0]:
+            st.markdown(section_header_html("Salsify Title", int(selected_row.get("Title %", 0) or 0)), unsafe_allow_html=True)
+            st.markdown(equal_height_block(salsify_title or "Missing"), unsafe_allow_html=True)
+        with title_cols[1]:
+            st.markdown(section_header_html(f"{retailer_label} Title", int(selected_row.get("Title %", 0) or 0)), unsafe_allow_html=True)
+            st.markdown(equal_height_block(retailer_title or "Missing"), unsafe_allow_html=True)
+
+        desc_cols = st.columns(2)
+        with desc_cols[0]:
+            st.markdown(section_header_html("Salsify Description", int(selected_row.get("Description %", 0) or 0)), unsafe_allow_html=True)
+            st.markdown(equal_height_block(salsify_description or "Missing", min_height=200), unsafe_allow_html=True)
+        with desc_cols[1]:
+            st.markdown(section_header_html(f"{retailer_label} Description", int(selected_row.get("Description %", 0) or 0)), unsafe_allow_html=True)
+            st.markdown(equal_height_block(retailer_description or "Missing", min_height=200), unsafe_allow_html=True)
+
+        feature_cols = st.columns(2)
+        with feature_cols[0]:
+            st.markdown(section_header_html("Salsify Features", int(selected_row.get("Feature %", 0) or 0)), unsafe_allow_html=True)
+            if salsify_features:
+                for feature in salsify_features:
+                    st.markdown(equal_feature_block(feature), unsafe_allow_html=True)
+            else:
+                st.markdown(equal_feature_block("Missing"), unsafe_allow_html=True)
+        with feature_cols[1]:
+            st.markdown(section_header_html(f"{retailer_label} Features", int(selected_row.get("Feature %", 0) or 0)), unsafe_allow_html=True)
+            if retailer_features:
+                for feature in retailer_features[:5]:
+                    st.markdown(equal_feature_block(feature), unsafe_allow_html=True)
+            else:
+                st.markdown(equal_feature_block("Missing"), unsafe_allow_html=True)
+
+        st.markdown(section_header_html("Image Comparison", int(selected_row.get("Image Match %", 0) or 0)), unsafe_allow_html=True)
+        if salsify_images_for_panel or retailer_image_urls:
+            image_panel_html = build_image_panel_html(
+                salsify_images_for_panel,
+                retailer_image_urls,
+                max(MAX_IMAGE_SLOTS_TO_SCORE, len(salsify_images_for_panel), len(retailer_image_urls), 6),
+                retailer_name=retailer_label,
+                box_height=110,
+            )
+            st.markdown(image_panel_html, unsafe_allow_html=True)
+        else:
+            st.info("No image comparison data was available for this SKU.")
+
+        with st.expander("Debug Paths and Status"):
+            debug_subset = {
+                "SKU": selected_row.get("SKU", ""),
+                "Brand": selected_row.get("Brand", ""),
+                "Retailer": retailer_label,
+                "Status": selected_row.get("Status", ""),
+                "Title Path": selected_row.get("Title Path", ""),
+                "Description Path": selected_row.get("Description Path", ""),
+                "Features Path": selected_row.get("Features Path", ""),
+                "Retail URL": selected_row.get("Retail URL", ""),
+                "Salsify URL": selected_row.get("Salsify URL", ""),
+                "Overall %": selected_row.get("Overall %", 0),
+            }
+            st.json(debug_subset)
+    else:
+        st.info("No visual review rows are available for the current brand filter.")
