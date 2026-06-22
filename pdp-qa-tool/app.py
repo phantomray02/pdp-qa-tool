@@ -6929,3 +6929,229 @@ if uploaded_txt_ready_for_direct_batch:
             st.session_state["active_batch_key"] = current_batch_key
 else:
     st.session_state["auto_batch_upload_key"] = ""
+
+
+# =========================================
+# BATCH EXECUTION + REPORT EXPORT
+# =========================================
+def build_excel_report_bytes(summary_rows, detail_rows, debug_rows):
+    summary_df = pd.DataFrame(summary_rows or [])
+    detail_df = pd.DataFrame(detail_rows or [])
+    debug_df = pd.DataFrame(debug_rows or [])
+
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        summary_df.to_excel(writer, sheet_name="Summary", index=False)
+        detail_df.to_excel(writer, sheet_name="Detail", index=False)
+        debug_df.to_excel(writer, sheet_name="Debug", index=False)
+
+    output.seek(0)
+    workbook = load_workbook(output)
+    for ws in workbook.worksheets:
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = ws.dimensions
+        for column_cells in ws.columns:
+            max_len = 0
+            column_letter = column_cells[0].column_letter
+            for cell in column_cells:
+                try:
+                    value = "" if cell.value is None else str(cell.value)
+                except Exception:
+                    value = ""
+                max_len = max(max_len, len(value))
+            ws.column_dimensions[column_letter].width = min(max(max_len + 2, 12), 60)
+
+    final_output = BytesIO()
+    workbook.save(final_output)
+    final_output.seek(0)
+    return final_output.getvalue()
+
+
+def run_batch_processing(retailer_df_to_process, selected_retailer_name, batch_key, batch_label):
+    rows = [] if retailer_df_to_process is None else retailer_df_to_process.to_dict("records")
+    if not rows:
+        return {
+            "summary_rows": [],
+            "detail_rows": [],
+            "debug_rows": [],
+            "report_bytes": None,
+            "report_filename": "",
+            "processed_count": 0,
+        }
+
+    progress_placeholder = st.empty()
+    status_placeholder = st.empty()
+    progress_bar = progress_placeholder.progress(0.0)
+    total_rows = len(rows)
+
+    summary_rows = []
+    detail_rows = []
+    debug_rows = []
+    ordered_results = [None] * total_rows
+
+    clear_in_memory_caches()
+
+    max_workers = max(1, min(int(MAX_WORKERS or 1), total_rows))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {executor.submit(process_row, row): idx for idx, row in enumerate(rows)}
+        completed = 0
+        for future in as_completed(future_map):
+            idx = future_map[future]
+            try:
+                ordered_results[idx] = future.result()
+            except Exception as e:
+                row = rows[idx] if idx < len(rows) else {}
+                ordered_results[idx] = {
+                    "summary": {
+                        "SKU": row.get("sku", ""),
+                        "Retailer": selected_retailer_name,
+                        "Retail URL": row.get("retail_url", ""),
+                        "Salsify URL": row.get("salsify_url", ""),
+                        "Status": f"Processing error: {e}",
+                    },
+                    "detail": {
+                        "SKU": row.get("sku", ""),
+                        "Retailer": selected_retailer_name,
+                        "Retail URL": row.get("retail_url", ""),
+                        "Salsify URL": row.get("salsify_url", ""),
+                        "Status": f"Processing error: {e}",
+                    },
+                    "debug": {
+                        "SKU": row.get("sku", ""),
+                        "Retailer": selected_retailer_name,
+                        "Retail URL": row.get("retail_url", ""),
+                        "Salsify URL": row.get("salsify_url", ""),
+                        "Status": f"Processing error: {e}",
+                    },
+                }
+            completed += 1
+            progress_bar.progress(min(completed / total_rows, 1.0))
+            status_placeholder.caption(f"Running batch for {selected_retailer_name}: {completed} of {total_rows} row(s) complete.")
+
+    for result in ordered_results:
+        if not isinstance(result, dict):
+            continue
+        summary_rows.append(result.get("summary", {}) or {})
+        detail_rows.append(result.get("detail", {}) or {})
+        debug_rows.append(result.get("debug", {}) or {})
+
+    report_bytes = build_excel_report_bytes(summary_rows, detail_rows, debug_rows)
+    safe_retailer = re.sub(r"[^A-Za-z0-9_-]+", "_", str(selected_retailer_name or "Retailer").strip()) or "Retailer"
+    report_filename = f"brand_compliance_{safe_retailer}_{str(batch_label or 'batch')[:8]}.xlsx"
+
+    progress_bar.progress(1.0)
+    status_placeholder.caption(f"Batch finished for {selected_retailer_name}. Processed {total_rows} row(s).")
+
+    return {
+        "summary_rows": summary_rows,
+        "detail_rows": detail_rows,
+        "debug_rows": debug_rows,
+        "report_bytes": report_bytes,
+        "report_filename": report_filename,
+        "processed_count": total_rows,
+    }
+
+
+captured_html_loaded_count = int(st.session_state.get("captured_html_loaded_count", 0) or 0)
+raw_html_upload_hash = str(st.session_state.get("raw_html_upload_hash", "") or "")
+use_extension_mode = selected_capture_mode == EXTENSION_MODE_USE
+retailer_requires_extension = uses_extension_bridge_for_retailer(selected_retailer)
+retailer_can_skip_extension = should_skip_extension_for_retailer(selected_retailer)
+uploaded_txt_ready_for_direct_batch = (
+    use_extension_mode
+    and bool(selected_retailer)
+    and bool(current_batch_key)
+    and bool(file_ready_for_batch)
+    and captured_html_workbook is not None
+    and captured_html_loaded_count > 0
+)
+
+auto_batch_upload_key = (
+    f"{current_batch_key}::uploaded_txt::{raw_html_upload_hash}"
+    if uploaded_txt_ready_for_direct_batch
+    else ""
+)
+
+if uploaded_txt_ready_for_direct_batch:
+    if st.session_state.get("auto_batch_upload_completed_key", "") != auto_batch_upload_key:
+        st.session_state["auto_batch_upload_key"] = auto_batch_upload_key
+else:
+    st.session_state["auto_batch_upload_key"] = ""
+
+batch_has_rows_ready = retailer_df is not None and not retailer_df.empty and bool(selected_retailer)
+allow_direct_batch_without_txt = (
+    batch_has_rows_ready
+    and (
+        selected_capture_mode == EXTENSION_MODE_SKIP
+        or retailer_can_skip_extension
+        or not retailer_requires_extension
+    )
+)
+allow_direct_batch_from_uploaded_txt = batch_has_rows_ready and uploaded_txt_ready_for_direct_batch
+batch_can_run_now = allow_direct_batch_without_txt or allow_direct_batch_from_uploaded_txt
+
+run_controls_col, run_status_col = st.columns([1.25, 3.75])
+with run_controls_col:
+    manual_run_requested = st.button(
+        "Run Batch",
+        key="run_batch_after_uploads",
+        disabled=not batch_can_run_now,
+        use_container_width=True,
+    )
+
+with run_status_col:
+    if batch_has_rows_ready and allow_direct_batch_from_uploaded_txt:
+        st.success(
+            f"Uploaded TXT raw HTML is ready for {captured_html_loaded_count} URL(s). Starting batch automatically from uploaded retailer HTML."
+        )
+    elif batch_has_rows_ready and allow_direct_batch_without_txt:
+        st.info(f"Batch is ready for {selected_retailer}. Click Run Batch to process the selected retailer rows.")
+    elif retailer_requires_extension and use_extension_mode and not uploaded_txt_ready_for_direct_batch:
+        st.warning("Batch cannot start yet because this retailer is set to use uploaded TXT raw HTML, and no usable TXT capture is loaded yet.")
+
+
+auto_run_requested = (
+    bool(auto_batch_upload_key)
+    and st.session_state.get("auto_batch_upload_key", "") == auto_batch_upload_key
+    and st.session_state.get("auto_batch_upload_completed_key", "") != auto_batch_upload_key
+)
+run_batch_requested = bool(batch_can_run_now) and (manual_run_requested or auto_run_requested)
+
+if run_batch_requested:
+    st.session_state.processing_done = False
+    st.session_state.summary_rows = []
+    st.session_state.export_rows = []
+    st.session_state.debug_rows = []
+    st.session_state.summary_skus = set()
+    st.session_state.detail_skus = set()
+    st.session_state.debug_skus = set()
+    st.session_state.active_batch_key = current_batch_key
+
+    batch_result = run_batch_processing(
+        retailer_df_to_process=retailer_df,
+        selected_retailer_name=selected_retailer,
+        batch_key=current_batch_key,
+        batch_label=file_hash or current_batch_key,
+    )
+
+    st.session_state.summary_rows = list(batch_result.get("summary_rows", []) or [])
+    st.session_state.export_rows = list(batch_result.get("detail_rows", []) or [])
+    st.session_state.debug_rows = list(batch_result.get("debug_rows", []) or [])
+    st.session_state.processing_done = True
+    st.session_state.completed_batch_key = current_batch_key
+    st.session_state.report_batch_key = current_batch_key
+    st.session_state.report_bytes = batch_result.get("report_bytes")
+    st.session_state.report_filename = batch_result.get("report_filename")
+    st.session_state.auto_download_done = False
+
+    if auto_batch_upload_key:
+        st.session_state.auto_batch_upload_completed_key = auto_batch_upload_key
+        if st.session_state.get("auto_batch_upload_key", "") == auto_batch_upload_key:
+            st.session_state.auto_batch_upload_key = ""
+
+    st.session_state.active_batch_key = ""
+
+    try:
+        st.rerun()
+    except Exception:
+        pass
