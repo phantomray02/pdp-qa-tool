@@ -6191,65 +6191,15 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
 
 def align_image_slots_for_comparison(s_images, r_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE, strong_threshold=80):
     """
-    Lightweight local sequence alignment for image slots.
+    Preserve the original slot order exactly as captured.
 
-    This prevents a single missing optional image, such as ATF I/O, from shifting every
-    downstream score into the wrong slot comparison.
+    No image reordering, no sequence alignment, and no slot-shift correction.
+    If one side is missing an image in a given position, that slot should stay mismatched
+    and score 0% (Poor) instead of being auto-aligned to a later slot.
     """
     s_seq = list(s_images or [])[:max_slots]
     r_seq = list(r_images or [])[:max_slots]
-
-    aligned_s = []
-    aligned_r = []
-    i = 0
-    j = 0
-
-    while i < len(s_seq) or j < len(r_seq):
-        if i >= len(s_seq):
-            aligned_s.append(make_blank_salsify_image_slot())
-            aligned_r.append(r_seq[j] if j < len(r_seq) else "")
-            j += 1
-            continue
-
-        if j >= len(r_seq):
-            aligned_s.append(s_seq[i])
-            aligned_r.append("")
-            i += 1
-            continue
-
-        s_url = get_image_slot_url(s_seq[i])
-        r_url = get_image_slot_url(r_seq[j])
-        current_score = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
-
-        next_r_score = -1
-        if j + 1 < len(r_seq):
-            next_r_url = get_image_slot_url(r_seq[j + 1])
-            next_r_score = compare_images_visually(s_url, next_r_url) if (s_url and next_r_url) else 0
-
-        next_s_score = -1
-        if i + 1 < len(s_seq):
-            next_s_url = get_image_slot_url(s_seq[i + 1])
-            next_s_score = compare_images_visually(next_s_url, r_url) if (next_s_url and r_url) else 0
-
-        if next_r_score >= strong_threshold and next_r_score > current_score and next_r_score >= next_s_score:
-            aligned_s.append(make_blank_salsify_image_slot())
-            aligned_r.append(r_seq[j])
-            j += 1
-            continue
-
-        if next_s_score >= strong_threshold and next_s_score > current_score and next_s_score > next_r_score:
-            aligned_s.append(s_seq[i])
-            aligned_r.append("")
-            i += 1
-            continue
-
-        aligned_s.append(s_seq[i])
-        aligned_r.append(r_seq[j])
-        i += 1
-        j += 1
-
-    aligned_s, aligned_r = trim_trailing_empty_image_slots(aligned_s, aligned_r)
-    return aligned_s[:max_slots], aligned_r[:max_slots]
+    return trim_trailing_empty_image_slots(s_seq, r_seq)
 
 
 def get_image_slot_url(slot_value):
