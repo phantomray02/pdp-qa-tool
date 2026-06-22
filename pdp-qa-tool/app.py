@@ -224,11 +224,12 @@ def build_bridge_rows_from_retailer_df(retailer_df, retailer_name=""):
         return rows
     for _, row in retailer_df.iterrows():
         sku = str(row.get("sku", "") or "").strip()
+        rpc = str(row.get("retailer_rpc", "") or row.get("rpc", "") or "").strip()
         url = normalize_uploaded_capture_url(str(row.get("retail_url", "") or "").strip(), retailer_name)
         if not url or url in seen:
             continue
         seen.add(url)
-        rows.append({"url": url, "label": sku})
+        rows.append({"url": url, "label": sku, "rpc": rpc})
     return rows
 
 
@@ -236,13 +237,72 @@ def get_bridge_required_urls(rows, retailer_name=""):
     return {normalize_uploaded_capture_url(str((row or {}).get("url", "") or "").strip(), retailer_name) for row in (rows or []) if str((row or {}).get("url", "") or "").strip()}
 
 
+def build_extension_bridge_payload(selected_retailer, retailer_df, current_batch_key):
+    rows = []
+    if retailer_df is None or getattr(retailer_df, "empty", True):
+        return {"retailer": str(selected_retailer or ""), "batch_id": str(current_batch_key or ""), "rows": []}
+
+    for _, row in retailer_df.iterrows():
+        url = normalize_uploaded_capture_url(str(row.get("retail_url", "") or "").strip(), selected_retailer)
+        if not url:
+            continue
+        rows.append(
+            {
+                "url": url,
+                "label": str(row.get("sku", "") or "").strip(),
+                "rpc": str(row.get("retailer_rpc", "") or row.get("rpc", "") or "").strip(),
+            }
+        )
+
+    deduped = []
+    seen = set()
+    for item in rows:
+        url = str(item.get("url", "") or "").strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        deduped.append(item)
+
+    return {
+        "retailer": str(selected_retailer or "").strip(),
+        "batch_id": str(current_batch_key or "").strip(),
+        "rows": deduped,
+    }
+
+
 def render_bridge_config_beacon(batch_id, retailer, rows):
     payload = {"batch_id": batch_id or "", "retailer": retailer or "", "rows": rows or []}
-    json_text = html.escape(json.dumps(payload, separators=(",", ":")))
-    st.markdown(
-        f'<div id="pdp-bridge-config" data-bridge-batch="{html.escape(str(batch_id or ""), quote=True)}" data-bridge-retailer="{html.escape(str(retailer or ""), quote=True)}" style="display:none">{json_text}</div>',
-        unsafe_allow_html=True,
+    payload_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    safe_payload_json = html.escape(payload_json)
+    components.html(
+        f"""
+        <script>
+        (function() {{
+          const payload = {payload_json};
+          window.__PDP_BRIDGE_CONFIG__ = payload;
+          try {{
+            window.postMessage({{ source: 'pdp-streamlit-bridge', type: 'PDP_BRIDGE_CONFIG_READY', payload: payload }}, '*');
+          }} catch (err) {{}}
+        }})();
+        </script>
+        <script type="application/json" id="pdp-bridge-config" data-bridge-batch="1">{safe_payload_json}</script>
+        <div id="pdp-bridge-config-hidden" data-bridge-batch="1" data-bridge-json='{safe_payload_json}' style="display:none"></div>
+        """,
+        height=0,
     )
+
+
+def render_extension_bridge_status(selected_capture_mode, selected_retailer, bridge_payload):
+    total_urls = len((bridge_payload or {}).get("rows", []) or [])
+    if selected_capture_mode == EXTENSION_MODE_USE and uses_extension_bridge_for_retailer(selected_retailer):
+        if total_urls > 0:
+            top_upload_col.success(
+                f"Extension batch ready for {total_urls} {selected_retailer} URL(s). Open the extension popup and click Start retailer batch."
+            )
+        else:
+            top_upload_col.info(
+                "Capture Mode is set to Use extension, but there are no retailer URLs ready yet for the selected retailer."
+            )
 
 
 def get_salsify_html_direct(url):
@@ -6394,13 +6454,14 @@ with top_upload_col:
         if default_top_retailer not in top_retailer_options:
             default_top_retailer = top_retailer_options[0]
             st.session_state.selected_retailer_top = default_top_retailer
-        st.selectbox(
+        chosen_top_retailer = st.selectbox(
             "Select Retailer",
             top_retailer_options,
             index=top_retailer_options.index(default_top_retailer) if default_top_retailer in top_retailer_options else 0,
             key="selected_retailer_top",
             help="Choose the retailer for direct batch/load or the extension TXT upload path.",
         )
+        st.session_state.selected_retailer = chosen_top_retailer
 
     captured_html_workbook = st.file_uploader("Upload Captured Retailer HTML Workbook / TXT (optional)", type=["xlsx", "csv", "txt"], key="captured_html_workbook")
 
@@ -6471,6 +6532,39 @@ if uploaded_file is not None:
         st.session_state["top_retailer_options"] = []
 else:
     st.session_state["top_retailer_options"] = []
+
+extension_bridge_payload = build_extension_bridge_payload(selected_retailer, retailer_df, current_batch_key)
+extension_mode_selected = selected_capture_mode == EXTENSION_MODE_USE
+extension_required_for_retailer = uses_extension_bridge_for_retailer(selected_retailer)
+
+if extension_mode_selected and extension_required_for_retailer:
+    render_bridge_config_beacon(
+        extension_bridge_payload.get("batch_id", ""),
+        extension_bridge_payload.get("retailer", selected_retailer),
+        extension_bridge_payload.get("rows", []),
+    )
+    extension_bridge(
+        extension_bridge_payload.get("rows", []),
+        retailer=extension_bridge_payload.get("retailer", selected_retailer),
+        batch_id=extension_bridge_payload.get("batch_id", ""),
+        auto_show_status=False,
+        key=f"pdp_extension_bridge::{extension_bridge_payload.get('batch_id', 'idle') or 'idle'}",
+    )
+else:
+    render_bridge_config_beacon("", selected_retailer, [])
+    extension_bridge(
+        [],
+        retailer=selected_retailer or "",
+        batch_id="",
+        auto_show_status=False,
+        key="pdp_extension_bridge::idle",
+    )
+
+render_extension_bridge_status(
+    selected_capture_mode,
+    selected_retailer,
+    extension_bridge_payload,
+)
 
 # HOTFIX FOR NameError: get_uploaded_raw_html_map
 # Paste this block ABOVE the line that starts with:
