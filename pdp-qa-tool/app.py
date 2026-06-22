@@ -1309,10 +1309,21 @@ def parse_uploaded_raw_html_map(raw_text):
 
 def lookup_uploaded_raw_html(uploaded_html_map, retail_url):
     uploaded_html_map = uploaded_html_map or {}
-    for key in uploaded_capture_url_candidates(retail_url):
+
+    url = str(retail_url or "").strip()
+    if not url:
+        return ""
+
+    # Route Kroger separately and strictly
+    if "kroger.com" in url.lower():
+        return get_kroger_html_from_uploaded_map(url, uploaded_html_map)
+
+    # Other retailers keep original flexible behavior
+    for key in uploaded_capture_url_candidates(url):
         html_text = uploaded_html_map.get(key, "")
         if html_text:
             return html_text
+
     return ""
 
 
@@ -1468,6 +1479,23 @@ def render_extension_batch_bridge(payload):
     </script>
     """
     components.html(bridge_html, height=0, width=0)
+
+
+# ==============================
+# KROGER STRICT HTML RESOLVER
+# ==============================
+def get_kroger_html_from_uploaded_map(retail_url, uploaded_html_map):
+    if not retail_url or not uploaded_html_map:
+        return ""
+
+    normalized = normalize_kroger_url(retail_url)
+
+    # STRICT: only exact matches (no fuzzy, no partial)
+    for key, html_text in uploaded_html_map.items():
+        if normalize_kroger_url(key) == normalized:
+            return html_text
+
+    return ""
 
 def normalize_kroger_url(url):
     url = str(url or "").strip()
