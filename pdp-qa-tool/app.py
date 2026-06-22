@@ -1339,16 +1339,130 @@ def render_extension_batch_bridge(payload):
     <script>
     (function() {{
       const payload = {payload_json};
-      window.__PDP_EXTENSION_BATCH__ = payload;
-      window.__RAW_HTML_EXTENSION_BATCH__ = payload;
-      window.__STREAMLIT_EXTENSION_BATCH__ = payload;
-      window.pdpExtensionBatch = payload;
+      const TARGET_KEYS = [
+        '__PDP_EXTENSION_BATCH__',
+        '__RAW_HTML_EXTENSION_BATCH__',
+        '__STREAMLIT_EXTENSION_BATCH__',
+        '__EXTENSION_BATCH__',
+        '__RAW_HTML_BATCH__',
+        'pdpExtensionBatch',
+        'rawHtmlExtensionBatch',
+        'streamlitExtensionBatch'
+      ];
+      const TARGET_EVENTS = [
+        'pdp-extension-batch-ready',
+        'raw-html-extension-batch-ready',
+        'streamlit-extension-batch-ready',
+        'extension-batch-ready'
+      ];
+      const STORAGE_KEYS = [
+        'pdpExtensionBatch',
+        'rawHtmlExtensionBatch',
+        'streamlitExtensionBatch',
+        '__PDP_EXTENSION_BATCH__'
+      ];
+
+      function safeSetStorage(targetWindow) {{
+        for (const storageName of ['localStorage', 'sessionStorage']) {{
+          try {{
+            const storage = targetWindow[storageName];
+            if (!storage) continue;
+            for (const key of STORAGE_KEYS) {{
+              storage.setItem(key, JSON.stringify(payload));
+            }}
+          }} catch (e) {{}}
+        }}
+      }}
+
+      function safeSetDom(targetWindow) {{
+        try {{
+          const doc = targetWindow.document;
+          if (!doc) return;
+          const root = doc.documentElement || doc.body;
+          const body = doc.body || doc.documentElement;
+          if (root) {{
+            root.setAttribute('data-pdp-extension-batch-ready', payload && payload.ready ? '1' : '0');
+            root.setAttribute('data-pdp-extension-retailer', payload && payload.retailer ? String(payload.retailer) : '');
+            root.setAttribute('data-pdp-extension-batch-key', payload && payload.batchKey ? String(payload.batchKey) : '');
+            root.setAttribute('data-pdp-extension-capture-mode', payload && payload.captureMode ? String(payload.captureMode) : '');
+          }}
+          if (body) {{
+            body.setAttribute('data-pdp-extension-batch-ready', payload && payload.ready ? '1' : '0');
+            body.setAttribute('data-pdp-extension-retailer', payload && payload.retailer ? String(payload.retailer) : '');
+            body.setAttribute('data-pdp-extension-batch-key', payload && payload.batchKey ? String(payload.batchKey) : '');
+          }}
+          let scriptTag = doc.getElementById('pdp-extension-batch-json');
+          if (!scriptTag) {{
+            scriptTag = doc.createElement('script');
+            scriptTag.type = 'application/json';
+            scriptTag.id = 'pdp-extension-batch-json';
+            (doc.body || doc.documentElement).appendChild(scriptTag);
+          }}
+          scriptTag.textContent = JSON.stringify(payload);
+        }} catch (e) {{}}
+      }}
+
+      function safeDispatch(targetWindow) {{
+        try {{
+          for (const eventName of TARGET_EVENTS) {{
+            targetWindow.dispatchEvent(new CustomEvent(eventName, {{ detail: payload }}));
+          }}
+        }} catch (e) {{}}
+        try {{
+          targetWindow.postMessage({{ type: 'pdp-extension-batch-ready', payload }}, '*');
+          targetWindow.postMessage({{ type: 'raw-html-extension-batch-ready', payload }}, '*');
+          targetWindow.postMessage({{ type: 'streamlit-extension-batch-ready', payload }}, '*');
+          targetWindow.postMessage({{ type: 'extension-batch-ready', payload }}, '*');
+        }} catch (e) {{}}
+      }}
+
+      function safeAssign(targetWindow) {{
+        if (!targetWindow) return;
+        try {{
+          for (const key of TARGET_KEYS) {{
+            targetWindow[key] = payload;
+          }}
+        }} catch (e) {{}}
+        safeSetStorage(targetWindow);
+        safeSetDom(targetWindow);
+        safeDispatch(targetWindow);
+      }}
+
+      function allTargets() {{
+        const targets = [];
+        const candidates = [window, window.parent, window.top];
+        for (const candidate of candidates) {{
+          if (!candidate) continue;
+          if (!targets.includes(candidate)) targets.push(candidate);
+        }}
+        return targets;
+      }}
+
+      function publish() {{
+        for (const target of allTargets()) {{
+          safeAssign(target);
+        }}
+      }}
+
+      publish();
+      let publishCount = 0;
+      const intervalId = setInterval(() => {{
+        publish();
+        publishCount += 1;
+        if (publishCount >= 40) {{
+          clearInterval(intervalId);
+        }}
+      }}, 500);
+
       try {{
-        window.dispatchEvent(new CustomEvent('pdp-extension-batch-ready', {{ detail: payload }}));
+        window.addEventListener('message', function(event) {{
+          const data = event && event.data ? event.data : {{}};
+          const msgType = data && data.type ? String(data.type) : '';
+          if (msgType === 'pdp-extension-batch-request' || msgType === 'raw-html-extension-batch-request' || msgType === 'streamlit-extension-batch-request' || msgType === 'extension-batch-request') {{
+            publish();
+          }}
+        }});
       }} catch (e) {{}}
-      document.body.setAttribute('data-pdp-extension-batch-ready', payload && payload.ready ? '1' : '0');
-      document.body.setAttribute('data-pdp-extension-retailer', payload && payload.retailer ? String(payload.retailer) : '');
-      document.body.setAttribute('data-pdp-extension-batch-key', payload && payload.batchKey ? String(payload.batchKey) : '');
     }})();
     </script>
     """
