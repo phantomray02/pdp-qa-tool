@@ -96,6 +96,10 @@ STRICT_LIVE_RETAILER_ONLY = True
 STRICT_CVS_VARIANT_MATCH = True
 CVS_VARIANT_MIN_MATCH_SCORE = 35
 
+CAPTURE_MODE_USE_EXTENSION = "Use extension + TXT upload"
+CAPTURE_MODE_SKIP_EXTENSION = "Skip extension and go straight to batch"
+AUTO_SKIP_EXTENSION_RETAILERS = {"CVS", "Walgreens"}
+
 html_cache = {}
 image_hash_cache = {}
 image_compare_cache = {}
@@ -1232,6 +1236,123 @@ def get_uploaded_text_file_bytes(uploaded_text_file):
     except Exception:
         return ""
 
+
+
+def normalize_uploaded_capture_url(url):
+    url = str(url or "").strip()
+    if not url:
+        return ""
+    try:
+        if "kroger.com" in url.lower():
+            url = normalize_kroger_url(url)
+    except Exception:
+        pass
+    url = html.unescape(url)
+    url = url.split("#", 1)[0].strip()
+    url = re.sub(r"[​-‍﻿]", "", url)
+    return url
+
+
+def uploaded_capture_url_candidates(url):
+    normalized = normalize_uploaded_capture_url(url)
+    if not normalized:
+        return []
+    candidates = []
+    for candidate in [normalized]:
+        if candidate not in candidates:
+            candidates.append(candidate)
+        no_query = candidate.split("?", 1)[0].strip()
+        if no_query and no_query not in candidates:
+            candidates.append(no_query)
+        lowered = candidate.lower()
+        if lowered not in candidates:
+            candidates.append(lowered)
+        lowered_no_query = no_query.lower() if no_query else ""
+        if lowered_no_query and lowered_no_query not in candidates:
+            candidates.append(lowered_no_query)
+    return candidates
+
+
+def parse_uploaded_raw_html_map(raw_text):
+    raw_text = str(raw_text or "")
+    if not raw_text.strip():
+        return {}
+    label_pattern = re.compile(r'(?im)^(?:requested\s+url|final\s+url|retail\s+url|retailer\s+url|url)\s*:\s*(https?://\S+)\s*$')
+    matches = list(label_pattern.finditer(raw_text))
+    if not matches:
+        alt_pattern = re.compile(r'(?im)^(https?://\S+)\s*$')
+        matches = list(alt_pattern.finditer(raw_text))
+    html_map = {}
+    html_start_tokens = ['<!doctype', '<html', '<head', '<body', '<script', '<div']
+    for i, match in enumerate(matches):
+        url = normalize_uploaded_capture_url(match.group(1))
+        if not url:
+            continue
+        start = match.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(raw_text)
+        block = raw_text[start:end].strip()
+        lower_block = block.lower()
+        html_start = -1
+        for token in html_start_tokens:
+            idx = lower_block.find(token)
+            if idx != -1 and (html_start == -1 or idx < html_start):
+                html_start = idx
+        html_text = block[html_start:] if html_start != -1 else block
+        html_text = html_text.strip()
+        if len(html_text) < 80:
+            continue
+        for key in uploaded_capture_url_candidates(url):
+            if len(html_text) > len(html_map.get(key, "")):
+                html_map[key] = html_text
+    return html_map
+
+
+def lookup_uploaded_raw_html(uploaded_html_map, retail_url):
+    uploaded_html_map = uploaded_html_map or {}
+    for key in uploaded_capture_url_candidates(retail_url):
+        html_text = uploaded_html_map.get(key, "")
+        if html_text:
+            return html_text
+    return ""
+
+
+def build_extension_batch_payload(retailer_df, retailer_name, current_batch_key, capture_mode, txt_ready=False):
+    retailer_df = retailer_df.copy() if retailer_df is not None else pd.DataFrame()
+    retail_urls = []
+    if retailer_df is not None and not retailer_df.empty and "retail_url" in retailer_df.columns:
+        retail_urls = [str(x).strip() for x in retailer_df["retail_url"].fillna("").astype(str).tolist() if str(x).strip()]
+    return {
+        "ready": True,
+        "retailer": str(retailer_name or ""),
+        "batchKey": str(current_batch_key or ""),
+        "captureMode": str(capture_mode or ""),
+        "txtReady": bool(txt_ready),
+        "totalRows": int(len(retailer_df)) if retailer_df is not None else 0,
+        "retailUrls": retail_urls,
+        "timestamp": int(time.time()),
+    }
+
+
+def render_extension_batch_bridge(payload):
+    payload_json = json.dumps(payload or {}, ensure_ascii=False)
+    bridge_html = f"""
+    <script>
+    (function() {{
+      const payload = {payload_json};
+      window.__PDP_EXTENSION_BATCH__ = payload;
+      window.__RAW_HTML_EXTENSION_BATCH__ = payload;
+      window.__STREAMLIT_EXTENSION_BATCH__ = payload;
+      window.pdpExtensionBatch = payload;
+      try {{
+        window.dispatchEvent(new CustomEvent('pdp-extension-batch-ready', {{ detail: payload }}));
+      }} catch (e) {{}}
+      document.body.setAttribute('data-pdp-extension-batch-ready', payload && payload.ready ? '1' : '0');
+      document.body.setAttribute('data-pdp-extension-retailer', payload && payload.retailer ? String(payload.retailer) : '');
+      document.body.setAttribute('data-pdp-extension-batch-key', payload && payload.batchKey ? String(payload.batchKey) : '');
+    }})();
+    </script>
+    """
+    components.html(bridge_html, height=0, width=0)
 
 def normalize_kroger_url(url):
     url = str(url or "").strip()
@@ -4990,6 +5111,37 @@ def get_sams_bundle(retail_url, target_rpc="", sku=""):
     
 def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_source_code=""):
     retailer = normalize_retailer_name(retailer_name).strip().lower()
+    uploaded_html = str(row_source_code or "")
+
+    if uploaded_html.strip():
+        if retailer == "cvs":
+            bundle = {
+                "text": _extract_cvs_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc),
+                "images": extract_cvs_images_from_html(uploaded_html),
+            }
+            bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
+            return bundle
+        if retailer == "walgreens":
+            bundle = {
+                "text": extract_walgreens_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc),
+                "images": extract_walgreens_images_from_html(uploaded_html),
+            }
+            bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
+            return bundle
+        if retailer == "sam's club":
+            bundle = {
+                "text": extract_sams_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc),
+                "images": extract_sams_images_from_html(uploaded_html),
+            }
+            bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
+            return bundle
+        if retailer == "kroger":
+            bundle = {
+                "text": extract_kroger_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc),
+                "images": [],
+            }
+            bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
+            return bundle
 
     retailer_fetchers = {
         "cvs": lambda: get_cvs_bundle(retail_url, target_rpc),
@@ -6273,6 +6425,16 @@ if "batch_status_message" not in st.session_state:
     st.session_state.batch_status_message = ""
 if "batch_error_text" not in st.session_state:
     st.session_state.batch_error_text = ""
+if "capture_mode" not in st.session_state:
+    st.session_state.capture_mode = CAPTURE_MODE_USE_EXTENSION
+if "uploaded_raw_html_map" not in st.session_state:
+    st.session_state.uploaded_raw_html_map = {}
+if "uploaded_raw_html_filename" not in st.session_state:
+    st.session_state.uploaded_raw_html_filename = ""
+if "raw_html_upload_hash" not in st.session_state:
+    st.session_state.raw_html_upload_hash = ""
+if "auto_batch_upload_key" not in st.session_state:
+    st.session_state.auto_batch_upload_key = ""
 
 # =========================================
 # TOP UPLOAD + DOWNLOAD UI
@@ -6302,6 +6464,12 @@ selected_retailer = ""
 current_batch_key = ""
 file_hash = ""
 file_ready_for_batch = False
+selected_capture_mode = st.session_state.capture_mode
+uploaded_raw_html_file = None
+uploaded_raw_html_map = st.session_state.uploaded_raw_html_map or {}
+matched_uploaded_html_count = 0
+missing_uploaded_html_count = 0
+capture_batch_key_part = "no_txt"
 
 if uploaded_file:
     try:
@@ -6332,6 +6500,11 @@ if uploaded_file:
             st.session_state.batch_started_key = ""
             st.session_state.batch_status_message = ""
             st.session_state.batch_error_text = ""
+            st.session_state.capture_mode = CAPTURE_MODE_USE_EXTENSION
+            st.session_state.uploaded_raw_html_map = {}
+            st.session_state.uploaded_raw_html_filename = ""
+            st.session_state.raw_html_upload_hash = ""
+            st.session_state.auto_batch_upload_key = ""
             clear_in_memory_caches()
             st.cache_data.clear()
 
@@ -6346,6 +6519,15 @@ if uploaded_file:
             st.caption("Detected retailers in upload: " + ", ".join(all_retailers))
 
         with top_upload_col:
+            st.radio(
+                "⚙️ Capture Mode",
+                [CAPTURE_MODE_USE_EXTENSION, CAPTURE_MODE_SKIP_EXTENSION],
+                key="capture_mode",
+                horizontal=True,
+                help="Use the browser extension + TXT upload, or skip extension and run directly for supported retailers.",
+            )
+            selected_capture_mode = st.session_state.capture_mode
+
             if multi_retailer:
                 retailer_options = ["-- Select Retailer --"] + all_retailers
                 if st.session_state.selected_retailer not in retailer_options:
@@ -6371,9 +6553,42 @@ if uploaded_file:
                 )
                 file_ready_for_batch = True
 
+            uploaded_raw_html_file = st.file_uploader(
+                "Upload Captured Retailer HTML TXT",
+                type=["txt", "html"],
+                key="uploaded_raw_html_txt_top",
+                help="If you ran the extension and downloaded the TXT, upload it here so batch can run from the captured retailer HTML.",
+            )
+            if uploaded_raw_html_file is not None:
+                raw_html_bytes = uploaded_raw_html_file.getvalue()
+                raw_html_hash = hashlib.md5(raw_html_bytes or b"").hexdigest()
+                if st.session_state.raw_html_upload_hash != raw_html_hash:
+                    raw_html_text = get_uploaded_text_file_bytes(uploaded_raw_html_file)
+                    st.session_state.uploaded_raw_html_map = parse_uploaded_raw_html_map(raw_html_text)
+                    st.session_state.uploaded_raw_html_filename = uploaded_raw_html_file.name
+                    st.session_state.raw_html_upload_hash = raw_html_hash
+                    st.session_state.auto_batch_upload_key = ""
+                    st.session_state.batch_error_text = ""
+                uploaded_raw_html_map = st.session_state.uploaded_raw_html_map or {}
+                if uploaded_raw_html_map:
+                    st.success(f"Loaded TXT capture map from {st.session_state.uploaded_raw_html_filename} with {len(uploaded_raw_html_map)} URL keys.")
+                else:
+                    st.warning("TXT uploaded, but no labeled URL + HTML blocks were found yet. If needed, keep using the extension and re-download the TXT.")
+            else:
+                uploaded_raw_html_map = st.session_state.uploaded_raw_html_map or {}
+
         if file_ready_for_batch:
+            capture_batch_key_part = "use_ext" if selected_capture_mode == CAPTURE_MODE_USE_EXTENSION else "skip_ext"
+            if st.session_state.raw_html_upload_hash:
+                capture_batch_key_part += f"::{st.session_state.raw_html_upload_hash}"
             retailer_df = master_df[master_df["retailer"].astype(str) == selected_retailer].copy()
-            current_batch_key = f"{file_hash}::{selected_retailer}"
+            if "copy_source_code" not in retailer_df.columns:
+                retailer_df["copy_source_code"] = ""
+            if uploaded_raw_html_map:
+                retailer_df["copy_source_code"] = retailer_df["retail_url"].apply(lambda value: lookup_uploaded_raw_html(uploaded_raw_html_map, value))
+                matched_uploaded_html_count = int((retailer_df["copy_source_code"].astype(str).str.len() > 0).sum())
+                missing_uploaded_html_count = max(len(retailer_df) - matched_uploaded_html_count, 0)
+            current_batch_key = f"{file_hash}::{selected_retailer}::{capture_batch_key_part}"
 
             if st.session_state.active_batch_key != current_batch_key:
                 st.session_state.summary_rows = []
@@ -6394,6 +6609,61 @@ if uploaded_file:
                 st.session_state.batch_started_key = ""
                 st.session_state.batch_status_message = ""
                 st.session_state.batch_error_text = ""
+                st.session_state.auto_batch_upload_key = ""
+
+            txt_ready_for_batch = bool(matched_uploaded_html_count > 0)
+            if selected_capture_mode == CAPTURE_MODE_USE_EXTENSION:
+                extension_payload = build_extension_batch_payload(
+                    retailer_df=retailer_df,
+                    retailer_name=selected_retailer,
+                    current_batch_key=current_batch_key,
+                    capture_mode=selected_capture_mode,
+                    txt_ready=txt_ready_for_batch,
+                )
+                render_extension_batch_bridge(extension_payload)
+                st.caption(f"Extension bridge ready for {selected_retailer}. Upload the TXT after the extension run, then batch will run from captured HTML.")
+            elif selected_retailer in AUTO_SKIP_EXTENSION_RETAILERS:
+                st.caption(f"{selected_retailer} is in skip-extension mode, so the app can auto-run straight to batch with live retailer fetches.")
+
+            if uploaded_raw_html_map:
+                st.caption(f"TXT match status for {selected_retailer}: {matched_uploaded_html_count} matched rows, {missing_uploaded_html_count} unmatched rows.")
+
+            should_auto_run = False
+            auto_run_reason = ""
+            if selected_capture_mode == CAPTURE_MODE_USE_EXTENSION and txt_ready_for_batch:
+                should_auto_run = True
+                auto_run_reason = "uploaded TXT capture"
+            elif selected_capture_mode == CAPTURE_MODE_SKIP_EXTENSION and selected_retailer in AUTO_SKIP_EXTENSION_RETAILERS:
+                should_auto_run = True
+                auto_run_reason = "skip-extension direct batch"
+
+            if (
+                should_auto_run
+                and st.session_state.auto_batch_upload_key != current_batch_key
+                and st.session_state.batch_started_key != current_batch_key
+                and not st.session_state.processing_done
+            ):
+                st.session_state.batch_run_requested = True
+                st.session_state.batch_started_key = current_batch_key
+                st.session_state.batch_status_message = f"Auto-starting batch for {selected_retailer} using {auto_run_reason}."
+                st.session_state.batch_error_text = ""
+                st.session_state.completed_batch_key = ""
+                st.session_state.start_idx = 0
+                st.session_state.summary_rows = []
+                st.session_state.export_rows = []
+                st.session_state.debug_rows = []
+                st.session_state.summary_skus = set()
+                st.session_state.detail_skus = set()
+                st.session_state.debug_skus = set()
+                st.session_state.progress_bar = None
+                st.session_state.report_bytes = None
+                st.session_state.report_filename = None
+                st.session_state.report_batch_key = ""
+                st.session_state.auto_download_done = False
+                st.session_state.auto_batch_upload_key = current_batch_key
+                clear_in_memory_caches()
+                st.cache_data.clear()
+                st.rerun()
 
 
             run_button_col, run_msg_col = st.columns([1.2, 3.8], gap="small")
@@ -6430,8 +6700,12 @@ if uploaded_file:
                     st.error(st.session_state.batch_error_text)
                 elif st.session_state.processing_done and st.session_state.completed_batch_key == current_batch_key:
                     st.success(st.session_state.batch_status_message or f"Batch finished for {selected_retailer}. Visual QA review is ready below.")
+                elif selected_capture_mode == CAPTURE_MODE_USE_EXTENSION and not matched_uploaded_html_count:
+                    st.info(f"Load the extension, run the retailer batch, then upload the TXT capture for {selected_retailer}. As soon as the TXT has matches, batch will run from that captured HTML.")
+                elif selected_capture_mode == CAPTURE_MODE_SKIP_EXTENSION and selected_retailer in AUTO_SKIP_EXTENSION_RETAILERS:
+                    st.info(f"Skip-extension mode is enabled for {selected_retailer}. The app will go straight into batch automatically.")
                 else:
-                    st.info(f"Top section stays in the new app flow. Click Run Batch for {selected_retailer}, then the visual QA review will appear below after the extract/report finishes.")
+                    st.info(f"Use the top selections, then click Run Batch for {selected_retailer}. The visual QA review will appear below after extract/report generation finishes.")
 
     except EmptyDataError:
         st.error("🔥 CRITICAL APP ERROR")
@@ -6612,6 +6886,7 @@ if retailer_df is not None and file_ready_for_batch and st.session_state.batch_s
                 st.session_state.completed_batch_key = current_batch_key
                 st.session_state.batch_status_message = f"Batch finished for {selected_retailer}. Extract/report generated successfully."
                 st.session_state.batch_run_requested = False
+                st.session_state.auto_batch_upload_key = current_batch_key
                 st.rerun()
     except Exception as e:
         st.session_state.batch_error_text = str(e)
@@ -6739,6 +7014,7 @@ if (
             unsafe_allow_html=True,
         )
         st.markdown("## 👁️ Full Visual QA Review")
+        st.caption("This full visual UI appears only after the top batch run finishes and the extract/report rows are ready.")
         st.caption("This full visual UI appears only after the new top-section batch run finishes and the extract/report rows are ready.")
 
         if hidden_count > 0:
