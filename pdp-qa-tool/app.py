@@ -6072,16 +6072,22 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
     """
     Build the retailer-specific Salsify comparison image list.
 
-    Salsify-only rule:
-    - Lock slots 1-3 to Online Optimized Image, Flat Back_2D, Flat Left_2D.
-    - If any of those are missing, keep a blank Salsify slot so later ATF / lifestyle
-      images shift down instead of moving up into the first three slots.
-    - Retailer images are not changed by this rule.
+    Salsify-only slot locking should only apply where it is still wanted.
 
-    Beyond the top three locked Salsify slots, optional ATF I/O still behaves naturally.
-    If ATF I/O is missing, later ATF slots move up behind the locked top three.
+    Current rule:
+    - CVS keeps the locked top-three Salsify slots so later ATF / lifestyle images
+      shift down instead of moving up into slots 1-3.
+    - Walgreens keeps its existing locked top-three + explicit ATF ordering behavior.
+    - Kroger and every other retailer keep the natural Salsify image order and do not
+      force blank top-three slots.
     """
     retailer = str(retailer_name or "").strip().lower()
+
+    # Only CVS still needs the blank-slot shift-down behavior.
+    # Keep Walgreens' existing special image handling unchanged.
+    if retailer not in {"cvs", "walgreens"}:
+        return list(s_images or [])[:max_slots]
+
     s_images = build_locked_salsify_slots(
         s_images,
         lock_top_three=True,
