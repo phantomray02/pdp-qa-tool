@@ -1840,7 +1840,7 @@ def _parse_salsify_page(html_text):
         if meta_desc and meta_desc.get("content"):
             description = normalize_space(meta_desc.get("content", ""))
 
-    # Kroger-specific Salsify fields should override generic deck placeholders when present.
+    # Retailer-specific Salsify fields should override generic deck placeholders when present.
     kroger_feature_values = []
     for i in range(1, 11):
         kroger_feature_values.extend(
@@ -1853,12 +1853,33 @@ def _parse_salsify_page(html_text):
         )
     kroger_feature_values = dedupe_preserve_order(kroger_feature_values)
 
+    sams_feature_values = []
+    for i in range(1, 11):
+        sams_feature_values.extend(
+            collect_property_values(
+                f"Sam's Club Feature {i}",
+                f"Sam's Club Feature{i}",
+                f"Sams Club Feature {i}",
+                f"Sams Club Feature{i}",
+                f"Sam's Club Bullet {i}",
+                f"Sam's Club Bullet{i}",
+                f"Sams Club Bullet {i}",
+                f"Sams Club Bullet{i}",
+            )
+        )
+    sams_feature_values = dedupe_preserve_order(sams_feature_values)
+
     retailer_overrides = {
         "kroger": {
             "title": first_property("Kroger Product Title", "Kroger Title"),
             "description": first_property("Kroger Description", "Kroger Product Description"),
             "features": kroger_feature_values,
-        }
+        },
+        "sam's club": {
+            "title": first_property("Sam's Club Product Title", "Sams Club Product Title", "Sam's Club Title", "Sams Club Title"),
+            "description": first_property("Sam's Club Description", "Sams Club Description", "Sam's Club Product Description", "Sams Club Product Description"),
+            "features": sams_feature_values,
+        },
     }
 
     text_bundle = {
@@ -1896,36 +1917,14 @@ def _parse_salsify_page(html_text):
     except Exception:
         pass
 
-    def find_asset(*queries):
-        for query in queries:
-            q_norm = normalize_salsify_asset_name(query)
-            if not q_norm:
-                continue
-            for key, value in asset_lookup.items():
-                if q_norm in key:
-                    return value
-        return ""
-
-    ordered_candidates = [
-        ("online", find_asset("online optimized image", "online image", "online", "front")),
-        ("back", find_asset("flat back 2d", "flat back", "back 2d", "back")),
-        ("left", find_asset("flat left 2d", "flat left", "left 2d", "left")),
-        ("atf io", find_asset("atf i o generic", "atf io generic", "atf i o", "atf io")),
-        ("atf 2", find_asset("atf 2")),
-        ("atf 3", find_asset("atf 3")),
-        ("atf 4", find_asset("atf 4")),
-        ("atf 5", find_asset("atf 5")),
-        ("atf 6", find_asset("atf 6")),
-    ]
-
     images = []
     seen_urls = set()
-    for name, url in ordered_candidates:
-        url = str(url or "").strip()
-        if not url or url in seen_urls:
+    for asset_name, asset_url in asset_lookup.items():
+        clean_url = str(asset_url or "").strip()
+        if not clean_url or clean_url in seen_urls:
             continue
-        images.append({"name": name, "url": url})
-        seen_urls.add(url)
+        images.append({"name": asset_name, "url": clean_url})
+        seen_urls.add(clean_url)
 
     return {
         "text": text_bundle,
@@ -5506,6 +5505,20 @@ def extract_sams_images_from_html(html_text):
         seen.add(base)
         out.append(f"{base}?odnHeight=450&odnWidth=450&odnBg=FFFFFF")
 
+    # Extra safety: if the first Sam's image repeats again, keep only the first occurrence.
+    if out:
+        first_base = _base_asr_url(out[0])
+        deduped_out = []
+        first_seen = False
+        for url in out:
+            current_base = _base_asr_url(url)
+            if current_base == first_base:
+                if first_seen:
+                    continue
+                first_seen = True
+            deduped_out.append(url)
+        out = deduped_out
+
     return out[:MAX_IMAGE_SLOTS_TO_COMPARE]
 
 
@@ -6068,6 +6081,7 @@ def finalize_salsify_copy_for_retailer(retailer_name, s_text):
     Normalize Salsify copy for retailer-specific comparison only.
     For Walgreens, do NOT strip 'Also check out our ...' anymore.
     Kroger should prefer Kroger Product Title / Kroger Description / Kroger Feature N.
+    Sam's Club should prefer Sam's Club Product Title / Description / Feature N.
     """
     retailer = str(retailer_name or "").strip().lower()
     out = dict(s_text or {})
@@ -6079,13 +6093,29 @@ def finalize_salsify_copy_for_retailer(retailer_name, s_text):
             if normalize_space(out.get(f"feature{i}", ""))
         ]
 
+    retailer_overrides = out.get("retailer_overrides", {}) or {}
+
     if retailer == "kroger":
-        retailer_overrides = out.get("retailer_overrides", {}) or {}
         kroger_override = retailer_overrides.get("kroger", {}) or {}
         selected_title = normalize_space(kroger_override.get("title", "") or out.get("title", ""))
         selected_description = clean_kroger_text(kroger_override.get("description", "") or out.get("description", ""))
         selected_features = normalize_kroger_features(
             kroger_override.get("features", []) or generic_feature_list(),
+            max_features=10,
+        )
+        out["title"] = selected_title
+        out["description"] = selected_description
+        out["features"] = selected_features
+        for i in range(1, 8):
+            out[f"feature{i}"] = selected_features[i - 1] if i - 1 < len(selected_features) else ""
+        return out
+
+    if retailer in {"sam's club", "sams club", "samsclub"}:
+        sams_override = retailer_overrides.get("sam's club", {}) or {}
+        selected_title = clean_sams_title(sams_override.get("title", "") or out.get("title", ""))
+        selected_description = clean_sams_text(sams_override.get("description", "") or out.get("description", ""))
+        selected_features = normalize_sams_features_final(
+            sams_override.get("features", []) or generic_feature_list(),
             max_features=10,
         )
         out["title"] = selected_title
@@ -6358,65 +6388,115 @@ def compare_images_visually(s_url, r_url):
     return score
 
 
-def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
+def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE, brand=""):
     """
     Build the retailer-specific Salsify comparison image list.
 
-    Salsify-only slot locking should only apply where it is still wanted.
-
-    Current rule:
-    - CVS keeps the locked top-three Salsify slots so later ATF / lifestyle images
-      shift down instead of moving up into slots 1-3.
-    - Walgreens keeps its existing locked top-three + explicit ATF ordering behavior.
-    - Kroger and every other retailer keep the natural Salsify image order and do not
-      force blank top-three slots.
+    Rules:
+    - CVS keeps locked top-three Salsify slots so later ATF / lifestyle images shift down.
+    - Walgreens keeps explicit online/back/left + ATF ordering.
+    - Sam's Club for Depend, Kotex, U by Kotex, Poise, and Thinx/Thix uses:
+      Online Optimized Image,
+      ATF I/O-Generic (fallback to ATF 10-Sams Club if missing),
+      then ATF 2-Sams Club through ATF 10-Sams Club.
+    - Other retailers keep natural Salsify image order.
     """
     retailer = str(retailer_name or "").strip().lower()
+    brand_norm = normalize_salsify_asset_name(brand or "")
+    source_images = list(s_images or [])
 
-    # Only CVS still needs the blank-slot shift-down behavior.
-    # Keep Walgreens' existing special image handling unchanged.
+    def dedupe_images_preserve_order(images):
+        out = []
+        seen = set()
+        for img in images:
+            if not isinstance(img, dict):
+                continue
+            url = str(img.get("url", "") or "").strip()
+            if not url or url in seen:
+                continue
+            out.append(img)
+            seen.add(url)
+        return out
+
+    def find_first_image(images, *queries):
+        query_tokens = [normalize_salsify_asset_name(q) for q in queries if normalize_salsify_asset_name(q)]
+        for query in query_tokens:
+            for img in images:
+                if not isinstance(img, dict):
+                    continue
+                name = normalize_salsify_asset_name(img.get("name", ""))
+                if not name:
+                    continue
+                if query == name or query in name:
+                    return img
+        return None
+
+    if retailer in {"sam's club", "sams club", "samsclub"}:
+        sams_brands = {"depend", "kotex", "u by kotex", "poise", "thinx", "thix"}
+        if brand_norm in sams_brands:
+            aligned = []
+            online_img = find_first_image(source_images, "online optimized image", "online image", "online", "front")
+            if online_img:
+                aligned.append(online_img)
+
+            io_generic = find_first_image(
+                source_images,
+                "atf i/o generic",
+                "atf i o generic",
+                "atf io generic",
+                "atf i/o-generic",
+                "atf io",
+            )
+            if not io_generic:
+                io_generic = find_first_image(source_images, "atf 10 sam's club", "atf 10 sams club")
+            if io_generic:
+                aligned.append(io_generic)
+
+            for slot_num in range(2, 11):
+                img = find_first_image(
+                    source_images,
+                    f"atf {slot_num} sam's club",
+                    f"atf {slot_num} sams club",
+                )
+                if img:
+                    aligned.append(img)
+
+            aligned = dedupe_images_preserve_order(aligned)
+            return aligned[:max_slots]
+
+        return dedupe_images_preserve_order(source_images)[:max_slots]
+
     if retailer not in {"cvs", "walgreens"}:
-        return list(s_images or [])[:max_slots]
+        return dedupe_images_preserve_order(source_images)[:max_slots]
 
     s_images = build_locked_salsify_slots(
-        s_images,
+        source_images,
         lock_top_three=True,
         max_slots=max_slots,
     )
 
     if retailer != "walgreens":
-        return s_images[:max_slots]
+        return dedupe_images_preserve_order(s_images)[:max_slots]
 
-    by_name = {}
-    for img in s_images:
-        if not isinstance(img, dict):
-            continue
-        name = normalize_salsify_asset_name(img.get("name", ""))
-        if name and name not in by_name:
-            by_name[name] = img
+    aligned = []
+    for query_group in [
+        ("online optimized image", "online image", "online", "front"),
+        ("flat back 2d", "flat back", "back 2d", "back"),
+        ("flat left 2d", "flat left", "left 2d", "left"),
+        ("atf io", "atf i/o generic", "atf i o generic", "atf io generic"),
+        ("atf 2",),
+        ("atf 3",),
+        ("atf 4",),
+        ("atf 5",),
+        ("atf 6",),
+    ]:
+        img = find_first_image(s_images, *query_group)
+        if img:
+            aligned.append(img)
+        elif query_group[0] in {"online optimized image", "flat back 2d", "flat left 2d"}:
+            aligned.append(make_blank_salsify_image_slot(query_group[0]))
 
-    aligned = [
-        by_name.get("online") or make_blank_salsify_image_slot("online"),
-        by_name.get("back") or make_blank_salsify_image_slot("back"),
-        by_name.get("left") or make_blank_salsify_image_slot("left"),
-    ]
-
-    def add_if_present(*queries):
-        for query in queries:
-            q_norm = normalize_salsify_asset_name(query)
-            img = by_name.get(q_norm)
-            if img and img not in aligned:
-                aligned.append(img)
-                return
-
-    add_if_present("atf io")
-    add_if_present("atf 2")
-    add_if_present("atf 3")
-    add_if_present("atf 4")
-    add_if_present("atf 5")
-    add_if_present("atf 6")
-
-    return aligned[:min(max_slots, 6)]
+    return dedupe_images_preserve_order(aligned)[:min(max_slots, 6)]
 
 
 def align_image_slots_for_comparison(s_images, r_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE, strong_threshold=80):
@@ -6531,6 +6611,7 @@ def get_visual_row_payload(
         retailer_name,
         s_bundle["images"],
         max_slots=visual_max_slots,
+        brand=row.get("brand", ""),
     )
 
     r_text = finalize_retailer_copy(retailer_name, r_bundle["text"] or {})
@@ -6662,6 +6743,7 @@ def process_row(row):
             retailer_name,
             s_bundle["images"],
             max_slots=MAX_IMAGE_SLOTS_TO_SCORE,
+            brand=row.get("brand", ""),
         )
 
         r_text = finalize_retailer_copy(
