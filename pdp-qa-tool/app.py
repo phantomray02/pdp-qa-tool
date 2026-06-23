@@ -29,7 +29,7 @@ import base64
 # APP SETUP
 # =========================================
 st.set_page_config(layout="wide")
-st.title("PDP QA Tool ✅")
+st.title("PDP QA Tool 🎉")
 
 st.markdown(
     "<style>"
