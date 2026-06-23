@@ -7962,6 +7962,7 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
 
 
 
+
 # =========================================
 # STRICT RETAILER RULE LOCKS
 # =========================================
@@ -8014,56 +8015,54 @@ def _locked_empty_bundle(retailer_name, reason="retailer_locked"):
 
 
 if "get_retailer_salsify_requirements" in globals():
-    _original_get_retailer_salsify_requirements = get_retailer_salsify_requirements
+    _strict_lock_original_get_retailer_salsify_requirements = get_retailer_salsify_requirements
     def get_retailer_salsify_requirements(retailer_name):
         retailer = normalize_locked_retailer_name(retailer_name)
         if not retailer:
             return {}
-        return dict(_original_get_retailer_salsify_requirements(retailer) or {})
+        return dict(_strict_lock_original_get_retailer_salsify_requirements(retailer) or {})
 
 
 if "apply_retailer_salsify_copy_limits" in globals():
-    _original_apply_retailer_salsify_copy_limits = apply_retailer_salsify_copy_limits
+    _strict_lock_original_apply_retailer_salsify_copy_limits = apply_retailer_salsify_copy_limits
     def apply_retailer_salsify_copy_limits(retailer_name, s_text):
         retailer = normalize_locked_retailer_name(retailer_name)
-        return _original_apply_retailer_salsify_copy_limits(retailer, _locked_prune_retailer_overrides(s_text, retailer))
+        return _strict_lock_original_apply_retailer_salsify_copy_limits(retailer, _locked_prune_retailer_overrides(s_text, retailer))
 
 
 if "apply_retailer_salsify_image_limits" in globals():
-    _original_apply_retailer_salsify_image_limits = apply_retailer_salsify_image_limits
+    _strict_lock_original_apply_retailer_salsify_image_limits = apply_retailer_salsify_image_limits
     def apply_retailer_salsify_image_limits(retailer_name, images):
         retailer = normalize_locked_retailer_name(retailer_name)
-        return _original_apply_retailer_salsify_image_limits(retailer, images)
+        return _strict_lock_original_apply_retailer_salsify_image_limits(retailer, images)
 
 
 if "finalize_salsify_copy_for_retailer" in globals():
-    _original_finalize_salsify_copy_for_retailer = finalize_salsify_copy_for_retailer
+    _strict_lock_original_finalize_salsify_copy_for_retailer = finalize_salsify_copy_for_retailer
     def finalize_salsify_copy_for_retailer(retailer_name, s_text):
         retailer = normalize_locked_retailer_name(retailer_name)
-        return _original_finalize_salsify_copy_for_retailer(retailer, _locked_prune_retailer_overrides(s_text, retailer))
+        return _strict_lock_original_finalize_salsify_copy_for_retailer(retailer, _locked_prune_retailer_overrides(s_text, retailer))
 
 
 if "align_salsify_images_for_retailer" in globals():
-    _original_align_salsify_images_for_retailer = align_salsify_images_for_retailer
+    _strict_lock_original_align_salsify_images_for_retailer = align_salsify_images_for_retailer
     def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE, brand=""):
         retailer = normalize_locked_retailer_name(retailer_name)
-        return _original_align_salsify_images_for_retailer(retailer, s_images, max_slots=max_slots, brand=brand)
+        return _strict_lock_original_align_salsify_images_for_retailer(retailer, s_images, max_slots=max_slots, brand=brand)
 
 
 if "finalize_retailer_copy" in globals():
-    _original_finalize_retailer_copy = finalize_retailer_copy
+    _strict_lock_original_finalize_retailer_copy = finalize_retailer_copy
     def finalize_retailer_copy(retailer_name, text_dict):
         retailer = normalize_locked_retailer_name(retailer_name)
-        return _original_finalize_retailer_copy(retailer, text_dict)
+        return _strict_lock_original_finalize_retailer_copy(retailer, text_dict)
 
 
 if "get_retailer_bundle" in globals():
-    _original_get_retailer_bundle = get_retailer_bundle
+    _strict_lock_original_get_retailer_bundle = get_retailer_bundle
     def get_retailer_bundle(*args, **kwargs):
         """
-        Strict retailer lock wrapper that preserves the original function signature.
-        This prevents crashes when the live app passes newer kwargs such as
-        row_source_code, current_target_sku, sku, or uploaded_html.
+        Preserve the live function signature so future kwargs do not break the lock layer.
         """
         if kwargs:
             kwargs = dict(kwargs)
@@ -8073,7 +8072,7 @@ if "get_retailer_bundle" in globals():
                 if not locked_retailer:
                     return _locked_empty_bundle(original_retailer or "Retailer", "retailer_not_supported_locked")
                 kwargs["retailer_name"] = locked_retailer
-                return _original_get_retailer_bundle(**kwargs)
+                return _strict_lock_original_get_retailer_bundle(**kwargs)
         if len(args) >= 1:
             args = list(args)
             original_retailer = args[0]
@@ -8081,27 +8080,26 @@ if "get_retailer_bundle" in globals():
             if not locked_retailer:
                 return _locked_empty_bundle(original_retailer or "Retailer", "retailer_not_supported_locked")
             args[0] = locked_retailer
-            return _original_get_retailer_bundle(*tuple(args), **kwargs)
+            return _strict_lock_original_get_retailer_bundle(*tuple(args), **kwargs)
         return _locked_empty_bundle("Retailer", "retailer_not_supported_locked")
 
 
 if "get_visual_row_payload" in globals():
-    _original_get_visual_row_payload = get_visual_row_payload
+    _strict_lock_original_get_visual_row_payload = get_visual_row_payload
     def get_visual_row_payload(*args, **kwargs):
         """
-        Strict retailer lock wrapper that preserves the original function signature.
-        This prevents crashes when the live app passes newer kwargs such as sku,
-        current_target_sku, or row_source_code.
+        Preserve the live function signature so future kwargs do not break the lock layer.
+        Normalize retailer_name whether it arrives positionally or by keyword.
         """
+        if len(args) >= 2:
+            args = list(args)
+            args[1] = normalize_locked_retailer_name(args[1])
+            args = tuple(args)
         if kwargs:
             kwargs = dict(kwargs)
             if "retailer_name" in kwargs:
                 kwargs["retailer_name"] = normalize_locked_retailer_name(kwargs.get("retailer_name", ""))
-        elif len(args) >= 2:
-            args = list(args)
-            args[1] = normalize_locked_retailer_name(args[1])
-            args = tuple(args)
-        return _original_get_visual_row_payload(*args, **kwargs)
+        return _strict_lock_original_get_visual_row_payload(*args, **kwargs)
 # =========================================
 # END STRICT RETAILER RULE LOCKS
 # =========================================
