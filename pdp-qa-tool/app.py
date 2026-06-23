@@ -822,21 +822,36 @@ def infer_cvs_image_slot_from_url(url):
     return None
 
 def reorder_cvs_salsify_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
+    """
+    CVS Salsify order for visual QA:
+    1. Online/Main image.
+    2. Flat Back_2D / back.
+    3. Flat Left_2D / side.
+    4. ATF I/O-Generic if present, otherwise ATF 6-Generic.
+    5+. ATF 2-Generic through ATF 5-Generic.
+
+    Missing slots 1-4 stay blank so later ATF images do not shift up.
+    """
     imgs = [img for img in (images or []) if isinstance(img, dict)]
+
     def norm_name(img):
         return normalize_salsify_asset_name((img or {}).get("name", "")) if isinstance(img, dict) else ""
+
     def find_first(*queries):
-        q_tokens = [normalize_salsify_asset_name(q) for q in queries if normalize_salsify_asset_name(q)]
-        for q in q_tokens:
+        query_tokens = [normalize_salsify_asset_name(q) for q in queries if normalize_salsify_asset_name(q)]
+        for q in query_tokens:
             for img in imgs:
                 name = norm_name(img)
                 if name and (q == name or q in name):
                     return img
         return None
+
     def image_key(img):
         return str(img.get("url", "") or "").strip() if isinstance(img, dict) else ""
+
     ordered = []
     used = set()
+
     def add(img, blank_name=""):
         if not isinstance(img, dict):
             if blank_name:
@@ -850,16 +865,27 @@ def reorder_cvs_salsify_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_C
         ordered.append(img)
         used.add(key)
         return True
-    add(find_first("online optimized image", "online image", "main variant image", "main image", "hero", "primary", "front", "product image 1", "image 1"), "cvs_slot_1")
-    add(find_first("flat back 2d", "flat back", "back 2d", "back", "rear", "product image 2", "image 2"), "cvs_slot_2")
-    add(find_first("flat left 2d", "flat left", "left 2d", "left", "flat right 2d", "flat right", "right 2d", "right", "side", "product image 3", "image 3"), "cvs_slot_3")
-    for n in range(2, 6):
-        add(find_first(f"atf {n} generic", f"atf {n}-generic", f"atf{n} generic", f"atf{n}-generic"))
+
+    add(find_first(
+        "online optimized image", "online image", "main variant image", "main image", "hero", "primary", "front", "product image 1", "image 1",
+    ), "cvs_slot_1")
+    add(find_first(
+        "flat back 2d", "flat back", "back 2d", "back", "rear", "product image 2", "image 2",
+    ), "cvs_slot_2")
+    add(find_first(
+        "flat left 2d", "flat left", "left 2d", "left", "flat right 2d", "flat right", "right 2d", "right", "side", "product image 3", "image 3",
+    ), "cvs_slot_3")
+
     io_img = find_first("atf i/o generic", "atf i o generic", "atf io generic", "atf i/o-generic", "atf io-generic")
     atf6_img = find_first("atf 6 generic", "atf 6-generic", "atf6 generic", "atf6-generic")
-    add(io_img if io_img else atf6_img)
+    add(io_img if io_img else atf6_img, "cvs_slot_4")
+
+    for n in range(2, 6):
+        add(find_first(f"atf {n} generic", f"atf {n}-generic", f"atf{n} generic", f"atf{n}-generic"))
+
     for img in imgs:
         add(img)
+
     return ordered[:max_slots]
 
 def reorder_cvs_retailer_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
