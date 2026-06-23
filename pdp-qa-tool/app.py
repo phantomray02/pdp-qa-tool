@@ -7785,6 +7785,24 @@ def _wg_find_salsify_image(images, *queries):
 
 
 def reorder_walgreens_salsify_images_for_visual(images, max_slots=6):
+    """
+    Walgreens Salsify visual order:
+    - Slot 1: Online Optimized Image-
+    - Slot 2: Ingredient Label Image
+    - If ATF I/O exists:
+        Slot 3: ATF I/O-Generic
+        Slot 4: ATF 2-Generic
+        Slot 5: ATF 3-Generic
+        Slot 6: ATF 4-Generic
+        Do NOT use ATF 5-Generic.
+    - If ATF I/O does NOT exist:
+        Slot 3: ATF 2-Generic
+        Slot 4: ATF 3-Generic
+        Slot 5: ATF 4-Generic
+        Slot 6: ATF 5-Generic
+
+    ATF 5-Generic should only appear when I/O is missing, and it should always be last.
+    """
     imgs = [img for img in (images or []) if isinstance(img, dict)]
     ordered = []
     used = set()
@@ -7826,6 +7844,9 @@ def reorder_walgreens_salsify_images_for_visual(images, max_slots=6):
         "atf i/o-generic",
         "atf io-generic",
     )
+    atf2_img = _wg_find_salsify_image(imgs, "atf 2 generic", "atf 2-generic", "atf2 generic", "atf2-generic")
+    atf3_img = _wg_find_salsify_image(imgs, "atf 3 generic", "atf 3-generic", "atf3 generic", "atf3-generic")
+    atf4_img = _wg_find_salsify_image(imgs, "atf 4 generic", "atf 4-generic", "atf4 generic", "atf4-generic")
     atf5_img = _wg_find_salsify_image(
         imgs,
         "atf 5 generic",
@@ -7833,21 +7854,27 @@ def reorder_walgreens_salsify_images_for_visual(images, max_slots=6):
         "atf5 generic",
         "atf5-generic",
     )
-    atf2_img = _wg_find_salsify_image(imgs, "atf 2 generic", "atf 2-generic", "atf2 generic", "atf2-generic")
-    atf3_img = _wg_find_salsify_image(imgs, "atf 3 generic", "atf 3-generic", "atf3 generic", "atf3-generic")
-    atf4_img = _wg_find_salsify_image(imgs, "atf 4 generic", "atf 4-generic", "atf4 generic", "atf4-generic")
 
     add(online_img, "walgreens_slot_1_online")
     add(ingredient_img, "walgreens_slot_2_ingredient")
-    add(io_img if io_img else atf5_img, "walgreens_slot_3_io_or_atf5")
-    add(atf2_img, "walgreens_slot_4_atf2")
-    add(atf3_img, "walgreens_slot_5_atf3")
-    add(atf4_img, "walgreens_slot_6_atf4")
 
-    skip_atf5_key = _wg_salsify_image_key(atf5_img) if io_img is not None else ""
+    if io_img is not None:
+        add(io_img, "walgreens_slot_3_io")
+        add(atf2_img, "walgreens_slot_4_atf2")
+        add(atf3_img, "walgreens_slot_5_atf3")
+        add(atf4_img, "walgreens_slot_6_atf4")
+        skip_keys = {_wg_salsify_image_key(io_img), _wg_salsify_image_key(atf5_img)}
+    else:
+        add(atf2_img, "walgreens_slot_3_atf2")
+        add(atf3_img, "walgreens_slot_4_atf3")
+        add(atf4_img, "walgreens_slot_5_atf4")
+        add(atf5_img, "walgreens_slot_6_atf5")
+        skip_keys = {_wg_salsify_image_key(atf5_img)}
+
+    skip_keys = {k for k in skip_keys if k}
     for img in imgs:
         img_key = _wg_salsify_image_key(img)
-        if skip_atf5_key and img_key == skip_atf5_key:
+        if img_key in skip_keys:
             continue
         add(img)
 
