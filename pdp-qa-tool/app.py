@@ -7961,6 +7961,121 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
     return _original_align_salsify_images_for_retailer(retailer_name, s_images, max_slots=max_slots, brand=brand)
 
 
+
+# =========================================
+# STRICT RETAILER RULE LOCKS
+# =========================================
+STRICT_RETAILER_RULE_LOCKS = True
+
+_LOCKED_RETAILER_NAME_MAP = {
+    "cvs": "cvs",
+    "walgreens": "walgreens",
+    "walgreen": "walgreens",
+    "kroger": "kroger",
+    "sam's club": "sam's club",
+    "sams club": "sam's club",
+    "samsclub": "sam's club",
+    "sam s club": "sam's club",
+}
+
+
+def normalize_locked_retailer_name(retailer_name):
+    value = normalize_space(retailer_name)
+    if not value:
+        return ""
+    lowered = html.unescape(str(value)).strip().lower()
+    lowered = lowered.replace("’", "'")
+    lowered = re.sub(r"\s+", " ", lowered)
+    return _LOCKED_RETAILER_NAME_MAP.get(lowered, lowered)
+
+
+def _locked_prune_retailer_overrides(payload, retailer_name):
+    out = dict(payload or {})
+    overrides = dict(out.get("retailer_overrides", {}) or {})
+    retailer = normalize_locked_retailer_name(retailer_name)
+    if not overrides or not retailer:
+        return out
+
+    kept = {}
+    for key, value in overrides.items():
+        if normalize_locked_retailer_name(key) == retailer:
+            kept[key] = value
+    out["retailer_overrides"] = kept
+    return out
+
+
+def _locked_empty_bundle(retailer_name, reason="retailer_locked"):
+    if "build_empty_retailer_bundle" in globals():
+        try:
+            return build_empty_retailer_bundle(retailer_name or "Retailer", reason)
+        except Exception:
+            pass
+    return {"text": {"debug": {"Source Used": reason}}, "images": []}
+
+
+if "get_retailer_salsify_requirements" in globals():
+    _original_get_retailer_salsify_requirements = get_retailer_salsify_requirements
+    def get_retailer_salsify_requirements(retailer_name):
+        retailer = normalize_locked_retailer_name(retailer_name)
+        if not retailer:
+            return {}
+        return dict(_original_get_retailer_salsify_requirements(retailer) or {})
+
+
+if "apply_retailer_salsify_copy_limits" in globals():
+    _original_apply_retailer_salsify_copy_limits = apply_retailer_salsify_copy_limits
+    def apply_retailer_salsify_copy_limits(retailer_name, s_text):
+        retailer = normalize_locked_retailer_name(retailer_name)
+        return _original_apply_retailer_salsify_copy_limits(retailer, _locked_prune_retailer_overrides(s_text, retailer))
+
+
+if "apply_retailer_salsify_image_limits" in globals():
+    _original_apply_retailer_salsify_image_limits = apply_retailer_salsify_image_limits
+    def apply_retailer_salsify_image_limits(retailer_name, images):
+        retailer = normalize_locked_retailer_name(retailer_name)
+        return _original_apply_retailer_salsify_image_limits(retailer, images)
+
+
+if "finalize_salsify_copy_for_retailer" in globals():
+    _original_finalize_salsify_copy_for_retailer = finalize_salsify_copy_for_retailer
+    def finalize_salsify_copy_for_retailer(retailer_name, s_text):
+        retailer = normalize_locked_retailer_name(retailer_name)
+        return _original_finalize_salsify_copy_for_retailer(retailer, _locked_prune_retailer_overrides(s_text, retailer))
+
+
+if "align_salsify_images_for_retailer" in globals():
+    _original_align_salsify_images_for_retailer = align_salsify_images_for_retailer
+    def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE, brand=""):
+        retailer = normalize_locked_retailer_name(retailer_name)
+        return _original_align_salsify_images_for_retailer(retailer, s_images, max_slots=max_slots, brand=brand)
+
+
+if "finalize_retailer_copy" in globals():
+    _original_finalize_retailer_copy = finalize_retailer_copy
+    def finalize_retailer_copy(retailer_name, text_dict):
+        retailer = normalize_locked_retailer_name(retailer_name)
+        return _original_finalize_retailer_copy(retailer, text_dict)
+
+
+if "get_retailer_bundle" in globals():
+    _original_get_retailer_bundle = get_retailer_bundle
+    def get_retailer_bundle(retailer_name, retail_url="", target_rpc="", sku="", uploaded_html=""):
+        retailer = normalize_locked_retailer_name(retailer_name)
+        if not retailer:
+            return _locked_empty_bundle(retailer_name or "Retailer", "retailer_not_supported_locked")
+        return _original_get_retailer_bundle(retailer, retail_url=retail_url, target_rpc=target_rpc, sku=sku, uploaded_html=uploaded_html)
+
+
+if "get_visual_row_payload" in globals():
+    _original_get_visual_row_payload = get_visual_row_payload
+    def get_visual_row_payload(row, retailer_name, retail_url, salsify_url):
+        retailer = normalize_locked_retailer_name(retailer_name)
+        return _original_get_visual_row_payload(row, retailer, retail_url, salsify_url)
+# =========================================
+# END STRICT RETAILER RULE LOCKS
+# =========================================
+
+
 # =========================================
 # TOP UPLOAD + DOWNLOAD UI
 # =========================================
