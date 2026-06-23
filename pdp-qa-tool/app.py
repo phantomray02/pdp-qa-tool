@@ -731,6 +731,106 @@ def build_locked_salsify_slots(s_images, lock_top_three=True, max_slots=MAX_IMAG
     ordered.extend(remainder)
     return ordered[:max_slots]
 
+
+# =========================================
+# RETAILER Salsify REQUIREMENTS
+# =========================================
+# Centralized retailer-specific Salsify limits so copy/image rules are easy to update in one place.
+RETAILER_SALSIFY_REQUIREMENTS = {
+    "default": {"max_features": 5, "max_images": 6},
+    "cvs": {"max_features": 5, "max_images": 6},
+    "walgreens": {"max_features": 5, "max_images": 6},
+    "kroger": {"max_features": 7, "max_images": 7},
+    "sam's club": {"max_features": 10, "max_images": 10},
+    "sams club": {"max_features": 10, "max_images": 10},
+    "samsclub": {"max_features": 10, "max_images": 10},
+}
+
+
+def get_retailer_salsify_requirements(retailer_name):
+    retailer = str(retailer_name or "").strip().lower()
+    return dict(RETAILER_SALSIFY_REQUIREMENTS.get(retailer, RETAILER_SALSIFY_REQUIREMENTS["default"]))
+
+
+def get_retailer_salsify_feature_fields(retailer_name):
+    max_features = int(get_retailer_salsify_requirements(retailer_name).get("max_features", 5) or 5)
+    max_features = max(0, min(max_features, 10))
+    return [f"feature{i}" for i in range(1, max_features + 1)]
+
+
+def classify_cvs_generic_asset_name(value):
+    name = normalize_salsify_asset_name(value or "")
+    if any(token in name for token in [
+        "atf i/o generic",
+        "atf i o generic",
+        "atf io generic",
+        "atf i/o-generic",
+        "atf io-generic",
+    ]):
+        return "io_generic"
+    if any(token in name for token in [
+        "atf 6 generic",
+        "atf 6-generic",
+        "atf6 generic",
+        "atf6-generic",
+    ]):
+        return "atf6_generic"
+    return ""
+
+
+def apply_retailer_salsify_copy_limits(retailer_name, text_bundle):
+    out = dict(text_bundle or {})
+    limits = get_retailer_salsify_requirements(retailer_name)
+    max_features = int(limits.get("max_features", 5) or 5)
+    max_features = max(0, min(max_features, 10))
+
+    gathered = []
+    for value in out.get("features", []) or []:
+        clean_value = normalize_space(value)
+        if clean_value:
+            gathered.append(clean_value)
+    for i in range(1, 11):
+        clean_value = normalize_space(out.get(f"feature{i}", ""))
+        if clean_value:
+            gathered.append(clean_value)
+
+    gathered = dedupe_preserve_order(gathered)[:max_features]
+    out["features"] = gathered
+    for i in range(1, 11):
+        out[f"feature{i}"] = gathered[i - 1] if i <= max_features and i - 1 < len(gathered) else ""
+    return out
+
+
+def apply_retailer_salsify_image_limits(retailer_name, images):
+    retailer = str(retailer_name or "").strip().lower()
+    limits = get_retailer_salsify_requirements(retailer_name)
+    max_images = int(limits.get("max_images", MAX_IMAGE_SLOTS_TO_COMPARE) or MAX_IMAGE_SLOTS_TO_COMPARE)
+    max_images = max(0, min(max_images, MAX_IMAGE_SLOTS_TO_COMPARE))
+
+    out = []
+    seen_urls = set()
+    cvs_generic_family_kept = ""
+    for img in list(images or []):
+        if not isinstance(img, dict):
+            continue
+        url = str(img.get("url", "") or "").strip()
+        if not url or url in seen_urls:
+            continue
+        if retailer == "cvs":
+            family = classify_cvs_generic_asset_name(img.get("name", ""))
+            if family in {"io_generic", "atf6_generic"}:
+                # Mutual exclusion rule for CVS generic assets:
+                # if one of these is already present, do not allow the other one too.
+                if cvs_generic_family_kept and family != cvs_generic_family_kept:
+                    continue
+                if not cvs_generic_family_kept:
+                    cvs_generic_family_kept = family
+        out.append(img)
+        seen_urls.add(url)
+        if len(out) >= max_images:
+            break
+    return out
+
 def prepare_input_df(df):
     df = df.copy()
     df.columns = [str(c).strip().lower() for c in df.columns]
@@ -6530,6 +6630,13 @@ def finalize_salsify_copy_for_retailer(retailer_name, s_text):
     out["features"] = normalize_salsify_feature_values(out.get("features", []) or generic_feature_list(), max_features=10)
     return out
 
+
+_original_finalize_salsify_copy_for_retailer = finalize_salsify_copy_for_retailer
+
+def finalize_salsify_copy_for_retailer(retailer_name, s_text):
+    out = _original_finalize_salsify_copy_for_retailer(retailer_name, s_text)
+    return apply_retailer_salsify_copy_limits(retailer_name, out)
+
 def finalize_retailer_copy(retailer_name, r_text):
     retailer = str(retailer_name or "").strip().lower()
     out = dict(r_text or {})
@@ -6958,6 +7065,13 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
         return dedupe_images_preserve_order(aligned)[:min(max_slots, 6)]
 
     return dedupe_images_preserve_order(source_images)[:max_slots]
+
+
+_original_align_salsify_images_for_retailer = align_salsify_images_for_retailer
+
+def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE, brand=""):
+    aligned = _original_align_salsify_images_for_retailer(retailer_name, s_images, max_slots=max_slots, brand=brand)
+    return apply_retailer_salsify_image_limits(retailer_name, aligned)
 
 def align_image_slots_for_comparison(s_images, r_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE, strong_threshold=80):
     """
@@ -8111,12 +8225,16 @@ if (
             r_desc = r_text.get("description") or ""
             retailer_features = r_text.get("features") or []
             retailer_norm = str(retailer_name or "").strip().lower()
-            feature_fields = ["feature1", "feature2", "feature3", "feature4", "feature5", "feature6", "feature7"] if retailer_norm == "kroger" else ["feature1", "feature2", "feature3", "feature4", "feature5"]
+            salsify_requirements = get_retailer_salsify_requirements(retailer_name)
+            feature_fields = get_retailer_salsify_feature_fields(retailer_name)
 
             title_score = keyword_score(s_title, r_title)
             desc_score = description_similarity_score(s_desc, r_desc)
 
-            max_features = max(len(feature_fields), len(retailer_features))
+            max_features = min(
+                max(len(feature_fields), len(retailer_features)),
+                int(salsify_requirements.get("max_features", len(feature_fields)) or len(feature_fields)),
+            )
             feature_scores = []
             feature_rows = []
             for i in range(max_features):
@@ -8130,13 +8248,14 @@ if (
             copy_avg_score = int((title_score + desc_score + avg_feature_score) / 3)
 
             s_images, r_images = trim_trailing_empty_image_slots(s_images, r_images)
-            max_images = min(max(len(s_images), len(r_images)), MAX_IMAGE_SLOTS_TO_COMPARE)
+            retailer_image_limit = int(salsify_requirements.get("max_images", MAX_IMAGE_SLOTS_TO_COMPARE) or MAX_IMAGE_SLOTS_TO_COMPARE)
+            max_images = min(max(len(s_images), len(r_images)), MAX_IMAGE_SLOTS_TO_COMPARE, retailer_image_limit)
             
             # Compute image score before applying row filters.
             avg_img_score, _image_position_scores = build_image_score_fields(
                 s_images,
                 r_images,
-                max_slots=MAX_IMAGE_SLOTS_TO_SCORE,
+                max_slots=min(MAX_IMAGE_SLOTS_TO_SCORE, retailer_image_limit),
             )
             
             overall_score = int((title_score + desc_score + avg_feature_score + avg_img_score) / 4)
