@@ -405,8 +405,16 @@ def image_compare_cell_html(url):
         return '<div style="width:100%;min-height:80px;display:flex;align-items:center;justify-content:center;margin:0;padding:0;color:#C62828;font-size:16px;font-weight:700;">Missing</div>'
 
     safe_url = html.escape(str(url), quote=True)
+
+    if not is_video_like_url(url):
+        return (
+            f"<div style='width:100%;margin:0;padding:0;display:flex;align-items:flex-start;justify-content:center;overflow:hidden;'>"
+            f"<img src='{safe_url}' style='display:block;width:100%;height:auto;object-fit:contain;' />"
+            f"</div>"
+        )
+
     media_id = hashlib.md5(str(url).encode("utf-8")).hexdigest()[:12]
-    modal_id = f"media_modal_{media_id}"
+    modal_id = f"video_modal_{media_id}"
     open_js = (
         f"(function(){{"
         f"var modal=document.getElementById('{modal_id}');"
@@ -428,32 +436,18 @@ def image_compare_cell_html(url):
         f"}})()"
     )
 
-    if is_video_like_url(url):
-        return (
-            f'<div style="position:relative;width:100%;margin:0;padding:0;display:flex;align-items:flex-start;justify-content:center;overflow:hidden;">'
-            f'<video id="thumb_media_{media_id}" controls playsinline preload="metadata" onplay="{open_js}" ondblclick="{open_js}" style="display:block;width:100%;height:auto;max-height:320px;object-fit:contain;background:#000;cursor:zoom-in;">'
-            f'<source src="{safe_url}" />'
-            f'</video>'
-            f'<button type="button" onclick="{open_js}" style="position:absolute;right:8px;bottom:8px;padding:4px 8px;border:0;border-radius:6px;background:rgba(0,0,0,0.72);color:#fff;font-size:12px;font-weight:700;cursor:pointer;">Expand</button>'
-            f'</div>'
-            f'<div id="{modal_id}" onclick="if(event.target===this){{{close_js}}}" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.88);z-index:999999;align-items:center;justify-content:center;padding:24px;">'
-            f'<div style="position:relative;width:min(96vw,1200px);max-height:92vh;">'
-            f'<button type="button" onclick="{close_js}" style="position:absolute;top:-14px;right:-14px;width:38px;height:38px;border:0;border-radius:19px;background:#fff;color:#111;font-size:22px;font-weight:900;cursor:pointer;z-index:2;">×</button>'
-            f'<video id="full_media_{media_id}" controls playsinline preload="metadata" style="display:block;width:100%;max-height:92vh;height:auto;object-fit:contain;background:#000;">'
-            f'<source src="{safe_url}" />'
-            f'</video>'
-            f'</div></div>'
-        )
-
     return (
         f'<div style="position:relative;width:100%;margin:0;padding:0;display:flex;align-items:flex-start;justify-content:center;overflow:hidden;">'
-        f'<img id="thumb_media_{media_id}" src="{safe_url}" onclick="{open_js}" ondblclick="{open_js}" style="display:block;width:100%;height:auto;object-fit:contain;cursor:zoom-in;" />'
-        f'<button type="button" onclick="{open_js}" style="position:absolute;right:8px;bottom:8px;padding:4px 8px;border:0;border-radius:6px;background:rgba(0,0,0,0.72);color:#fff;font-size:12px;font-weight:700;cursor:pointer;">Expand</button>'
+        f'<video id="thumb_media_{media_id}" controls playsinline preload="metadata" onplay="{open_js}" style="display:block;width:100%;height:auto;max-height:320px;object-fit:contain;background:#000;">'
+        f'<source src="{safe_url}" />'
+        f'</video>'
         f'</div>'
-        f'<div id="{modal_id}" onclick="if(event.target===this){{{close_js}}}" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.88);z-index:999999;align-items:center;justify-content:center;padding:24px;">'
-        f'<div style="position:relative;width:min(96vw,1200px);max-height:92vh;">'
-        f'<button type="button" onclick="{close_js}" style="position:absolute;top:-14px;right:-14px;width:38px;height:38px;border:0;border-radius:19px;background:#fff;color:#111;font-size:22px;font-weight:900;cursor:pointer;z-index:2;">×</button>'
-        f'<img id="full_media_{media_id}" src="{safe_url}" style="display:block;width:100%;max-height:92vh;height:auto;object-fit:contain;background:#000;" />'
+        f'<div id="{modal_id}" onclick="if(event.target===this){{{close_js}}}" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.28);z-index:999999;align-items:center;justify-content:center;padding:18px;">'
+        f'<div style="position:relative;width:min(74vw,760px);max-height:76vh;border-radius:12px;overflow:hidden;box-shadow:0 20px 56px rgba(0,0,0,0.38);background:#111;">'
+        f'<button type="button" onclick="{close_js}" style="position:absolute;top:8px;right:8px;width:30px;height:30px;border:0;border-radius:15px;background:rgba(255,255,255,0.95);color:#111;font-size:18px;font-weight:900;cursor:pointer;z-index:2;">×</button>'
+        f'<video id="full_media_{media_id}" controls playsinline preload="metadata" style="display:block;width:100%;max-height:76vh;height:auto;object-fit:contain;background:#000;">'
+        f'<source src="{safe_url}" />'
+        f'</video>'
         f'</div></div>'
     )
 
@@ -2047,6 +2041,37 @@ def _parse_salsify_page(html_text):
             sams_feature_values.extend(slot_values)
     sams_feature_values = dedupe_preserve_order(sams_feature_values)
 
+    cvs_feature_values = []
+    cvs_feature_slots = {}
+    general_feature_values = []
+    for i in range(1, 11):
+        cvs_exact_values = collect_property_values(
+            f"CVS Feature {i}",
+            f"CVS Feature{i}",
+            f"CVS Bullet {i}",
+            f"CVS Bullet{i}",
+        )
+        cvs_loose_values = collect_property_values_loose(
+            f"CVS Feature {i}",
+            f"CVS Bullet {i}",
+        )
+        cvs_slot_values = dedupe_preserve_order((cvs_exact_values or []) + (cvs_loose_values or []))
+        if cvs_slot_values:
+            cvs_feature_slots[i] = cvs_slot_values[0]
+            cvs_feature_values.extend(cvs_slot_values)
+
+        general_feature_values.extend(
+            collect_property_values(
+                f"General Feature {i}",
+                f"General Feature{i}",
+                f"General Bullet {i}",
+                f"General Bullet{i}",
+            )
+        )
+    cvs_feature_values = dedupe_preserve_order(cvs_feature_values)
+    general_feature_values = dedupe_preserve_order(general_feature_values)
+
+
     retailer_overrides = {
         "kroger": {
             "title": first_property("Kroger Product Title", "Kroger Title"),
@@ -2068,6 +2093,21 @@ def _parse_salsify_page(html_text):
             ),
             "features": sams_feature_values,
             "feature_slots": sams_feature_slots,
+        },
+        "cvs": {
+            "title": first_non_placeholder_copy_value(
+                first_property("CVS Product Title", "CVS Title", "CVS Product Name"),
+                first_property("General Product Title", "General Title", "Product Title"),
+            ),
+            "description": first_non_placeholder_copy_value(
+                first_property("CVS Description", "CVS Product Description", "CVS Long Description"),
+                first_property("General Description", "General Product Description", "Description"),
+            ),
+            "features": normalize_salsify_feature_values(
+                cvs_feature_values or general_feature_values,
+                max_features=10,
+            ),
+            "feature_slots": cvs_feature_slots,
         },
     }
 
@@ -6302,11 +6342,75 @@ def split_walgreens_description_into_features(description_text, existing_feature
     return trimmed_description, cleaned_features[:max_features]
     
 
+
+
+def is_placeholder_salsify_copy_value(value):
+    normalized = normalize_salsify_asset_name(value or "")
+    if not normalized:
+        return True
+    exact_placeholders = {
+        "general product title",
+        "general title",
+        "product title",
+        "cvs product title",
+        "cvs title",
+        "general description",
+        "product description",
+        "description",
+        "cvs description",
+        "cvs product description",
+        "feature",
+        "bullet",
+    }
+    if normalized in exact_placeholders:
+        return True
+    if re.fullmatch(r"general feature ?\d+", normalized):
+        return True
+    if re.fullmatch(r"cvs feature ?\d+", normalized):
+        return True
+    if re.fullmatch(r"feature ?\d+", normalized):
+        return True
+    if re.fullmatch(r"general bullet ?\d+", normalized):
+        return True
+    if re.fullmatch(r"cvs bullet ?\d+", normalized):
+        return True
+    if re.fullmatch(r"bullet ?\d+", normalized):
+        return True
+    return False
+
+
+def first_non_placeholder_copy_value(*values):
+    for value in values:
+        clean_value = normalize_space(value)
+        if clean_value and not is_placeholder_salsify_copy_value(clean_value):
+            return clean_value
+    for value in values:
+        clean_value = normalize_space(value)
+        if clean_value:
+            return clean_value
+    return ""
+
+
+def normalize_salsify_feature_values(values, max_features=10):
+    out = []
+    seen = set()
+    for value in values or []:
+        clean_value = normalize_space(value)
+        if not clean_value or is_placeholder_salsify_copy_value(clean_value):
+            continue
+        if clean_value not in seen:
+            seen.add(clean_value)
+            out.append(clean_value)
+        if len(out) >= max_features:
+            break
+    return out
+
 def finalize_salsify_copy_for_retailer(retailer_name, s_text):
     """
     Normalize Salsify copy for retailer-specific comparison only.
     Kroger should prefer Kroger Product Title / Kroger Description / Kroger Feature N.
     Sam's Club should prefer Sam's Club Product Title / Description / Feature N.
+    CVS should prefer CVS-specific Salsify fields first, then General fields only as fallback.
     """
     retailer = str(retailer_name or "").strip().lower()
     out = dict(s_text or {})
@@ -6322,10 +6426,10 @@ def finalize_salsify_copy_for_retailer(retailer_name, s_text):
 
     if retailer == "kroger":
         kroger_override = retailer_overrides.get("kroger", {}) or {}
-        selected_title = normalize_space(kroger_override.get("title", "") or out.get("title", ""))
-        selected_description = clean_kroger_text(kroger_override.get("description", "") or out.get("description", ""))
+        selected_title = first_non_placeholder_copy_value(kroger_override.get("title", ""), out.get("title", ""))
+        selected_description = clean_kroger_text(first_non_placeholder_copy_value(kroger_override.get("description", ""), out.get("description", "")))
         selected_features = normalize_kroger_features(
-            kroger_override.get("features", []) or generic_feature_list(),
+            normalize_salsify_feature_values(kroger_override.get("features", []) or generic_feature_list(), max_features=10),
             max_features=10,
         )
         out["title"] = selected_title
@@ -6337,8 +6441,8 @@ def finalize_salsify_copy_for_retailer(retailer_name, s_text):
 
     if retailer in {"sam's club", "sams club", "samsclub"}:
         sams_override = retailer_overrides.get("sam's club", {}) or {}
-        selected_title = clean_sams_title(sams_override.get("title", "") or out.get("title", ""))
-        selected_description = clean_sams_text(sams_override.get("description", "") or out.get("description", ""))
+        selected_title = clean_sams_title(first_non_placeholder_copy_value(sams_override.get("title", ""), out.get("title", "")))
+        selected_description = clean_sams_text(first_non_placeholder_copy_value(sams_override.get("description", ""), out.get("description", "")))
 
         override_features = sams_override.get("features", []) or []
         override_feature_slots = sams_override.get("feature_slots", {}) or {}
@@ -6346,17 +6450,47 @@ def finalize_salsify_copy_for_retailer(retailer_name, s_text):
 
         selected_features = []
         for i in range(1, 11):
-            slot_value = normalize_space(override_feature_slots.get(i, ""))
+            slot_value = first_non_placeholder_copy_value(override_feature_slots.get(i, ""))
             if slot_value:
                 selected_features.append(slot_value)
 
         if not selected_features:
             selected_features = normalize_sams_features_final(
-                override_features or generic_features,
+                normalize_salsify_feature_values(override_features or generic_features, max_features=10),
                 max_features=10,
             )
         else:
-            tail_features = normalize_sams_features_final(override_features, max_features=10)
+            tail_features = normalize_sams_features_final(
+                normalize_salsify_feature_values(override_features, max_features=10),
+                max_features=10,
+            )
+            selected_features = dedupe_preserve_order(selected_features + tail_features)[:10]
+
+        out["title"] = selected_title
+        out["description"] = selected_description
+        out["features"] = selected_features
+        for i in range(1, 8):
+            out[f"feature{i}"] = selected_features[i - 1] if i - 1 < len(selected_features) else ""
+        return out
+
+    if retailer == "cvs":
+        cvs_override = retailer_overrides.get("cvs", {}) or {}
+        selected_title = first_non_placeholder_copy_value(cvs_override.get("title", ""), out.get("title", ""))
+        selected_description = first_non_placeholder_copy_value(cvs_override.get("description", ""), out.get("description", ""))
+
+        override_features = cvs_override.get("features", []) or []
+        override_feature_slots = cvs_override.get("feature_slots", {}) or {}
+        generic_features = generic_feature_list()
+
+        selected_features = []
+        for i in range(1, 11):
+            slot_value = first_non_placeholder_copy_value(override_feature_slots.get(i, ""))
+            if slot_value:
+                selected_features.append(slot_value)
+        if not selected_features:
+            selected_features = normalize_salsify_feature_values(override_features or generic_features, max_features=10)
+        else:
+            tail_features = normalize_salsify_feature_values(override_features, max_features=10)
             selected_features = dedupe_preserve_order(selected_features + tail_features)[:10]
 
         out["title"] = selected_title
@@ -6371,6 +6505,9 @@ def finalize_salsify_copy_for_retailer(retailer_name, s_text):
         out["description"] = normalize_space(out.get("description", ""))
         return out
 
+    out["title"] = first_non_placeholder_copy_value(out.get("title", ""))
+    out["description"] = first_non_placeholder_copy_value(out.get("description", ""))
+    out["features"] = normalize_salsify_feature_values(out.get("features", []) or generic_feature_list(), max_features=10)
     return out
 
 def finalize_retailer_copy(retailer_name, r_text):
@@ -6640,6 +6777,11 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
     - If Main Variant Image-Club does not exist, shift up and use Online Optimized Image- in spot 1.
     - Only keep Online Optimized Image- in spot 3 when it is a distinct asset not already used in spot 1.
     - After those slots, continue with Shipping-, ATF I/O, ATF 2-10, then remaining assets.
+
+    CVS rules:
+    - Lock only the top 3 Salsify slots.
+    - If one of the top 3 is missing, keep the slot blank and do not shift later images up.
+    - After slot 3, continue with the remaining Salsify images in original order.
     """
     retailer = str(retailer_name or "").strip().lower()
     brand_norm = normalize_salsify_asset_name(brand or "")
@@ -6734,27 +6876,68 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
 
         return dedupe_images_preserve_order(source_images)[:max_slots]
 
-    if retailer not in {"cvs", "walgreens"}:
-        return dedupe_images_preserve_order(source_images)[:max_slots]
+    if retailer == "cvs":
+        locked = []
+        used_urls = set()
 
-    s_images = build_locked_salsify_slots(source_images, lock_top_three=True, max_slots=max_slots)
-    if retailer != "walgreens":
-        return dedupe_images_preserve_order(s_images)[:max_slots]
+        def append_locked(img, blank_name):
+            if not isinstance(img, dict):
+                locked.append(make_blank_salsify_image_slot(blank_name))
+                return
+            url = str(img.get("url", "") or "").strip()
+            if not url or url in used_urls:
+                locked.append(make_blank_salsify_image_slot(blank_name))
+                return
+            locked.append(img)
+            used_urls.add(url)
 
-    aligned = []
-    for query_group in [
-        ("online optimized image", "online image", "online", "front"),
-        ("flat back 2d", "flat back", "back 2d", "back"),
-        ("flat left 2d", "flat left", "left 2d", "left"),
-        ("atf io", "atf i/o generic", "atf i o generic", "atf io generic"),
-        ("atf 2",), ("atf 3",), ("atf 4",), ("atf 5",), ("atf 6",),
-    ]:
-        img = find_first_image(s_images, *query_group)
-        if img:
-            aligned.append(img)
-        elif query_group[0] in {"online optimized image", "flat back 2d", "flat left 2d"}:
-            aligned.append(make_blank_salsify_image_slot(query_group[0]))
-    return dedupe_images_preserve_order(aligned)[:min(max_slots, 6)]
+        slot1_img = find_first_image(
+            source_images,
+            "online optimized image", "online image", "main variant image", "main image", "hero", "primary", "front", "product image 1", "image 1",
+        )
+        slot2_img = find_first_image(
+            source_images,
+            "flat back 2d", "flat back", "back 2d", "back", "rear", "product image 2", "image 2",
+        )
+        slot3_img = find_first_image(
+            source_images,
+            "flat left 2d", "flat left", "left 2d", "left", "flat right 2d", "flat right", "right 2d", "right", "side", "product image 3", "image 3",
+        )
+
+        append_locked(slot1_img, "cvs_slot_1")
+        append_locked(slot2_img, "cvs_slot_2")
+        append_locked(slot3_img, "cvs_slot_3")
+
+        remainder = []
+        for img in source_images:
+            if not isinstance(img, dict):
+                continue
+            url = str(img.get("url", "") or "").strip()
+            if not url or url in used_urls:
+                continue
+            remainder.append(img)
+            used_urls.add(url)
+
+        return (locked + remainder)[:max_slots]
+
+    if retailer == "walgreens":
+        s_images = build_locked_salsify_slots(source_images, lock_top_three=True, max_slots=max_slots)
+        aligned = []
+        for query_group in [
+            ("online optimized image", "online image", "online", "front"),
+            ("flat back 2d", "flat back", "back 2d", "back"),
+            ("flat left 2d", "flat left", "left 2d", "left"),
+            ("atf io", "atf i/o generic", "atf i o generic", "atf io generic"),
+            ("atf 2",), ("atf 3",), ("atf 4",), ("atf 5",), ("atf 6",),
+        ]:
+            img = find_first_image(s_images, *query_group)
+            if img:
+                aligned.append(img)
+            elif query_group[0] in {"online optimized image", "flat back 2d", "flat left 2d"}:
+                aligned.append(make_blank_salsify_image_slot(query_group[0]))
+        return dedupe_images_preserve_order(aligned)[:min(max_slots, 6)]
+
+    return dedupe_images_preserve_order(source_images)[:max_slots]
 
 def align_image_slots_for_comparison(s_images, r_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE, strong_threshold=80):
     """
