@@ -1723,24 +1723,43 @@ def _parse_salsify_page(html_text):
             and any(value.endswith(ext) or f"{ext}?" in value for ext in [".jpg", ".jpeg", ".png", ".webp", ".avif"])
         )
 
-    def extract_node_value(node):
+    def extract_node_values(node):
+        values_out = []
+        seen_local = set()
+
+        def add_value(value):
+            if not isinstance(value, str):
+                return
+            clean_value = html.unescape(str(value or "")).strip()
+            if not clean_value or looks_like_image_url(clean_value):
+                return
+            if clean_value not in seen_local:
+                seen_local.add(clean_value)
+                values_out.append(clean_value)
+
+        def walk_value(value):
+            if isinstance(value, str):
+                add_value(value)
+            elif isinstance(value, dict):
+                for key in ["value", "label", "displayValue", "name", "title", "text"]:
+                    if isinstance(value.get(key), str):
+                        add_value(value.get(key))
+                for nested in value.values():
+                    if isinstance(nested, (dict, list)):
+                        walk_value(nested)
+            elif isinstance(value, list):
+                for item in value:
+                    walk_value(item)
+
         if not isinstance(node, dict):
-            return ""
-        if isinstance(node.get("value"), str):
-            return str(node.get("value") or "")
-        values = node.get("values", [])
-        if isinstance(values, list) and values:
-            first = values[0]
-            if isinstance(first, dict):
-                if isinstance(first.get("value"), str):
-                    return str(first.get("value") or "")
-                if isinstance(first.get("label"), str):
-                    return str(first.get("label") or "")
-            if isinstance(first, str):
-                return str(first or "")
-        if isinstance(node.get("label"), str):
-            return str(node.get("label") or "")
-        return ""
+            return []
+
+        for key in ["value", "label", "displayValue", "name", "title", "text"]:
+            if isinstance(node.get(key), str):
+                add_value(node.get(key))
+
+        walk_value(node.get("values", []))
+        return values_out
 
     def normalize_prop_name(value):
         value = normalize_salsify_asset_name(value)
@@ -1755,13 +1774,13 @@ def _parse_salsify_page(html_text):
         if not isinstance(prop_name, str) or not prop_name.strip():
             continue
         normalized_name = normalize_prop_name(prop_name)
-        raw_value = extract_node_value(node)
-        raw_value = html.unescape(str(raw_value or "")).strip()
-        if not raw_value or looks_like_image_url(raw_value):
+        raw_values = extract_node_values(node)
+        if not raw_values:
             continue
         property_values.setdefault(normalized_name, [])
-        if raw_value not in property_values[normalized_name]:
-            property_values[normalized_name].append(raw_value)
+        for raw_value in raw_values:
+            if raw_value not in property_values[normalized_name]:
+                property_values[normalized_name].append(raw_value)
 
     def collect_property_values(*keys):
         out = []
@@ -1775,8 +1794,27 @@ def _parse_salsify_page(html_text):
                     out.append(clean_value)
         return out
 
+    def collect_property_values_loose(*keys):
+        out = []
+        seen = set()
+        normalized_queries = [normalize_prop_name(key) for key in keys if normalize_prop_name(key)]
+        for query in normalized_queries:
+            for prop_key, values in property_values.items():
+                if not prop_key:
+                    continue
+                if query == prop_key or query in prop_key or prop_key in query:
+                    for value in values or []:
+                        clean_value = normalize_space(value)
+                        if clean_value and clean_value not in seen:
+                            seen.add(clean_value)
+                            out.append(clean_value)
+        return out
+
     def first_property(*keys):
         values = collect_property_values(*keys)
+        if values:
+            return values[0]
+        values = collect_property_values_loose(*keys)
         return values[0] if values else ""
 
     title = first_property(
@@ -1867,6 +1905,14 @@ def _parse_salsify_page(html_text):
                 f"Sams Club Bullet{i}",
             )
         )
+        sams_feature_values.extend(
+            collect_property_values_loose(
+                f"Sam's Club Feature {i}",
+                f"Sams Club Feature {i}",
+                f"Sam's Club Bullet {i}",
+                f"Sams Club Bullet {i}",
+            )
+        )
     sams_feature_values = dedupe_preserve_order(sams_feature_values)
 
     retailer_overrides = {
@@ -1876,8 +1922,18 @@ def _parse_salsify_page(html_text):
             "features": kroger_feature_values,
         },
         "sam's club": {
-            "title": first_property("Sam's Club Product Title", "Sams Club Product Title", "Sam's Club Title", "Sams Club Title"),
-            "description": first_property("Sam's Club Description", "Sams Club Description", "Sam's Club Product Description", "Sams Club Product Description"),
+            "title": first_property(
+                "Sam's Club Product Title",
+                "Sams Club Product Title",
+                "Sam's Club Title",
+                "Sams Club Title",
+            ),
+            "description": first_property(
+                "Sam's Club Description",
+                "Sams Club Description",
+                "Sam's Club Product Description",
+                "Sams Club Product Description",
+            ),
             "features": sams_feature_values,
         },
     }
@@ -6114,13 +6170,17 @@ def finalize_salsify_copy_for_retailer(retailer_name, s_text):
         sams_override = retailer_overrides.get("sam's club", {}) or {}
         selected_title = clean_sams_title(sams_override.get("title", "") or out.get("title", ""))
         selected_description = clean_sams_text(sams_override.get("description", "") or out.get("description", ""))
+
         selected_features = normalize_sams_features_final(
             sams_override.get("features", []) or generic_feature_list(),
             max_features=10,
         )
+
         out["title"] = selected_title
         out["description"] = selected_description
         out["features"] = selected_features
+
+        # Force the visible Salsify feature slots to mirror Sam's Club Feature 1-5 first.
         for i in range(1, 8):
             out[f"feature{i}"] = selected_features[i - 1] if i - 1 < len(selected_features) else ""
         return out
