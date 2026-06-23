@@ -1741,10 +1741,14 @@ def _parse_salsify_page(html_text):
             if isinstance(value, str):
                 add_value(value)
             elif isinstance(value, dict):
-                for key in ["value", "label", "displayValue", "name", "title", "text"]:
+                # Only inspect value-like fields. Do not pull generic property labels
+                # such as "Sams Club Product Title" from dict keys like name/title.
+                for key in ["value", "label", "displayValue", "text"]:
                     if isinstance(value.get(key), str):
                         add_value(value.get(key))
-                for nested in value.values():
+                for nested_key, nested in value.items():
+                    if nested_key in {"property", "name", "key", "title"}:
+                        continue
                     if isinstance(nested, (dict, list)):
                         walk_value(nested)
             elif isinstance(value, list):
@@ -1754,7 +1758,7 @@ def _parse_salsify_page(html_text):
         if not isinstance(node, dict):
             return []
 
-        for key in ["value", "label", "displayValue", "name", "title", "text"]:
+        for key in ["value", "label", "displayValue", "text"]:
             if isinstance(node.get(key), str):
                 add_value(node.get(key))
 
@@ -6171,8 +6175,10 @@ def finalize_salsify_copy_for_retailer(retailer_name, s_text):
         selected_title = clean_sams_title(sams_override.get("title", "") or out.get("title", ""))
         selected_description = clean_sams_text(sams_override.get("description", "") or out.get("description", ""))
 
+        override_features = sams_override.get("features", []) or []
+        generic_features = generic_feature_list()
         selected_features = normalize_sams_features_final(
-            sams_override.get("features", []) or generic_feature_list(),
+            override_features or generic_features,
             max_features=10,
         )
 
@@ -6180,7 +6186,7 @@ def finalize_salsify_copy_for_retailer(retailer_name, s_text):
         out["description"] = selected_description
         out["features"] = selected_features
 
-        # Force the visible Salsify feature slots to mirror Sam's Club Feature 1-5 first.
+        # Force visible Salsify feature slots to mirror Sam's Club Feature 1-5 first.
         for i in range(1, 8):
             out[f"feature{i}"] = selected_features[i - 1] if i - 1 < len(selected_features) else ""
         return out
@@ -6448,6 +6454,7 @@ def compare_images_visually(s_url, r_url):
     return score
 
 
+
 def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE, brand=""):
     """
     Build the retailer-specific Salsify comparison image list.
@@ -6456,9 +6463,11 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
     - CVS keeps locked top-three Salsify slots so later ATF / lifestyle images shift down.
     - Walgreens keeps explicit online/back/left + ATF ordering.
     - Sam's Club for Depend, Kotex, U by Kotex, Poise, and Thinx/Thix uses:
-      Online Optimized Image,
-      ATF I/O-Generic (fallback to ATF 10-Sams Club if missing),
-      then ATF 2-Sams Club through ATF 10-Sams Club.
+      Online Optimized Image- (locked slot 1),
+      Shipping- if present,
+      ATF I/O-Generic if present,
+      then ATF 2-Sams Club through ATF 10-Sams Club,
+      then any remaining images after ATF 10 in original Salsify order.
     - Other retailers keep natural Salsify image order.
     """
     retailer = str(retailer_name or "").strip().lower()
@@ -6495,11 +6504,41 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
         sams_brands = {"depend", "kotex", "u by kotex", "poise", "thinx", "thix"}
         if brand_norm in sams_brands:
             aligned = []
-            online_img = find_first_image(source_images, "online optimized image", "online image", "online", "front")
-            if online_img:
-                aligned.append(online_img)
+            used_urls = set()
 
-            io_generic = find_first_image(
+            def append_unique(img):
+                if not isinstance(img, dict):
+                    return
+                url = str(img.get("url", "") or "").strip()
+                if not url or url in used_urls:
+                    return
+                aligned.append(img)
+                used_urls.add(url)
+
+            def image_name(img):
+                return normalize_salsify_asset_name((img or {}).get("name", "")) if isinstance(img, dict) else ""
+
+            # Slot 1 locked: Online Optimized Image-. Keep blank if missing so it stays slot 1.
+            online_img = find_first_image(
+                source_images,
+                "online optimized image",
+                "online optimized image-",
+                "online image",
+                "online",
+                "front",
+            )
+            if online_img:
+                append_unique(online_img)
+            else:
+                aligned.append(make_blank_salsify_image_slot("online optimized image"))
+
+            # Slot 2 optional: Shipping-. If missing, I/O-Generic moves up naturally.
+            shipping_img = find_first_image(source_images, "shipping", "shipping-")
+            if shipping_img:
+                append_unique(shipping_img)
+
+            # Next slot: ATF I/O-Generic. If Shipping is missing, this becomes slot 2.
+            io_img = find_first_image(
                 source_images,
                 "atf i/o generic",
                 "atf i o generic",
@@ -6507,21 +6546,47 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
                 "atf i/o-generic",
                 "atf io",
             )
-            if not io_generic:
-                io_generic = find_first_image(source_images, "atf 10 sam's club", "atf 10 sams club")
-            if io_generic:
-                aligned.append(io_generic)
+            if io_img:
+                append_unique(io_img)
 
-            for slot_num in range(2, 11):
+            # ATF 2 through ATF 9 in order.
+            for slot_num in range(2, 10):
                 img = find_first_image(
                     source_images,
                     f"atf {slot_num} sam's club",
                     f"atf {slot_num} sams club",
                 )
                 if img:
-                    aligned.append(img)
+                    append_unique(img)
 
-            aligned = dedupe_images_preserve_order(aligned)
+            # ATF 10 must stay below ATF 9.
+            atf10_img = find_first_image(source_images, "atf 10 sam's club", "atf 10 sams club")
+            if atf10_img:
+                append_unique(atf10_img)
+
+            # After ATF 10, append any remaining Salsify images in original order.
+            reserved_tokens = [
+                "online optimized image",
+                "online optimized image-",
+                "online image",
+                "shipping",
+                "shipping-",
+                "atf i/o generic",
+                "atf i o generic",
+                "atf io generic",
+                "atf i/o-generic",
+                "atf io",
+            ] + [f"atf {i} sam's club" for i in range(2, 11)] + [f"atf {i} sams club" for i in range(2, 11)]
+
+            for img in source_images:
+                if not isinstance(img, dict):
+                    continue
+                name = image_name(img)
+                if any(token in name for token in reserved_tokens):
+                    if str(img.get("url", "") or "").strip() in used_urls:
+                        continue
+                append_unique(img)
+
             return aligned[:max_slots]
 
         return dedupe_images_preserve_order(source_images)[:max_slots]
@@ -6557,7 +6622,6 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
             aligned.append(make_blank_salsify_image_slot(query_group[0]))
 
     return dedupe_images_preserve_order(aligned)[:min(max_slots, 6)]
-
 
 def align_image_slots_for_comparison(s_images, r_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE, strong_threshold=80):
     """
@@ -7883,3 +7947,5 @@ if (
         st.error("🔥 CRITICAL APP ERROR")
         st.text(str(e))
         st.text(traceback.format_exc())
+
+                      
