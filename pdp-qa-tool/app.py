@@ -8059,11 +8059,30 @@ if "finalize_retailer_copy" in globals():
 
 if "get_retailer_bundle" in globals():
     _original_get_retailer_bundle = get_retailer_bundle
-    def get_retailer_bundle(retailer_name, retail_url="", target_rpc="", sku="", uploaded_html=""):
-        retailer = normalize_locked_retailer_name(retailer_name)
-        if not retailer:
-            return _locked_empty_bundle(retailer_name or "Retailer", "retailer_not_supported_locked")
-        return _original_get_retailer_bundle(retailer, retail_url=retail_url, target_rpc=target_rpc, sku=sku, uploaded_html=uploaded_html)
+    def get_retailer_bundle(*args, **kwargs):
+        """
+        Strict retailer lock wrapper that preserves the original function signature.
+        This prevents crashes when the live app passes newer kwargs such as
+        row_source_code, current_target_sku, sku, or uploaded_html.
+        """
+        if kwargs:
+            kwargs = dict(kwargs)
+            if "retailer_name" in kwargs:
+                original_retailer = kwargs.get("retailer_name", "")
+                locked_retailer = normalize_locked_retailer_name(original_retailer)
+                if not locked_retailer:
+                    return _locked_empty_bundle(original_retailer or "Retailer", "retailer_not_supported_locked")
+                kwargs["retailer_name"] = locked_retailer
+                return _original_get_retailer_bundle(**kwargs)
+        if len(args) >= 1:
+            args = list(args)
+            original_retailer = args[0]
+            locked_retailer = normalize_locked_retailer_name(original_retailer)
+            if not locked_retailer:
+                return _locked_empty_bundle(original_retailer or "Retailer", "retailer_not_supported_locked")
+            args[0] = locked_retailer
+            return _original_get_retailer_bundle(*tuple(args), **kwargs)
+        return _locked_empty_bundle("Retailer", "retailer_not_supported_locked")
 
 
 if "get_visual_row_payload" in globals():
