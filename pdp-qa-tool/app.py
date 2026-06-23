@@ -2048,14 +2048,25 @@ def _parse_salsify_page(html_text):
         cvs_exact_values = collect_property_values(
             f"CVS Feature {i}",
             f"CVS Feature{i}",
+            f"CVS Product Feature {i}",
+            f"CVS Product Feature{i}",
+            f"CVS Selling Point {i}",
+            f"CVS Selling Point{i}",
             f"CVS Bullet {i}",
             f"CVS Bullet{i}",
+            f"Retailer Feature {i} - CVS",
+            f"Retailer Bullet {i} - CVS",
         )
         cvs_loose_values = collect_property_values_loose(
             f"CVS Feature {i}",
+            f"CVS Product Feature {i}",
+            f"CVS Selling Point {i}",
             f"CVS Bullet {i}",
+            f"Retailer Feature {i} - CVS",
+            f"Retailer Bullet {i} - CVS",
         )
         cvs_slot_values = dedupe_preserve_order((cvs_exact_values or []) + (cvs_loose_values or []))
+        cvs_slot_values = [v for v in cvs_slot_values if v and not is_placeholder_salsify_copy_value(v)]
         if cvs_slot_values:
             cvs_feature_slots[i] = cvs_slot_values[0]
             cvs_feature_values.extend(cvs_slot_values)
@@ -2068,8 +2079,23 @@ def _parse_salsify_page(html_text):
                 f"General Bullet{i}",
             )
         )
-    cvs_feature_values = dedupe_preserve_order(cvs_feature_values)
-    general_feature_values = dedupe_preserve_order(general_feature_values)
+
+    if not cvs_feature_values:
+        broad_cvs_feature_values = []
+        for prop_key, values in property_values.items():
+            pk = normalize_space(prop_key).lower().replace('_', ' ')
+            if 'cvs' not in pk:
+                continue
+            if not any(token in pk for token in ['feature', 'bullet', 'selling point', 'benefit', 'highlight']):
+                continue
+            for value in values or []:
+                clean_value = normalize_space(value)
+                if clean_value and not is_placeholder_salsify_copy_value(clean_value):
+                    broad_cvs_feature_values.append(clean_value)
+        cvs_feature_values = dedupe_preserve_order(broad_cvs_feature_values)
+
+    cvs_feature_values = normalize_salsify_feature_values(dedupe_preserve_order(cvs_feature_values), max_features=10)
+    general_feature_values = normalize_salsify_feature_values(dedupe_preserve_order(general_feature_values), max_features=10)
 
 
     retailer_overrides = {
@@ -6416,11 +6442,16 @@ def finalize_salsify_copy_for_retailer(retailer_name, s_text):
     out = dict(s_text or {})
 
     def generic_feature_list():
-        return [
-            normalize_space(out.get(f"feature{i}", ""))
-            for i in range(1, 8)
-            if normalize_space(out.get(f"feature{i}", ""))
-        ]
+        candidates = []
+        for i in range(1, 11):
+            value = normalize_space(out.get(f"feature{i}", ""))
+            if value:
+                candidates.append(value)
+        for value in out.get("features", []) or []:
+            value = normalize_space(value)
+            if value:
+                candidates.append(value)
+        return dedupe_preserve_order(candidates)
 
     retailer_overrides = out.get("retailer_overrides", {}) or {}
 
@@ -6443,29 +6474,19 @@ def finalize_salsify_copy_for_retailer(retailer_name, s_text):
         sams_override = retailer_overrides.get("sam's club", {}) or {}
         selected_title = clean_sams_title(first_non_placeholder_copy_value(sams_override.get("title", ""), out.get("title", "")))
         selected_description = clean_sams_text(first_non_placeholder_copy_value(sams_override.get("description", ""), out.get("description", "")))
-
         override_features = sams_override.get("features", []) or []
         override_feature_slots = sams_override.get("feature_slots", {}) or {}
         generic_features = generic_feature_list()
-
         selected_features = []
         for i in range(1, 11):
             slot_value = first_non_placeholder_copy_value(override_feature_slots.get(i, ""))
             if slot_value:
                 selected_features.append(slot_value)
-
         if not selected_features:
-            selected_features = normalize_sams_features_final(
-                normalize_salsify_feature_values(override_features or generic_features, max_features=10),
-                max_features=10,
-            )
+            selected_features = normalize_sams_features_final(normalize_salsify_feature_values(override_features or generic_features, max_features=10), max_features=10)
         else:
-            tail_features = normalize_sams_features_final(
-                normalize_salsify_feature_values(override_features, max_features=10),
-                max_features=10,
-            )
+            tail_features = normalize_sams_features_final(normalize_salsify_feature_values(override_features, max_features=10), max_features=10)
             selected_features = dedupe_preserve_order(selected_features + tail_features)[:10]
-
         out["title"] = selected_title
         out["description"] = selected_description
         out["features"] = selected_features
@@ -6477,22 +6498,21 @@ def finalize_salsify_copy_for_retailer(retailer_name, s_text):
         cvs_override = retailer_overrides.get("cvs", {}) or {}
         selected_title = first_non_placeholder_copy_value(cvs_override.get("title", ""), out.get("title", ""))
         selected_description = first_non_placeholder_copy_value(cvs_override.get("description", ""), out.get("description", ""))
-
         override_features = cvs_override.get("features", []) or []
         override_feature_slots = cvs_override.get("feature_slots", {}) or {}
         generic_features = generic_feature_list()
-
         selected_features = []
         for i in range(1, 11):
             slot_value = first_non_placeholder_copy_value(override_feature_slots.get(i, ""))
             if slot_value:
                 selected_features.append(slot_value)
         if not selected_features:
-            selected_features = normalize_salsify_feature_values(override_features or generic_features, max_features=10)
+            selected_features = normalize_salsify_feature_values(override_features, max_features=10)
         else:
             tail_features = normalize_salsify_feature_values(override_features, max_features=10)
             selected_features = dedupe_preserve_order(selected_features + tail_features)[:10]
-
+        if not selected_features:
+            selected_features = normalize_salsify_feature_values(generic_features, max_features=10)
         out["title"] = selected_title
         out["description"] = selected_description
         out["features"] = selected_features
@@ -7047,6 +7067,19 @@ def get_visual_row_payload(
         visual_max_slots = 6
 
     s_text = finalize_salsify_copy_for_retailer(retailer_name, s_bundle["text"] or {})
+    if str(retailer_name or "").strip().lower() == "cvs":
+        raw_text = dict(s_bundle.get("text", {}) or {})
+        raw_override = (raw_text.get("retailer_overrides", {}) or {}).get("cvs", {}) or {}
+        rescue_features = []
+        rescue_features.extend(raw_override.get("features", []) or [])
+        for i in range(1, 11):
+            rescue_features.append(raw_text.get(f"feature{i}", ""))
+        rescue_features.extend(raw_text.get("features", []) or [])
+        rescue_features = normalize_salsify_feature_values(rescue_features, max_features=10)
+        if rescue_features:
+            s_text["features"] = rescue_features
+            for i in range(1, 8):
+                s_text[f"feature{i}"] = rescue_features[i - 1] if i - 1 < len(rescue_features) else ""
     s_images = align_salsify_images_for_retailer(
         retailer_name,
         s_bundle["images"],
