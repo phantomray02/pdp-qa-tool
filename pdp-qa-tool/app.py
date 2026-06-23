@@ -738,7 +738,7 @@ def build_locked_salsify_slots(s_images, lock_top_three=True, max_slots=MAX_IMAG
 # Centralized retailer-specific Salsify limits so copy/image rules are easy to update in one place.
 RETAILER_SALSIFY_REQUIREMENTS = {
     "default": {"max_features": 5, "max_images": 6},
-    "cvs": {"max_features": 5, "max_images": 6},
+    "cvs": {"max_features": 5, "max_images": 8},
     "walgreens": {"max_features": 5, "max_images": 6},
     "kroger": {"max_features": 7, "max_images": 7},
     "sam's club": {"max_features": 10, "max_images": 10},
@@ -801,30 +801,128 @@ def apply_retailer_salsify_copy_limits(retailer_name, text_bundle):
     return out
 
 
+def infer_cvs_image_slot_from_url(url):
+    url = str(url or "").strip().split("?", 1)[0]
+    if not url:
+        return None
+    name = url.rsplit("/", 1)[-1]
+    stem = re.sub(r'\.(jpg|jpeg|png|webp|avif)$', '', name, flags=re.IGNORECASE)
+    match = re.search(r'(?:[_\-])(\d{1,2})$', stem)
+    if not match:
+        match = re.search(r'\((\d{1,2})\)$', stem)
+    if match:
+        try:
+            slot_num = int(match.group(1))
+            if 1 <= slot_num <= MAX_IMAGE_SLOTS_TO_COMPARE:
+                return slot_num
+        except Exception:
+            pass
+    if re.search(r'\d', stem):
+        return 1
+    return None
+
+def reorder_cvs_salsify_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
+    imgs = [img for img in (images or []) if isinstance(img, dict)]
+    def norm_name(img):
+        return normalize_salsify_asset_name((img or {}).get("name", "")) if isinstance(img, dict) else ""
+    def find_first(*queries):
+        q_tokens = [normalize_salsify_asset_name(q) for q in queries if normalize_salsify_asset_name(q)]
+        for q in q_tokens:
+            for img in imgs:
+                name = norm_name(img)
+                if name and (q == name or q in name):
+                    return img
+        return None
+    def image_key(img):
+        return str(img.get("url", "") or "").strip() if isinstance(img, dict) else ""
+    ordered = []
+    used = set()
+    def add(img, blank_name=""):
+        if not isinstance(img, dict):
+            if blank_name:
+                ordered.append(make_blank_salsify_image_slot(blank_name))
+            return False
+        key = image_key(img)
+        if not key or key in used:
+            if blank_name:
+                ordered.append(make_blank_salsify_image_slot(blank_name))
+            return False
+        ordered.append(img)
+        used.add(key)
+        return True
+    add(find_first("online optimized image", "online image", "main variant image", "main image", "hero", "primary", "front", "product image 1", "image 1"), "cvs_slot_1")
+    add(find_first("flat back 2d", "flat back", "back 2d", "back", "rear", "product image 2", "image 2"), "cvs_slot_2")
+    add(find_first("flat left 2d", "flat left", "left 2d", "left", "flat right 2d", "flat right", "right 2d", "right", "side", "product image 3", "image 3"), "cvs_slot_3")
+    for n in range(2, 6):
+        add(find_first(f"atf {n} generic", f"atf {n}-generic", f"atf{n} generic", f"atf{n}-generic"))
+    io_img = find_first("atf i/o generic", "atf i o generic", "atf io generic", "atf i/o-generic", "atf io-generic")
+    atf6_img = find_first("atf 6 generic", "atf 6-generic", "atf6 generic", "atf6-generic")
+    add(io_img if io_img else atf6_img)
+    for img in imgs:
+        add(img)
+    return ordered[:max_slots]
+
+def reorder_cvs_retailer_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
+    urls = [str(u or "").strip() for u in (images or []) if str(u or "").strip()]
+    if not urls:
+        return []
+    slotted = {}
+    unslotted = []
+    seen = set()
+    for url in urls:
+        base = url.split("?", 1)[0].strip()
+        if not base or base in seen:
+            continue
+        seen.add(base)
+        slot_num = infer_cvs_image_slot_from_url(base)
+        if slot_num is not None and slot_num not in slotted:
+            slotted[slot_num] = base
+        else:
+            unslotted.append(base)
+    ordered = []
+    used = set()
+    def add_url(v):
+        v = str(v or "").strip()
+        if not v or v in used:
+            return False
+        ordered.append(v)
+        used.add(v)
+        return True
+    has_any_explicit_top3 = any(slot in slotted for slot in (1,2,3))
+    if has_any_explicit_top3:
+        for slot_num in (1,2,3):
+            ordered.append(slotted.get(slot_num, ""))
+            if slotted.get(slot_num):
+                used.add(slotted[slot_num])
+    else:
+        first_three = urls[:3]
+        for i in range(3):
+            value = first_three[i] if i < len(first_three) else ""
+            ordered.append(value)
+            if value:
+                used.add(value)
+        unslotted = [u for u in urls[3:] if u not in used]
+    for slot_num in sorted(k for k in slotted.keys() if k > 3):
+        add_url(slotted[slot_num])
+    for url in unslotted:
+        add_url(url)
+    return ordered[:max_slots]
+
 def apply_retailer_salsify_image_limits(retailer_name, images):
     retailer = str(retailer_name or "").strip().lower()
     limits = get_retailer_salsify_requirements(retailer_name)
     max_images = int(limits.get("max_images", MAX_IMAGE_SLOTS_TO_COMPARE) or MAX_IMAGE_SLOTS_TO_COMPARE)
     max_images = max(0, min(max_images, MAX_IMAGE_SLOTS_TO_COMPARE))
-
+    if retailer == "cvs":
+        return reorder_cvs_salsify_images_for_visual(images, max_slots=max_images)
     out = []
     seen_urls = set()
-    cvs_generic_family_kept = ""
     for img in list(images or []):
         if not isinstance(img, dict):
             continue
         url = str(img.get("url", "") or "").strip()
         if not url or url in seen_urls:
             continue
-        if retailer == "cvs":
-            family = classify_cvs_generic_asset_name(img.get("name", ""))
-            if family in {"io_generic", "atf6_generic"}:
-                # Mutual exclusion rule for CVS generic assets:
-                # if one of these is already present, do not allow the other one too.
-                if cvs_generic_family_kept and family != cvs_generic_family_kept:
-                    continue
-                if not cvs_generic_family_kept:
-                    cvs_generic_family_kept = family
         out.append(img)
         seen_urls.add(url)
         if len(out) >= max_images:
@@ -3439,7 +3537,7 @@ def extract_vendor_copy_from_nextjs(html_text, target_rpc="", retail_url=""):
 
 
 def extract_cvs_images_from_html(html_text):
-    matches = re.findall(r'/bizcontent/merchandising/productimages/high_res/[^\s"]+\.jpg\?[^\"]*', html_text or "")
+    matches = re.findall(r'/bizcontent/merchandising/productimages/high_res/[^\s\"]+\.jpg\?[^\"]*', html_text or "")
 
     best_images = {}
     order = []
@@ -3457,7 +3555,8 @@ def extract_cvs_images_from_html(html_text):
         elif size > best_images[name]["size"]:
             best_images[name] = {"url": base, "size": size}
 
-    return [best_images[name]["url"] for name in order]
+    ordered_urls = [best_images[name]["url"] for name in order]
+    return reorder_cvs_retailer_images_for_visual(ordered_urls, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE)
 
 
 def _extract_cvs_text_from_html(html_text, retail_url="", target_rpc=""):
@@ -7004,48 +7103,7 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
         return dedupe_images_preserve_order(source_images)[:max_slots]
 
     if retailer == "cvs":
-        locked = []
-        used_urls = set()
-
-        def append_locked(img, blank_name):
-            if not isinstance(img, dict):
-                locked.append(make_blank_salsify_image_slot(blank_name))
-                return
-            url = str(img.get("url", "") or "").strip()
-            if not url or url in used_urls:
-                locked.append(make_blank_salsify_image_slot(blank_name))
-                return
-            locked.append(img)
-            used_urls.add(url)
-
-        slot1_img = find_first_image(
-            source_images,
-            "online optimized image", "online image", "main variant image", "main image", "hero", "primary", "front", "product image 1", "image 1",
-        )
-        slot2_img = find_first_image(
-            source_images,
-            "flat back 2d", "flat back", "back 2d", "back", "rear", "product image 2", "image 2",
-        )
-        slot3_img = find_first_image(
-            source_images,
-            "flat left 2d", "flat left", "left 2d", "left", "flat right 2d", "flat right", "right 2d", "right", "side", "product image 3", "image 3",
-        )
-
-        append_locked(slot1_img, "cvs_slot_1")
-        append_locked(slot2_img, "cvs_slot_2")
-        append_locked(slot3_img, "cvs_slot_3")
-
-        remainder = []
-        for img in source_images:
-            if not isinstance(img, dict):
-                continue
-            url = str(img.get("url", "") or "").strip()
-            if not url or url in used_urls:
-                continue
-            remainder.append(img)
-            used_urls.add(url)
-
-        return (locked + remainder)[:max_slots]
+        return reorder_cvs_salsify_images_for_visual(source_images, max_slots=max_slots)
 
     if retailer == "walgreens":
         s_images = build_locked_salsify_slots(source_images, lock_top_three=True, max_slots=max_slots)
@@ -7198,13 +7256,16 @@ def get_visual_row_payload(
         retailer_name,
         s_bundle["images"],
         max_slots=visual_max_slots,
-        brand=row.get("brand", ""),
+        brand="",
     )
 
     r_text = finalize_retailer_copy(retailer_name, r_bundle["text"] or {})
     r_images = r_bundle["images"] or []
 
-    if str(retailer_name or "").strip().lower() == "walgreens":
+    if str(retailer_name or "").strip().lower() == "cvs":
+        cvs_max_slots = int(get_retailer_salsify_requirements(retailer_name).get("max_images", MAX_IMAGE_SLOTS_TO_COMPARE) or MAX_IMAGE_SLOTS_TO_COMPARE)
+        r_images = reorder_cvs_retailer_images_for_visual(r_images, max_slots=cvs_max_slots)
+    elif str(retailer_name or "").strip().lower() == "walgreens":
         r_images = r_images[:6]
 
     s_images, r_images = align_image_slots_for_comparison(
