@@ -8068,9 +8068,21 @@ if "get_retailer_bundle" in globals():
 
 if "get_visual_row_payload" in globals():
     _original_get_visual_row_payload = get_visual_row_payload
-    def get_visual_row_payload(row, retailer_name, retail_url, salsify_url):
-        retailer = normalize_locked_retailer_name(retailer_name)
-        return _original_get_visual_row_payload(row, retailer, retail_url, salsify_url)
+    def get_visual_row_payload(*args, **kwargs):
+        """
+        Strict retailer lock wrapper that preserves the original function signature.
+        This prevents crashes when the live app passes newer kwargs such as sku,
+        current_target_sku, or row_source_code.
+        """
+        if kwargs:
+            kwargs = dict(kwargs)
+            if "retailer_name" in kwargs:
+                kwargs["retailer_name"] = normalize_locked_retailer_name(kwargs.get("retailer_name", ""))
+        elif len(args) >= 2:
+            args = list(args)
+            args[1] = normalize_locked_retailer_name(args[1])
+            args = tuple(args)
+        return _original_get_visual_row_payload(*args, **kwargs)
 # =========================================
 # END STRICT RETAILER RULE LOCKS
 # =========================================
