@@ -399,22 +399,63 @@ def is_video_like_url(url):
     )
 
 
+
 def image_compare_cell_html(url):
-    if url:
-        safe_url = html.escape(str(url), quote=True)
-        if is_video_like_url(url):
-            return (
-                f"<div style='width:100%;margin:0;padding:0;display:flex;align-items:flex-start;justify-content:center;overflow:hidden;'>"
-                f"<video controls preload='metadata' style='display:block;width:100%;height:auto;max-height:320px;object-fit:contain;background:#000;'>"
-                f"<source src='{safe_url}' />"
-                f"</video></div>"
-            )
+    if not url:
+        return '<div style="width:100%;min-height:80px;display:flex;align-items:center;justify-content:center;margin:0;padding:0;color:#C62828;font-size:16px;font-weight:700;">Missing</div>'
+
+    safe_url = html.escape(str(url), quote=True)
+    media_id = hashlib.md5(str(url).encode("utf-8")).hexdigest()[:12]
+    modal_id = f"media_modal_{media_id}"
+    open_js = (
+        f"(function(){{"
+        f"var modal=document.getElementById('{modal_id}');"
+        f"if(modal){{modal.style.display='flex';}}"
+        f"var thumb=document.getElementById('thumb_media_{media_id}');"
+        f"var full=document.getElementById('full_media_{media_id}');"
+        f"if(full){{"
+        f"try{{if(thumb&&thumb.currentTime>=0){{full.currentTime=thumb.currentTime||0;}}}}catch(e){{}}"
+        f"try{{full.play();}}catch(e){{}}"
+        f"}}"
+        f"}})()"
+    )
+    close_js = (
+        f"(function(){{"
+        f"var modal=document.getElementById('{modal_id}');"
+        f"if(modal){{modal.style.display='none';}}"
+        f"var full=document.getElementById('full_media_{media_id}');"
+        f"if(full){{try{{full.pause();}}catch(e){{}}}}"
+        f"}})()"
+    )
+
+    if is_video_like_url(url):
         return (
-            f"<div style='width:100%;margin:0;padding:0;display:flex;align-items:flex-start;justify-content:center;overflow:hidden;'>"
-            f"<img src='{safe_url}' style='display:block;width:100%;height:auto;object-fit:contain;' />"
-            f"</div>"
+            f'<div style="position:relative;width:100%;margin:0;padding:0;display:flex;align-items:flex-start;justify-content:center;overflow:hidden;">'
+            f'<video id="thumb_media_{media_id}" controls playsinline preload="metadata" onplay="{open_js}" ondblclick="{open_js}" style="display:block;width:100%;height:auto;max-height:320px;object-fit:contain;background:#000;cursor:zoom-in;">'
+            f'<source src="{safe_url}" />'
+            f'</video>'
+            f'<button type="button" onclick="{open_js}" style="position:absolute;right:8px;bottom:8px;padding:4px 8px;border:0;border-radius:6px;background:rgba(0,0,0,0.72);color:#fff;font-size:12px;font-weight:700;cursor:pointer;">Expand</button>'
+            f'</div>'
+            f'<div id="{modal_id}" onclick="if(event.target===this){{{close_js}}}" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.88);z-index:999999;align-items:center;justify-content:center;padding:24px;">'
+            f'<div style="position:relative;width:min(96vw,1200px);max-height:92vh;">'
+            f'<button type="button" onclick="{close_js}" style="position:absolute;top:-14px;right:-14px;width:38px;height:38px;border:0;border-radius:19px;background:#fff;color:#111;font-size:22px;font-weight:900;cursor:pointer;z-index:2;">×</button>'
+            f'<video id="full_media_{media_id}" controls playsinline preload="metadata" style="display:block;width:100%;max-height:92vh;height:auto;object-fit:contain;background:#000;">'
+            f'<source src="{safe_url}" />'
+            f'</video>'
+            f'</div></div>'
         )
-    return "<div style='width:100%;min-height:80px;display:flex;align-items:center;justify-content:center;margin:0;padding:0;color:#C62828;font-size:16px;font-weight:700;'>Missing</div>"
+
+    return (
+        f'<div style="position:relative;width:100%;margin:0;padding:0;display:flex;align-items:flex-start;justify-content:center;overflow:hidden;">'
+        f'<img id="thumb_media_{media_id}" src="{safe_url}" onclick="{open_js}" ondblclick="{open_js}" style="display:block;width:100%;height:auto;object-fit:contain;cursor:zoom-in;" />'
+        f'<button type="button" onclick="{open_js}" style="position:absolute;right:8px;bottom:8px;padding:4px 8px;border:0;border-radius:6px;background:rgba(0,0,0,0.72);color:#fff;font-size:12px;font-weight:700;cursor:pointer;">Expand</button>'
+        f'</div>'
+        f'<div id="{modal_id}" onclick="if(event.target===this){{{close_js}}}" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.88);z-index:999999;align-items:center;justify-content:center;padding:24px;">'
+        f'<div style="position:relative;width:min(96vw,1200px);max-height:92vh;">'
+        f'<button type="button" onclick="{close_js}" style="position:absolute;top:-14px;right:-14px;width:38px;height:38px;border:0;border-radius:19px;background:#fff;color:#111;font-size:22px;font-weight:900;cursor:pointer;z-index:2;">×</button>'
+        f'<img id="full_media_{media_id}" src="{safe_url}" style="display:block;width:100%;max-height:92vh;height:auto;object-fit:contain;background:#000;" />'
+        f'</div></div>'
+    )
 
 def image_compare_row_html(s_url, r_url, score):
     return (
@@ -1675,6 +1716,80 @@ def render_debugger_panel(
 # =========================================
 # SALSIFY PARSERS
 # =========================================
+
+
+def _normalize_salsify_property_key(value):
+    value = normalize_salsify_asset_name(value)
+    value = value.replace(" ", "_")
+    return value.strip("_")
+
+
+def _prepend_salsify_property_value(prop_map, prop_name, prop_value):
+    normalized_name = _normalize_salsify_property_key(prop_name)
+    clean_value = normalize_space(prop_value)
+    if not normalized_name or not clean_value:
+        return
+    values = prop_map.setdefault(normalized_name, [])
+    if clean_value in values:
+        values.remove(clean_value)
+    values.insert(0, clean_value)
+
+
+def extract_salsify_visible_property_map(html_text):
+    result = {"properties": {}, "assets": {}}
+    if not html_text:
+        return result
+
+    raw_html = html.unescape(str(html_text or ""))
+    soup = BeautifulSoup(raw_html, "html.parser")
+
+    def store_asset(label, url):
+        normalized_label = normalize_salsify_asset_name(label)
+        clean_url = html.unescape(str(url or "").strip())
+        if not normalized_label or not clean_url:
+            return
+        result["assets"][normalized_label] = clean_url if is_video_like_url(clean_url) else clean_url.split("?", 1)[0]
+
+    # Standard 2-column table rows: left cell = property label, right cell = actual value.
+    for row in soup.find_all("tr"):
+        cells = row.find_all(["td", "th"])
+        if len(cells) < 2:
+            continue
+        label = normalize_space(cells[0].get_text(" ", strip=True))
+        if not label:
+            continue
+        value_cell = cells[1]
+        value_text = normalize_space(value_cell.get_text(" ", strip=True))
+        if value_text:
+            _prepend_salsify_property_value(result["properties"], label, value_text)
+        for a in value_cell.find_all("a", href=True):
+            href = html.unescape(str(a.get("href", "") or "").strip())
+            if href:
+                store_asset(label, href)
+
+    # Also support definition-list style blocks.
+    for dl in soup.find_all("dl"):
+        for dt, dd in zip(dl.find_all("dt"), dl.find_all("dd")):
+            label = normalize_space(dt.get_text(" ", strip=True))
+            value_text = normalize_space(dd.get_text(" ", strip=True))
+            if label and value_text:
+                _prepend_salsify_property_value(result["properties"], label, value_text)
+            for a in dd.find_all("a", href=True):
+                href = html.unescape(str(a.get("href", "") or "").strip())
+                if label and href:
+                    store_asset(label, href)
+
+    # Visible asset label -> href patterns.
+    visible_asset_patterns = [
+        r'>\s*(Main Variant Image-Club|Online Optimized Image-|Shipping-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)\s*<.*?href="([^"]+)"',
+        r'"property"\s*:\s*"(Main Variant Image-Club|Online Optimized Image-|Shipping-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)"[^{}]{0,1200}?"value"\s*:\s*"([^"]+)"',
+    ]
+    for pattern in visible_asset_patterns:
+        for matched_name, matched_url in re.findall(pattern, raw_html, flags=re.IGNORECASE | re.DOTALL):
+            store_asset(matched_name, matched_url)
+
+    return result
+
 def _parse_salsify_page(html_text):
     empty = {
         "text": {
@@ -1696,14 +1811,14 @@ def _parse_salsify_page(html_text):
         return empty
 
     soup = BeautifulSoup(html_text, "html.parser")
+    visible_property_map = extract_salsify_visible_property_map(html_text)
     script = soup.find("script", {"id": "__NEXT_DATA__"})
-    if not script:
-        return empty
-
-    try:
-        data = json.loads(script.string)
-    except Exception:
-        return empty
+    data = {}
+    if script:
+        try:
+            data = json.loads(script.string)
+        except Exception:
+            data = {}
 
     def iter_nodes(obj):
         if isinstance(obj, dict):
@@ -1812,6 +1927,19 @@ def _parse_salsify_page(html_text):
                             seen.add(clean_value)
                             out.append(clean_value)
         return out
+
+
+    for prop_key, prop_values in (visible_property_map.get("properties", {}) or {}).items():
+        if not prop_key or not prop_values:
+            continue
+        property_values.setdefault(prop_key, [])
+        for prop_value in reversed(list(prop_values)):
+            clean_value = normalize_space(prop_value)
+            if not clean_value:
+                continue
+            if clean_value in property_values[prop_key]:
+                property_values[prop_key].remove(clean_value)
+            property_values[prop_key].insert(0, clean_value)
 
     def first_property(*keys):
         values = collect_property_values(*keys)
@@ -1977,6 +2105,13 @@ def _parse_salsify_page(html_text):
             asset_lookup[normalized_name] = val.split("?")[0]
     except Exception:
         pass
+
+
+    for asset_name, asset_url in (visible_property_map.get("assets", {}) or {}).items():
+        clean_asset_name = normalize_salsify_asset_name(asset_name)
+        clean_asset_url = html.unescape(str(asset_url or "").strip())
+        if clean_asset_name and clean_asset_url and clean_asset_name not in asset_lookup:
+            asset_lookup[clean_asset_name] = clean_asset_url if is_video_like_url(clean_asset_url) else clean_asset_url.split("?", 1)[0]
 
     try:
         raw_html_text = html.unescape(str(html_text or ""))
@@ -6494,19 +6629,25 @@ def compare_images_visually(s_url, r_url):
     return score
 
 
+
 def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE, brand=""):
     """
     Build the retailer-specific Salsify comparison image list.
-    Sam's Club order for Depend/Kotex/U by Kotex/Poise/Thinx:
-    1 Main Variant Image-Club, 2 ATF Video-Sams Club, 3 Online Optimized Image-,
-    then Shipping-, ATF I/O, ATF 2-10, then remaining assets.
+
+    Sam's Club rules for Depend, Kotex, U by Kotex, Poise, and Thinx/Thix:
+    - Keep ATF Video-Sams Club in spot 2 whenever that asset exists.
+    - If Main Variant Image-Club exists, use it in spot 1.
+    - If Main Variant Image-Club does not exist, shift up and use Online Optimized Image- in spot 1.
+    - Only keep Online Optimized Image- in spot 3 when it is a distinct asset not already used in spot 1.
+    - After those slots, continue with Shipping-, ATF I/O, ATF 2-10, then remaining assets.
     """
     retailer = str(retailer_name or "").strip().lower()
     brand_norm = normalize_salsify_asset_name(brand or "")
     source_images = list(s_images or [])
 
     def dedupe_images_preserve_order(images):
-        out, seen = [], set()
+        out = []
+        seen = set()
         for img in images:
             if not isinstance(img, dict):
                 continue
@@ -6531,7 +6672,9 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
     if retailer in {"sam's club", "sams club", "samsclub"}:
         sams_brands = {"depend", "kotex", "u by kotex", "poise", "thinx", "thix"}
         if brand_norm in sams_brands:
-            aligned, used_urls = [], set()
+            aligned = []
+            used_urls = set()
+
             def append_unique(img):
                 if not isinstance(img, dict):
                     return False
@@ -6541,29 +6684,44 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
                 aligned.append(img)
                 used_urls.add(url)
                 return True
+
             def image_name(img):
                 return normalize_salsify_asset_name((img or {}).get("name", "")) if isinstance(img, dict) else ""
 
             mvi_img = find_first_image(source_images, "main variant image club", "main variant image-club")
             video_img = find_first_image(source_images, "atf video sams club", "atf video sam's club", "video sams club")
             ooi_img = find_first_image(source_images, "online optimized image", "online optimized image-", "online image", "online", "front")
+
+            used_ooi_in_slot1 = False
             if not append_unique(mvi_img):
-                if not append_unique(ooi_img):
+                used_ooi_in_slot1 = append_unique(ooi_img)
+                if not used_ooi_in_slot1:
                     aligned.append(make_blank_salsify_image_slot("main variant image club"))
-            if not append_unique(video_img):
-                if not append_unique(ooi_img):
-                    aligned.append(make_blank_salsify_image_slot("atf video sams club"))
-            if not append_unique(ooi_img):
-                aligned.append(make_blank_salsify_image_slot("online optimized image"))
+
+            if video_img:
+                append_unique(video_img)
+
+            if ooi_img and not used_ooi_in_slot1:
+                append_unique(ooi_img)
+
             append_unique(find_first_image(source_images, "shipping", "shipping-"))
-            append_unique(find_first_image(source_images, "atf i/o generic", "atf i o generic", "atf io generic", "atf i/o-generic", "atf io sams club", "atf i/o sams club", "atf i o sams club", "atf i/o-sams club", "atf io-sams club", "atf io"))
+            append_unique(find_first_image(
+                source_images,
+                "atf i/o generic", "atf i o generic", "atf io generic", "atf i/o-generic",
+                "atf io sams club", "atf i/o sams club", "atf i o sams club", "atf i/o-sams club", "atf io-sams club", "atf io",
+            ))
             for slot_num in range(2, 11):
                 append_unique(find_first_image(source_images, f"atf {slot_num} sam's club", f"atf {slot_num} sams club"))
+
             reserved_tokens = [
-                "main variant image club", "main variant image-club", "atf video sams club", "atf video sam's club", "video sams club",
-                "online optimized image", "online optimized image-", "online image", "shipping", "shipping-",
-                "atf i/o generic", "atf i o generic", "atf io generic", "atf i/o-generic", "atf io sams club", "atf i/o sams club", "atf i o sams club", "atf i/o-sams club", "atf io-sams club", "atf io",
+                "main variant image club", "main variant image-club",
+                "atf video sams club", "atf video sam's club", "video sams club",
+                "online optimized image", "online optimized image-", "online image",
+                "shipping", "shipping-",
+                "atf i/o generic", "atf i o generic", "atf io generic", "atf i/o-generic",
+                "atf io sams club", "atf i/o sams club", "atf i o sams club", "atf i/o-sams club", "atf io-sams club", "atf io",
             ] + [f"atf {i} sam's club" for i in range(2, 11)] + [f"atf {i} sams club" for i in range(2, 11)]
+
             for img in source_images:
                 if not isinstance(img, dict):
                     continue
@@ -6571,14 +6729,18 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
                 if any(token in name for token in reserved_tokens):
                     continue
                 append_unique(img)
+
             return aligned[:max_slots]
+
         return dedupe_images_preserve_order(source_images)[:max_slots]
 
     if retailer not in {"cvs", "walgreens"}:
         return dedupe_images_preserve_order(source_images)[:max_slots]
+
     s_images = build_locked_salsify_slots(source_images, lock_top_three=True, max_slots=max_slots)
     if retailer != "walgreens":
         return dedupe_images_preserve_order(s_images)[:max_slots]
+
     aligned = []
     for query_group in [
         ("online optimized image", "online image", "online", "front"),
@@ -7388,7 +7550,7 @@ if uploaded_file:
 # =========================================
 st.markdown("## 🔎 QA Viewer Controls")
 show_only_issues = st.checkbox("❌ Show ONLY Issues", key="show_issues")
-hide_good = st.checkbox("✅ Hide Strong Matches (80%+)", key="hide_good")
+hide_good = st.checkbox("🎉 Hide Strong Matches (80%+)", key="hide_good")
 show_below_90_only = st.checkbox("🔎 Show Only Scores Below 90%", key="show_below_90_only")
 
 
