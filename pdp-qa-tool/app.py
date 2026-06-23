@@ -2321,6 +2321,54 @@ def _parse_salsify_page(html_text):
     cvs_feature_values = normalize_salsify_feature_values(dedupe_preserve_order(cvs_feature_values), max_features=10)
     general_feature_values = normalize_salsify_feature_values(dedupe_preserve_order(general_feature_values), max_features=10)
 
+    walgreens_feature_values = []
+    walgreens_feature_slots = {}
+    for i in range(1, 11):
+        walgreens_exact_values = collect_property_values(
+            f"Walgreens Feature {i}",
+            f"Walgreens Feature{i}",
+            f"Walgreens Product Feature {i}",
+            f"Walgreens Product Feature{i}",
+            f"Walgreens Selling Point {i}",
+            f"Walgreens Selling Point{i}",
+            f"Walgreens Bullet {i}",
+            f"Walgreens Bullet{i}",
+            f"Retailer Feature {i} - Walgreens",
+            f"Retailer Bullet {i} - Walgreens",
+        )
+        walgreens_loose_values = collect_property_values_loose(
+            f"Walgreens Feature {i}",
+            f"Walgreens Product Feature {i}",
+            f"Walgreens Selling Point {i}",
+            f"Walgreens Bullet {i}",
+            f"Retailer Feature {i} - Walgreens",
+            f"Retailer Bullet {i} - Walgreens",
+        )
+        walgreens_slot_values = dedupe_preserve_order((walgreens_exact_values or []) + (walgreens_loose_values or []))
+        walgreens_slot_values = [v for v in walgreens_slot_values if v and not is_placeholder_salsify_copy_value(v)]
+        if walgreens_slot_values:
+            walgreens_feature_slots[i] = walgreens_slot_values[0]
+            walgreens_feature_values.extend(walgreens_slot_values)
+
+    if not walgreens_feature_values:
+        broad_walgreens_feature_values = []
+        for prop_key, values in property_values.items():
+            pk = normalize_space(prop_key).lower().replace('_', ' ')
+            if 'walgreens' not in pk:
+                continue
+            if not any(token in pk for token in ['feature', 'bullet', 'selling point', 'benefit', 'highlight']):
+                continue
+            for value in values or []:
+                clean_value = normalize_space(value)
+                if clean_value and not is_placeholder_salsify_copy_value(clean_value):
+                    broad_walgreens_feature_values.append(clean_value)
+        walgreens_feature_values = dedupe_preserve_order(broad_walgreens_feature_values)
+
+    walgreens_feature_values = normalize_salsify_feature_values(
+        dedupe_preserve_order(walgreens_feature_values),
+        max_features=10,
+    )
+
 
     retailer_overrides = {
         "kroger": {
@@ -2358,6 +2406,21 @@ def _parse_salsify_page(html_text):
                 max_features=10,
             ),
             "feature_slots": cvs_feature_slots,
+        },
+        "walgreens": {
+            "title": first_non_placeholder_copy_value(
+                first_property("Walgreens Product Title", "Walgreens Title", "Walgreens Product Name"),
+                first_property("General Product Title", "General Title", "Product Title"),
+            ),
+            "description": first_non_placeholder_copy_value(
+                first_property("Walgreens Description", "Walgreens Product Description", "Walgreens Long Description"),
+                first_property("General Description", "General Product Description", "Description"),
+            ),
+            "features": normalize_salsify_feature_values(
+                walgreens_feature_values or general_feature_values,
+                max_features=10,
+            ),
+            "feature_slots": walgreens_feature_slots,
         },
     }
 
@@ -6746,8 +6809,37 @@ def finalize_salsify_copy_for_retailer(retailer_name, s_text):
         return out
 
     if retailer == "walgreens":
-        out["title"] = normalize_space(out.get("title", ""))
-        out["description"] = normalize_space(out.get("description", ""))
+        walgreens_override = retailer_overrides.get("walgreens", {}) or {}
+        selected_title = clean_walgreens_title(
+            first_non_placeholder_copy_value(walgreens_override.get("title", ""), out.get("title", ""))
+        )
+        selected_description = strip_walgreens_description_tail(
+            first_non_placeholder_copy_value(walgreens_override.get("description", ""), out.get("description", ""))
+        )
+        override_features = walgreens_override.get("features", []) or []
+        override_feature_slots = walgreens_override.get("feature_slots", {}) or {}
+        generic_features = generic_feature_list()
+        selected_features = []
+        for i in range(1, 11):
+            slot_value = first_non_placeholder_copy_value(override_feature_slots.get(i, ""))
+            if slot_value:
+                selected_features.append(slot_value)
+        if not selected_features:
+            selected_features = normalize_walgreens_features_final(
+                normalize_salsify_feature_values(override_features or generic_features, max_features=10),
+                max_features=10,
+            )
+        else:
+            tail_features = normalize_walgreens_features_final(
+                normalize_salsify_feature_values(override_features, max_features=10),
+                max_features=10,
+            )
+            selected_features = dedupe_preserve_order(selected_features + tail_features)[:10]
+        out["title"] = selected_title
+        out["description"] = selected_description
+        out["features"] = selected_features
+        for i in range(1, 8):
+            out[f"feature{i}"] = selected_features[i - 1] if i - 1 < len(selected_features) else ""
         return out
 
     out["title"] = first_non_placeholder_copy_value(out.get("title", ""))
@@ -7063,6 +7155,20 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
                     return img
         return None
 
+    def find_first_retailer_preferred_image(images, retailer_token, *queries):
+        retailer_token = normalize_salsify_asset_name(retailer_token or "")
+        preferred = []
+        fallback = []
+        for img in images or []:
+            if not isinstance(img, dict):
+                continue
+            name = normalize_salsify_asset_name(img.get("name", ""))
+            if retailer_token and retailer_token in name:
+                preferred.append(img)
+            else:
+                fallback.append(img)
+        return find_first_image(preferred, *queries) or find_first_image(fallback, *queries)
+
     if retailer in {"sam's club", "sams club", "samsclub"}:
         sams_brands = {"depend", "kotex", "u by kotex", "poise", "thinx", "thix"}
         if brand_norm in sams_brands:
@@ -7132,20 +7238,24 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
         return reorder_cvs_salsify_images_for_visual(source_images, max_slots=max_slots)
 
     if retailer == "walgreens":
-        s_images = build_locked_salsify_slots(source_images, lock_top_three=True, max_slots=max_slots)
         aligned = []
-        for query_group in [
-            ("online optimized image", "online image", "online", "front"),
-            ("flat back 2d", "flat back", "back 2d", "back"),
-            ("flat left 2d", "flat left", "left 2d", "left"),
-            ("atf io", "atf i/o generic", "atf i o generic", "atf io generic"),
-            ("atf 2",), ("atf 3",), ("atf 4",), ("atf 5",), ("atf 6",),
-        ]:
-            img = find_first_image(s_images, *query_group)
+        slot_plan = [
+            (("online optimized image", "online image", "online", "front"), "online optimized image", True),
+            (("flat back 2d", "flat back", "back 2d", "back"), "flat back 2d", True),
+            (("flat left 2d", "flat left", "left 2d", "left"), "flat left 2d", True),
+            (("atf io", "atf i/o generic", "atf i o generic", "atf io generic"), "atf io", False),
+            (("atf 2",), "atf 2", False),
+            (("atf 3",), "atf 3", False),
+            (("atf 4",), "atf 4", False),
+            (("atf 5",), "atf 5", False),
+            (("atf 6",), "atf 6", False),
+        ]
+        for query_group, blank_name, keep_blank in slot_plan:
+            img = find_first_retailer_preferred_image(source_images, "walgreens", *query_group)
             if img:
                 aligned.append(img)
-            elif query_group[0] in {"online optimized image", "flat back 2d", "flat left 2d"}:
-                aligned.append(make_blank_salsify_image_slot(query_group[0]))
+            elif keep_blank:
+                aligned.append(make_blank_salsify_image_slot(blank_name))
         return dedupe_images_preserve_order(aligned)[:min(max_slots, 6)]
 
     return dedupe_images_preserve_order(source_images)[:max_slots]
