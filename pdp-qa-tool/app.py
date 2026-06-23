@@ -5384,35 +5384,127 @@ def _normalize_sams_medium_image_url(url):
     return f"{base}?odnHeight=450&odnWidth=450&odnBg=FFFFFF"
 
 
+
 def extract_sams_images_from_html(html_text):
     """
-    Pull Sam's Club image URLs directly from the source/page text and normalize
-    them to 450 x 450 medium assets.
+    Pull Sam's Club PDP carousel images in page slot order.
+
+    Rules:
+    - Prefer explicit static thumbnail slots by alt text: "thumbnail image X of ...".
+    - Skip video thumbnails: "thumbnail video image ...".
+    - Ignore customer/review/gallery/related/ad images.
+    - Normalize assets to medium 450 x 450 URLs.
+    - If no ordered thumbnail slots are found, fall back to the hero image and then
+      to raw ASR image discovery.
     """
     if not html_text:
         return []
 
-    html_text = str(html_text)
-    urls = []
+    working = str(html_text or "")
+    # Sam's captured TXT can contain doubly-escaped HTML such as &amp;amp; and &lt;img ...&gt;.
+    for _ in range(3):
+        unescaped = html.unescape(working)
+        if unescaped == working:
+            break
+        working = unescaped
 
-    raw_urls = re.findall(
-        r"https://i5\.samsclubimages\.com/asr/[^\\s\"'<>]+",
-        html_text,
-        flags=re.IGNORECASE,
-    )
+    def _base_asr_url(url):
+        url = html.unescape(str(url or "").strip())
+        m = re.search(
+            r'(https://i5\.samsclubimages\.com/asr/[^?\s"<>]+\.jpe?g)',
+            url,
+            flags=re.IGNORECASE,
+        )
+        return m.group(1) if m else ""
 
-    for raw in raw_urls:
-        clean = _normalize_sams_medium_image_url(raw)
-        if clean:
-            urls.append(clean)
+    def _normalized_medium(url):
+        base = _base_asr_url(url)
+        if not base:
+            return ""
+        return f"{base}?odnHeight=450&odnWidth=450&odnBg=FFFFFF"
 
+    def _is_unwanted_alt(alt_text):
+        alt_text = normalize_space(alt_text).lower()
+        return any(
+            token in alt_text
+            for token in [
+                'thumbnail video image',
+                'customer photos',
+                'member photos',
+                'review image',
+                'related product',
+                'sponsored',
+            ]
+        )
+
+    slot_candidates = {}
+
+    # Primary path: explicit thumbnail image alt text with a src/srcset inside the same img tag.
+    img_tag_pattern = re.compile(r'<img\b[^>]*>', flags=re.IGNORECASE | re.DOTALL)
+    for tag_match in img_tag_pattern.finditer(working):
+        tag = tag_match.group(0)
+        alt_match = re.search(r'alt="([^"]+)"', tag, flags=re.IGNORECASE | re.DOTALL)
+        if not alt_match:
+            continue
+        alt_text = html.unescape(alt_match.group(1) or '')
+        if _is_unwanted_alt(alt_text):
+            continue
+        slot_match = re.search(r'thumbnail\s+image\s+(\d+)\s+of', alt_text, flags=re.IGNORECASE)
+        if not slot_match:
+            continue
+        slot_num = int(slot_match.group(1))
+
+        # Prefer src first; if missing, use the first srcset URL.
+        src_match = re.search(r'src="([^"]+)"', tag, flags=re.IGNORECASE | re.DOTALL)
+        chosen_url = src_match.group(1) if src_match else ''
+        if not chosen_url:
+            srcset_match = re.search(r'srcset="([^"]+)"', tag, flags=re.IGNORECASE | re.DOTALL)
+            if srcset_match:
+                first_srcset = srcset_match.group(1).split(',')[0].strip().split()[0].strip()
+                chosen_url = first_srcset
+
+        normalized = _normalized_medium(chosen_url)
+        if normalized and slot_num not in slot_candidates:
+            slot_candidates[slot_num] = normalized
+
+    ordered_urls = [slot_candidates[k] for k in sorted(slot_candidates.keys()) if slot_candidates.get(k)]
+
+    # Secondary path: explicit hero image, only if thumbnail slots were not found.
+    if not ordered_urls:
+        hero_patterns = [
+            r'<img\b[^>]*data-testid="hero-image"[^>]*src="([^"]+)"',
+            r'<img\b[^>]*data-seo-id="hero-image"[^>]*src="([^"]+)"',
+            r'<img\b[^>]*alt="[^"]*Hero image 0 of[^"]*"[^>]*src="([^"]+)"',
+        ]
+        for pattern in hero_patterns:
+            hero_match = re.search(pattern, working, flags=re.IGNORECASE | re.DOTALL)
+            if hero_match:
+                normalized = _normalized_medium(hero_match.group(1))
+                if normalized:
+                    ordered_urls.append(normalized)
+                    break
+
+    # Final fallback: raw ASR URLs in source order.
+    if not ordered_urls:
+        raw_urls = re.findall(
+            r'https://i5\.samsclubimages\.com/asr/[^\s"<>]+',
+            working,
+            flags=re.IGNORECASE,
+        )
+        for raw in raw_urls:
+            normalized = _normalized_medium(raw)
+            if normalized:
+                ordered_urls.append(normalized)
+
+    # Dedupe while preserving page order.
     out = []
     seen = set()
-
-    for url in urls:
-        if url not in seen:
-            seen.add(url)
-            out.append(url)
+    for url in ordered_urls:
+        base = _base_asr_url(url)
+        if not base or base in seen:
+            continue
+        seen.add(base)
+        out.append(f"{base}?odnHeight=450&odnWidth=450&odnBg=FFFFFF")
 
     return out[:MAX_IMAGE_SLOTS_TO_COMPARE]
 
