@@ -383,39 +383,38 @@ def image_header_html(label):
     )
 
 
+
+def is_video_like_url(url):
+    url = html.unescape(str(url or "").strip())
+    if not url:
+        return False
+    lowered = url.lower().split('?', 1)[0]
+    return bool(
+        lowered.endswith('.mp4')
+        or lowered.endswith('.m3u8')
+        or lowered.endswith('.webm')
+        or '/video/' in lowered
+        or 'salsify.com/video/' in lowered
+        or 'asr-rm/' in lowered
+    )
+
+
 def image_compare_cell_html(url):
     if url:
         safe_url = html.escape(str(url), quote=True)
+        if is_video_like_url(url):
+            return (
+                f"<div style='width:100%;margin:0;padding:0;display:flex;align-items:flex-start;justify-content:center;overflow:hidden;'>"
+                f"<video controls preload='metadata' style='display:block;width:100%;height:auto;max-height:320px;object-fit:contain;background:#000;'>"
+                f"<source src='{safe_url}' />"
+                f"</video></div>"
+            )
         return (
-            f"<div style=\""
-            f"width:100%;"
-            f"margin:0;"
-            f"padding:0;"
-            f"display:flex;"
-            f"align-items:flex-start;"
-            f"justify-content:center;"
-            f"overflow:hidden;"
-            f"\">"
-            f"<img src=\"{safe_url}\" style=\"display:block; width:100%; height:auto; object-fit:contain;\" />"
+            f"<div style='width:100%;margin:0;padding:0;display:flex;align-items:flex-start;justify-content:center;overflow:hidden;'>"
+            f"<img src='{safe_url}' style='display:block;width:100%;height:auto;object-fit:contain;' />"
             f"</div>"
         )
-
-    return (
-        f"<div style=\""
-        f"width:100%;"
-        f"min-height:80px;"
-        f"display:flex;"
-        f"align-items:center;"
-        f"justify-content:center;"
-        f"margin:0;"
-        f"padding:0;"
-        f"color:#C62828;"
-        f"font-size:16px;"
-        f"font-weight:700;"
-        f"\">"
-        f"Missing"
-        f"</div>"
-    )
+    return "<div style='width:100%;min-height:80px;display:flex;align-items:center;justify-content:center;margin:0;padding:0;color:#C62828;font-size:16px;font-weight:700;'>Missing</div>"
 
 def image_compare_row_html(s_url, r_url, score):
     return (
@@ -1976,6 +1975,21 @@ def _parse_salsify_page(html_text):
             if not val:
                 continue
             asset_lookup[normalized_name] = val.split("?")[0]
+    except Exception:
+        pass
+
+    try:
+        raw_html_text = html.unescape(str(html_text or ""))
+        fallback_asset_patterns = [
+            r'>\s*(Main Variant Image-Club|Online Optimized Image-|Shipping-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)\s*<.*?href="([^"]+)"',
+            r'"property"\s*:\s*"(Main Variant Image-Club|Online Optimized Image-|Shipping-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)"[^{}]{0,800}?"value"\s*:\s*"([^"]+)"',
+        ]
+        for pattern in fallback_asset_patterns:
+            for matched_name, matched_url in re.findall(pattern, raw_html_text, flags=re.IGNORECASE | re.DOTALL):
+                normalized_name = normalize_salsify_asset_name(matched_name)
+                clean_url = html.unescape(str(matched_url or "").strip())
+                if normalized_name and clean_url and normalized_name not in asset_lookup:
+                    asset_lookup[normalized_name] = clean_url.split("?")[0] if not is_video_like_url(clean_url) else clean_url
     except Exception:
         pass
 
@@ -5446,23 +5460,16 @@ def _normalize_sams_medium_image_url(url):
 
 
 
+
 def extract_sams_images_from_html(html_text):
     """
-    Pull Sam's Club PDP carousel images in page slot order.
-
-    Rules:
-    - Prefer explicit static thumbnail slots by alt text: "thumbnail image X of ...".
-    - Skip video thumbnails: "thumbnail video image ...".
-    - Ignore customer/review/gallery/related/ad images.
-    - Normalize assets to medium 450 x 450 URLs.
-    - If no ordered thumbnail slots are found, fall back to the hero image and then
-      to raw ASR image discovery.
+    Pull Sam's Club PDP Images & Videos rail in true onsite slot order.
+    Keep image 1, video 2, the other front image 3, then the rest.
+    Prefer the actual mp4 for video slots when present in raw HTML.
     """
     if not html_text:
         return []
-
     working = str(html_text or "")
-    # Sam's captured TXT can contain doubly-escaped HTML such as &amp;amp; and &lt;img ...&gt;.
     for _ in range(3):
         unescaped = html.unescape(working)
         if unescaped == working:
@@ -5471,36 +5478,60 @@ def extract_sams_images_from_html(html_text):
 
     def _base_asr_url(url):
         url = html.unescape(str(url or "").strip())
-        m = re.search(
-            r'(https://i5\.samsclubimages\.com/asr/[^?\s"<>]+\.jpe?g)',
-            url,
-            flags=re.IGNORECASE,
-        )
+        m = re.search(r'(https://i5\.samsclubimages\.com/asr/[^?\s"<>]+\.jpe?g)', url, flags=re.IGNORECASE)
         return m.group(1) if m else ""
 
     def _normalized_medium(url):
-        base = _base_asr_url(url)
-        if not base:
+        url = html.unescape(str(url or "").strip())
+        if not url:
             return ""
-        return f"{base}?odnHeight=450&odnWidth=450&odnBg=FFFFFF"
+        if is_video_like_url(url):
+            return url
+        base = _base_asr_url(url)
+        if base:
+            return f"{base}?odnHeight=450&odnWidth=450&odnBg=FFFFFF"
+        if re.match(r'^https?://', url, flags=re.IGNORECASE) and re.search(r'\.(?:jpg|jpeg|png|webp|avif)(?:\?|$)', url, flags=re.IGNORECASE):
+            return url
+        return ""
 
     def _is_unwanted_alt(alt_text):
         alt_text = normalize_space(alt_text).lower()
-        return any(
-            token in alt_text
-            for token in [
-                'thumbnail video image',
-                'customer photos',
-                'member photos',
-                'review image',
-                'related product',
-                'sponsored',
-            ]
-        )
+        return any(token in alt_text for token in ['customer photos', 'member photos', 'review image', 'related product', 'sponsored'])
+
+    def _extract_slot_num_from_alt(alt_text):
+        alt_text = normalize_space(alt_text)
+        m = re.search(r'thumbnail\s+image\s+(\d+)\s+of', alt_text, flags=re.IGNORECASE)
+        if m:
+            return int(m.group(1)), 'image'
+        m = re.search(r'thumbnail\s+video\s+image\s+(\d+)\s+of', alt_text, flags=re.IGNORECASE)
+        if m:
+            return int(m.group(1)), 'video'
+        m = re.search(r'thumbnail\s+video\s+(\d+)\s+of', alt_text, flags=re.IGNORECASE)
+        if m:
+            return int(m.group(1)), 'video'
+        return None, ''
+
+    def _first_url_from_srcset(srcset_value):
+        srcset_value = str(srcset_value or '').strip()
+        if not srcset_value:
+            return ''
+        first = srcset_value.split(',')[0].strip()
+        if not first:
+            return ''
+        return first.split()[0].strip()
+
+    def _video_urls_from_text(text):
+        found = re.findall(r'https?://[^\s"<>]+(?:\.mp4|\.m3u8)(?:\?[^\s"<>]*)?', str(text or ''), flags=re.IGNORECASE)
+        out, seen = [], set()
+        for url in found:
+            clean = html.unescape(str(url or '').strip())
+            if clean and clean not in seen:
+                seen.add(clean)
+                out.append(clean)
+        return out
 
     slot_candidates = {}
-
-    # Primary path: explicit thumbnail image alt text with a src/srcset inside the same img tag.
+    global_video_urls = _video_urls_from_text(working)
     img_tag_pattern = re.compile(r'<img\b[^>]*>', flags=re.IGNORECASE | re.DOTALL)
     for tag_match in img_tag_pattern.finditer(working):
         tag = tag_match.group(0)
@@ -5510,27 +5541,31 @@ def extract_sams_images_from_html(html_text):
         alt_text = html.unescape(alt_match.group(1) or '')
         if _is_unwanted_alt(alt_text):
             continue
-        slot_match = re.search(r'thumbnail\s+image\s+(\d+)\s+of', alt_text, flags=re.IGNORECASE)
-        if not slot_match:
+        slot_num, slot_kind = _extract_slot_num_from_alt(alt_text)
+        if slot_num is None:
             continue
-        slot_num = int(slot_match.group(1))
-
-        # Prefer src first; if missing, use the first srcset URL.
         src_match = re.search(r'src="([^"]+)"', tag, flags=re.IGNORECASE | re.DOTALL)
         chosen_url = src_match.group(1) if src_match else ''
         if not chosen_url:
             srcset_match = re.search(r'srcset="([^"]+)"', tag, flags=re.IGNORECASE | re.DOTALL)
             if srcset_match:
-                first_srcset = srcset_match.group(1).split(',')[0].strip().split()[0].strip()
-                chosen_url = first_srcset
-
+                chosen_url = _first_url_from_srcset(srcset_match.group(1))
+        if not chosen_url:
+            data_src_match = re.search(r'data-src="([^"]+)"', tag, flags=re.IGNORECASE | re.DOTALL)
+            if data_src_match:
+                chosen_url = data_src_match.group(1)
         normalized = _normalized_medium(chosen_url)
+        if slot_kind == 'video':
+            local_window = working[max(0, tag_match.start() - 1500): min(len(working), tag_match.end() + 5000)]
+            local_videos = _video_urls_from_text(local_window)
+            if local_videos:
+                normalized = local_videos[0]
+            elif global_video_urls:
+                normalized = global_video_urls[0]
         if normalized and slot_num not in slot_candidates:
             slot_candidates[slot_num] = normalized
 
     ordered_urls = [slot_candidates[k] for k in sorted(slot_candidates.keys()) if slot_candidates.get(k)]
-
-    # Secondary path: explicit hero image, only if thumbnail slots were not found.
     if not ordered_urls:
         hero_patterns = [
             r'<img\b[^>]*data-testid="hero-image"[^>]*src="([^"]+)"',
@@ -5544,45 +5579,38 @@ def extract_sams_images_from_html(html_text):
                 if normalized:
                     ordered_urls.append(normalized)
                     break
-
-    # Final fallback: raw ASR URLs in source order.
     if not ordered_urls:
-        raw_urls = re.findall(
-            r'https://i5\.samsclubimages\.com/asr/[^\s"<>]+',
-            working,
-            flags=re.IGNORECASE,
-        )
+        raw_urls = re.findall(r'https://i5\.samsclubimages\.com/asr/[^\s"<>]+', working, flags=re.IGNORECASE)
         for raw in raw_urls:
             normalized = _normalized_medium(raw)
             if normalized:
                 ordered_urls.append(normalized)
 
-    # Dedupe while preserving page order.
-    out = []
-    seen = set()
+    out, seen = [], set()
     for url in ordered_urls:
-        base = _base_asr_url(url)
-        if not base or base in seen:
+        if is_video_like_url(url):
+            key = html.unescape(str(url or '').strip())
+            final_url = key
+        else:
+            key = _base_asr_url(url) or str(url or '').split('?', 1)[0].strip()
+            final_url = f"{_base_asr_url(url)}?odnHeight=450&odnWidth=450&odnBg=FFFFFF" if _base_asr_url(url) else str(url or '').strip()
+        if not key or key in seen:
             continue
-        seen.add(base)
-        out.append(f"{base}?odnHeight=450&odnWidth=450&odnBg=FFFFFF")
+        seen.add(key)
+        out.append(final_url)
 
-    # Extra safety: if the first Sam's image repeats again, keep only the first occurrence.
     if out:
-        first_base = _base_asr_url(out[0])
-        deduped_out = []
-        first_seen = False
+        first_key = (_base_asr_url(out[0]) or str(out[0]).split('?', 1)[0].strip())
+        deduped_out, first_seen = [], False
         for url in out:
-            current_base = _base_asr_url(url)
-            if current_base == first_base:
+            current_key = (_base_asr_url(url) or str(url).split('?', 1)[0].strip())
+            if current_key == first_key:
                 if first_seen:
                     continue
                 first_seen = True
             deduped_out.append(url)
         out = deduped_out
-
     return out[:MAX_IMAGE_SLOTS_TO_COMPARE]
-
 
 def extract_sams_text_from_html(html_text, retail_url="", target_rpc=""):
     debug = {
@@ -6412,22 +6440,26 @@ def hamming_distance(a, b):
     return bin(a ^ b).count("1")
 
 
+
 def compare_images_visually(s_url, r_url):
     global image_compare_cache
-
     if "image_compare_cache" not in globals() or not isinstance(globals().get("image_compare_cache"), dict):
         image_compare_cache = {}
-
     if not s_url or not r_url:
         return 0
-
     cache_key = (str(s_url), str(r_url))
     if cache_key in image_compare_cache:
         return image_compare_cache[cache_key]
-
+    s_is_video = is_video_like_url(s_url)
+    r_is_video = is_video_like_url(r_url)
+    if s_is_video or r_is_video:
+        score = 100 if (s_is_video and r_is_video) else 0
+        image_compare_cache[cache_key] = score
+        while len(image_compare_cache) > IMAGE_COMPARE_CACHE_MAX:
+            image_compare_cache.pop(next(iter(image_compare_cache)))
+        return score
     s_hashes = get_image_dhash(s_url)
     r_hashes = get_image_dhash(r_url)
-
     if not s_hashes or not r_hashes:
         score = 0
     else:
@@ -6438,12 +6470,10 @@ def compare_images_visually(s_url, r_url):
             if s_hash is None or r_hash is None:
                 continue
             distances.append(hamming_distance(s_hash, r_hash))
-
         if not distances:
             score = 0
         else:
             dist = min(distances)
-
             if dist <= 2:
                 score = 100
             elif dist <= 5:
@@ -6458,38 +6488,25 @@ def compare_images_visually(s_url, r_url):
                 score = 55
             else:
                 score = 30
-
     image_compare_cache[cache_key] = score
     while len(image_compare_cache) > IMAGE_COMPARE_CACHE_MAX:
         image_compare_cache.pop(next(iter(image_compare_cache)))
-
     return score
-
-
 
 
 def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE, brand=""):
     """
     Build the retailer-specific Salsify comparison image list.
-
-    Rules:
-    - CVS keeps locked top-three Salsify slots so later ATF / lifestyle images shift down.
-    - Walgreens keeps explicit online/back/left + ATF ordering.
-    - Sam's Club for Depend, Kotex, U by Kotex, Poise, and Thinx/Thix uses:
-      Main Variant Image-Club as slot 1 when present, otherwise Online Optimized Image- as slot 1,
-      then Shipping- if present,
-      then ATF I/O-Generic or ATF I/O-Sams Club if present,
-      then ATF 2-Sams Club through ATF 10-Sams Club,
-      then any remaining non-mapped images after ATF 10 in original Salsify order.
-    - Other retailers keep natural Salsify image order.
+    Sam's Club order for Depend/Kotex/U by Kotex/Poise/Thinx:
+    1 Main Variant Image-Club, 2 ATF Video-Sams Club, 3 Online Optimized Image-,
+    then Shipping-, ATF I/O, ATF 2-10, then remaining assets.
     """
     retailer = str(retailer_name or "").strip().lower()
     brand_norm = normalize_salsify_asset_name(brand or "")
     source_images = list(s_images or [])
 
     def dedupe_images_preserve_order(images):
-        out = []
-        seen = set()
+        out, seen = [], set()
         for img in images:
             if not isinstance(img, dict):
                 continue
@@ -6507,99 +6524,46 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
                 if not isinstance(img, dict):
                     continue
                 name = normalize_salsify_asset_name(img.get("name", ""))
-                if not name:
-                    continue
-                if query == name or query in name:
+                if name and (query == name or query in name):
                     return img
         return None
 
     if retailer in {"sam's club", "sams club", "samsclub"}:
         sams_brands = {"depend", "kotex", "u by kotex", "poise", "thinx", "thix"}
         if brand_norm in sams_brands:
-            aligned = []
-            used_urls = set()
-
+            aligned, used_urls = [], set()
             def append_unique(img):
                 if not isinstance(img, dict):
-                    return
+                    return False
                 url = str(img.get("url", "") or "").strip()
                 if not url or url in used_urls:
-                    return
+                    return False
                 aligned.append(img)
                 used_urls.add(url)
-
+                return True
             def image_name(img):
                 return normalize_salsify_asset_name((img or {}).get("name", "")) if isinstance(img, dict) else ""
 
-            primary_img = find_first_image(
-                source_images,
-                "main variant image club",
-                "main variant image-club",
-            )
-            if not primary_img:
-                primary_img = find_first_image(
-                    source_images,
-                    "online optimized image",
-                    "online optimized image-",
-                    "online image",
-                    "online",
-                    "front",
-                )
-            if primary_img:
-                append_unique(primary_img)
-            else:
-                aligned.append(make_blank_salsify_image_slot("main variant image club"))
-
-            shipping_img = find_first_image(source_images, "shipping", "shipping-")
-            if shipping_img:
-                append_unique(shipping_img)
-
-            io_img = find_first_image(
-                source_images,
-                "atf i/o generic",
-                "atf i o generic",
-                "atf io generic",
-                "atf i/o-generic",
-                "atf io sams club",
-                "atf i/o sams club",
-                "atf i o sams club",
-                "atf i/o-sams club",
-                "atf io-sams club",
-                "atf io",
-            )
-            if io_img:
-                append_unique(io_img)
-
+            mvi_img = find_first_image(source_images, "main variant image club", "main variant image-club")
+            video_img = find_first_image(source_images, "atf video sams club", "atf video sam's club", "video sams club")
+            ooi_img = find_first_image(source_images, "online optimized image", "online optimized image-", "online image", "online", "front")
+            if not append_unique(mvi_img):
+                if not append_unique(ooi_img):
+                    aligned.append(make_blank_salsify_image_slot("main variant image club"))
+            if not append_unique(video_img):
+                if not append_unique(ooi_img):
+                    aligned.append(make_blank_salsify_image_slot("atf video sams club"))
+            if not append_unique(ooi_img):
+                aligned.append(make_blank_salsify_image_slot("online optimized image"))
+            append_unique(find_first_image(source_images, "shipping", "shipping-"))
+            append_unique(find_first_image(source_images, "atf i/o generic", "atf i o generic", "atf io generic", "atf i/o-generic", "atf io sams club", "atf i/o sams club", "atf i o sams club", "atf i/o-sams club", "atf io-sams club", "atf io"))
             for slot_num in range(2, 11):
-                img = find_first_image(
-                    source_images,
-                    f"atf {slot_num} sam's club",
-                    f"atf {slot_num} sams club",
-                )
-                if img:
-                    append_unique(img)
-
-            # Skip mapped / reserved Sam's images from the remainder so MVI replaces OOI cleanly.
+                append_unique(find_first_image(source_images, f"atf {slot_num} sam's club", f"atf {slot_num} sams club"))
             reserved_tokens = [
-                "main variant image club",
-                "main variant image-club",
-                "online optimized image",
-                "online optimized image-",
-                "online image",
-                "shipping",
-                "shipping-",
-                "atf i/o generic",
-                "atf i o generic",
-                "atf io generic",
-                "atf i/o-generic",
-                "atf io sams club",
-                "atf i/o sams club",
-                "atf i o sams club",
-                "atf i/o-sams club",
-                "atf io-sams club",
-                "atf io",
+                "main variant image club", "main variant image-club", "atf video sams club", "atf video sam's club", "video sams club",
+                "online optimized image", "online optimized image-", "online image", "shipping", "shipping-",
+                "atf i/o generic", "atf i o generic", "atf io generic", "atf i/o-generic", "atf io sams club", "atf i/o sams club", "atf i o sams club", "atf i/o-sams club", "atf io-sams club", "atf io",
             ] + [f"atf {i} sam's club" for i in range(2, 11)] + [f"atf {i} sams club" for i in range(2, 11)]
-
             for img in source_images:
                 if not isinstance(img, dict):
                     continue
@@ -6607,41 +6571,27 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
                 if any(token in name for token in reserved_tokens):
                     continue
                 append_unique(img)
-
             return aligned[:max_slots]
-
         return dedupe_images_preserve_order(source_images)[:max_slots]
 
     if retailer not in {"cvs", "walgreens"}:
         return dedupe_images_preserve_order(source_images)[:max_slots]
-
-    s_images = build_locked_salsify_slots(
-        source_images,
-        lock_top_three=True,
-        max_slots=max_slots,
-    )
-
+    s_images = build_locked_salsify_slots(source_images, lock_top_three=True, max_slots=max_slots)
     if retailer != "walgreens":
         return dedupe_images_preserve_order(s_images)[:max_slots]
-
     aligned = []
     for query_group in [
         ("online optimized image", "online image", "online", "front"),
         ("flat back 2d", "flat back", "back 2d", "back"),
         ("flat left 2d", "flat left", "left 2d", "left"),
         ("atf io", "atf i/o generic", "atf i o generic", "atf io generic"),
-        ("atf 2",),
-        ("atf 3",),
-        ("atf 4",),
-        ("atf 5",),
-        ("atf 6",),
+        ("atf 2",), ("atf 3",), ("atf 4",), ("atf 5",), ("atf 6",),
     ]:
         img = find_first_image(s_images, *query_group)
         if img:
             aligned.append(img)
         elif query_group[0] in {"online optimized image", "flat back 2d", "flat left 2d"}:
             aligned.append(make_blank_salsify_image_slot(query_group[0]))
-
     return dedupe_images_preserve_order(aligned)[:min(max_slots, 6)]
 
 def align_image_slots_for_comparison(s_images, r_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE, strong_threshold=80):
