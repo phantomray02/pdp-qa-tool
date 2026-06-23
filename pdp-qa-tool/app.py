@@ -7785,24 +7785,6 @@ def _wg_find_salsify_image(images, *queries):
 
 
 def reorder_walgreens_salsify_images_for_visual(images, max_slots=6):
-    """
-    Walgreens Salsify visual order:
-    - Slot 1: Online Optimized Image-
-    - Slot 2: Ingredient Label Image
-    - If ATF I/O exists:
-        Slot 3: ATF I/O-Generic
-        Slot 4: ATF 2-Generic
-        Slot 5: ATF 3-Generic
-        Slot 6: ATF 4-Generic
-        Do NOT use ATF 5-Generic.
-    - If ATF I/O does NOT exist:
-        Slot 3: ATF 2-Generic
-        Slot 4: ATF 3-Generic
-        Slot 5: ATF 4-Generic
-        Slot 6: ATF 5-Generic
-
-    ATF 5-Generic should only appear when I/O is missing, and it should always be last.
-    """
     imgs = [img for img in (images or []) if isinstance(img, dict)]
     ordered = []
     used = set()
@@ -7844,9 +7826,6 @@ def reorder_walgreens_salsify_images_for_visual(images, max_slots=6):
         "atf i/o-generic",
         "atf io-generic",
     )
-    atf2_img = _wg_find_salsify_image(imgs, "atf 2 generic", "atf 2-generic", "atf2 generic", "atf2-generic")
-    atf3_img = _wg_find_salsify_image(imgs, "atf 3 generic", "atf 3-generic", "atf3 generic", "atf3-generic")
-    atf4_img = _wg_find_salsify_image(imgs, "atf 4 generic", "atf 4-generic", "atf4 generic", "atf4-generic")
     atf5_img = _wg_find_salsify_image(
         imgs,
         "atf 5 generic",
@@ -7854,27 +7833,21 @@ def reorder_walgreens_salsify_images_for_visual(images, max_slots=6):
         "atf5 generic",
         "atf5-generic",
     )
+    atf2_img = _wg_find_salsify_image(imgs, "atf 2 generic", "atf 2-generic", "atf2 generic", "atf2-generic")
+    atf3_img = _wg_find_salsify_image(imgs, "atf 3 generic", "atf 3-generic", "atf3 generic", "atf3-generic")
+    atf4_img = _wg_find_salsify_image(imgs, "atf 4 generic", "atf 4-generic", "atf4 generic", "atf4-generic")
 
     add(online_img, "walgreens_slot_1_online")
     add(ingredient_img, "walgreens_slot_2_ingredient")
+    add(io_img if io_img else atf5_img, "walgreens_slot_3_io_or_atf5")
+    add(atf2_img, "walgreens_slot_4_atf2")
+    add(atf3_img, "walgreens_slot_5_atf3")
+    add(atf4_img, "walgreens_slot_6_atf4")
 
-    if io_img is not None:
-        add(io_img, "walgreens_slot_3_io")
-        add(atf2_img, "walgreens_slot_4_atf2")
-        add(atf3_img, "walgreens_slot_5_atf3")
-        add(atf4_img, "walgreens_slot_6_atf4")
-        skip_keys = {_wg_salsify_image_key(io_img), _wg_salsify_image_key(atf5_img)}
-    else:
-        add(atf2_img, "walgreens_slot_3_atf2")
-        add(atf3_img, "walgreens_slot_4_atf3")
-        add(atf4_img, "walgreens_slot_5_atf4")
-        add(atf5_img, "walgreens_slot_6_atf5")
-        skip_keys = {_wg_salsify_image_key(atf5_img)}
-
-    skip_keys = {k for k in skip_keys if k}
+    skip_atf5_key = _wg_salsify_image_key(atf5_img) if io_img is not None else ""
     for img in imgs:
         img_key = _wg_salsify_image_key(img)
-        if img_key in skip_keys:
+        if skip_atf5_key and img_key == skip_atf5_key:
             continue
         add(img)
 
@@ -7959,150 +7932,6 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
     if retailer == "walgreens":
         return reorder_walgreens_salsify_images_for_visual(s_images, max_slots=min(max_slots, 6))
     return _original_align_salsify_images_for_retailer(retailer_name, s_images, max_slots=max_slots, brand=brand)
-
-
-
-
-# =========================================
-# STRICT RETAILER RULE LOCKS
-# =========================================
-STRICT_RETAILER_RULE_LOCKS = True
-
-_LOCKED_RETAILER_NAME_MAP = {
-    "cvs": "cvs",
-    "walgreens": "walgreens",
-    "walgreen": "walgreens",
-    "kroger": "kroger",
-    "sam's club": "sam's club",
-    "sams club": "sam's club",
-    "samsclub": "sam's club",
-    "sam s club": "sam's club",
-}
-
-
-def normalize_locked_retailer_name(retailer_name):
-    value = normalize_space(retailer_name)
-    if not value:
-        return ""
-    lowered = html.unescape(str(value)).strip().lower()
-    lowered = lowered.replace("’", "'")
-    lowered = re.sub(r"\s+", " ", lowered)
-    return _LOCKED_RETAILER_NAME_MAP.get(lowered, lowered)
-
-
-def _locked_prune_retailer_overrides(payload, retailer_name):
-    out = dict(payload or {})
-    overrides = dict(out.get("retailer_overrides", {}) or {})
-    retailer = normalize_locked_retailer_name(retailer_name)
-    if not overrides or not retailer:
-        return out
-
-    kept = {}
-    for key, value in overrides.items():
-        if normalize_locked_retailer_name(key) == retailer:
-            kept[key] = value
-    out["retailer_overrides"] = kept
-    return out
-
-
-def _locked_empty_bundle(retailer_name, reason="retailer_locked"):
-    if "build_empty_retailer_bundle" in globals():
-        try:
-            return build_empty_retailer_bundle(retailer_name or "Retailer", reason)
-        except Exception:
-            pass
-    return {"text": {"debug": {"Source Used": reason}}, "images": []}
-
-
-if "get_retailer_salsify_requirements" in globals():
-    _strict_lock_original_get_retailer_salsify_requirements = get_retailer_salsify_requirements
-    def get_retailer_salsify_requirements(retailer_name):
-        retailer = normalize_locked_retailer_name(retailer_name)
-        if not retailer:
-            return {}
-        return dict(_strict_lock_original_get_retailer_salsify_requirements(retailer) or {})
-
-
-if "apply_retailer_salsify_copy_limits" in globals():
-    _strict_lock_original_apply_retailer_salsify_copy_limits = apply_retailer_salsify_copy_limits
-    def apply_retailer_salsify_copy_limits(retailer_name, s_text):
-        retailer = normalize_locked_retailer_name(retailer_name)
-        return _strict_lock_original_apply_retailer_salsify_copy_limits(retailer, _locked_prune_retailer_overrides(s_text, retailer))
-
-
-if "apply_retailer_salsify_image_limits" in globals():
-    _strict_lock_original_apply_retailer_salsify_image_limits = apply_retailer_salsify_image_limits
-    def apply_retailer_salsify_image_limits(retailer_name, images):
-        retailer = normalize_locked_retailer_name(retailer_name)
-        return _strict_lock_original_apply_retailer_salsify_image_limits(retailer, images)
-
-
-if "finalize_salsify_copy_for_retailer" in globals():
-    _strict_lock_original_finalize_salsify_copy_for_retailer = finalize_salsify_copy_for_retailer
-    def finalize_salsify_copy_for_retailer(retailer_name, s_text):
-        retailer = normalize_locked_retailer_name(retailer_name)
-        return _strict_lock_original_finalize_salsify_copy_for_retailer(retailer, _locked_prune_retailer_overrides(s_text, retailer))
-
-
-if "align_salsify_images_for_retailer" in globals():
-    _strict_lock_original_align_salsify_images_for_retailer = align_salsify_images_for_retailer
-    def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE, brand=""):
-        retailer = normalize_locked_retailer_name(retailer_name)
-        return _strict_lock_original_align_salsify_images_for_retailer(retailer, s_images, max_slots=max_slots, brand=brand)
-
-
-if "finalize_retailer_copy" in globals():
-    _strict_lock_original_finalize_retailer_copy = finalize_retailer_copy
-    def finalize_retailer_copy(retailer_name, text_dict):
-        retailer = normalize_locked_retailer_name(retailer_name)
-        return _strict_lock_original_finalize_retailer_copy(retailer, text_dict)
-
-
-if "get_retailer_bundle" in globals():
-    _strict_lock_original_get_retailer_bundle = get_retailer_bundle
-    def get_retailer_bundle(*args, **kwargs):
-        """
-        Preserve the live function signature so future kwargs do not break the lock layer.
-        """
-        if kwargs:
-            kwargs = dict(kwargs)
-            if "retailer_name" in kwargs:
-                original_retailer = kwargs.get("retailer_name", "")
-                locked_retailer = normalize_locked_retailer_name(original_retailer)
-                if not locked_retailer:
-                    return _locked_empty_bundle(original_retailer or "Retailer", "retailer_not_supported_locked")
-                kwargs["retailer_name"] = locked_retailer
-                return _strict_lock_original_get_retailer_bundle(**kwargs)
-        if len(args) >= 1:
-            args = list(args)
-            original_retailer = args[0]
-            locked_retailer = normalize_locked_retailer_name(original_retailer)
-            if not locked_retailer:
-                return _locked_empty_bundle(original_retailer or "Retailer", "retailer_not_supported_locked")
-            args[0] = locked_retailer
-            return _strict_lock_original_get_retailer_bundle(*tuple(args), **kwargs)
-        return _locked_empty_bundle("Retailer", "retailer_not_supported_locked")
-
-
-if "get_visual_row_payload" in globals():
-    _strict_lock_original_get_visual_row_payload = get_visual_row_payload
-    def get_visual_row_payload(*args, **kwargs):
-        """
-        Preserve the live function signature so future kwargs do not break the lock layer.
-        Normalize retailer_name whether it arrives positionally or by keyword.
-        """
-        if len(args) >= 2:
-            args = list(args)
-            args[1] = normalize_locked_retailer_name(args[1])
-            args = tuple(args)
-        if kwargs:
-            kwargs = dict(kwargs)
-            if "retailer_name" in kwargs:
-                kwargs["retailer_name"] = normalize_locked_retailer_name(kwargs.get("retailer_name", ""))
-        return _strict_lock_original_get_visual_row_payload(*args, **kwargs)
-# =========================================
-# END STRICT RETAILER RULE LOCKS
-# =========================================
 
 
 # =========================================
