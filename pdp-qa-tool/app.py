@@ -5155,6 +5155,77 @@ def _extract_visible_sams_highlights(source_text):
     return normalize_sams_features_final(cleaned, max_features=5)
 
 
+
+
+def _extract_visible_sams_product_details(source_text):
+    if not source_text:
+        return ""
+
+    source_text = str(source_text or "")
+    start_match = re.search(r'####\s+Product details\s*\n', source_text, flags=re.IGNORECASE)
+    if not start_match:
+        return ""
+
+    remainder = source_text[start_match.end():]
+    stop_match = re.search(
+        r'(?im)^###\s+(Specifications|Member ratings\s*&\s*reviews|Related pages)\b|^Directions:|^Ingredients:|^info:|^Shop more FSA',
+        remainder,
+    )
+    block = remainder[:stop_match.start()] if stop_match else remainder
+
+    lines = []
+    for raw_line in block.splitlines():
+        line = clean_sams_text(raw_line)
+        if not line:
+            continue
+        if re.match(r'^###\s+', raw_line):
+            break
+        if line.lower() in {"product details", "about this item"}:
+            continue
+        if line.lower().startswith("view all reviews"):
+            break
+        lines.append(line)
+
+    description = normalize_space(" ".join(lines))
+    return clean_sams_text(description)
+
+
+def _extract_visible_sams_rating_and_reviews(source_text):
+    if not source_text:
+        return "", ""
+
+    source_text = str(source_text or "")
+    rating = ""
+    review_count = ""
+    rating_count = ""
+
+    rating_match = re.search(r'\b([0-9]+(?:\.[0-9]+)?)\s+out of 5\b', source_text, flags=re.IGNORECASE)
+    if not rating_match:
+        rating_match = re.search(r'\(([0-9]+(?:\.[0-9]+)?)\)\s*\|\s*\[[0-9,]+\s+ratings?\]', source_text, flags=re.IGNORECASE)
+    if rating_match:
+        rating = str(rating_match.group(1) or "").strip()
+
+    review_matchers = [
+        r'View all reviews\s*\(([0-9,]+)\)',
+        r'Showing\s+\d+\s*-\s*\d+\s+of\s+([0-9,]+)\s+reviews',
+        r'\|\s*\[([0-9,]+)\s+reviews\]',
+    ]
+    for pattern in review_matchers:
+        m_review = re.search(pattern, source_text, flags=re.IGNORECASE)
+        if m_review:
+            review_count = str(m_review.group(1) or "").replace(",", "").strip()
+            break
+
+    rating_count_match = re.search(r'\b([0-9,]+)\s+ratings?\b', source_text, flags=re.IGNORECASE)
+    if rating_count_match:
+        rating_count = str(rating_count_match.group(1) or "").replace(",", "").strip()
+
+    if not review_count and rating_count:
+        review_count = rating_count
+
+    return rating, review_count
+
+
 def extract_sams_copy_from_source(source_text, retail_url=""):
     """
     Sam's Club copy extraction priority:
@@ -5177,11 +5248,16 @@ def extract_sams_copy_from_source(source_text, retail_url=""):
     5. Visible Highlights fallback:
        ### Highlights
        - bullet
+
+    6. Visible Product details fallback:
+       #### Product details
+       paragraph copy between Product details and Specifications / Reviews.
     """
     debug = {
         "Title Path": "",
         "Description Path": "",
         "Features Path": "",
+        "Rating Path": "",
         "Source Used": "sams_raw_source",
     }
 
@@ -5190,16 +5266,14 @@ def extract_sams_copy_from_source(source_text, retail_url=""):
             "title": "",
             "description": "",
             "features": [],
+            "rating": "",
+            "review_count": "",
             "debug": debug,
         }
 
     source_text = str(source_text)
 
-    # -----------------------------------------
-    # TITLE
-    # -----------------------------------------
     title = ""
-
     name_match = re.search(
         r'"name"\s*:\s*"((?:\\.|[^"\\])*)"\s*,\s*"personalizable"',
         source_text,
@@ -5220,11 +5294,7 @@ def extract_sams_copy_from_source(source_text, retail_url=""):
         if title:
             debug["Title Path"] = "retail_url_slug_fallback"
 
-    # -----------------------------------------
-    # DESCRIPTION
-    # -----------------------------------------
     description = ""
-
     long_match = re.search(
         r'"longDescription"\s*:\s*"((?:\\.|[^"\\])*)"',
         source_text,
@@ -5234,20 +5304,17 @@ def extract_sams_copy_from_source(source_text, retail_url=""):
         long_html = _decode_sams_json_string(long_match.group(1))
         description = extract_sams_description_from_long_description_html(long_html)
         description = clean_sams_text(description)
-
         if description:
             debug["Description Path"] = "sams_longDescription_html"
+
+    if not description:
+        description = _extract_visible_sams_product_details(source_text)
+        if description:
+            debug["Description Path"] = "sams_visible_product_details_fallback"
         else:
             debug["Description Path"] = "sams_description_missing"
-    else:
-        debug["Description Path"] = "sams_description_missing"
 
-    # -----------------------------------------
-    # FEATURES
-    # -----------------------------------------
     features = []
-
-    # strict shortDescription path
     short_match = re.search(
         r'"shortDescription"\s*:\s*"((?:\\.|[^"\\])*)"',
         source_text,
@@ -5257,11 +5324,9 @@ def extract_sams_copy_from_source(source_text, retail_url=""):
         short_html = _decode_sams_json_string(short_match.group(1))
         features = extract_sams_features_from_short_description_html(short_html)
         features = normalize_sams_features_final(features, max_features=5)
-
         if features:
             debug["Features Path"] = "sams_shortDescription_html"
 
-    # relaxed shortDescription path
     if not features:
         short_match_relaxed = re.search(
             r'"shortDescription"\s*:\s*"(.*?\\u003c/ul(?:\\u003e)?)',
@@ -5272,11 +5337,9 @@ def extract_sams_copy_from_source(source_text, retail_url=""):
             short_html = _decode_sams_json_string(short_match_relaxed.group(1))
             features = extract_sams_features_from_short_description_html(short_html)
             features = normalize_sams_features_final(features, max_features=5)
-
             if features:
                 debug["Features Path"] = "sams_shortDescription_relaxed_ul"
 
-    # visible Highlights fallback
     if not features:
         features = _extract_visible_sams_highlights(source_text)
         if features:
@@ -5284,10 +5347,18 @@ def extract_sams_copy_from_source(source_text, retail_url=""):
         else:
             debug["Features Path"] = "sams_features_missing"
 
+    rating, review_count = _extract_visible_sams_rating_and_reviews(source_text)
+    if rating or review_count:
+        debug["Rating Path"] = "sams_visible_member_ratings_reviews"
+    else:
+        debug["Rating Path"] = "sams_rating_reviews_missing"
+
     return {
         "title": title,
         "description": description,
         "features": features[:5],
+        "rating": rating,
+        "review_count": review_count,
         "debug": debug,
     }
 
@@ -5351,6 +5422,7 @@ def extract_sams_text_from_html(html_text, retail_url="", target_rpc=""):
         "Title Path": "",
         "Description Path": "",
         "Features Path": "",
+        "Rating Path": "",
         "Source Used": "sams_html",
     }
 
@@ -5359,30 +5431,41 @@ def extract_sams_text_from_html(html_text, retail_url="", target_rpc=""):
             "title": "",
             "description": "",
             "features": [],
+            "rating": "",
+            "review_count": "",
             "debug": debug,
         }
 
-    if is_sams_robot_page(html_text):
-        fallback_title = build_sams_title_from_url_slug(retail_url)
+    result = extract_sams_copy_from_source(html_text, retail_url=retail_url)
+    result_debug = result.get("debug", {}) or {}
 
+    has_meaningful_content = bool(
+        clean_sams_title(result.get("title", "")) or
+        clean_sams_text(result.get("description", "")) or
+        normalize_sams_features_final(result.get("features", []), max_features=5) or
+        str(result.get("rating", "") or "").strip() or
+        str(result.get("review_count", "") or "").strip()
+    )
+
+    if is_sams_robot_page(html_text) and not has_meaningful_content:
+        fallback_title = build_sams_title_from_url_slug(retail_url)
         return {
             "title": fallback_title,
             "description": "",
             "features": [],
+            "rating": "",
+            "review_count": "",
             "debug": {
                 "Title Path": "retail_url_slug_fallback" if fallback_title else "sams_robot_page_blocked",
                 "Description Path": "sams_robot_page_blocked",
                 "Features Path": "sams_robot_page_blocked",
+                "Rating Path": "sams_robot_page_blocked",
                 "Source Used": "sams_robot_page_blocked",
             },
         }
 
-    result = extract_sams_copy_from_source(html_text, retail_url=retail_url)
-
-    result_debug = result.get("debug", {}) or {}
     result_debug["Source Used"] = "sams_html"
     result["debug"] = result_debug
-
     return result
 
 
