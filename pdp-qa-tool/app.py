@@ -832,10 +832,12 @@ def reorder_cvs_salsify_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_C
     1. Online/Main image.
     2. Flat Back_2D / back.
     3. Flat Left_2D / side.
-    4. ATF I/O-Generic if present, otherwise ATF 6-Generic.
-    5+. ATF 2-Generic through ATF 5-Generic.
+    4. ATF I/O-Generic when present.
+       - If ATF I/O-Generic is missing, ATF 2 moves up into this slot.
+    5+. Continue remaining ATF 2-5 Generic images in order.
+    Last. ATF 6-Generic is always kept last and is never used as the ATF I/O fallback.
 
-    Missing slots 1-4 stay blank so later ATF images do not shift up.
+    Missing slots 1-3 stay blank so later ATF images do not shift up.
     """
     imgs = [img for img in (images or []) if isinstance(img, dict)]
 
@@ -871,6 +873,14 @@ def reorder_cvs_salsify_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_C
         used.add(key)
         return True
 
+    def add_first_available(query_groups, blank_name=""):
+        for query_group in query_groups:
+            if add(find_first(*query_group)):
+                return True
+        if blank_name:
+            ordered.append(make_blank_salsify_image_slot(blank_name))
+        return False
+
     add(find_first(
         "online optimized image", "online image", "main variant image", "main image", "hero", "primary", "front", "product image 1", "image 1",
     ), "cvs_slot_1")
@@ -881,18 +891,29 @@ def reorder_cvs_salsify_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_C
         "flat left 2d", "flat left", "left 2d", "left", "flat right 2d", "flat right", "right 2d", "right", "side", "product image 3", "image 3",
     ), "cvs_slot_3")
 
-    io_img = find_first("atf i/o generic", "atf i o generic", "atf io generic", "atf i/o-generic", "atf io-generic")
-    atf6_img = find_first("atf 6 generic", "atf 6-generic", "atf6 generic", "atf6-generic")
-    add(io_img if io_img else atf6_img, "cvs_slot_4")
+    io_queries = (("atf i/o generic", "atf i o generic", "atf io generic", "atf i/o-generic", "atf io-generic"),)
+    atf2_queries = (("atf 2 generic", "atf 2-generic", "atf2 generic", "atf2-generic"),)
+    atf3_queries = (("atf 3 generic", "atf 3-generic", "atf3 generic", "atf3-generic"),)
+    atf4_queries = (("atf 4 generic", "atf 4-generic", "atf4 generic", "atf4-generic"),)
+    atf5_queries = (("atf 5 generic", "atf 5-generic", "atf5 generic", "atf5-generic"),)
+    atf6_queries = (("atf 6 generic", "atf 6-generic", "atf6 generic", "atf6-generic"),)
 
-    for n in range(2, 6):
-        add(find_first(f"atf {n} generic", f"atf {n}-generic", f"atf{n} generic", f"atf{n}-generic"))
+    # Slot 4: ATF I/O if present; otherwise ATF 2 moves up.
+    add_first_available(io_queries + atf2_queries)
+
+    # Continue remaining core ATF images in order. Used URLs are skipped automatically.
+    add_first_available(atf2_queries)
+    add_first_available(atf3_queries)
+    add_first_available(atf4_queries)
+    add_first_available(atf5_queries)
+
+    # ATF 6 is always last among CVS ATF assets.
+    add_first_available(atf6_queries)
 
     for img in imgs:
         add(img)
 
     return ordered[:max_slots]
-
 def reorder_cvs_retailer_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
     urls = [str(u or "").strip() for u in (images or []) if str(u or "").strip()]
     if not urls:
