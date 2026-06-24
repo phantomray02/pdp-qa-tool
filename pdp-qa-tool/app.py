@@ -3849,65 +3849,123 @@ def clean_albertsons_text(text):
     text = str(text)
     text = html.unescape(text)
     text = text.replace("\u0026", "&")
+    text = text.replace("\u003c", "<")
+    text = text.replace("\u003e", ">")
     text = text.replace("\n", " ")
     text = text.replace("\/", "/")
     text = text.replace('\"', '"')
     if "<" in text and ">" in text:
         text = BeautifulSoup(text, "html.parser").get_text(" ", strip=True)
     text = re.sub(r"\s+", " ", text).strip()
-    return text
+    return text.strip(" |:-")
+
 
 def normalize_albertsons_features(items, max_features=8):
-    cleaned = []
+    out = []
     for item in items or []:
         value = clean_albertsons_text(item)
-        if value:
-            cleaned.append(value)
-    return dedupe_preserve_order(cleaned[:max_features])
+        if not value:
+            continue
+        if value.lower() in {"details", "more", "warning", "about the producer"}:
+            continue
+        out.append(value)
+    return dedupe_preserve_order(out[:max_features])
+
+
+def _normalize_albertsons_title(value):
+    value = clean_albertsons_text(value)
+    value = re.sub(r"\s*-\s*albertsons\s*$", "", value, flags=re.IGNORECASE).strip()
+    value = re.sub(r"\s*\|\s*Albertsons\s*$", "", value, flags=re.IGNORECASE).strip()
+    return value
+
 
 def _clean_albertsons_image_url(url):
     url = html.unescape(str(url or "")).strip()
     url = url.replace("\u0026", "&")
     url = url.replace("\\u003d", "=")
     url = url.replace("\u003d", "=")
+    url = url.replace("&amp;", "&")
     while url and url[-1] in (")", chr(92), chr(34), chr(39)):
         url = url[:-1]
+    if url.startswith("//"):
+        url = "https:" + url
     if url.startswith("images.albertsons-media.com/"):
         url = "https://" + url
-    if not re.match(r"^https?://images\.albertsons-media\.com/is/image/ABS/", url, flags=re.IGNORECASE):
+    if not re.match(r'^https?://images\.albertsons-media\.com/is/image/ABS/', url, flags=re.IGNORECASE):
         return ""
     if "${product.id}" in url:
         return ""
-    bad_tokens = ["nav-albertsons-logo", "privacyoptions", "grocery-bag", "progressive_profile_web", "rewards34", "referral"]
-    if any(token in url.lower() for token in bad_tokens):
+    asset_name = url.split('/is/image/ABS/', 1)[-1].split('?', 1)[0].strip().rstrip(chr(92))
+    low_asset = asset_name.lower()
+    bad_exact = {
+        'nav-albertsons-logo',
+        'privacyoptions730x350',
+        'grocery-bag',
+        'progressive_profile_web',
+        'rewards34',
+        'referral',
+    }
+    if low_asset in bad_exact:
         return ""
-    url = re.sub(r"\$ng-ecom-pdp-tn\$", "$ng-ecom-pdp-desktop$", url, flags=re.IGNORECASE)
+    url = re.sub(r'\$ng-ecom-pdp-tn\$', '$ng-ecom-pdp-desktop$', url, flags=re.IGNORECASE)
+    url = re.sub(r'\s+', '', url)
     return url
 
+
 def _albertsons_image_family_key(url):
-    return str(url or "").split("?", 1)[0].strip().lower()
+    base = str(url or "").split("?", 1)[0].strip().rstrip(chr(92))
+    return base.lower()
+
 
 def extract_albertsons_images_from_html(html_text, target_rpc=""):
+    """
+    Albertsons-only retailer image lookup.
+    - Reads only Albertsons ABS image URLs from the HTML.
+    - Filters to the target RPC when supplied.
+    - Normalizes thumbnail params to desktop params.
+    - Preserves site order by first appearance in the HTML.
+    - Deduplicates thumbnail/desktop duplicates by image family.
+    """
     working = html.unescape(str(html_text or ""))
     target_rpc = clean_item_number(target_rpc)
-    image_urls = re.findall(r'https?://images\.albertsons-media\.com/is/image/ABS/[^\s"\']+', working, flags=re.IGNORECASE)
-    image_urls += ["https://" + x for x in re.findall(r'images\.albertsons-media\.com/is/image/ABS/[^\s"\']+', working, flags=re.IGNORECASE)]
 
-    family_order = []
-    best_by_family = {}
-    for raw_url in image_urls:
+    url_pattern = r"https?://images\.albertsons-media\.com/is/image/ABS/[^\s\">]+|//images\.albertsons-media\.com/is/image/ABS/[^\s\">]+"
+    raw_urls = re.findall(url_pattern, working, flags=re.IGNORECASE)
+
+    ordered_candidates = []
+    seen_candidate = set()
+    for raw_url in raw_urls:
         clean_url = _clean_albertsons_image_url(raw_url)
         if not clean_url:
             continue
-        if target_rpc and f"/ABS/{target_rpc}" not in clean_url:
-            continue
+        if target_rpc:
+            path = clean_url.split('/is/image/ABS/', 1)[-1]
+            if not (
+                path.startswith(f'{target_rpc}-')
+                or path.startswith(f'{target_rpc}?')
+                or f'/ABS/{target_rpc}-' in clean_url
+                or f'/ABS/{target_rpc}?' in clean_url
+            ):
+                continue
+        if clean_url not in seen_candidate:
+            seen_candidate.add(clean_url)
+            ordered_candidates.append(clean_url)
+
+    if not ordered_candidates:
+        for raw_url in raw_urls:
+            clean_url = _clean_albertsons_image_url(raw_url)
+            if clean_url and clean_url not in seen_candidate:
+                seen_candidate.add(clean_url)
+                ordered_candidates.append(clean_url)
+
+    family_order = []
+    best_by_family = {}
+    for clean_url in ordered_candidates:
         family_key = _albertsons_image_family_key(clean_url)
         if family_key not in family_order:
             family_order.append(family_key)
         current = best_by_family.get(family_key, "")
-        current_is_desktop = "$ng-ecom-pdp-desktop$" in current
-        candidate_is_desktop = "$ng-ecom-pdp-desktop$" in clean_url
-        if not current or (candidate_is_desktop and not current_is_desktop):
+        if (not current) or ('$ng-ecom-pdp-desktop$' in clean_url and '$ng-ecom-pdp-desktop$' not in current):
             best_by_family[family_key] = clean_url
 
     ordered = []
@@ -3919,12 +3977,26 @@ def extract_albertsons_images_from_html(html_text, target_rpc=""):
 
 
 def extract_albertsons_text_from_html(html_text, retail_url="", target_rpc=""):
+    """
+    Albertsons-only retailer copy parser.
+    Title:
+      1. og:title.
+      2. html <title>.
+      3. product image alt/title patterns like '<title> - Image 1'.
+      4. never generic page h1 prompts like 'Shopped with us before?'.
+    Description/features:
+      1. Primary source is #detailsAccordionContent .content-detail__marketing.
+      2. Description comes from the first real marketing div.pt-4 paragraph.
+      3. Features come from ul.pt-4.mb-0 > li in that same block.
+      4. Fallback to markdown/plain-text capture between ### details and ### more.
+    """
     debug = {
         "Title Path": "",
         "Description Path": "",
         "Features Path": "",
         "Source Used": "albertsons_live_html",
         "Retailer": "Albertsons",
+        "Image Path": "albertsons_abs_image_lookup",
     }
     if not html_text:
         return {"title": "", "description": "", "features": [], "rating": "", "review_count": "", "debug": debug}
@@ -3933,70 +4005,70 @@ def extract_albertsons_text_from_html(html_text, retail_url="", target_rpc=""):
     soup = BeautifulSoup(working, "html.parser")
 
     title = ""
-    generic_title_markers = {"shopped with us before?", "details", "more", "welcome back!"}
+    title_path = ""
 
-    # Prefer the markdown page title from captured raw HTML, then og:title, then html title.
-    heading_match = re.search(r'(?m)^#\s+(.+?)\s*-\s*albertsons\s*$', working, flags=re.IGNORECASE)
-    if heading_match:
-        title = normalize_space(heading_match.group(1))
-        debug["Title Path"] = "markdown_h1"
-
-    if not title:
-        og_title = soup.find("meta", attrs={"property": "og:title"})
-        if og_title and og_title.get("content"):
-            title = normalize_space(og_title.get("content", ""))
-            debug["Title Path"] = "og:title"
+    meta = soup.find("meta", attrs={"property": "og:title"})
+    if meta and meta.get("content"):
+        title = _normalize_albertsons_title(meta.get("content", ""))
+        title_path = "og:title"
 
     if not title and soup.title:
-        title = normalize_space(soup.title.get_text(" ", strip=True))
-        debug["Title Path"] = "html_title"
+        title = _normalize_albertsons_title(soup.title.get_text(" ", strip=True))
+        title_path = "html_title"
 
-    h1 = soup.find("h1")
-    if h1:
-        h1_title = normalize_space(h1.get_text(" ", strip=True))
-        if h1_title and h1_title.lower() not in generic_title_markers:
-            if not title or title.lower() in generic_title_markers:
+    if not title:
+        for m in re.finditer(r'([^\r\n]{15,200}?)\s*-\s*Image\s+[1-9][0-9]*\b', working, flags=re.IGNORECASE):
+            candidate = _normalize_albertsons_title(m.group(1))
+            if candidate and len(candidate.split()) >= 4:
+                title = candidate
+                title_path = "image_alt_title"
+                break
+
+    if not title:
+        h1 = soup.find("h1")
+        if h1:
+            h1_title = _normalize_albertsons_title(h1.get_text(" ", strip=True))
+            if h1_title and h1_title.lower() not in {"shopped with us before?", "details", "more", "welcome back!"}:
                 title = h1_title
-                debug["Title Path"] = "h1"
+                title_path = "h1"
 
-    title = re.sub(r"\s*-\s*albertsons\s*$", "", title, flags=re.IGNORECASE).strip()
+    debug["Title Path"] = title_path or "albertsons_title_missing"
 
     description = ""
     features = []
 
-    # Albertsons copy must come from product-detail-accordion > content-detail__marketing.
-    marketing = soup.select_one('#detailsAccordionContent .content-detail__marketing') or soup.select_one('.content-detail__marketing')
+    marketing = None
+    marketing_path = ""
+    selectors = [
+        '#detailsAccordionContent .content-detail__marketing',
+        '[data-testid="product-detail-accordion"] .content-detail__marketing',
+        '#detailsAccordion .content-detail__marketing',
+        '.content-detail__marketing',
+    ]
+    for selector in selectors:
+        marketing = soup.select_one(selector)
+        if marketing is not None:
+            marketing_path = selector
+            break
+
     if marketing is not None:
         for div in marketing.find_all('div', class_=lambda c: c and 'pt-4' in str(c), recursive=True):
             candidate = clean_albertsons_text(div.get_text(' ', strip=True))
             if candidate and len(candidate.split()) >= 8:
                 description = candidate
-                debug["Description Path"] = "content-detail__marketing div.pt-4"
+                debug["Description Path"] = f"{marketing_path} > div.pt-4"
                 break
-        ul = marketing.find('ul')
+
+        ul = marketing.find('ul', class_=lambda c: c and 'pt-4' in str(c)) or marketing.find('ul')
         if ul is not None:
-            features = [clean_albertsons_text(li.get_text(' ', strip=True)) for li in ul.find_all('li')]
-            features = normalize_albertsons_features(features, max_features=8)
+            features = normalize_albertsons_features(
+                [li.get_text(' ', strip=True) for li in ul.find_all('li')],
+                max_features=8,
+            )
             if features:
-                debug["Features Path"] = "content-detail__marketing ul li"
+                debug["Features Path"] = f"{marketing_path} > ul li"
 
-    if not description:
-        desc_match = re.search(
-            r'product-detail-accordion[^>]*class="text-m".*?content-detail__marketing.*?<div[^>]*class="pt-4"[^>]*>(.*?)</div>\s*<ul[^>]*class="pt-4 mb-0"',
-            working,
-            flags=re.IGNORECASE | re.DOTALL,
-        )
-        if desc_match:
-            description = clean_albertsons_text(desc_match.group(1))
-            debug["Description Path"] = "product-detail-accordion regex"
-        feature_match = re.search(r'<ul[^>]*class="pt-4 mb-0"[^>]*>(.*?)</ul>', working, flags=re.IGNORECASE | re.DOTALL)
-        if feature_match:
-            features = [clean_albertsons_text(x) for x in re.findall(r'<li[^>]*>(.*?)</li>', feature_match.group(1), flags=re.IGNORECASE | re.DOTALL)]
-            features = normalize_albertsons_features(features, max_features=8)
-            if features:
-                debug["Features Path"] = "product-detail-accordion regex"
-
-    if not description and '### details' in working.lower():
+    if not description or not features:
         lines = [normalize_space(line) for line in working.splitlines()]
         start_idx = next((idx for idx, line in enumerate(lines) if line.lower() == '### details'), -1)
         if start_idx != -1:
@@ -4013,13 +4085,13 @@ def extract_albertsons_text_from_html(html_text, retail_url="", target_rpc=""):
                     desc_parts.append(line)
             if desc_parts and not description:
                 description = clean_albertsons_text(' '.join(desc_parts))
-                debug["Description Path"] = "details text fallback"
+                debug["Description Path"] = 'markdown details block'
             if feat_parts and not features:
                 features = normalize_albertsons_features(feat_parts, max_features=8)
-                debug["Features Path"] = "details text fallback"
+                debug["Features Path"] = 'markdown details block'
 
     return {
-        "title": title,
+        "title": _normalize_albertsons_title(title),
         "description": clean_albertsons_text(description),
         "features": normalize_albertsons_features(features, max_features=8),
         "rating": "",
@@ -4027,12 +4099,16 @@ def extract_albertsons_text_from_html(html_text, retail_url="", target_rpc=""):
         "debug": debug,
     }
 
+
+@st.cache_data(show_spinner=False)
 def get_albertsons_bundle(retail_url, target_rpc=""):
     html_text = get_html(retail_url)
-    return {
+    bundle = {
         "text": extract_albertsons_text_from_html(html_text, retail_url=retail_url, target_rpc=target_rpc),
         "images": extract_albertsons_images_from_html(html_text, target_rpc=target_rpc),
     }
+    bundle.setdefault("text", {}).setdefault("debug", {})["Image Path"] = "albertsons_abs_image_lookup"
+    return bundle
 
 # =========================================
 # KROGER PARSERS
@@ -6529,6 +6605,7 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
         if retailer == "albertsons":
             bundle = {"text": extract_albertsons_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_albertsons_images_from_html(uploaded_html, target_rpc=target_rpc)}
             bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
+            bundle.setdefault("text", {}).setdefault("debug", {})["Image Path"] = "albertsons_abs_image_lookup"
             return bundle
         if retailer == "sam's club":
             bundle = {"text": extract_sams_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_sams_images_from_html(uploaded_html)}
