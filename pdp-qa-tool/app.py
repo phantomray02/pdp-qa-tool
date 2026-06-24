@@ -7259,10 +7259,13 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
     if retailer == "walgreens":
         aligned = []
         strict_image_mode = retailer in EXCLUSIVE_SALSIFY_IMAGE_RETAILERS
+        # Walgreens visual rules:
+        # 1. Slot 1 is always Online Optimized Image.
+        # 2. Slot 2 is always Ingredient Label Image.
+        # 3. If either slot is missing, keep that slot blank so ATF images do not move up.
         slot_plan = [
-            (("online optimized image", "online image", "online", "front"), "online optimized image", True),
-            (("flat back 2d", "flat back", "back 2d", "back"), "flat back 2d", True),
-            (("flat left 2d", "flat left", "left 2d", "left"), "flat left 2d", True),
+            (("online optimized image-", "online optimized image", "online image", "online", "front"), "online optimized image", True),
+            (("ingredient label image", "ingredients label image", "ingredient label", "ingredients label"), "ingredient label image", True),
             (("atf io", "atf i/o generic", "atf i o generic", "atf io generic"), "atf io", False),
             (("atf 2",), "atf 2", False),
             (("atf 3",), "atf 3", False),
