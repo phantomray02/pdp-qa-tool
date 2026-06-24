@@ -8574,6 +8574,7 @@ if uploaded_file:
             st.session_state.report_bytes = None
             st.session_state.report_filename = None
             st.session_state.report_batch_key = ""
+            st.session_state.report_row_signature = ""
             st.session_state.batch_run_requested = False
             st.session_state.batch_started_key = ""
             st.session_state.batch_status_message = ""
@@ -9055,11 +9056,15 @@ if (
             inplace=True,
         )
 
+    export_rerun_needed = False
+
     if summary_df.empty and detail_df.empty and debug_df.empty:
         st.session_state.report_bytes = None
         st.session_state.report_filename = None
-        st.session_state.report_batch_key = ""
-        st.session_state.report_row_signature = ""
+        # Mark this exact empty state as handled so Streamlit does not get stuck in an export rerun loop.
+        st.session_state.report_batch_key = st.session_state.completed_batch_key
+        st.session_state.report_row_signature = current_report_signature
+        st.session_state.auto_download_done = False
         st.session_state.batch_status_message = (
             f"Batch finished for {selected_retailer}, but no report rows were captured yet. "
             "The app cleared the previous report instead of exporting an empty workbook."
@@ -9136,7 +9141,9 @@ if (
             f"Report ready for {selected_retailer}. "
             f"Summary rows: {len(summary_df)}, Details rows: {len(detail_df)}, Debug rows: {len(debug_df)}."
         )
-    st.rerun()
+        export_rerun_needed = True
+    if export_rerun_needed:
+        st.rerun()
 
 # =========================================
 # FULL VISUAL MODE
