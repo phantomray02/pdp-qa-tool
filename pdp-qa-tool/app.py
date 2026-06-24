@@ -743,7 +743,7 @@ RETAILER_SALSIFY_REQUIREMENTS = {
     "default": {"max_features": 5, "max_images": 6},
     "cvs": {"max_features": 5, "max_images": 8},
     "walgreens": {"max_features": 5, "max_images": 6},
-    "albertsons": {"max_features": 8, "max_images": 20},
+    "albertsons": {"max_features": 6, "max_images": 20},
     "kroger": {"max_features": 7, "max_images": 7},
     "sam's club": {"max_features": 10, "max_images": 10},
     "sams club": {"max_features": 10, "max_images": 10},
@@ -2380,6 +2380,7 @@ def _parse_salsify_page(html_text):
     cvs_feature_values = []
     cvs_feature_slots = {}
     general_feature_values = []
+    general_feature_slots = {}
     for i in range(1, 11):
         cvs_exact_values = collect_property_values(
             f"CVS Feature {i}",
@@ -2407,14 +2408,16 @@ def _parse_salsify_page(html_text):
             cvs_feature_slots[i] = cvs_slot_values[0]
             cvs_feature_values.extend(cvs_slot_values)
 
-        general_feature_values.extend(
-            collect_property_values(
-                f"General Feature {i}",
-                f"General Feature{i}",
-                f"General Bullet {i}",
-                f"General Bullet{i}",
-            )
+        general_slot_values = collect_property_values(
+            f"General Feature {i}",
+            f"General Feature{i}",
+            f"General Bullet {i}",
+            f"General Bullet{i}",
         )
+        general_slot_values = [v for v in general_slot_values if v and not is_placeholder_salsify_copy_value(v)]
+        if general_slot_values:
+            general_feature_slots[i] = general_slot_values[0]
+            general_feature_values.extend(general_slot_values)
 
     if not cvs_feature_values:
         broad_cvs_feature_values = []
@@ -2575,18 +2578,29 @@ def _parse_salsify_page(html_text):
         },
         "albertsons": {
             "title": first_non_placeholder_copy_value(
-                first_property("Albertsons Product Title (Each)", "Albertsons Product Title"),
+                first_property("Albertsons Product Title (Each)"),
                 first_property("General Product Title", "General Title", "Product Title"),
             ),
             "description": first_non_placeholder_copy_value(
                 first_property("Albertsons Description"),
                 first_property("General Description", "General Product Description", "Description"),
             ),
-            "features": normalize_salsify_feature_values(
-                albertsons_feature_values or general_feature_values,
-                max_features=8,
-            ),
-            "feature_slots": albertsons_feature_slots,
+            "features": normalize_salsify_feature_values([
+                first_non_placeholder_copy_value(albertsons_feature_slots.get(2, ""), general_feature_slots.get(1, "")),
+                first_non_placeholder_copy_value(albertsons_feature_slots.get(3, ""), general_feature_slots.get(2, "")),
+                first_non_placeholder_copy_value(albertsons_feature_slots.get(4, ""), general_feature_slots.get(3, "")),
+                first_non_placeholder_copy_value(albertsons_feature_slots.get(5, ""), general_feature_slots.get(4, "")),
+                first_non_placeholder_copy_value(albertsons_feature_slots.get(6, ""), general_feature_slots.get(5, "")),
+                first_non_placeholder_copy_value(albertsons_feature_slots.get(7, ""), general_feature_slots.get(6, "")),
+            ], max_features=6),
+            "feature_slots": {
+                1: first_non_placeholder_copy_value(albertsons_feature_slots.get(2, ""), general_feature_slots.get(1, "")),
+                2: first_non_placeholder_copy_value(albertsons_feature_slots.get(3, ""), general_feature_slots.get(2, "")),
+                3: first_non_placeholder_copy_value(albertsons_feature_slots.get(4, ""), general_feature_slots.get(3, "")),
+                4: first_non_placeholder_copy_value(albertsons_feature_slots.get(5, ""), general_feature_slots.get(4, "")),
+                5: first_non_placeholder_copy_value(albertsons_feature_slots.get(6, ""), general_feature_slots.get(5, "")),
+                6: first_non_placeholder_copy_value(albertsons_feature_slots.get(7, ""), general_feature_slots.get(6, "")),
+            },
         },
     }
 
@@ -7534,21 +7548,19 @@ def finalize_salsify_copy_for_retailer(retailer_name, s_text):
         albertsons_override = retailer_overrides.get("albertsons", {}) or {}
         selected_title = normalize_space(first_non_placeholder_copy_value(albertsons_override.get("title", ""), out.get("title", "")))
         selected_description = normalize_space(first_non_placeholder_copy_value(albertsons_override.get("description", ""), out.get("description", "")))
-        override_features = normalize_salsify_feature_values(albertsons_override.get("features", []) or [], max_features=8)
+        override_features = normalize_salsify_feature_values(albertsons_override.get("features", []) or [], max_features=6)
         override_feature_slots = albertsons_override.get("feature_slots", {}) or {}
 
-        # Albertsons should only include retailer-specific features that actually exist.
-        # No generic fallback and no padding for missing Albertsons slots.
         selected_features = []
-        for i in range(1, 9):
+        for i in range(1, 7):
             slot_value = first_non_placeholder_copy_value(override_feature_slots.get(i, ""))
             if slot_value:
                 selected_features.append(slot_value)
 
         if selected_features:
-            selected_features = dedupe_preserve_order(selected_features)[:8]
+            selected_features = dedupe_preserve_order(selected_features)[:6]
         else:
-            selected_features = override_features[:8]
+            selected_features = override_features[:6]
 
         out["title"] = selected_title
         out["description"] = selected_description
