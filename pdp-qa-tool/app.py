@@ -1151,98 +1151,6 @@ def clear_in_memory_caches():
         walgreens_api_cache = {}
     walgreens_api_cache.clear()
 
-
-
-def build_report_artifact(summary_rows, detail_rows, debug_rows, selected_retailer):
-    summary_df = pd.DataFrame(list(summary_rows or []))
-    detail_df = pd.DataFrame(list(detail_rows or []))
-    debug_df = pd.DataFrame(list(debug_rows or []))
-
-    selected_retailer_rpc_header = f"{str(selected_retailer or '').strip() or 'Retailer'} RPC"
-    for _df in [summary_df, detail_df, debug_df]:
-        _df.rename(
-            columns={
-                "CVS RPC": selected_retailer_rpc_header,
-                "Retailer RPC": selected_retailer_rpc_header,
-            },
-            inplace=True,
-        )
-
-    counts = {
-        "summary": int(len(summary_df)),
-        "detail": int(len(detail_df)),
-        "debug": int(len(debug_df)),
-    }
-
-    if summary_df.empty and detail_df.empty and debug_df.empty:
-        return {
-            "has_rows": False,
-            "bytes": None,
-            "filename": None,
-            "counts": counts,
-        }
-
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        summary_df.to_excel(writer, sheet_name="Summary", index=False)
-        detail_df.to_excel(writer, sheet_name="Details", index=False)
-        debug_df.to_excel(writer, sheet_name="Debug", index=False)
-
-        wb = writer.book
-        green_fill = PatternFill(fill_type="solid", fgColor="C6EFCE")
-        yellow_fill = PatternFill(fill_type="solid", fgColor="FFEB9C")
-        red_fill = PatternFill(fill_type="solid", fgColor="FFC7CE")
-
-        for sheet_name in ["Summary", "Details"]:
-            ws = wb[sheet_name]
-            header_map = {}
-            for cell in ws[1]:
-                header_map[str(cell.value).strip()] = cell.column
-
-            for col_name, col_idx in header_map.items():
-                if "%" in col_name:
-                    for row_idx in range(2, ws.max_row + 1):
-                        cell = ws.cell(row=row_idx, column=col_idx)
-                        value = cell.value
-                        if value is None or value == "":
-                            continue
-                        try:
-                            score_val = float(value)
-                        except Exception:
-                            continue
-                        if score_val >= 80:
-                            cell.fill = green_fill
-                        elif score_val >= 50:
-                            cell.fill = yellow_fill
-                        else:
-                            cell.fill = red_fill
-
-            for col_cells in ws.columns:
-                max_length = 0
-                col_letter = col_cells[0].column_letter
-                for cell in col_cells:
-                    try:
-                        cell_len = len(str(cell.value or ""))
-                        if cell_len > max_length:
-                            max_length = cell_len
-                    except Exception:
-                        pass
-                adjusted_width = min(max(max_length + 2, 12), 60)
-                ws.column_dimensions[col_letter].width = adjusted_width
-
-    safe_retailer = re.sub(
-        r"[^a-z0-9]+",
-        "_",
-        str(selected_retailer or "retailer").lower().strip(),
-    ).strip("_") or "retailer"
-
-    return {
-        "has_rows": True,
-        "bytes": output.getvalue(),
-        "filename": f"pdp_qa_results_{safe_retailer}_all_brands.xlsx",
-        "counts": counts,
-    }
-
 # =========================================
 # HTML FETCH
 # =========================================
@@ -3959,6 +3867,31 @@ def get_cvs_bundle(retail_url, target_rpc=""):
 # =========================================
 # ALBERTSONS PARSERS
 # =========================================
+def is_albertsons_out_of_stock_html(html_text):
+    working = html.unescape(str(html_text or ''))
+    if not working.strip():
+        return False
+
+    html_lower = working.lower()
+    try:
+        soup = BeautifulSoup(working, 'html.parser')
+        text_blob = normalize_space(soup.get_text(' ', strip=True))
+    except Exception:
+        text_blob = normalize_space(working)
+    text_lower = text_blob.lower()
+
+    if 'out of stock' not in text_lower:
+        return False
+
+    supporting_markers = [
+        'product-unavailability',
+        'similar products',
+        'similar product',
+        'unavailable',
+    ]
+    return any(marker in html_lower or marker in text_lower for marker in supporting_markers)
+
+
 def clean_albertsons_text(text):
     if not text:
         return ""
@@ -4280,12 +4213,15 @@ def extract_albertsons_text_from_html(html_text, retail_url='', target_rpc=''):
         'Source Used': 'albertsons_live_html',
         'Retailer': 'Albertsons',
         'Image Path': 'albertsons_abs_image_lookup',
+        'Availability': '',
     }
     if not html_text:
-        return {'title': '', 'description': '', 'features': [], 'rating': '', 'review_count': '', 'debug': debug}
+        return {'title': '', 'description': '', 'features': [], 'rating': '', 'review_count': '', 'out_of_stock': False, 'debug': debug}
 
     working = html.unescape(str(html_text or ''))
     soup = BeautifulSoup(working, 'html.parser')
+    out_of_stock = is_albertsons_out_of_stock_html(working)
+    debug['Availability'] = 'Out of stock' if out_of_stock else 'Available / not flagged'
 
     title = ''
     og_title = soup.find('meta', attrs={'property': 'og:title'})
@@ -4348,6 +4284,7 @@ def extract_albertsons_text_from_html(html_text, retail_url='', target_rpc=''):
         'features': normalize_albertsons_features(features, max_features=8),
         'rating': '',
         'review_count': '',
+        'out_of_stock': out_of_stock,
         'debug': debug,
     }
 
@@ -4727,88 +4664,8 @@ def get_kroger_bundle(retail_url, target_rpc=""):
 def _safe_json_loads(text):
     try:
         return json.loads(text)
-    except Exception as e:
-        error_text = f"{type(e).__name__}: {e}"
-        try:
-            retail_url = str(row.get("retail_url", "") or "").strip()
-            salsify_url = str(row.get("salsify_url", "") or "").strip()
-            cvs_rpc = str(row.get("retailer_rpc", "") or "").strip()
-            retailer_name = row.get("retailer", "") or infer_retailer_name_from_url(retail_url)
-            rating_value = row.get("rating", "")
-            review_count_value = row.get("review_count", "")
-            fallback_status = f"Batch row exception | {error_text}"
-            return {
-                "summary": {
-                    "SKU": row.get("sku", ""),
-                    "Retailer": retailer_name,
-                    "Retailer RPC": cvs_rpc,
-                    "Brand": row.get("brand", ""),
-                    "Salsify URL": salsify_url,
-                    "Retail URL": retail_url,
-                    "Rating": rating_value,
-                    "Review Count": review_count_value,
-                    "Title %": 0,
-                    "Description %": 0,
-                    "Feature %": 0,
-                    "Image Match %": 0,
-                    "Overall %": 0,
-                    "Status": fallback_status,
-                },
-                "detail": {
-                    "SKU": row.get("sku", ""),
-                    "Retailer": retailer_name,
-                    "Retailer RPC": cvs_rpc,
-                    "Brand": row.get("brand", ""),
-                    "Salsify URL": salsify_url,
-                    "Retail URL": retail_url,
-                    "Rating": rating_value,
-                    "Review Count": review_count_value,
-                    "Title %": 0,
-                    "Description %": 0,
-                    "Feature %": 0,
-                    "Image Match %": 0,
-                    "Overall %": 0,
-                    "Status": fallback_status,
-                    "Salsify Title": "",
-                    "Retailer Title": "",
-                    "Salsify Description": "",
-                    "Retailer Description": "",
-                    "Retailer Features": "",
-                    "Salsify Images": "",
-                    "Retailer Images": "",
-                },
-                "debug": {
-                    "SKU": row.get("sku", ""),
-                    "Retailer": retailer_name,
-                    "Retailer RPC": cvs_rpc,
-                    "Brand": row.get("brand", ""),
-                    "Retail URL": retail_url,
-                    "Rating": rating_value,
-                    "Review Count": review_count_value,
-                    "Salsify URL": salsify_url,
-                    "Status": fallback_status,
-                    "Exception Type": type(e).__name__,
-                    "Exception Text": str(e),
-                    "Trace Location": "process_row",
-                },
-            }
-        except Exception:
-            return {
-                "summary": None,
-                "detail": None,
-                "debug": {
-                    "SKU": row.get("sku", ""),
-                    "Retailer": row.get("retailer", ""),
-                    "Retailer RPC": row.get("retailer_rpc", ""),
-                    "Brand": row.get("brand", ""),
-                    "Retail URL": row.get("retail_url", ""),
-                    "Salsify URL": row.get("salsify_url", ""),
-                    "Status": f"Batch row exception | {error_text}",
-                    "Exception Type": type(e).__name__,
-                    "Exception Text": str(e),
-                    "Trace Location": "process_row_secondary_fallback",
-                },
-            }
+    except Exception:
+        return None
 
 
 def _decode_walgreens_json_string(raw_value):
@@ -8347,6 +8204,10 @@ def process_row(row):
                 except Exception:
                     row_source_code = row_source_code or ""
 
+        is_albertsons_out_of_stock = False
+        if str(retailer_name_normalized).strip().lower() == "albertsons":
+            is_albertsons_out_of_stock = is_albertsons_out_of_stock_html(row_source_code)
+
         title_score = 0
         desc_score = 0
         avg_feature_score = 0
@@ -8356,6 +8217,8 @@ def process_row(row):
         image_position_scores = {}
 
         status_notes = []
+        if is_albertsons_out_of_stock:
+            status_notes.append("Out of stock")
 
         if not salsify_url:
             status_notes.append("Missing Salsify URL")
@@ -8378,6 +8241,7 @@ def process_row(row):
                     "Image Match %": avg_img_score,
                     "Overall %": overall,
                     "Status": ", ".join(status_notes),
+                    "Out of Stock": "Yes" if is_albertsons_out_of_stock else "No",
                     **feature_score_fields,
                     **image_position_scores,
                 },
@@ -8396,6 +8260,7 @@ def process_row(row):
                     "Image Match %": avg_img_score,
                     "Overall %": overall,
                     "Status": ", ".join(status_notes),
+                    "Out of Stock": "Yes" if is_albertsons_out_of_stock else "No",
                     **feature_score_fields,
                     **image_position_scores,
                 },
@@ -8409,6 +8274,7 @@ def process_row(row):
                     "Review Count": review_count_value,
                     "Salsify URL": salsify_url,
                     "Status": ", ".join(status_notes),
+                    "Out of Stock": "Yes" if is_albertsons_out_of_stock else "No",
                 },
             }
 
@@ -8447,6 +8313,8 @@ def process_row(row):
             retailer_name,
             r_bundle["text"] or {},
         )
+        if str(retailer_name_normalized).strip().lower() == "albertsons":
+            is_albertsons_out_of_stock = bool(r_text.get("out_of_stock", False)) or is_albertsons_out_of_stock
         r_images = (r_bundle["images"] or [])[:6] if str(retailer_name or "").strip().lower() == "walgreens" else (r_bundle["images"] or [])
         s_images, r_images = align_image_slots_for_comparison(
             s_images,
@@ -8513,6 +8381,7 @@ def process_row(row):
                 "Image Match %": avg_img_score,
                 "Overall %": overall,
                 "Status": ", ".join(status_notes),
+                "Out of Stock": "Yes" if is_albertsons_out_of_stock else "No",
                 **feature_score_fields,
                 **image_position_scores,
             },
@@ -8530,7 +8399,8 @@ def process_row(row):
                 "Feature %": avg_feature_score,
                 "Image Match %": avg_img_score,
                 "Overall %": overall,
-                "Status": "",
+                "Status": ", ".join(status_notes),
+                "Out of Stock": "Yes" if is_albertsons_out_of_stock else "No",
                 "Salsify Title": s_text.get("title", ""),
                 "Retailer Title": r_text.get("title", ""),
                     "CVS Title": r_text.get("title", ""),
@@ -8617,6 +8487,7 @@ def process_row(row):
                 "rawTextHasVendorDetailsParagraph": debug_data.get("rawTextHasVendorDetailsParagraph", False),
                 "rawHtmlVendorExcerpt": debug_data.get("rawHtmlVendorExcerpt", ""),
                 "rawTextVendorExcerpt": debug_data.get("rawTextVendorExcerpt", ""),
+                "Availability": debug_data.get("Availability", ""),
             },
         }
 
@@ -8958,7 +8829,6 @@ if uploaded_file:
                 st.session_state.report_bytes = None
                 st.session_state.report_filename = None
                 st.session_state.report_batch_key = ""
-                st.session_state.report_row_signature = ""
                 st.session_state.auto_download_done = False
                 st.session_state.auto_batch_upload_key = current_batch_key
                 clear_in_memory_caches()
@@ -8990,7 +8860,6 @@ if uploaded_file:
                     st.session_state.report_bytes = None
                     st.session_state.report_filename = None
                     st.session_state.report_batch_key = ""
-                    st.session_state.report_row_signature = ""
                     st.session_state.auto_download_done = False
                     clear_in_memory_caches()
                     st.cache_data.clear()
@@ -9161,15 +9030,15 @@ if retailer_df is not None and file_ready_for_batch and st.session_state.batch_s
                         detail = result.get("detail")
                         debug = result.get("debug")
 
-                        if summary and str(summary.get("SKU", "")) not in st.session_state.summary_skus:
+                        if summary and summary["SKU"] not in st.session_state.summary_skus:
                             st.session_state.summary_rows.append(summary)
-                            st.session_state.summary_skus.add(str(summary.get("SKU", "")))
-                        if detail and str(detail.get("SKU", "")) not in st.session_state.detail_skus:
+                            st.session_state.summary_skus.add(summary["SKU"])
+                        if detail and detail["SKU"] not in st.session_state.detail_skus:
                             st.session_state.export_rows.append(detail)
-                            st.session_state.detail_skus.add(str(detail.get("SKU", "")))
-                        if debug and str(debug.get("SKU", "")) not in st.session_state.debug_skus:
+                            st.session_state.detail_skus.add(detail["SKU"])
+                        if debug and debug["SKU"] not in st.session_state.debug_skus:
                             st.session_state.debug_rows.append(debug)
-                            st.session_state.debug_skus.add(str(debug.get("SKU", "")))
+                            st.session_state.debug_skus.add(debug["SKU"])
 
                     if completed % UI_UPDATE_EVERY == 0 or completed == total:
                         progress_bar.progress(completed / max(total, 1))
@@ -9185,44 +9054,8 @@ if retailer_df is not None and file_ready_for_batch and st.session_state.batch_s
             else:
                 st.session_state.processing_done = True
                 st.session_state.completed_batch_key = current_batch_key
-
-                current_report_signature = "::".join([
-                    str(current_batch_key or ""),
-                    str(len(st.session_state.summary_rows or [])),
-                    str(len(st.session_state.export_rows or [])),
-                    str(len(st.session_state.debug_rows or [])),
-                ])
-                report_artifact = build_report_artifact(
-                    st.session_state.summary_rows,
-                    st.session_state.export_rows,
-                    st.session_state.debug_rows,
-                    selected_retailer,
-                )
-
-                if report_artifact.get("has_rows"):
-                    counts = report_artifact.get("counts", {})
-                    st.session_state.report_bytes = report_artifact.get("bytes")
-                    st.session_state.report_filename = report_artifact.get("filename")
-                    st.session_state.report_batch_key = current_batch_key
-                    st.session_state.report_row_signature = current_report_signature
-                    st.session_state.batch_status_message = (
-                        f"Report ready for {selected_retailer}. "
-                        f"Summary rows: {counts.get('summary', 0)}, "
-                        f"Details rows: {counts.get('detail', 0)}, "
-                        f"Debug rows: {counts.get('debug', 0)}."
-                    )
-                else:
-                    st.session_state.report_bytes = None
-                    st.session_state.report_filename = None
-                    st.session_state.report_batch_key = current_batch_key
-                    st.session_state.report_row_signature = current_report_signature
-                    st.session_state.batch_status_message = (
-                        f"Batch finished for {selected_retailer}, but no report rows were captured yet. "
-                        "No Excel export was generated because all report tabs would have been empty."
-                    )
-
+                st.session_state.batch_status_message = f"Batch finished for {selected_retailer}. Extract/report generated successfully."
                 st.session_state.batch_run_requested = False
-                st.session_state.auto_download_done = False
                 st.session_state.auto_batch_upload_key = current_batch_key
                 st.rerun()
     except Exception as e:
@@ -9246,10 +9079,10 @@ if st.session_state.completed_batch_key:
 if (
     st.session_state.processing_done
     and st.session_state.completed_batch_key
-    and st.session_state.report_bytes is None
     and (
         st.session_state.report_batch_key != st.session_state.completed_batch_key
         or st.session_state.report_row_signature != current_report_signature
+        or st.session_state.report_bytes is None
     )
 ):
     summary_df = pd.DataFrame(list(st.session_state.summary_rows or []))
@@ -9394,6 +9227,7 @@ if (
         )
         st.markdown("## 👁️ Full Visual QA Review")
         st.caption("This full visual UI appears only after the top batch run finishes and the extract/report rows are ready.")
+        st.caption("Albertsons rows flagged as Out of Stock are automatically kept in the Excel export and hidden from Full Visual QA review.")
         st.caption("This full visual UI appears only after the new top-section batch run finishes and the extract/report rows are ready. Kroger visual rows reuse the uploaded TXT-matched HTML instead of live fetch.")
 
         if hidden_count > 0:
@@ -9437,6 +9271,8 @@ if (
             r_desc = r_text.get("description") or ""
             retailer_features = r_text.get("features") or []
             retailer_norm = str(retailer_name or "").strip().lower()
+            if retailer_norm == "albertsons" and bool(r_text.get("out_of_stock", False)):
+                continue
             salsify_requirements = get_retailer_salsify_requirements(retailer_name)
             feature_fields = get_retailer_salsify_feature_fields(retailer_name)
 
