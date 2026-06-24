@@ -3857,8 +3857,7 @@ def clean_albertsons_text(text):
     if "<" in text and ">" in text:
         text = BeautifulSoup(text, "html.parser").get_text(" ", strip=True)
     text = re.sub(r"\s+", " ", text).strip()
-    text = text.strip(" |:-")
-    return text
+    return text.strip(" |:-")
 
 
 def _normalize_albertsons_title(value):
@@ -3873,7 +3872,7 @@ def _is_albertsons_noise_line(value):
     if not value:
         return True
     lowered = value.lower()
-    bad_starts = [
+    bad_prefixes = [
         'unsupported browser',
         "you're currently",
         'got it',
@@ -3907,8 +3906,12 @@ def _is_albertsons_noise_line(value):
         'session expired',
         'sorry, we\'re having issues.',
         'close',
+        'view supported browsers',
+        'skip to search',
+        'skip to main content',
+        'try again',
     ]
-    if any(lowered.startswith(x) for x in bad_starts):
+    if any(lowered.startswith(x) for x in bad_prefixes):
         return True
     if lowered in {'details', 'more', 'previous', 'next', 'false'}:
         return True
@@ -3919,6 +3922,27 @@ def _is_albertsons_noise_line(value):
     return False
 
 
+def _is_albertsons_packaging_blob(value):
+    value = normalize_space(value)
+    if not value:
+        return False
+    lowered = value.lower()
+    signals = [
+        'square feet',
+        'sq ft',
+        'how2recycle',
+        'cottonelle.com',
+        '1-800-',
+        'made in the usa',
+        'fsc:',
+        'sustainability promise',
+        'recyclable packaging',
+        'responsibly managed forests',
+        '100% recycled content used in cores',
+    ]
+    return sum(1 for s in signals if s in lowered) >= 2
+
+
 def normalize_albertsons_features(items, max_features=8):
     out = []
     for item in items or []:
@@ -3926,6 +3950,7 @@ def normalize_albertsons_features(items, max_features=8):
         if not value:
             continue
         value = re.sub(r'^[-•]\s*', '', value).strip()
+        value = re.sub(r'^(::marker\s*)+', '', value, flags=re.IGNORECASE).strip()
         if _is_albertsons_noise_line(value):
             continue
         out.append(value)
@@ -3948,27 +3973,33 @@ def _extract_albertsons_details_from_text(working):
             continue
         if line.startswith('- '):
             feat_parts.append(line[2:].strip())
-        elif not feat_parts:
+            continue
+        # Ignore the long packaging/legal blob that sometimes appears after bullets inside ### details.
+        if feat_parts and _is_albertsons_packaging_blob(line):
+            continue
+        if not feat_parts:
             desc_parts.append(line)
-    return clean_albertsons_text(' '.join(desc_parts)), normalize_albertsons_features(feat_parts, max_features=8)
+    description = clean_albertsons_text(' '.join(desc_parts))
+    features = normalize_albertsons_features(feat_parts, max_features=8)
+    return description, features
 
 
 def _clean_albertsons_image_url(url):
-    url = html.unescape(str(url or "")).strip()
-    url = url.replace("\\u0026", "&")
-    url = url.replace("\\\\u003d", "=")
-    url = url.replace("\\u003d", "=")
-    url = url.replace("&amp;", "&")
-    while url and url[-1] in (")", chr(92), chr(34), chr(39)):
+    url = html.unescape(str(url or '')).strip()
+    url = url.replace('\\u0026', '&')
+    url = url.replace('\\\\u003d', '=')
+    url = url.replace('\\u003d', '=')
+    url = url.replace('&amp;', '&')
+    while url and url[-1] in (')', chr(92), chr(34), chr(39), ','):
         url = url[:-1]
-    if url.startswith("//"):
-        url = "https:" + url
-    if url.startswith("images.albertsons-media.com/"):
-        url = "https://" + url
+    if url.startswith('//'):
+        url = 'https:' + url
+    if url.startswith('images.albertsons-media.com/'):
+        url = 'https://' + url
     if not re.match(r'^https?://images\.albertsons-media\.com/is/image/ABS/', url, flags=re.IGNORECASE):
-        return ""
-    if "${product.id}" in url:
-        return ""
+        return ''
+    if '${product.id}' in url:
+        return ''
     asset_name = url.split('/is/image/ABS/', 1)[-1].split('?', 1)[0].strip().rstrip(chr(92))
     low_asset = asset_name.lower()
     bad_exact = {
@@ -3980,22 +4011,53 @@ def _clean_albertsons_image_url(url):
         'referral',
     }
     if low_asset in bad_exact:
-        return ""
+        return ''
+    # Normalize thumbnail version to desktop version for steadier visual compare.
     url = re.sub(r'\$ng-ecom-pdp-tn\$', '$ng-ecom-pdp-desktop$', url, flags=re.IGNORECASE)
     url = re.sub(r'\s+', '', url)
     return url
 
 
 def _albertsons_image_family_key(url):
-    base = str(url or "").split("?", 1)[0].strip().rstrip(chr(92))
+    base = str(url or '').split('?', 1)[0].strip().rstrip(chr(92))
     return base.lower()
 
 
-def extract_albertsons_images_from_html(html_text, target_rpc=""):
-    working = html.unescape(str(html_text or ""))
+def extract_albertsons_images_from_html(html_text, target_rpc=''):
+    """
+    Reliable Albertsons retailer image extraction.
+    Priority:
+    1. Find all ABS image URLs from raw HTML / JS / srcset strings.
+    2. Filter by the target RPC when present.
+    3. Preserve first-seen order.
+    4. Deduplicate thumbnail/desktop duplicates by family.
+    5. Prefer desktop over thumbnail when both exist.
+    """
+    working = html.unescape(str(html_text or ''))
     target_rpc = clean_item_number(target_rpc)
-    url_pattern = r'https?://images\.albertsons-media\.com/is/image/ABS/[^\s\">]+|//images\.albertsons-media\.com/is/image/ABS/[^\s\">]+'
-    raw_urls = re.findall(url_pattern, working, flags=re.IGNORECASE)
+
+    patterns = [
+        r'https?://images\.albertsons-media\.com/is/image/ABS/[^\s\"\'>,]+',
+        r'//images\.albertsons-media\.com/is/image/ABS/[^\s\"\'>,]+',
+        r'images\.albertsons-media\.com/is/image/ABS/[^\s\"\'>,]+',
+    ]
+
+    raw_urls = []
+    for pattern in patterns:
+        raw_urls.extend(re.findall(pattern, working, flags=re.IGNORECASE))
+
+    # Include URLs found inside srcset / JSON-ish blocks.
+    soup = BeautifulSoup(working, 'html.parser')
+    for tag in soup.find_all(True):
+        for attr in ('src', 'data-src', 'data-zoom-image', 'content'):
+            value = tag.get(attr, '')
+            if value and 'images.albertsons-media.com/is/image/ABS/' in str(value):
+                raw_urls.append(str(value))
+        srcset = str(tag.get('srcset', '') or '')
+        if srcset and 'images.albertsons-media.com/is/image/ABS/' in srcset:
+            for part in srcset.split(','):
+                raw_urls.append(part.strip().split(' ')[0])
+
     ordered_candidates = []
     seen_candidate = set()
     for raw_url in raw_urls:
@@ -4014,73 +4076,122 @@ def extract_albertsons_images_from_html(html_text, target_rpc=""):
         if clean_url not in seen_candidate:
             seen_candidate.add(clean_url)
             ordered_candidates.append(clean_url)
+
     if not ordered_candidates:
         for raw_url in raw_urls:
             clean_url = _clean_albertsons_image_url(raw_url)
             if clean_url and clean_url not in seen_candidate:
                 seen_candidate.add(clean_url)
                 ordered_candidates.append(clean_url)
+
     family_order = []
     best_by_family = {}
     for clean_url in ordered_candidates:
         family_key = _albertsons_image_family_key(clean_url)
         if family_key not in family_order:
             family_order.append(family_key)
-        current = best_by_family.get(family_key, "")
+        current = best_by_family.get(family_key, '')
         if (not current) or ('$ng-ecom-pdp-desktop$' in clean_url and '$ng-ecom-pdp-desktop$' not in current):
             best_by_family[family_key] = clean_url
+
     ordered = []
     for family_key in family_order:
-        url = best_by_family.get(family_key, "")
+        url = best_by_family.get(family_key, '')
         if url and url not in ordered:
             ordered.append(url)
     return ordered[:8]
 
 
-def extract_albertsons_text_from_html(html_text, retail_url="", target_rpc=""):
+def _extract_albertsons_description_from_marketing(marketing):
+    """
+    The real Albertsons description lives in the nested div.pt-4 inside .content-detail__marketing.
+    Do not use the outer wrapper div that also contains the UL or the lower text-m packaging block.
+    """
+    if marketing is None:
+        return ''
+
+    candidate_nodes = []
+    candidate_nodes.extend(marketing.select(':scope > div > div.pt-4'))
+    candidate_nodes.extend(marketing.select('div.pt-4'))
+
+    seen = set()
+    for node in candidate_nodes:
+        marker = str(node)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        parent_classes = ' '.join(node.parent.get('class', [])) if getattr(node, 'parent', None) else ''
+        node_classes = ' '.join(node.get('class', []))
+        # Skip the lower packaging/spec block that sits in a text-m container.
+        if 'text-m' in parent_classes or 'text-m' in node_classes:
+            continue
+        candidate = clean_albertsons_text(node.get_text(' ', strip=True))
+        if candidate and len(candidate.split()) >= 8 and not _is_albertsons_noise_line(candidate):
+            return candidate
+    return ''
+
+
+def _extract_albertsons_features_from_marketing(marketing):
+    if marketing is None:
+        return []
+    ul = marketing.find('ul', class_=lambda c: c and 'pt-4' in str(c)) or marketing.find('ul')
+    if ul is None:
+        return []
+    feature_values = []
+    for li in ul.find_all('li'):
+        li_clone = BeautifulSoup(str(li), 'html.parser')
+        for marker in li_clone.select('span'):
+            txt = normalize_space(marker.get_text(' ', strip=True))
+            if txt == '::marker':
+                marker.decompose()
+        feature_values.append(li_clone.get_text(' ', strip=True))
+    return normalize_albertsons_features(feature_values, max_features=8)
+
+
+def extract_albertsons_text_from_html(html_text, retail_url='', target_rpc=''):
     debug = {
-        "Title Path": "",
-        "Description Path": "",
-        "Features Path": "",
-        "Source Used": "albertsons_live_html",
-        "Retailer": "Albertsons",
-        "Image Path": "albertsons_abs_image_lookup",
+        'Title Path': '',
+        'Description Path': '',
+        'Features Path': '',
+        'Source Used': 'albertsons_live_html',
+        'Retailer': 'Albertsons',
+        'Image Path': 'albertsons_abs_image_lookup',
     }
     if not html_text:
-        return {"title": "", "description": "", "features": [], "rating": "", "review_count": "", "debug": debug}
+        return {'title': '', 'description': '', 'features': [], 'rating': '', 'review_count': '', 'debug': debug}
 
-    working = html.unescape(str(html_text or ""))
-    soup = BeautifulSoup(working, "html.parser")
+    working = html.unescape(str(html_text or ''))
+    soup = BeautifulSoup(working, 'html.parser')
 
-    title = ""
-    meta_title = soup.find("meta", attrs={"property": "og:title"})
-    if meta_title and meta_title.get("content"):
-        title = _normalize_albertsons_title(meta_title.get("content", ""))
-        debug["Title Path"] = "og:title"
+    title = ''
+    og_title = soup.find('meta', attrs={'property': 'og:title'})
+    if og_title and og_title.get('content'):
+        title = _normalize_albertsons_title(og_title.get('content', ''))
+        debug['Title Path'] = 'og:title'
     if not title and soup.title:
-        title = _normalize_albertsons_title(soup.title.get_text(" ", strip=True))
-        debug["Title Path"] = "html_title"
+        title = _normalize_albertsons_title(soup.title.get_text(' ', strip=True))
+        debug['Title Path'] = 'html_title'
     if not title:
         heading_match = re.search(r'(?m)^#\s+(.+?)\s*-\s*albertsons\s*$', working, flags=re.IGNORECASE)
         if heading_match:
             title = _normalize_albertsons_title(heading_match.group(1))
-            debug["Title Path"] = "markdown_h1"
+            debug['Title Path'] = 'markdown_h1'
     if not title:
         for m in re.finditer(r'([^\r\n]{15,200}?)\s*-\s*Image\s+[1-9][0-9]*\b', working, flags=re.IGNORECASE):
             candidate = _normalize_albertsons_title(m.group(1))
             if candidate and len(candidate.split()) >= 4:
                 title = candidate
-                debug["Title Path"] = "image_alt_title"
+                debug['Title Path'] = 'image_alt_title'
                 break
     if not title:
-        h1 = soup.find("h1")
+        h1 = soup.find('h1')
         if h1:
-            h1_title = _normalize_albertsons_title(h1.get_text(" ", strip=True))
-            if h1_title and h1_title.lower() not in {"shopped with us before?", "details", "more", "welcome back!"}:
+            h1_title = _normalize_albertsons_title(h1.get_text(' ', strip=True))
+            if h1_title and h1_title.lower() not in {'shopped with us before?', 'details', 'more', 'welcome back!'}:
                 title = h1_title
-                debug["Title Path"] = "h1"
+                debug['Title Path'] = 'h1'
 
-    description = ""
+    description = ''
     features = []
 
     selectors = [
@@ -4090,7 +4201,7 @@ def extract_albertsons_text_from_html(html_text, retail_url="", target_rpc=""):
         '.content-detail__marketing',
     ]
     marketing = None
-    marketing_path = ""
+    marketing_path = ''
     for selector in selectors:
         marketing = soup.select_one(selector)
         if marketing is not None:
@@ -4098,58 +4209,41 @@ def extract_albertsons_text_from_html(html_text, retail_url="", target_rpc=""):
             break
 
     if marketing is not None:
-        # Prefer the actual Albertsons description node, not the wrapper div that also contains the UL.
-        description_node = (
-            marketing.select_one(':scope > div > div.pt-4')
-            or marketing.select_one('div.pt-4')
-        )
-        if description_node is not None:
-            candidate = clean_albertsons_text(description_node.get_text(' ', strip=True))
-            if candidate and len(candidate.split()) >= 8 and not _is_albertsons_noise_line(candidate):
-                description = candidate
-                debug["Description Path"] = f"{marketing_path} > div.pt-4"
+        description = _extract_albertsons_description_from_marketing(marketing)
+        if description:
+            debug['Description Path'] = f'{marketing_path} > div.pt-4'
+        features = _extract_albertsons_features_from_marketing(marketing)
+        if features:
+            debug['Features Path'] = f'{marketing_path} > ul li'
 
-        ul = marketing.find('ul', class_=lambda c: c and 'pt-4' in str(c)) or marketing.find('ul')
-        if ul is not None:
-            feature_values = []
-            for li in ul.find_all('li'):
-                li_clone = BeautifulSoup(str(li), 'html.parser')
-                for marker in li_clone.select('span'):
-                    txt = normalize_space(marker.get_text(' ', strip=True))
-                    if txt == '::marker':
-                        marker.decompose()
-                feature_values.append(li_clone.get_text(' ', strip=True))
-            features = normalize_albertsons_features(feature_values, max_features=8)
-            if features:
-                debug["Features Path"] = f"{marketing_path} > ul li"
-
+    # Fallback for extension/plain text captures.
     if not description or not features:
         text_description, text_features = _extract_albertsons_details_from_text(working)
         if text_description and not description:
             description = text_description
-            debug["Description Path"] = "markdown details block"
+            debug['Description Path'] = 'markdown details block'
         if text_features and not features:
             features = text_features
-            debug["Features Path"] = "markdown details block"
+            debug['Features Path'] = 'markdown details block'
 
     return {
-        "title": _normalize_albertsons_title(title),
-        "description": clean_albertsons_text(description),
-        "features": normalize_albertsons_features(features, max_features=8),
-        "rating": "",
-        "review_count": "",
-        "debug": debug,
+        'title': _normalize_albertsons_title(title),
+        'description': clean_albertsons_text(description),
+        'features': normalize_albertsons_features(features, max_features=8),
+        'rating': '',
+        'review_count': '',
+        'debug': debug,
     }
 
 
 @st.cache_data(show_spinner=False)
-def get_albertsons_bundle(retail_url, target_rpc=""):
+def get_albertsons_bundle(retail_url, target_rpc=''):
     html_text = get_html(retail_url)
     bundle = {
-        "text": extract_albertsons_text_from_html(html_text, retail_url=retail_url, target_rpc=target_rpc),
-        "images": extract_albertsons_images_from_html(html_text, target_rpc=target_rpc),
+        'text': extract_albertsons_text_from_html(html_text, retail_url=retail_url, target_rpc=target_rpc),
+        'images': extract_albertsons_images_from_html(html_text, target_rpc=target_rpc),
     }
-    bundle.setdefault("text", {}).setdefault("debug", {})["Image Path"] = "albertsons_abs_image_lookup"
+    bundle.setdefault('text', {}).setdefault('debug', {})['Image Path'] = 'albertsons_abs_image_lookup'
     return bundle
 
 # =========================================
