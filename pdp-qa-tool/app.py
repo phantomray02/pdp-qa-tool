@@ -3949,7 +3949,6 @@ def _extract_albertsons_details_from_text(working):
         if line.startswith('- '):
             feat_parts.append(line[2:].strip())
         elif not feat_parts:
-            # Keep description only until bullets begin.
             desc_parts.append(line)
     return clean_albertsons_text(' '.join(desc_parts)), normalize_albertsons_features(feat_parts, max_features=8)
 
@@ -4054,8 +4053,9 @@ def extract_albertsons_text_from_html(html_text, retail_url="", target_rpc=""):
     soup = BeautifulSoup(working, "html.parser")
 
     title = ""
-    if soup.find("meta", attrs={"property": "og:title"}) and soup.find("meta", attrs={"property": "og:title"}).get("content"):
-        title = _normalize_albertsons_title(soup.find("meta", attrs={"property": "og:title"}).get("content", ""))
+    meta_title = soup.find("meta", attrs={"property": "og:title"})
+    if meta_title and meta_title.get("content"):
+        title = _normalize_albertsons_title(meta_title.get("content", ""))
         debug["Title Path"] = "og:title"
     if not title and soup.title:
         title = _normalize_albertsons_title(soup.title.get_text(" ", strip=True))
@@ -4083,7 +4083,6 @@ def extract_albertsons_text_from_html(html_text, retail_url="", target_rpc=""):
     description = ""
     features = []
 
-    # 1. Prefer the true Albertsons details accordion marketing block when raw HTML is present.
     selectors = [
         '#detailsAccordionContent .content-detail__marketing',
         '[data-testid="product-detail-accordion"] .content-detail__marketing',
@@ -4097,20 +4096,33 @@ def extract_albertsons_text_from_html(html_text, retail_url="", target_rpc=""):
         if marketing is not None:
             marketing_path = selector
             break
+
     if marketing is not None:
-        for div in marketing.find_all('div', class_=lambda c: c and 'pt-4' in str(c), recursive=True):
-            candidate = clean_albertsons_text(div.get_text(' ', strip=True))
+        # Prefer the actual Albertsons description node, not the wrapper div that also contains the UL.
+        description_node = (
+            marketing.select_one(':scope > div > div.pt-4')
+            or marketing.select_one('div.pt-4')
+        )
+        if description_node is not None:
+            candidate = clean_albertsons_text(description_node.get_text(' ', strip=True))
             if candidate and len(candidate.split()) >= 8 and not _is_albertsons_noise_line(candidate):
                 description = candidate
                 debug["Description Path"] = f"{marketing_path} > div.pt-4"
-                break
+
         ul = marketing.find('ul', class_=lambda c: c and 'pt-4' in str(c)) or marketing.find('ul')
         if ul is not None:
-            features = normalize_albertsons_features([li.get_text(' ', strip=True) for li in ul.find_all('li')], max_features=8)
+            feature_values = []
+            for li in ul.find_all('li'):
+                li_clone = BeautifulSoup(str(li), 'html.parser')
+                for marker in li_clone.select('span'):
+                    txt = normalize_space(marker.get_text(' ', strip=True))
+                    if txt == '::marker':
+                        marker.decompose()
+                feature_values.append(li_clone.get_text(' ', strip=True))
+            features = normalize_albertsons_features(feature_values, max_features=8)
             if features:
                 debug["Features Path"] = f"{marketing_path} > ul li"
 
-    # 2. Fallback for extension/plain-text captures: use ### details block only.
     if not description or not features:
         text_description, text_features = _extract_albertsons_details_from_text(working)
         if text_description and not description:
