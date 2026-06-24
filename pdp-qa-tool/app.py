@@ -7307,12 +7307,12 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
         }
 
         # Walgreens Salsify rules:
-        # 1. Slot 1 must be Online Optimized Image.
-        # 2. Slot 2 must be Ingredient Label Image.
-        # 3. If either slot is missing, keep that slot blank.
-        # 4. ATF images must start only after slots 1 and 2 and never move up.
+        # 1. Slot 1 must be Online Optimized Image- only. Show Missing if unavailable.
+        # 2. Slot 2 must be Ingredient Label Image only. Show Missing if unavailable.
+        # 3. If slot 1 or slot 2 is missing, keep the blank slot so ATF images move down.
+        # 4. Walgreens lookups must not overlap with other retailer-labeled assets.
         slot_plan = [
-            (("online optimized image-", "online optimized image", "online image", "online", "front"), "online optimized image", True),
+            (("online optimized image-", "online optimized image"), "online optimized image", True),
             (("ingredient label image", "ingredients label image", "ingredient label", "ingredients label"), "ingredient label image", True),
             (("atf io", "atf i/o generic", "atf i o generic", "atf io generic"), "atf io", False),
             (("atf 2",), "atf 2", False),
