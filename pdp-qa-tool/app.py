@@ -1648,6 +1648,22 @@ def lookup_uploaded_raw_html(uploaded_html_map, retail_url, target_rpc=""):
         html_text = uploaded_html_map.get(key, "")
         if html_text:
             return html_text
+
+    # Generic same-page fallback: match on the normalized URL after stripping query params.
+    retail_no_query = normalize_uploaded_capture_url(retail_url).split("?", 1)[0].strip().lower()
+    if retail_no_query:
+        for stored_key, stored_html in uploaded_html_map.items():
+            stored_no_query = normalize_uploaded_capture_url(stored_key).split("?", 1)[0].strip().lower()
+            if stored_no_query and stored_no_query == retail_no_query:
+                return str(stored_html or "")
+
+    # Albertsons fallback: match by product-details.<rpc>.html even if the row URL differs.
+    if target_rpc and retail_url and "albertsons.com" in retail_url.lower():
+        token = f"product-details.{target_rpc}.html"
+        for stored_key, stored_html in uploaded_html_map.items():
+            if token in str(stored_key or ""):
+                return str(stored_html or "")
+
     return ""
 
 def build_extension_batch_payload(retailer_df, retailer_name, current_batch_key, capture_mode, txt_ready=False):
@@ -8103,6 +8119,12 @@ def process_row(row):
         salsify_url = str(salsify_url or "").strip()
         retail_url = str(retail_url or "").strip()
         cvs_rpc = str(cvs_rpc or "").strip()
+        if pd.isna(row_source_code):
+            row_source_code = ""
+        else:
+            row_source_code = str(row_source_code or "").strip()
+            if row_source_code.lower() == "nan":
+                row_source_code = ""
 
         retailer_name_normalized = normalize_retailer_name(retailer_name)
         if str(retailer_name_normalized).strip().lower() == "kroger" and not retail_url and cvs_rpc:
