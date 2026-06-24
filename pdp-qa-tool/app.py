@@ -3867,6 +3867,31 @@ def get_cvs_bundle(retail_url, target_rpc=""):
 # =========================================
 # ALBERTSONS PARSERS
 # =========================================
+def is_albertsons_out_of_stock_html(html_text):
+    working = html.unescape(str(html_text or ''))
+    if not working.strip():
+        return False
+
+    html_lower = working.lower()
+    try:
+        soup = BeautifulSoup(working, 'html.parser')
+        text_blob = normalize_space(soup.get_text(' ', strip=True))
+    except Exception:
+        text_blob = normalize_space(working)
+    text_lower = text_blob.lower()
+
+    if 'out of stock' not in text_lower:
+        return False
+
+    supporting_markers = [
+        'product-unavailability',
+        'similar products',
+        'similar product',
+        'unavailable',
+    ]
+    return any(marker in html_lower or marker in text_lower for marker in supporting_markers)
+
+
 def clean_albertsons_text(text):
     if not text:
         return ""
@@ -4232,12 +4257,15 @@ def extract_albertsons_text_from_html(html_text, retail_url='', target_rpc=''):
         'Source Used': 'albertsons_live_html',
         'Retailer': 'Albertsons',
         'Image Path': 'albertsons_abs_image_lookup',
+        'Availability': '',
     }
     if not html_text:
-        return {'title': '', 'description': '', 'features': [], 'rating': '', 'review_count': '', 'debug': debug}
+        return {'title': '', 'description': '', 'features': [], 'rating': '', 'review_count': '', 'out_of_stock': False, 'debug': debug}
 
     working = html.unescape(str(html_text or ''))
     soup = BeautifulSoup(working, 'html.parser')
+    out_of_stock = is_albertsons_out_of_stock_html(working)
+    debug['Availability'] = 'Out of stock' if out_of_stock else 'Available / not flagged'
 
     title = ''
     og_title = soup.find('meta', attrs={'property': 'og:title'})
@@ -4300,6 +4328,7 @@ def extract_albertsons_text_from_html(html_text, retail_url='', target_rpc=''):
         'features': normalize_albertsons_features(features, max_features=8),
         'rating': '',
         'review_count': '',
+        'out_of_stock': out_of_stock,
         'debug': debug,
     }
 
@@ -8219,6 +8248,10 @@ def process_row(row):
                 except Exception:
                     row_source_code = row_source_code or ""
 
+        is_albertsons_out_of_stock = False
+        if str(retailer_name_normalized).strip().lower() == "albertsons":
+            is_albertsons_out_of_stock = is_albertsons_out_of_stock_html(row_source_code)
+
         title_score = 0
         desc_score = 0
         avg_feature_score = 0
@@ -8228,6 +8261,8 @@ def process_row(row):
         image_position_scores = {}
 
         status_notes = []
+        if is_albertsons_out_of_stock:
+            status_notes.append("Out of stock")
 
         if not salsify_url:
             status_notes.append("Missing Salsify URL")
@@ -8250,6 +8285,7 @@ def process_row(row):
                     "Image Match %": avg_img_score,
                     "Overall %": overall,
                     "Status": ", ".join(status_notes),
+                    "Out of Stock": "Yes" if is_albertsons_out_of_stock else "No",
                     **feature_score_fields,
                     **image_position_scores,
                 },
@@ -8268,6 +8304,7 @@ def process_row(row):
                     "Image Match %": avg_img_score,
                     "Overall %": overall,
                     "Status": ", ".join(status_notes),
+                    "Out of Stock": "Yes" if is_albertsons_out_of_stock else "No",
                     **feature_score_fields,
                     **image_position_scores,
                 },
@@ -8281,6 +8318,7 @@ def process_row(row):
                     "Review Count": review_count_value,
                     "Salsify URL": salsify_url,
                     "Status": ", ".join(status_notes),
+                    "Out of Stock": "Yes" if is_albertsons_out_of_stock else "No",
                 },
             }
 
@@ -8319,6 +8357,8 @@ def process_row(row):
             retailer_name,
             r_bundle["text"] or {},
         )
+        if str(retailer_name_normalized).strip().lower() == "albertsons":
+            is_albertsons_out_of_stock = bool(r_text.get("out_of_stock", False)) or is_albertsons_out_of_stock
         if str(retailer_name or "").strip().lower() == "walgreens":
             r_images = (r_bundle["images"] or [])[:6]
         else:
@@ -8388,6 +8428,7 @@ def process_row(row):
                 "Image Match %": avg_img_score,
                 "Overall %": overall,
                 "Status": ", ".join(status_notes),
+                "Out of Stock": "Yes" if is_albertsons_out_of_stock else "No",
                 **feature_score_fields,
                 **image_position_scores,
             },
@@ -8405,7 +8446,8 @@ def process_row(row):
                 "Feature %": avg_feature_score,
                 "Image Match %": avg_img_score,
                 "Overall %": overall,
-                "Status": "",
+                "Status": ", ".join(status_notes),
+                "Out of Stock": "Yes" if is_albertsons_out_of_stock else "No",
                 "Salsify Title": s_text.get("title", ""),
                 "Retailer Title": r_text.get("title", ""),
                     "CVS Title": r_text.get("title", ""),
@@ -8492,6 +8534,8 @@ def process_row(row):
                 "rawTextHasVendorDetailsParagraph": debug_data.get("rawTextHasVendorDetailsParagraph", False),
                 "rawHtmlVendorExcerpt": debug_data.get("rawHtmlVendorExcerpt", ""),
                 "rawTextVendorExcerpt": debug_data.get("rawTextVendorExcerpt", ""),
+                "Availability": debug_data.get("Availability", ""),
+                "Albertsons Image Count": debug_data.get("Albertsons Image Count", 0),
             },
         }
 
@@ -9231,6 +9275,7 @@ if (
         )
         st.markdown("## 👁️ Full Visual QA Review")
         st.caption("This full visual UI appears only after the top batch run finishes and the extract/report rows are ready.")
+        st.caption("Albertsons rows flagged as Out of Stock stay in the Excel export and are hidden from Full Visual QA review.")
         st.caption("This full visual UI appears only after the new top-section batch run finishes and the extract/report rows are ready. Kroger visual rows reuse the uploaded TXT-matched HTML instead of live fetch.")
 
         if hidden_count > 0:
@@ -9274,6 +9319,8 @@ if (
             r_desc = r_text.get("description") or ""
             retailer_features = r_text.get("features") or []
             retailer_norm = str(retailer_name or "").strip().lower()
+            if retailer_norm == "albertsons" and bool(r_text.get("out_of_stock", False)):
+                continue
             salsify_requirements = get_retailer_salsify_requirements(retailer_name)
             feature_fields = get_retailer_salsify_feature_fields(retailer_name)
 
