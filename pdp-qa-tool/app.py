@@ -1649,7 +1649,6 @@ def lookup_uploaded_raw_html(uploaded_html_map, retail_url, target_rpc=""):
         if html_text:
             return html_text
 
-    # Generic same-page fallback: match on the normalized URL after stripping query params.
     retail_no_query = normalize_uploaded_capture_url(retail_url).split("?", 1)[0].strip().lower()
     if retail_no_query:
         for stored_key, stored_html in uploaded_html_map.items():
@@ -1657,7 +1656,6 @@ def lookup_uploaded_raw_html(uploaded_html_map, retail_url, target_rpc=""):
             if stored_no_query and stored_no_query == retail_no_query:
                 return str(stored_html or "")
 
-    # Albertsons fallback: always allow direct RPC matching from the uploaded TXT map.
     matched_albertsons_key = find_albertsons_url_in_uploaded_map(uploaded_html_map, target_rpc=target_rpc)
     if matched_albertsons_key:
         return str(uploaded_html_map.get(matched_albertsons_key, "") or "")
@@ -6774,7 +6772,6 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
             return bundle
         return build_empty_retailer_bundle("Kroger", "kroger_txt_required_missing_or_rpc_not_matched")
 
-    # Albertsons must use the uploaded TXT capture only.
     if retailer == "albertsons":
         if uploaded_html.strip():
             return get_albertsons_bundle_from_uploaded(uploaded_html, retail_url=retail_url, target_rpc=target_rpc)
@@ -8041,7 +8038,7 @@ def get_visual_row_payload(
     row_source_code = str(row_source_code or "")
     uploaded_html_map = st.session_state.uploaded_raw_html_map or {}
 
-    # Visual QA must reuse the same Kroger TXT-matched HTML used in batch processing.
+    # Visual QA must reuse the same TXT-matched retailer HTML used in batch processing.
     if retailer_norm == "kroger":
         if not retail_url and current_target_sku:
             retail_url = find_kroger_url_in_uploaded_map(uploaded_html_map, target_rpc=current_target_sku)
@@ -8051,6 +8048,22 @@ def get_visual_row_payload(
                 retail_url,
                 target_rpc=current_target_sku,
             )
+
+    if retailer_norm == "albertsons":
+        if not retail_url and current_target_sku:
+            retail_url = find_albertsons_url_in_uploaded_map(uploaded_html_map, target_rpc=current_target_sku)
+        if not row_source_code:
+            row_source_code = lookup_uploaded_raw_html(
+                uploaded_html_map,
+                retail_url,
+                target_rpc=current_target_sku,
+            )
+        if not row_source_code and current_target_sku:
+            matched_albertsons_key = find_albertsons_url_in_uploaded_map(uploaded_html_map, target_rpc=current_target_sku)
+            if matched_albertsons_key:
+                row_source_code = str(uploaded_html_map.get(matched_albertsons_key, "") or "")
+                if not retail_url:
+                    retail_url = matched_albertsons_key
 
     r_bundle = get_retailer_bundle(
         retailer_name,
@@ -8136,7 +8149,8 @@ def process_row(row):
         if str(retailer_name_normalized).strip().lower() == "kroger" and not retail_url and cvs_rpc:
             retail_url = find_kroger_url_in_uploaded_map(st.session_state.uploaded_raw_html_map or {}, target_rpc=cvs_rpc)
 
-        # Albertsons must use uploaded TXT only. Resolve the uploaded HTML lazily here.
+        # Albertsons TXT captures can be extremely large. Resolve uploaded HTML lazily here
+        # instead of copying the full HTML block into every dataframe row before batching.
         if str(retailer_name_normalized).strip().lower() == "albertsons":
             uploaded_map = st.session_state.uploaded_raw_html_map or {}
             if not row_source_code:
@@ -8715,12 +8729,8 @@ if uploaded_file:
                 st.session_state.auto_batch_upload_key = ""
 
             txt_ready_for_batch = bool(matched_uploaded_html_count > 0)
-            if selected_retailer == "Albertsons":
-                txt_ready_for_batch = bool(uploaded_raw_html_map) and bool(matched_uploaded_html_count > 0)
             isolated_unique_url_count = int(retailer_df["retail_url"].fillna("").astype(str).str.strip().replace("", pd.NA).dropna().nunique()) if retailer_df is not None and not retailer_df.empty and "retail_url" in retailer_df.columns else 0
             st.caption(f"Strict retailer isolation active: {selected_retailer} only. Rows queued: {len(retailer_df)}. Unique retailer URLs queued: {isolated_unique_url_count}.")
-            if selected_retailer == "Albertsons" and not txt_ready_for_batch:
-                st.warning("Albertsons is TXT-only. Batch rows without a matching uploaded TXT capture will return missing retailer content instead of using live retailer HTML.")
             if selected_capture_mode == CAPTURE_MODE_USE_EXTENSION:
                 extension_payload = build_extension_batch_payload(
                     retailer_df=retailer_df,
