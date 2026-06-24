@@ -1151,6 +1151,98 @@ def clear_in_memory_caches():
         walgreens_api_cache = {}
     walgreens_api_cache.clear()
 
+
+
+def build_report_artifact(summary_rows, detail_rows, debug_rows, selected_retailer):
+    summary_df = pd.DataFrame(list(summary_rows or []))
+    detail_df = pd.DataFrame(list(detail_rows or []))
+    debug_df = pd.DataFrame(list(debug_rows or []))
+
+    selected_retailer_rpc_header = f"{str(selected_retailer or '').strip() or 'Retailer'} RPC"
+    for _df in [summary_df, detail_df, debug_df]:
+        _df.rename(
+            columns={
+                "CVS RPC": selected_retailer_rpc_header,
+                "Retailer RPC": selected_retailer_rpc_header,
+            },
+            inplace=True,
+        )
+
+    counts = {
+        "summary": int(len(summary_df)),
+        "detail": int(len(detail_df)),
+        "debug": int(len(debug_df)),
+    }
+
+    if summary_df.empty and detail_df.empty and debug_df.empty:
+        return {
+            "has_rows": False,
+            "bytes": None,
+            "filename": None,
+            "counts": counts,
+        }
+
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        summary_df.to_excel(writer, sheet_name="Summary", index=False)
+        detail_df.to_excel(writer, sheet_name="Details", index=False)
+        debug_df.to_excel(writer, sheet_name="Debug", index=False)
+
+        wb = writer.book
+        green_fill = PatternFill(fill_type="solid", fgColor="C6EFCE")
+        yellow_fill = PatternFill(fill_type="solid", fgColor="FFEB9C")
+        red_fill = PatternFill(fill_type="solid", fgColor="FFC7CE")
+
+        for sheet_name in ["Summary", "Details"]:
+            ws = wb[sheet_name]
+            header_map = {}
+            for cell in ws[1]:
+                header_map[str(cell.value).strip()] = cell.column
+
+            for col_name, col_idx in header_map.items():
+                if "%" in col_name:
+                    for row_idx in range(2, ws.max_row + 1):
+                        cell = ws.cell(row=row_idx, column=col_idx)
+                        value = cell.value
+                        if value is None or value == "":
+                            continue
+                        try:
+                            score_val = float(value)
+                        except Exception:
+                            continue
+                        if score_val >= 80:
+                            cell.fill = green_fill
+                        elif score_val >= 50:
+                            cell.fill = yellow_fill
+                        else:
+                            cell.fill = red_fill
+
+            for col_cells in ws.columns:
+                max_length = 0
+                col_letter = col_cells[0].column_letter
+                for cell in col_cells:
+                    try:
+                        cell_len = len(str(cell.value or ""))
+                        if cell_len > max_length:
+                            max_length = cell_len
+                    except Exception:
+                        pass
+                adjusted_width = min(max(max_length + 2, 12), 60)
+                ws.column_dimensions[col_letter].width = adjusted_width
+
+    safe_retailer = re.sub(
+        r"[^a-z0-9]+",
+        "_",
+        str(selected_retailer or "retailer").lower().strip(),
+    ).strip("_") or "retailer"
+
+    return {
+        "has_rows": True,
+        "bytes": output.getvalue(),
+        "filename": f"pdp_qa_results_{safe_retailer}_all_brands.xlsx",
+        "counts": counts,
+    }
+
 # =========================================
 # HTML FETCH
 # =========================================
@@ -8786,6 +8878,7 @@ if uploaded_file:
                 st.session_state.report_bytes = None
                 st.session_state.report_filename = None
                 st.session_state.report_batch_key = ""
+                st.session_state.report_row_signature = ""
                 st.session_state.auto_download_done = False
                 st.session_state.auto_batch_upload_key = current_batch_key
                 clear_in_memory_caches()
@@ -8817,6 +8910,7 @@ if uploaded_file:
                     st.session_state.report_bytes = None
                     st.session_state.report_filename = None
                     st.session_state.report_batch_key = ""
+                    st.session_state.report_row_signature = ""
                     st.session_state.auto_download_done = False
                     clear_in_memory_caches()
                     st.cache_data.clear()
@@ -9011,8 +9105,44 @@ if retailer_df is not None and file_ready_for_batch and st.session_state.batch_s
             else:
                 st.session_state.processing_done = True
                 st.session_state.completed_batch_key = current_batch_key
-                st.session_state.batch_status_message = f"Batch finished for {selected_retailer}. Extract/report generated successfully."
+
+                current_report_signature = "::".join([
+                    str(current_batch_key or ""),
+                    str(len(st.session_state.summary_rows or [])),
+                    str(len(st.session_state.export_rows or [])),
+                    str(len(st.session_state.debug_rows or [])),
+                ])
+                report_artifact = build_report_artifact(
+                    st.session_state.summary_rows,
+                    st.session_state.export_rows,
+                    st.session_state.debug_rows,
+                    selected_retailer,
+                )
+
+                if report_artifact.get("has_rows"):
+                    counts = report_artifact.get("counts", {})
+                    st.session_state.report_bytes = report_artifact.get("bytes")
+                    st.session_state.report_filename = report_artifact.get("filename")
+                    st.session_state.report_batch_key = current_batch_key
+                    st.session_state.report_row_signature = current_report_signature
+                    st.session_state.batch_status_message = (
+                        f"Report ready for {selected_retailer}. "
+                        f"Summary rows: {counts.get('summary', 0)}, "
+                        f"Details rows: {counts.get('detail', 0)}, "
+                        f"Debug rows: {counts.get('debug', 0)}."
+                    )
+                else:
+                    st.session_state.report_bytes = None
+                    st.session_state.report_filename = None
+                    st.session_state.report_batch_key = current_batch_key
+                    st.session_state.report_row_signature = current_report_signature
+                    st.session_state.batch_status_message = (
+                        f"Batch finished for {selected_retailer}, but no report rows were captured yet. "
+                        "No Excel export was generated because all report tabs would have been empty."
+                    )
+
                 st.session_state.batch_run_requested = False
+                st.session_state.auto_download_done = False
                 st.session_state.auto_batch_upload_key = current_batch_key
                 st.rerun()
     except Exception as e:
@@ -9036,10 +9166,10 @@ if st.session_state.completed_batch_key:
 if (
     st.session_state.processing_done
     and st.session_state.completed_batch_key
+    and st.session_state.report_bytes is None
     and (
         st.session_state.report_batch_key != st.session_state.completed_batch_key
         or st.session_state.report_row_signature != current_report_signature
-        or st.session_state.report_bytes is None
     )
 ):
     summary_df = pd.DataFrame(list(st.session_state.summary_rows or []))
