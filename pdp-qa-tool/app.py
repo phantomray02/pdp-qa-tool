@@ -607,11 +607,10 @@ def infer_retailer_name_from_url(url):
         return "Walgreens"
     if "amazon.com" in url:
         return "Amazon"
+    if "albertsons.com" in url:
+        return "Albertsons"
 
     return "Retailer"
-    
-
-
 def normalize_retailer_name(value):
     value = normalize_space(value)
     if not value:
@@ -628,11 +627,10 @@ def normalize_retailer_name(value):
         "target": "Target",
         "kroger": "Kroger",
         "amazon": "Amazon",
+        "albertsons": "Albertsons",
         "retailer": "Retailer",
     }
     return mapping.get(lowered, value)
-
-
 def build_empty_retailer_bundle(retailer_name="Retailer", reason=""):
     retailer_name = normalize_retailer_name(retailer_name)
     reason = normalize_space(reason) or "retailer_not_supported"
@@ -745,6 +743,7 @@ RETAILER_SALSIFY_REQUIREMENTS = {
     "default": {"max_features": 5, "max_images": 6},
     "cvs": {"max_features": 5, "max_images": 8},
     "walgreens": {"max_features": 5, "max_images": 6},
+    "albertsons": {"max_features": 8, "max_images": 8},
     "kroger": {"max_features": 7, "max_images": 7},
     "sam's club": {"max_features": 10, "max_images": 10},
     "sams club": {"max_features": 10, "max_images": 10},
@@ -960,6 +959,71 @@ def reorder_cvs_retailer_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_
         add_url(url)
     return ordered[:max_slots]
 
+def reorder_albertsons_salsify_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
+    """
+    Albertsons Salsify order for visual QA:
+    1. Online Optimized Image-Grocery when present; otherwise Online Optimized Image-.
+       Never use Online Optimized Image- when the Grocery asset exists.
+    2+. ATF 2-Generic through ATF 8-Generic, shifting up when earlier ATF slots are missing.
+    Slot 1 stays reserved for the Online image and shows Missing if no Online asset exists.
+    """
+    imgs = [img for img in (images or []) if isinstance(img, dict)]
+
+    def norm_name(img):
+        return normalize_salsify_asset_name((img or {}).get("name", "")) if isinstance(img, dict) else ""
+
+    excluded_tokens = [
+        normalize_salsify_asset_name(x)
+        for x in ["cvs", "walgreens", "sam's club", "sams club", "samsclub", "kroger", "walmart", "target", "amazon"]
+    ]
+
+    def is_excluded(img):
+        name = norm_name(img)
+        return any(token and token in name for token in excluded_tokens)
+
+    def find_first(*queries):
+        query_tokens = [normalize_salsify_asset_name(q) for q in queries if normalize_salsify_asset_name(q)]
+        for q in query_tokens:
+            for img in imgs:
+                if is_excluded(img):
+                    continue
+                name = norm_name(img)
+                if name and (q == name or q in name):
+                    return img
+        return None
+
+    def image_key(img):
+        return str(img.get("url", "") or "").strip() if isinstance(img, dict) else ""
+
+    ordered = []
+    used = set()
+
+    def add(img, blank_name=""):
+        if not isinstance(img, dict):
+            if blank_name:
+                ordered.append(make_blank_salsify_image_slot(blank_name))
+            return False
+        key = image_key(img)
+        if not key or key in used:
+            if blank_name:
+                ordered.append(make_blank_salsify_image_slot(blank_name))
+            return False
+        ordered.append(img)
+        used.add(key)
+        return True
+
+    grocery_img = find_first("online optimized image grocery", "online optimized image-grocery")
+    regular_online_img = None if grocery_img else find_first("online optimized image-", "online optimized image")
+    add(grocery_img or regular_online_img, "albertsons_slot_1")
+
+    for n in range(2, 9):
+        add(find_first(f"atf {n} generic", f"atf {n}-generic", f"atf{n} generic", f"atf{n}-generic"))
+
+    for img in imgs:
+        add(img)
+
+    return ordered[:max_slots]
+
 def apply_retailer_salsify_image_limits(retailer_name, images):
     retailer = str(retailer_name or "").strip().lower()
     limits = get_retailer_salsify_requirements(retailer_name)
@@ -967,6 +1031,8 @@ def apply_retailer_salsify_image_limits(retailer_name, images):
     max_images = max(0, min(max_images, MAX_IMAGE_SLOTS_TO_COMPARE))
     if retailer == "cvs":
         return reorder_cvs_salsify_images_for_visual(images, max_slots=max_images)
+    if retailer == "albertsons":
+        return reorder_albertsons_salsify_images_for_visual(images, max_slots=max_images)
     out = []
     seen_urls = set()
     for img in list(images or []):
@@ -1001,7 +1067,7 @@ def prepare_input_df(df):
     )
 
     rpc_candidates = []
-    for rpc_col in ["retailer_rpc", "kroger_rpc", "cvs rpc", "walgreens rpc", "sams club rpc"]:
+    for rpc_col in ["retailer_rpc", "kroger_rpc", "cvs rpc", "walgreens rpc", "sams club rpc", "albertsons rpc", "albertsons_rpc"]:
         if rpc_col in df.columns:
             rpc_candidates.append(
                 df[rpc_col]
@@ -1019,7 +1085,7 @@ def prepare_input_df(df):
     else:
         df["retailer_rpc"] = ""
 
-    for rpc_col in ["kroger_rpc", "cvs rpc", "walgreens rpc", "sams club rpc"]:
+    for rpc_col in ["kroger_rpc", "cvs rpc", "walgreens rpc", "sams club rpc", "albertsons rpc", "albertsons_rpc"]:
         if rpc_col in df.columns:
             df.drop(columns=[rpc_col], inplace=True)
 
@@ -2396,6 +2462,45 @@ def _parse_salsify_page(html_text):
     )
 
 
+    albertsons_feature_values = []
+    albertsons_feature_slots = {}
+    for i in range(1, 9):
+        exact_keys = [f"Albertsons Feature {i}"]
+        loose_keys = [f"Albertsons Feature {i}"]
+        if i == 1:
+            exact_keys.extend(["Albertsons Feature 1 (Each)", "Albertsons Feature1 (Each)", "Albertsons Feature1"])
+            loose_keys.extend(["Albertsons Feature 1 (Each)", "Albertsons Feature 1"])
+        elif i == 5:
+            exact_keys.extend(["Albertsons Feature 5 (Each)", "Albertsons Feature5 (Each)", "Albertsons Feature5"])
+            loose_keys.extend(["Albertsons Feature 5 (Each)", "Albertsons Feature 5"])
+        else:
+            exact_keys.extend([f"Albertsons Feature{i}", f"Retailer Feature {i} - Albertsons", f"Retailer Bullet {i} - Albertsons"])
+            loose_keys.extend([f"Retailer Feature {i} - Albertsons", f"Retailer Bullet {i} - Albertsons"])
+        slot_values = dedupe_preserve_order((collect_property_values(*exact_keys) or []) + (collect_property_values_loose(*loose_keys) or []))
+        slot_values = [v for v in slot_values if v and not is_placeholder_salsify_copy_value(v)]
+        if slot_values:
+            albertsons_feature_slots[i] = slot_values[0]
+            albertsons_feature_values.extend(slot_values)
+
+    if not albertsons_feature_values:
+        broad_albertsons_feature_values = []
+        for prop_key, values in property_values.items():
+            pk = normalize_space(prop_key).lower().replace('_', ' ')
+            if 'albertsons' not in pk:
+                continue
+            if not any(token in pk for token in ['feature', 'bullet', 'selling point', 'benefit', 'highlight']):
+                continue
+            for value in values or []:
+                clean_value = normalize_space(value)
+                if clean_value and not is_placeholder_salsify_copy_value(clean_value):
+                    broad_albertsons_feature_values.append(clean_value)
+        albertsons_feature_values = dedupe_preserve_order(broad_albertsons_feature_values)
+
+    albertsons_feature_values = normalize_salsify_feature_values(
+        dedupe_preserve_order(albertsons_feature_values),
+        max_features=8,
+    )
+
     retailer_overrides = {
         "kroger": {
             "title": first_property("Kroger Product Title", "Kroger Title"),
@@ -2447,6 +2552,21 @@ def _parse_salsify_page(html_text):
                 max_features=10,
             ),
             "feature_slots": walgreens_feature_slots,
+        },
+        "albertsons": {
+            "title": first_non_placeholder_copy_value(
+                first_property("Albertsons Product Title (Each)", "Albertsons Product Title"),
+                first_property("General Product Title", "General Title", "Product Title"),
+            ),
+            "description": first_non_placeholder_copy_value(
+                first_property("Albertsons Description"),
+                first_property("General Description", "General Product Description", "Description"),
+            ),
+            "features": normalize_salsify_feature_values(
+                albertsons_feature_values or general_feature_values,
+                max_features=8,
+            ),
+            "feature_slots": albertsons_feature_slots,
         },
     }
 
@@ -3722,6 +3842,196 @@ def get_cvs_bundle(retail_url, target_rpc=""):
             target_rpc=target_rpc,
         ),
         "images": extract_cvs_images_from_html(html_text),
+    }
+
+# =========================================
+# ALBERTSONS PARSERS
+# =========================================
+def clean_albertsons_text(text):
+    if not text:
+        return ""
+    text = str(text)
+    text = html.unescape(text)
+    text = text.replace("\u0026", "&")
+    text = text.replace("\n", " ")
+    text = text.replace("\/", "/")
+    text = text.replace('\"', '"')
+    if "<" in text and ">" in text:
+        text = BeautifulSoup(text, "html.parser").get_text(" ", strip=True)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+def normalize_albertsons_features(items, max_features=8):
+    cleaned = []
+    for item in items or []:
+        value = clean_albertsons_text(item)
+        if value:
+            cleaned.append(value)
+    return dedupe_preserve_order(cleaned[:max_features])
+
+def _clean_albertsons_image_url(url):
+    url = html.unescape(str(url or "")).strip()
+    url = url.replace("\u0026", "&")
+    url = url.replace("\\u003d", "=")
+    url = url.replace("\u003d", "=")
+    while url and url[-1] in (")", chr(92), chr(34), chr(39)):
+        url = url[:-1]
+    if url.startswith("images.albertsons-media.com/"):
+        url = "https://" + url
+    if not re.match(r"^https?://images\.albertsons-media\.com/is/image/ABS/", url, flags=re.IGNORECASE):
+        return ""
+    if "${product.id}" in url:
+        return ""
+    bad_tokens = ["nav-albertsons-logo", "privacyoptions", "grocery-bag", "progressive_profile_web", "rewards34", "referral"]
+    if any(token in url.lower() for token in bad_tokens):
+        return ""
+    url = re.sub(r"\$ng-ecom-pdp-tn\$", "$ng-ecom-pdp-desktop$", url, flags=re.IGNORECASE)
+    return url
+
+def _albertsons_image_family_key(url):
+    return str(url or "").split("?", 1)[0].strip().lower()
+
+def extract_albertsons_images_from_html(html_text, target_rpc=""):
+    working = html.unescape(str(html_text or ""))
+    target_rpc = clean_item_number(target_rpc)
+    image_urls = re.findall(r'https?://images\.albertsons-media\.com/is/image/ABS/[^\s"\']+', working, flags=re.IGNORECASE)
+    image_urls += ["https://" + x for x in re.findall(r'images\.albertsons-media\.com/is/image/ABS/[^\s"\']+', working, flags=re.IGNORECASE)]
+
+    family_order = []
+    best_by_family = {}
+    for raw_url in image_urls:
+        clean_url = _clean_albertsons_image_url(raw_url)
+        if not clean_url:
+            continue
+        if target_rpc and f"/ABS/{target_rpc}" not in clean_url:
+            continue
+        family_key = _albertsons_image_family_key(clean_url)
+        if family_key not in family_order:
+            family_order.append(family_key)
+        current = best_by_family.get(family_key, "")
+        current_is_desktop = "$ng-ecom-pdp-desktop$" in current
+        candidate_is_desktop = "$ng-ecom-pdp-desktop$" in clean_url
+        if not current or (candidate_is_desktop and not current_is_desktop):
+            best_by_family[family_key] = clean_url
+
+    ordered = []
+    for family_key in family_order:
+        url = best_by_family.get(family_key, "")
+        if url and url not in ordered:
+            ordered.append(url)
+    return ordered[:8]
+
+def extract_albertsons_text_from_html(html_text, retail_url="", target_rpc=""):
+    debug = {
+        "Title Path": "",
+        "Description Path": "",
+        "Features Path": "",
+        "Source Used": "albertsons_live_html",
+        "Retailer": "Albertsons",
+    }
+    if not html_text:
+        return {"title": "", "description": "", "features": [], "rating": "", "review_count": "", "debug": debug}
+
+    working = html.unescape(str(html_text or ""))
+    soup = BeautifulSoup(working, "html.parser")
+
+    title = ""
+    generic_title_markers = {"shopped with us before?", "details", "more", "welcome back!"}
+
+    heading_match = re.search(r'(?m)^#\s+(.+?)\s*-\s*albertsons\s*$', working, flags=re.IGNORECASE)
+    if heading_match:
+        title = normalize_space(heading_match.group(1))
+        debug["Title Path"] = "markdown_h1"
+
+    if not title:
+        og_title = soup.find("meta", attrs={"property": "og:title"})
+        if og_title and og_title.get("content"):
+            title = normalize_space(og_title.get("content", ""))
+            debug["Title Path"] = "og:title"
+
+    if not title and soup.title:
+        title = normalize_space(soup.title.get_text(" ", strip=True))
+        debug["Title Path"] = "html_title"
+
+    h1 = soup.find("h1")
+    if h1:
+        h1_title = normalize_space(h1.get_text(" ", strip=True))
+        if h1_title and h1_title.lower() not in generic_title_markers:
+            if not title or title.lower() in generic_title_markers:
+                title = h1_title
+                debug["Title Path"] = "h1"
+
+    title = re.sub(r"\s*-\s*albertsons\s*$", "", title, flags=re.IGNORECASE).strip()
+
+    description = ""
+    features = []
+    marketing = soup.select_one('#detailsAccordionContent .content-detail__marketing') or soup.select_one('.content-detail__marketing')
+    if marketing is not None:
+        for div in marketing.find_all('div', class_=lambda c: c and 'pt-4' in str(c), recursive=True):
+            candidate = clean_albertsons_text(div.get_text(' ', strip=True))
+            if candidate and len(candidate.split()) >= 8:
+                description = candidate
+                debug["Description Path"] = "content-detail__marketing div.pt-4"
+                break
+        ul = marketing.find('ul')
+        if ul is not None:
+            features = [clean_albertsons_text(li.get_text(' ', strip=True)) for li in ul.find_all('li')]
+            features = normalize_albertsons_features(features, max_features=8)
+            if features:
+                debug["Features Path"] = "content-detail__marketing ul li"
+
+    if not description:
+        desc_match = re.search(
+            r'product-detail-accordion[^>]*class="text-m".*?content-detail__marketing.*?<div[^>]*class="pt-4"[^>]*>(.*?)</div>\s*<ul[^>]*class="pt-4 mb-0"',
+            working,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if desc_match:
+            description = clean_albertsons_text(desc_match.group(1))
+            debug["Description Path"] = "product-detail-accordion regex"
+        feature_match = re.search(r'<ul[^>]*class="pt-4 mb-0"[^>]*>(.*?)</ul>', working, flags=re.IGNORECASE | re.DOTALL)
+        if feature_match:
+            features = [clean_albertsons_text(x) for x in re.findall(r'<li[^>]*>(.*?)</li>', feature_match.group(1), flags=re.IGNORECASE | re.DOTALL)]
+            features = normalize_albertsons_features(features, max_features=8)
+            if features:
+                debug["Features Path"] = "product-detail-accordion regex"
+
+    if not description and '### details' in working.lower():
+        lines = [normalize_space(line) for line in working.splitlines()]
+        start_idx = next((idx for idx, line in enumerate(lines) if line.lower() == '### details'), -1)
+        if start_idx != -1:
+            desc_parts = []
+            feat_parts = []
+            for line in lines[start_idx + 1:]:
+                if not line:
+                    continue
+                if line.lower().startswith('### more'):
+                    break
+                if line.startswith('- '):
+                    feat_parts.append(line[2:].strip())
+                else:
+                    desc_parts.append(line)
+            if desc_parts and not description:
+                description = clean_albertsons_text(' '.join(desc_parts))
+                debug["Description Path"] = "details text fallback"
+            if feat_parts and not features:
+                features = normalize_albertsons_features(feat_parts, max_features=8)
+                debug["Features Path"] = "details text fallback"
+
+    return {
+        "title": title,
+        "description": clean_albertsons_text(description),
+        "features": normalize_albertsons_features(features, max_features=8),
+        "rating": "",
+        "review_count": "",
+        "debug": debug,
+    }
+@st.cache_data(show_spinner=False)
+def get_albertsons_bundle(retail_url, target_rpc=""):
+    html_text = get_html(retail_url)
+    return {
+        "text": extract_albertsons_text_from_html(html_text, retail_url=retail_url, target_rpc=target_rpc),
+        "images": extract_albertsons_images_from_html(html_text, target_rpc=target_rpc),
     }
 
 # =========================================
@@ -6216,6 +6526,10 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
             bundle = {"text": extract_walgreens_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_walgreens_images_from_html(uploaded_html)}
             bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
             return bundle
+        if retailer == "albertsons":
+            bundle = {"text": extract_albertsons_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_albertsons_images_from_html(uploaded_html, target_rpc=target_rpc)}
+            bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
+            return bundle
         if retailer == "sam's club":
             bundle = {"text": extract_sams_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_sams_images_from_html(uploaded_html)}
             bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
@@ -6224,6 +6538,7 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
     retailer_fetchers = {
         "cvs": lambda: get_cvs_bundle(retail_url, target_rpc),
         "walgreens": lambda: get_walgreens_bundle(retail_url, target_rpc, sku=sku),
+        "albertsons": lambda: get_albertsons_bundle(retail_url, target_rpc),
         "sam's club": lambda: get_sams_bundle(retail_url, target_rpc, sku=sku),
         "kroger": lambda: get_kroger_bundle(retail_url, target_rpc),
     }
@@ -6699,6 +7014,9 @@ def is_placeholder_salsify_copy_value(value):
         "description",
         "cvs description",
         "cvs product description",
+        "albertsons product title each",
+        "albertsons product title",
+        "albertsons description",
         "feature",
         "bullet",
     }
@@ -6709,6 +7027,8 @@ def is_placeholder_salsify_copy_value(value):
     if re.fullmatch(r"cvs feature ?\d+", normalized):
         return True
     if re.fullmatch(r"feature ?\d+", normalized):
+        return True
+    if re.fullmatch(r"albertsons feature ?\d+( each)?", normalized):
         return True
     if re.fullmatch(r"general bullet ?\d+", normalized):
         return True
@@ -6880,6 +7200,30 @@ def finalize_salsify_copy_for_retailer(retailer_name, s_text):
             out[f"feature{i}"] = selected_features[i - 1] if i - 1 < len(selected_features) else ""
         return out
 
+    if retailer == "albertsons":
+        albertsons_override = retailer_overrides.get("albertsons", {}) or {}
+        selected_title = normalize_space(first_non_placeholder_copy_value(albertsons_override.get("title", ""), out.get("title", "")))
+        selected_description = normalize_space(first_non_placeholder_copy_value(albertsons_override.get("description", ""), out.get("description", "")))
+        override_features = albertsons_override.get("features", []) or []
+        override_feature_slots = albertsons_override.get("feature_slots", {}) or {}
+        generic_features = generic_feature_list()
+        selected_features = []
+        for i in range(1, 9):
+            slot_value = first_non_placeholder_copy_value(override_feature_slots.get(i, ""))
+            if slot_value:
+                selected_features.append(slot_value)
+        if not selected_features:
+            selected_features = normalize_salsify_feature_values(override_features or generic_features, max_features=8)
+        else:
+            tail_features = normalize_salsify_feature_values(override_features, max_features=8)
+            selected_features = dedupe_preserve_order(selected_features + tail_features)[:8]
+        out["title"] = selected_title
+        out["description"] = selected_description
+        out["features"] = selected_features
+        for i in range(1, 11):
+            out[f"feature{i}"] = selected_features[i - 1] if i - 1 < len(selected_features) else ""
+        return out
+
     out["title"] = first_non_placeholder_copy_value(out.get("title", ""))
     out["description"] = first_non_placeholder_copy_value(out.get("description", ""))
     out["features"] = normalize_salsify_feature_values(out.get("features", []) or generic_feature_list(), max_features=10)
@@ -6918,6 +7262,12 @@ def finalize_retailer_copy(retailer_name, r_text):
 
         out["description"] = cleaned_description
         out["features"] = cleaned_features
+        return out
+
+    if retailer == "albertsons":
+        out["title"] = normalize_space(out.get("title", ""))
+        out["description"] = clean_albertsons_text(out.get("description", ""))
+        out["features"] = normalize_albertsons_features(out.get("features", []), max_features=8)
         return out
 
     if retailer in ["sam's club", "sams club", "samsclub"]:
@@ -7452,8 +7802,11 @@ def get_visual_row_payload(
     )
 
     visual_max_slots = MAX_IMAGE_SLOTS_TO_COMPARE
-    if str(retailer_name or "").strip().lower() == "walgreens":
+    retailer_name_norm = str(retailer_name or "").strip().lower()
+    if retailer_name_norm == "walgreens":
         visual_max_slots = 6
+    elif retailer_name_norm == "albertsons":
+        visual_max_slots = 8
 
     s_text = finalize_salsify_copy_for_retailer(retailer_name, s_bundle["text"] or {})
     if str(retailer_name or "").strip().lower() == "cvs":
@@ -7484,6 +7837,8 @@ def get_visual_row_payload(
         r_images = reorder_cvs_retailer_images_for_visual(r_images, max_slots=cvs_max_slots)
     elif str(retailer_name or "").strip().lower() == "walgreens":
         r_images = r_images[:6]
+    elif str(retailer_name or "").strip().lower() == "albertsons":
+        r_images = r_images[:8]
 
     s_images, r_images = align_image_slots_for_comparison(
         s_images,
