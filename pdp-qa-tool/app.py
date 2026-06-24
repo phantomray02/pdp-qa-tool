@@ -8491,6 +8491,8 @@ if "report_filename" not in st.session_state:
     st.session_state.report_filename = None
 if "report_batch_key" not in st.session_state:
     st.session_state.report_batch_key = ""
+if "report_row_signature" not in st.session_state:
+    st.session_state.report_row_signature = ""
 if "batch_run_requested" not in st.session_state:
     st.session_state.batch_run_requested = False
 if "batch_started_key" not in st.session_state:
@@ -8529,6 +8531,8 @@ with top_download_col:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key="download_excel_report_top_single",
         )
+        if st.session_state.report_row_signature:
+            st.caption(f"Report snapshot: {st.session_state.report_row_signature}")
 
 master_df = None
 retailer_df = None
@@ -8722,6 +8726,9 @@ if uploaded_file:
                 st.session_state.selected_brand_visual = "All"
                 st.session_state.auto_download_done = False
                 st.session_state.report_batch_key = ""
+                st.session_state.report_row_signature = ""
+                st.session_state.report_bytes = None
+                st.session_state.report_filename = None
                 st.session_state.batch_run_requested = False
                 st.session_state.batch_started_key = ""
                 st.session_state.batch_status_message = ""
@@ -9016,14 +9023,27 @@ if retailer_df is not None and file_ready_for_batch and st.session_state.batch_s
 # =========================================
 # TOP EXPORT SECTION
 # =========================================
+current_report_signature = ""
+if st.session_state.completed_batch_key:
+    current_report_signature = "::".join([
+        str(st.session_state.completed_batch_key or ""),
+        str(len(st.session_state.summary_rows or [])),
+        str(len(st.session_state.export_rows or [])),
+        str(len(st.session_state.debug_rows or [])),
+    ])
+
 if (
     st.session_state.processing_done
     and st.session_state.completed_batch_key
-    and st.session_state.report_batch_key != st.session_state.completed_batch_key
+    and (
+        st.session_state.report_batch_key != st.session_state.completed_batch_key
+        or st.session_state.report_row_signature != current_report_signature
+        or st.session_state.report_bytes is None
+    )
 ):
-    summary_df = pd.DataFrame(st.session_state.summary_rows)
-    detail_df = pd.DataFrame(st.session_state.export_rows)
-    debug_df = pd.DataFrame(st.session_state.debug_rows)
+    summary_df = pd.DataFrame(list(st.session_state.summary_rows or []))
+    detail_df = pd.DataFrame(list(st.session_state.export_rows or []))
+    debug_df = pd.DataFrame(list(st.session_state.debug_rows or []))
 
     selected_retailer_rpc_header = f"{str(selected_retailer or '').strip() or 'Retailer'} RPC"
     for _df in [summary_df, detail_df, debug_df]:
@@ -9035,76 +9055,89 @@ if (
             inplace=True,
         )
 
-    output = BytesIO()
+    if summary_df.empty and detail_df.empty and debug_df.empty:
+        st.session_state.report_bytes = None
+        st.session_state.report_filename = None
+        st.session_state.report_batch_key = ""
+        st.session_state.report_row_signature = ""
+        st.session_state.batch_status_message = (
+            f"Batch finished for {selected_retailer}, but no report rows were captured yet. "
+            "The app cleared the previous report instead of exporting an empty workbook."
+        )
+    else:
+        output = BytesIO()
 
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        summary_df.to_excel(writer, sheet_name="Summary", index=False)
-        detail_df.to_excel(writer, sheet_name="Details", index=False)
-        debug_df.to_excel(writer, sheet_name="Debug", index=False)
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            summary_df.to_excel(writer, sheet_name="Summary", index=False)
+            detail_df.to_excel(writer, sheet_name="Details", index=False)
+            debug_df.to_excel(writer, sheet_name="Debug", index=False)
 
-        wb = writer.book
+            wb = writer.book
 
-        green_fill = PatternFill(fill_type="solid", fgColor="C6EFCE")
-        yellow_fill = PatternFill(fill_type="solid", fgColor="FFEB9C")
-        red_fill = PatternFill(fill_type="solid", fgColor="FFC7CE")
+            green_fill = PatternFill(fill_type="solid", fgColor="C6EFCE")
+            yellow_fill = PatternFill(fill_type="solid", fgColor="FFEB9C")
+            red_fill = PatternFill(fill_type="solid", fgColor="FFC7CE")
 
-        for sheet_name in ["Summary", "Details"]:
-            ws = wb[sheet_name]
+            for sheet_name in ["Summary", "Details"]:
+                ws = wb[sheet_name]
 
-            header_map = {}
-            for cell in ws[1]:
-                header_map[str(cell.value).strip()] = cell.column
+                header_map = {}
+                for cell in ws[1]:
+                    header_map[str(cell.value).strip()] = cell.column
 
-            for col_name, col_idx in header_map.items():
-                if "%" in col_name:
-                    for row_idx in range(2, ws.max_row + 1):
-                        cell = ws.cell(row=row_idx, column=col_idx)
-                        value = cell.value
+                for col_name, col_idx in header_map.items():
+                    if "%" in col_name:
+                        for row_idx in range(2, ws.max_row + 1):
+                            cell = ws.cell(row=row_idx, column=col_idx)
+                            value = cell.value
 
-                        if value is None or value == "":
-                            continue
+                            if value is None or value == "":
+                                continue
 
+                            try:
+                                score_val = float(value)
+                            except Exception:
+                                continue
+
+                            if score_val >= 80:
+                                cell.fill = green_fill
+                            elif score_val >= 50:
+                                cell.fill = yellow_fill
+                            else:
+                                cell.fill = red_fill
+
+                for col_cells in ws.columns:
+                    max_length = 0
+                    col_letter = col_cells[0].column_letter
+
+                    for cell in col_cells:
                         try:
-                            score_val = float(value)
+                            cell_len = len(str(cell.value or ""))
+                            if cell_len > max_length:
+                                max_length = cell_len
                         except Exception:
-                            continue
+                            pass
 
-                        if score_val >= 80:
-                            cell.fill = green_fill
-                        elif score_val >= 50:
-                            cell.fill = yellow_fill
-                        else:
-                            cell.fill = red_fill
+                    adjusted_width = min(max(max_length + 2, 12), 60)
+                    ws.column_dimensions[col_letter].width = adjusted_width
 
-            for col_cells in ws.columns:
-                max_length = 0
-                col_letter = col_cells[0].column_letter
+        safe_retailer = re.sub(
+            r"[^a-z0-9]+",
+            "_",
+            str(selected_retailer or "retailer").lower().strip(),
+        ).strip("_") or "retailer"
 
-                for cell in col_cells:
-                    try:
-                        cell_len = len(str(cell.value or ""))
-                        if cell_len > max_length:
-                            max_length = cell_len
-                    except Exception:
-                        pass
-
-                adjusted_width = min(max(max_length + 2, 12), 60)
-                ws.column_dimensions[col_letter].width = adjusted_width
-
-    safe_retailer = re.sub(
-        r"[^a-z0-9]+",
-        "_",
-        str(selected_retailer or "retailer").lower().strip(),
-    ).strip("_") or "retailer"
-
-    st.session_state.report_bytes = output.getvalue()
-    st.session_state.report_filename = f"pdp_qa_results_{safe_retailer}_all_brands.xlsx"
-    st.session_state.report_batch_key = st.session_state.completed_batch_key
-    st.session_state.auto_download_done = False
-    if not st.session_state.batch_status_message:
-        st.session_state.batch_status_message = f"Batch finished for {selected_retailer}. Extract/report generated successfully."
+        st.session_state.report_bytes = output.getvalue()
+        st.session_state.report_filename = f"pdp_qa_results_{safe_retailer}_all_brands.xlsx"
+        st.session_state.report_batch_key = st.session_state.completed_batch_key
+        st.session_state.report_row_signature = current_report_signature
+        st.session_state.auto_download_done = False
+        st.session_state.batch_status_message = (
+            f"Report ready for {selected_retailer}. "
+            f"Summary rows: {len(summary_df)}, Details rows: {len(detail_df)}, Debug rows: {len(debug_df)}."
+        )
     st.rerun()
-        
+
 # =========================================
 # FULL VISUAL MODE
 # =========================================
