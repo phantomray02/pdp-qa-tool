@@ -7172,21 +7172,35 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
                     return img
         return None
 
-    def find_first_retailer_preferred_image(images, retailer_token, *queries, strict=False):
+    def find_first_retailer_preferred_image(images, retailer_token, *queries, strict=False, excluded_retailer_tokens=None, used_urls=None):
         retailer_token = normalize_salsify_asset_name(retailer_token or "")
+        excluded_retailer_tokens = {
+            normalize_salsify_asset_name(x)
+            for x in (excluded_retailer_tokens or [])
+            if normalize_salsify_asset_name(x)
+        }
+        used_urls = {str(x or "").strip() for x in (used_urls or set()) if str(x or "").strip()}
+
         preferred = []
-        fallback = []
+        generic_only = []
+
         for img in images or []:
             if not isinstance(img, dict):
+                continue
+            url = str(img.get("url", "") or "").strip()
+            if used_urls and url in used_urls:
                 continue
             name = normalize_salsify_asset_name(img.get("name", ""))
             if retailer_token and retailer_token in name:
                 preferred.append(img)
-            else:
-                fallback.append(img)
+                continue
+            if any(token and token in name for token in excluded_retailer_tokens):
+                continue
+            generic_only.append(img)
+
         if strict:
             return find_first_image(preferred, *queries)
-        return find_first_image(preferred, *queries) or find_first_image(fallback, *queries)
+        return find_first_image(preferred, *queries) or find_first_image(generic_only, *queries)
 
     if retailer in {"sam's club", "sams club", "samsclub"}:
         sams_brands = {"depend", "kotex", "u by kotex", "poise", "thinx", "thix"}
@@ -7257,12 +7271,25 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
         return reorder_cvs_salsify_images_for_visual(source_images, max_slots=max_slots)
 
     if retailer == "walgreens":
-        aligned = []
         strict_image_mode = retailer in EXCLUSIVE_SALSIFY_IMAGE_RETAILERS
-        # Walgreens visual rules:
-        # 1. Slot 1 is always Online Optimized Image.
-        # 2. Slot 2 is always Ingredient Label Image.
-        # 3. If either slot is missing, keep that slot blank so ATF images do not move up.
+        used_urls = set()
+        aligned = []
+        excluded_retailer_tokens = {
+            "cvs",
+            "kroger",
+            "sam's club",
+            "sams club",
+            "samsclub",
+            "walmart",
+            "target",
+            "amazon",
+        }
+
+        # Walgreens Salsify rules:
+        # 1. Slot 1 must be Online Optimized Image.
+        # 2. Slot 2 must be Ingredient Label Image.
+        # 3. If either slot is missing, keep that slot blank.
+        # 4. ATF images must start only after slots 1 and 2 and never move up.
         slot_plan = [
             (("online optimized image-", "online optimized image", "online image", "online", "front"), "online optimized image", True),
             (("ingredient label image", "ingredients label image", "ingredient label", "ingredients label"), "ingredient label image", True),
@@ -7273,18 +7300,23 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
             (("atf 5",), "atf 5", False),
             (("atf 6",), "atf 6", False),
         ]
+
         for query_group, blank_name, keep_blank in slot_plan:
             img = find_first_retailer_preferred_image(
                 source_images,
                 "walgreens",
                 *query_group,
                 strict=strict_image_mode,
+                excluded_retailer_tokens=excluded_retailer_tokens,
+                used_urls=used_urls,
             )
-            if img:
+            if isinstance(img, dict) and str(img.get("url", "") or "").strip():
                 aligned.append(img)
+                used_urls.add(str(img.get("url", "") or "").strip())
             elif keep_blank:
                 aligned.append(make_blank_salsify_image_slot(blank_name))
-        return dedupe_images_preserve_order(aligned)[:min(max_slots, 6)]
+
+        return aligned[:min(max_slots, 6)]
 
     return dedupe_images_preserve_order(source_images)[:max_slots]
 
