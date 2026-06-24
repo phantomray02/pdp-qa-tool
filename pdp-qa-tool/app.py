@@ -4125,6 +4125,23 @@ def _extract_albertsons_asset_product_id(url):
     return str(m.group(1) or '') if m else ''
 
 
+def _is_valid_albertsons_asset_name(asset_name, target_rpc=''):
+    asset_name = str(asset_name or '').strip().rstrip(chr(92))
+    if not asset_name:
+        return False
+    m = re.match(r'^(\d+)(?:-(.+))?$', asset_name)
+    if not m:
+        return False
+    product_id = str(m.group(1) or '')
+    suffix = str(m.group(2) or '').strip()
+    if target_rpc and product_id != str(target_rpc or '').strip():
+        return False
+    # Reject malformed bare product-id-only URLs such as 970751363\ or 970751363 with no asset suffix.
+    if not suffix:
+        return False
+    return True
+
+
 def _albertsons_asset_sort_key(url):
     asset_name = _extract_albertsons_asset_name(url)
     if not asset_name:
@@ -4192,10 +4209,9 @@ def extract_albertsons_images_from_html(html_text, target_rpc=''):
         clean_url = _clean_albertsons_image_url(raw_url)
         if not clean_url:
             continue
-        if target_rpc:
-            asset_product_id = _extract_albertsons_asset_product_id(clean_url)
-            if asset_product_id != target_rpc:
-                continue
+        asset_name = _extract_albertsons_asset_name(clean_url)
+        if not _is_valid_albertsons_asset_name(asset_name, target_rpc=target_rpc):
+            continue
         if clean_url not in seen_candidate:
             seen_candidate.add(clean_url)
             ordered_candidates.append(clean_url)
@@ -4364,6 +4380,7 @@ def get_albertsons_bundle_from_uploaded(uploaded_html, retail_url='', target_rpc
         text_bundle.setdefault('debug', {})['Image Path'] = 'albertsons_txt_only_no_abs_urls_found'
 
     text_bundle.setdefault('debug', {})['Albertsons Image Count'] = int(len(images or []))
+    text_bundle.setdefault('debug', {})['Albertsons Image Capture Note'] = 'Carousel / hidden thumbnail variants included when ABS asset URLs are present in HTML/TXT.'
     return {'text': text_bundle, 'images': images or []}
 
 
@@ -4376,6 +4393,7 @@ def get_albertsons_bundle(retail_url, target_rpc=''):
     }
     bundle.setdefault('text', {}).setdefault('debug', {})['Image Path'] = 'albertsons_abs_image_lookup'
     bundle.setdefault('text', {}).setdefault('debug', {})['Albertsons Image Count'] = int(len(bundle.get('images', []) or []))
+    bundle.setdefault('text', {}).setdefault('debug', {})['Albertsons Image Capture Note'] = 'Carousel / hidden thumbnail variants included when ABS asset URLs are present in HTML.'
     return bundle
 
 # =========================================
@@ -8548,6 +8566,7 @@ def process_row(row):
                 "rawTextVendorExcerpt": debug_data.get("rawTextVendorExcerpt", ""),
                 "Availability": debug_data.get("Availability", ""),
                 "Albertsons Image Count": debug_data.get("Albertsons Image Count", 0),
+                "Albertsons Image Capture Note": debug_data.get("Albertsons Image Capture Note", ""),
             },
         }
 
