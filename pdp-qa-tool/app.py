@@ -3848,28 +3848,17 @@ def clean_albertsons_text(text):
         return ""
     text = str(text)
     text = html.unescape(text)
-    text = text.replace("\u0026", "&")
-    text = text.replace("\u003c", "<")
-    text = text.replace("\u003e", ">")
-    text = text.replace("\n", " ")
-    text = text.replace("\/", "/")
-    text = text.replace('\"', '"')
+    text = text.replace("\\u0026", "&")
+    text = text.replace("\\u003c", "<")
+    text = text.replace("\\u003e", ">")
+    text = text.replace("\\n", " ")
+    text = text.replace("\\/", "/")
+    text = text.replace('\\"', '"')
     if "<" in text and ">" in text:
         text = BeautifulSoup(text, "html.parser").get_text(" ", strip=True)
     text = re.sub(r"\s+", " ", text).strip()
-    return text.strip(" |:-")
-
-
-def normalize_albertsons_features(items, max_features=8):
-    out = []
-    for item in items or []:
-        value = clean_albertsons_text(item)
-        if not value:
-            continue
-        if value.lower() in {"details", "more", "warning", "about the producer"}:
-            continue
-        out.append(value)
-    return dedupe_preserve_order(out[:max_features])
+    text = text.strip(" |:-")
+    return text
 
 
 def _normalize_albertsons_title(value):
@@ -3879,11 +3868,97 @@ def _normalize_albertsons_title(value):
     return value
 
 
+def _is_albertsons_noise_line(value):
+    value = normalize_space(value)
+    if not value:
+        return True
+    lowered = value.lower()
+    bad_starts = [
+        'unsupported browser',
+        "you're currently",
+        'got it',
+        'welcome back!',
+        'welcome',
+        'sign in',
+        'create account',
+        'top members save',
+        'get personalized deals',
+        'earn points',
+        'shop anytime',
+        'related links',
+        'shopping options for',
+        'deliveryavailable',
+        'pickupavailable',
+        'sponsored 3rd party ad content',
+        'similar items',
+        'featured items',
+        'disclaimer',
+        'allergen notice',
+        "we'd love to hear",
+        'share feedback',
+        'quick links',
+        'company info',
+        'policies & disclosures',
+        'currently shopping',
+        'previously shopped',
+        'continue',
+        'warning',
+        'about the producer',
+        'session expired',
+        'sorry, we\'re having issues.',
+        'close',
+    ]
+    if any(lowered.startswith(x) for x in bad_starts):
+        return True
+    if lowered in {'details', 'more', 'previous', 'next', 'false'}:
+        return True
+    if lowered.startswith('© '):
+        return True
+    if any(tok in lowered for tok in ['privacy policy', 'terms of use', 'accessibility statement', 'hipaa notice']):
+        return True
+    return False
+
+
+def normalize_albertsons_features(items, max_features=8):
+    out = []
+    for item in items or []:
+        value = clean_albertsons_text(item)
+        if not value:
+            continue
+        value = re.sub(r'^[-•]\s*', '', value).strip()
+        if _is_albertsons_noise_line(value):
+            continue
+        out.append(value)
+    return dedupe_preserve_order(out[:max_features])
+
+
+def _extract_albertsons_details_from_text(working):
+    lines = [normalize_space(line) for line in str(working or '').splitlines()]
+    lines = [line for line in lines if line]
+    start_idx = next((idx for idx, line in enumerate(lines) if line.lower() == '### details'), -1)
+    if start_idx == -1:
+        return '', []
+    desc_parts = []
+    feat_parts = []
+    for line in lines[start_idx + 1:]:
+        low = line.lower()
+        if low.startswith('### more'):
+            break
+        if _is_albertsons_noise_line(line):
+            continue
+        if line.startswith('- '):
+            feat_parts.append(line[2:].strip())
+        elif not feat_parts:
+            # Keep description only until bullets begin.
+            desc_parts.append(line)
+    return clean_albertsons_text(' '.join(desc_parts)), normalize_albertsons_features(feat_parts, max_features=8)
+
+
 def _clean_albertsons_image_url(url):
     url = html.unescape(str(url or "")).strip()
-    url = url.replace("\u0026", "&")
+    url = url.replace("\\u0026", "&")
+    url = url.replace("\\\\u003d", "=")
     url = url.replace("\\u003d", "=")
-    url = url.replace("\u003d", "=")
     url = url.replace("&amp;", "&")
     while url and url[-1] in (")", chr(92), chr(34), chr(39)):
         url = url[:-1]
@@ -3918,20 +3993,10 @@ def _albertsons_image_family_key(url):
 
 
 def extract_albertsons_images_from_html(html_text, target_rpc=""):
-    """
-    Albertsons-only retailer image lookup.
-    - Reads only Albertsons ABS image URLs from the HTML.
-    - Filters to the target RPC when supplied.
-    - Normalizes thumbnail params to desktop params.
-    - Preserves site order by first appearance in the HTML.
-    - Deduplicates thumbnail/desktop duplicates by image family.
-    """
     working = html.unescape(str(html_text or ""))
     target_rpc = clean_item_number(target_rpc)
-
-    url_pattern = r"https?://images\.albertsons-media\.com/is/image/ABS/[^\s\">]+|//images\.albertsons-media\.com/is/image/ABS/[^\s\">]+"
+    url_pattern = r'https?://images\.albertsons-media\.com/is/image/ABS/[^\s\">]+|//images\.albertsons-media\.com/is/image/ABS/[^\s\">]+'
     raw_urls = re.findall(url_pattern, working, flags=re.IGNORECASE)
-
     ordered_candidates = []
     seen_candidate = set()
     for raw_url in raw_urls:
@@ -3950,14 +4015,12 @@ def extract_albertsons_images_from_html(html_text, target_rpc=""):
         if clean_url not in seen_candidate:
             seen_candidate.add(clean_url)
             ordered_candidates.append(clean_url)
-
     if not ordered_candidates:
         for raw_url in raw_urls:
             clean_url = _clean_albertsons_image_url(raw_url)
             if clean_url and clean_url not in seen_candidate:
                 seen_candidate.add(clean_url)
                 ordered_candidates.append(clean_url)
-
     family_order = []
     best_by_family = {}
     for clean_url in ordered_candidates:
@@ -3967,7 +4030,6 @@ def extract_albertsons_images_from_html(html_text, target_rpc=""):
         current = best_by_family.get(family_key, "")
         if (not current) or ('$ng-ecom-pdp-desktop$' in clean_url and '$ng-ecom-pdp-desktop$' not in current):
             best_by_family[family_key] = clean_url
-
     ordered = []
     for family_key in family_order:
         url = best_by_family.get(family_key, "")
@@ -3977,19 +4039,6 @@ def extract_albertsons_images_from_html(html_text, target_rpc=""):
 
 
 def extract_albertsons_text_from_html(html_text, retail_url="", target_rpc=""):
-    """
-    Albertsons-only retailer copy parser.
-    Title:
-      1. og:title.
-      2. html <title>.
-      3. product image alt/title patterns like '<title> - Image 1'.
-      4. never generic page h1 prompts like 'Shopped with us before?'.
-    Description/features:
-      1. Primary source is #detailsAccordionContent .content-detail__marketing.
-      2. Description comes from the first real marketing div.pt-4 paragraph.
-      3. Features come from ul.pt-4.mb-0 > li in that same block.
-      4. Fallback to markdown/plain-text capture between ### details and ### more.
-    """
     debug = {
         "Title Path": "",
         "Description Path": "",
@@ -4005,90 +4054,71 @@ def extract_albertsons_text_from_html(html_text, retail_url="", target_rpc=""):
     soup = BeautifulSoup(working, "html.parser")
 
     title = ""
-    title_path = ""
-
-    meta = soup.find("meta", attrs={"property": "og:title"})
-    if meta and meta.get("content"):
-        title = _normalize_albertsons_title(meta.get("content", ""))
-        title_path = "og:title"
-
+    if soup.find("meta", attrs={"property": "og:title"}) and soup.find("meta", attrs={"property": "og:title"}).get("content"):
+        title = _normalize_albertsons_title(soup.find("meta", attrs={"property": "og:title"}).get("content", ""))
+        debug["Title Path"] = "og:title"
     if not title and soup.title:
         title = _normalize_albertsons_title(soup.title.get_text(" ", strip=True))
-        title_path = "html_title"
-
+        debug["Title Path"] = "html_title"
+    if not title:
+        heading_match = re.search(r'(?m)^#\s+(.+?)\s*-\s*albertsons\s*$', working, flags=re.IGNORECASE)
+        if heading_match:
+            title = _normalize_albertsons_title(heading_match.group(1))
+            debug["Title Path"] = "markdown_h1"
     if not title:
         for m in re.finditer(r'([^\r\n]{15,200}?)\s*-\s*Image\s+[1-9][0-9]*\b', working, flags=re.IGNORECASE):
             candidate = _normalize_albertsons_title(m.group(1))
             if candidate and len(candidate.split()) >= 4:
                 title = candidate
-                title_path = "image_alt_title"
+                debug["Title Path"] = "image_alt_title"
                 break
-
     if not title:
         h1 = soup.find("h1")
         if h1:
             h1_title = _normalize_albertsons_title(h1.get_text(" ", strip=True))
             if h1_title and h1_title.lower() not in {"shopped with us before?", "details", "more", "welcome back!"}:
                 title = h1_title
-                title_path = "h1"
-
-    debug["Title Path"] = title_path or "albertsons_title_missing"
+                debug["Title Path"] = "h1"
 
     description = ""
     features = []
 
-    marketing = None
-    marketing_path = ""
+    # 1. Prefer the true Albertsons details accordion marketing block when raw HTML is present.
     selectors = [
         '#detailsAccordionContent .content-detail__marketing',
         '[data-testid="product-detail-accordion"] .content-detail__marketing',
         '#detailsAccordion .content-detail__marketing',
         '.content-detail__marketing',
     ]
+    marketing = None
+    marketing_path = ""
     for selector in selectors:
         marketing = soup.select_one(selector)
         if marketing is not None:
             marketing_path = selector
             break
-
     if marketing is not None:
         for div in marketing.find_all('div', class_=lambda c: c and 'pt-4' in str(c), recursive=True):
             candidate = clean_albertsons_text(div.get_text(' ', strip=True))
-            if candidate and len(candidate.split()) >= 8:
+            if candidate and len(candidate.split()) >= 8 and not _is_albertsons_noise_line(candidate):
                 description = candidate
                 debug["Description Path"] = f"{marketing_path} > div.pt-4"
                 break
-
         ul = marketing.find('ul', class_=lambda c: c and 'pt-4' in str(c)) or marketing.find('ul')
         if ul is not None:
-            features = normalize_albertsons_features(
-                [li.get_text(' ', strip=True) for li in ul.find_all('li')],
-                max_features=8,
-            )
+            features = normalize_albertsons_features([li.get_text(' ', strip=True) for li in ul.find_all('li')], max_features=8)
             if features:
                 debug["Features Path"] = f"{marketing_path} > ul li"
 
+    # 2. Fallback for extension/plain-text captures: use ### details block only.
     if not description or not features:
-        lines = [normalize_space(line) for line in working.splitlines()]
-        start_idx = next((idx for idx, line in enumerate(lines) if line.lower() == '### details'), -1)
-        if start_idx != -1:
-            desc_parts = []
-            feat_parts = []
-            for line in lines[start_idx + 1:]:
-                if not line:
-                    continue
-                if line.lower().startswith('### more'):
-                    break
-                if line.startswith('- '):
-                    feat_parts.append(line[2:].strip())
-                else:
-                    desc_parts.append(line)
-            if desc_parts and not description:
-                description = clean_albertsons_text(' '.join(desc_parts))
-                debug["Description Path"] = 'markdown details block'
-            if feat_parts and not features:
-                features = normalize_albertsons_features(feat_parts, max_features=8)
-                debug["Features Path"] = 'markdown details block'
+        text_description, text_features = _extract_albertsons_details_from_text(working)
+        if text_description and not description:
+            description = text_description
+            debug["Description Path"] = "markdown details block"
+        if text_features and not features:
+            features = text_features
+            debug["Features Path"] = "markdown details block"
 
     return {
         "title": _normalize_albertsons_title(title),
