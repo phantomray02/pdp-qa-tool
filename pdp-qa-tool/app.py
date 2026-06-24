@@ -3909,11 +3909,25 @@ def _is_albertsons_noise_line(value):
         'view supported browsers',
         'skip to search',
         'skip to main content',
+        'skip to cookie settings',
+        'skip to chat',
         'try again',
+        'member pricevalid',
+        'your price $',
+        'out of stock',
+        'sign in to add',
+        'editing order for',
+        'reserve new time',
+        'choose time later',
+        "don't add item",
+        "item can't be added to cart",
+        'this preorder item',
+        'place order by',
+        'necessary only continue with all',
     ]
     if any(lowered.startswith(x) for x in bad_prefixes):
         return True
-    if lowered in {'details', 'more', 'previous', 'next', 'false'}:
+    if lowered in {'details', 'ingredients', 'more', 'previous', 'next', 'false'}:
         return True
     if lowered.startswith('© '):
         return True
@@ -3931,7 +3945,7 @@ def _is_albertsons_packaging_blob(value):
         'square feet',
         'sq ft',
         'how2recycle',
-        'cottonelle.com',
+        '.com.',
         '1-800-',
         'made in the usa',
         'fsc:',
@@ -3939,6 +3953,7 @@ def _is_albertsons_packaging_blob(value):
         'recyclable packaging',
         'responsibly managed forests',
         '100% recycled content used in cores',
+        'domestic and imported material',
     ]
     return sum(1 for s in signals if s in lowered) >= 2
 
@@ -3967,14 +3982,13 @@ def _extract_albertsons_details_from_text(working):
     feat_parts = []
     for line in lines[start_idx + 1:]:
         low = line.lower()
-        if low.startswith('### more'):
+        if low.startswith('### ingredients') or low.startswith('### more'):
             break
         if _is_albertsons_noise_line(line):
             continue
         if line.startswith('- '):
             feat_parts.append(line[2:].strip())
             continue
-        # Ignore the long packaging/legal blob that sometimes appears after bullets inside ### details.
         if feat_parts and _is_albertsons_packaging_blob(line):
             continue
         if not feat_parts:
@@ -3982,6 +3996,17 @@ def _extract_albertsons_details_from_text(working):
     description = clean_albertsons_text(' '.join(desc_parts))
     features = normalize_albertsons_features(feat_parts, max_features=8)
     return description, features
+
+
+def _extract_albertsons_title_from_text_capture(working):
+    title_match = re.search(r'(?m)^#\s+(.+?)\s*-\s*albertsons\s*$', str(working or ''), flags=re.IGNORECASE)
+    if title_match:
+        return _normalize_albertsons_title(title_match.group(1))
+    for m in re.finditer(r'([^\r\n]{15,220}?)\s*-\s*Image\s+[1-9][0-9]*\b', str(working or ''), flags=re.IGNORECASE):
+        candidate = _normalize_albertsons_title(m.group(1))
+        if candidate and len(candidate.split()) >= 4:
+            return candidate
+    return ''
 
 
 def _clean_albertsons_image_url(url):
@@ -4012,7 +4037,6 @@ def _clean_albertsons_image_url(url):
     }
     if low_asset in bad_exact:
         return ''
-    # Normalize thumbnail version to desktop version for steadier visual compare.
     url = re.sub(r'\$ng-ecom-pdp-tn\$', '$ng-ecom-pdp-desktop$', url, flags=re.IGNORECASE)
     url = re.sub(r'\s+', '', url)
     return url
@@ -4025,13 +4049,10 @@ def _albertsons_image_family_key(url):
 
 def extract_albertsons_images_from_html(html_text, target_rpc=''):
     """
-    Reliable Albertsons retailer image extraction.
-    Priority:
-    1. Find all ABS image URLs from raw HTML / JS / srcset strings.
-    2. Filter by the target RPC when present.
-    3. Preserve first-seen order.
-    4. Deduplicate thumbnail/desktop duplicates by family.
-    5. Prefer desktop over thumbnail when both exist.
+    Albertsons image extraction for both full DOM HTML and uploaded TXT captures.
+    - If ABS image URLs are present, return them in page order.
+    - If the uploaded text capture flattened the page and removed URLs, return [].
+    - The calling bundle path can then optionally fall back to live retailer HTML for images only.
     """
     working = html.unescape(str(html_text or ''))
     target_rpc = clean_item_number(target_rpc)
@@ -4041,12 +4062,10 @@ def extract_albertsons_images_from_html(html_text, target_rpc=''):
         r'//images\.albertsons-media\.com/is/image/ABS/[^\s\"\'>,]+',
         r'images\.albertsons-media\.com/is/image/ABS/[^\s\"\'>,]+',
     ]
-
     raw_urls = []
     for pattern in patterns:
         raw_urls.extend(re.findall(pattern, working, flags=re.IGNORECASE))
 
-    # Include URLs found inside srcset / JSON-ish blocks.
     soup = BeautifulSoup(working, 'html.parser')
     for tag in soup.find_all(True):
         for attr in ('src', 'data-src', 'data-zoom-image', 'content'):
@@ -4078,11 +4097,7 @@ def extract_albertsons_images_from_html(html_text, target_rpc=''):
             ordered_candidates.append(clean_url)
 
     if not ordered_candidates:
-        for raw_url in raw_urls:
-            clean_url = _clean_albertsons_image_url(raw_url)
-            if clean_url and clean_url not in seen_candidate:
-                seen_candidate.add(clean_url)
-                ordered_candidates.append(clean_url)
+        return []
 
     family_order = []
     best_by_family = {}
@@ -4103,17 +4118,11 @@ def extract_albertsons_images_from_html(html_text, target_rpc=''):
 
 
 def _extract_albertsons_description_from_marketing(marketing):
-    """
-    The real Albertsons description lives in the nested div.pt-4 inside .content-detail__marketing.
-    Do not use the outer wrapper div that also contains the UL or the lower text-m packaging block.
-    """
     if marketing is None:
         return ''
-
     candidate_nodes = []
     candidate_nodes.extend(marketing.select(':scope > div > div.pt-4'))
     candidate_nodes.extend(marketing.select('div.pt-4'))
-
     seen = set()
     for node in candidate_nodes:
         marker = str(node)
@@ -4122,7 +4131,6 @@ def _extract_albertsons_description_from_marketing(marketing):
         seen.add(marker)
         parent_classes = ' '.join(node.parent.get('class', [])) if getattr(node, 'parent', None) else ''
         node_classes = ' '.join(node.get('class', []))
-        # Skip the lower packaging/spec block that sits in a text-m container.
         if 'text-m' in parent_classes or 'text-m' in node_classes:
             continue
         candidate = clean_albertsons_text(node.get_text(' ', strip=True))
@@ -4172,17 +4180,9 @@ def extract_albertsons_text_from_html(html_text, retail_url='', target_rpc=''):
         title = _normalize_albertsons_title(soup.title.get_text(' ', strip=True))
         debug['Title Path'] = 'html_title'
     if not title:
-        heading_match = re.search(r'(?m)^#\s+(.+?)\s*-\s*albertsons\s*$', working, flags=re.IGNORECASE)
-        if heading_match:
-            title = _normalize_albertsons_title(heading_match.group(1))
-            debug['Title Path'] = 'markdown_h1'
-    if not title:
-        for m in re.finditer(r'([^\r\n]{15,200}?)\s*-\s*Image\s+[1-9][0-9]*\b', working, flags=re.IGNORECASE):
-            candidate = _normalize_albertsons_title(m.group(1))
-            if candidate and len(candidate.split()) >= 4:
-                title = candidate
-                debug['Title Path'] = 'image_alt_title'
-                break
+        title = _extract_albertsons_title_from_text_capture(working)
+        if title:
+            debug['Title Path'] = 'markdown_h1_or_image_alt_title'
     if not title:
         h1 = soup.find('h1')
         if h1:
@@ -4216,7 +4216,7 @@ def extract_albertsons_text_from_html(html_text, retail_url='', target_rpc=''):
         if features:
             debug['Features Path'] = f'{marketing_path} > ul li'
 
-    # Fallback for extension/plain text captures.
+    # Text-file / flattened capture fallback.
     if not description or not features:
         text_description, text_features = _extract_albertsons_details_from_text(working)
         if text_description and not description:
@@ -4234,6 +4234,32 @@ def extract_albertsons_text_from_html(html_text, retail_url='', target_rpc=''):
         'review_count': '',
         'debug': debug,
     }
+
+
+def get_albertsons_bundle_from_uploaded(uploaded_html, retail_url='', target_rpc=''):
+    """
+    Albertsons uploaded TXT-first path.
+    Copy comes from the uploaded text capture.
+    Images try the uploaded text capture first; if that flattened capture has no ABS URLs,
+    fall back to the live retailer page for images only.
+    """
+    uploaded_html = str(uploaded_html or '')
+    text_bundle = extract_albertsons_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc)
+    text_bundle.setdefault('debug', {})['Source Used'] = 'uploaded_txt_html'
+
+    images = extract_albertsons_images_from_html(uploaded_html, target_rpc=target_rpc)
+    if images:
+        text_bundle.setdefault('debug', {})['Image Path'] = 'albertsons_abs_image_lookup_uploaded'
+        return {'text': text_bundle, 'images': images}
+
+    live_html = get_html(retail_url)
+    live_images = extract_albertsons_images_from_html(live_html, target_rpc=target_rpc) if live_html else []
+    if live_images:
+        text_bundle.setdefault('debug', {})['Image Path'] = 'albertsons_live_abs_image_fallback'
+        return {'text': text_bundle, 'images': live_images}
+
+    text_bundle.setdefault('debug', {})['Image Path'] = 'albertsons_text_capture_no_abs_urls'
+    return {'text': text_bundle, 'images': []}
 
 
 @st.cache_data(show_spinner=False)
@@ -6739,10 +6765,7 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
             bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
             return bundle
         if retailer == "albertsons":
-            bundle = {"text": extract_albertsons_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_albertsons_images_from_html(uploaded_html, target_rpc=target_rpc)}
-            bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
-            bundle.setdefault("text", {}).setdefault("debug", {})["Image Path"] = "albertsons_abs_image_lookup"
-            return bundle
+            return get_albertsons_bundle_from_uploaded(uploaded_html, retail_url=retail_url, target_rpc=target_rpc)
         if retailer == "sam's club":
             bundle = {"text": extract_sams_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_sams_images_from_html(uploaded_html)}
             bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
