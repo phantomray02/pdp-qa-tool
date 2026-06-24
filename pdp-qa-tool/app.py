@@ -743,7 +743,7 @@ RETAILER_SALSIFY_REQUIREMENTS = {
     "default": {"max_features": 5, "max_images": 6},
     "cvs": {"max_features": 5, "max_images": 8},
     "walgreens": {"max_features": 5, "max_images": 6},
-    "albertsons": {"max_features": 8, "max_images": 8},
+    "albertsons": {"max_features": 8, "max_images": 20},
     "kroger": {"max_features": 7, "max_images": 7},
     "sam's club": {"max_features": 10, "max_images": 10},
     "sams club": {"max_features": 10, "max_images": 10},
@@ -3867,31 +3867,6 @@ def get_cvs_bundle(retail_url, target_rpc=""):
 # =========================================
 # ALBERTSONS PARSERS
 # =========================================
-def is_albertsons_out_of_stock_html(html_text):
-    working = html.unescape(str(html_text or ''))
-    if not working.strip():
-        return False
-
-    html_lower = working.lower()
-    try:
-        soup = BeautifulSoup(working, 'html.parser')
-        text_blob = normalize_space(soup.get_text(' ', strip=True))
-    except Exception:
-        text_blob = normalize_space(working)
-    text_lower = text_blob.lower()
-
-    if 'out of stock' not in text_lower:
-        return False
-
-    supporting_markers = [
-        'product-unavailability',
-        'similar products',
-        'similar product',
-        'unavailable',
-    ]
-    return any(marker in html_lower or marker in text_lower for marker in supporting_markers)
-
-
 def clean_albertsons_text(text):
     if not text:
         return ""
@@ -4096,35 +4071,81 @@ def _albertsons_image_family_key(url):
     return base.lower()
 
 
+def _extract_albertsons_asset_name(url):
+    clean_url = _clean_albertsons_image_url(url)
+    if not clean_url:
+        return ''
+    return clean_url.split('/is/image/ABS/', 1)[-1].split('?', 1)[0].strip().rstrip(chr(92))
+
+
+def _extract_albertsons_asset_product_id(url):
+    asset_name = _extract_albertsons_asset_name(url)
+    if not asset_name:
+        return ''
+    m = re.match(r'^(\d+)', asset_name)
+    return str(m.group(1) or '') if m else ''
+
+
+def _albertsons_asset_sort_key(url):
+    asset_name = _extract_albertsons_asset_name(url)
+    if not asset_name:
+        return (999, 999, url)
+    suffix = asset_name.split('-', 1)[-1] if '-' in asset_name else asset_name
+    suffix_upper = suffix.upper()
+    prefix_match = re.match(r'^([A-Z]+)', suffix_upper)
+    prefix = prefix_match.group(1) if prefix_match else suffix_upper[:1]
+    number_match = re.search(r'(\d+)', suffix_upper)
+    number_value = int(number_match.group(1)) if number_match else 999
+    prefix_rank_map = {
+        'C': 0,
+        'H': 1,
+        'U': 2,
+        'A': 3,
+        'L': 4,
+        'R': 5,
+    }
+    prefix_rank = prefix_rank_map.get(prefix[:1], 50)
+    return (prefix_rank, number_value, suffix_upper)
+
+
 def extract_albertsons_images_from_html(html_text, target_rpc=''):
     """
     Albertsons image extraction for both full DOM HTML and uploaded TXT captures.
-    - If ABS image URLs are present, return them in page order.
-    - If the uploaded text capture flattened the page and removed URLs, return [].
-    - The calling bundle path can then optionally fall back to live retailer HTML for images only.
+    Rules:
+    - Capture every ABS image URL tied to the product id / RPC group.
+    - Search raw HTML/text plus common DOM attributes.
+    - Prefer desktop PDP variants when duplicate assets appear.
+    - Do not hard-cap Albertsons to 8 images here; let downstream max slot rules decide.
     """
     working = html.unescape(str(html_text or ''))
     target_rpc = clean_item_number(target_rpc)
 
-    patterns = [
-        r'https?://images\.albertsons-media\.com/is/image/ABS/[^\s\"\'>,]+',
-        r'//images\.albertsons-media\.com/is/image/ABS/[^\s\"\'>,]+',
-        r'images\.albertsons-media\.com/is/image/ABS/[^\s\"\'>,]+',
-    ]
     raw_urls = []
+
+    patterns = [
+        r'https?://images\.albertsons-media\.com/is/image/ABS/[^\s\"\'\>,)]+',
+        r'//images\.albertsons-media\.com/is/image/ABS/[^\s\"\'\>,)]+',
+        r'images\.albertsons-media\.com/is/image/ABS/[^\s\"\'\>,)]+',
+    ]
     for pattern in patterns:
         raw_urls.extend(re.findall(pattern, working, flags=re.IGNORECASE))
 
     soup = BeautifulSoup(working, 'html.parser')
+    attr_names = (
+        'src', 'data-src', 'data-zoom-image', 'content', 'href',
+        'data-lazy', 'data-image-url', 'data-full-image', 'data-desktop-src',
+        'data-mobile-src', 'data-thumb', 'poster'
+    )
     for tag in soup.find_all(True):
-        for attr in ('src', 'data-src', 'data-zoom-image', 'content'):
+        for attr in attr_names:
             value = tag.get(attr, '')
             if value and 'images.albertsons-media.com/is/image/ABS/' in str(value):
                 raw_urls.append(str(value))
-        srcset = str(tag.get('srcset', '') or '')
-        if srcset and 'images.albertsons-media.com/is/image/ABS/' in srcset:
-            for part in srcset.split(','):
-                raw_urls.append(part.strip().split(' ')[0])
+        for set_attr in ('srcset', 'data-srcset', 'data-image-set'):
+            srcset = str(tag.get(set_attr, '') or '')
+            if srcset and 'images.albertsons-media.com/is/image/ABS/' in srcset:
+                for part in srcset.split(','):
+                    raw_urls.append(part.strip().split(' ')[0])
 
     ordered_candidates = []
     seen_candidate = set()
@@ -4133,13 +4154,8 @@ def extract_albertsons_images_from_html(html_text, target_rpc=''):
         if not clean_url:
             continue
         if target_rpc:
-            path = clean_url.split('/is/image/ABS/', 1)[-1]
-            if not (
-                path.startswith(f'{target_rpc}-')
-                or path.startswith(f'{target_rpc}?')
-                or f'/ABS/{target_rpc}-' in clean_url
-                or f'/ABS/{target_rpc}?' in clean_url
-            ):
+            asset_product_id = _extract_albertsons_asset_product_id(clean_url)
+            if asset_product_id != target_rpc:
                 continue
         if clean_url not in seen_candidate:
             seen_candidate.add(clean_url)
@@ -4163,7 +4179,10 @@ def extract_albertsons_images_from_html(html_text, target_rpc=''):
         url = best_by_family.get(family_key, '')
         if url and url not in ordered:
             ordered.append(url)
-    return ordered[:8]
+
+    ordered = sorted(ordered, key=_albertsons_asset_sort_key)
+    return ordered[:MAX_IMAGE_SLOTS_TO_COMPARE]
+
 
 
 def _extract_albertsons_description_from_marketing(marketing):
@@ -4213,15 +4232,12 @@ def extract_albertsons_text_from_html(html_text, retail_url='', target_rpc=''):
         'Source Used': 'albertsons_live_html',
         'Retailer': 'Albertsons',
         'Image Path': 'albertsons_abs_image_lookup',
-        'Availability': '',
     }
     if not html_text:
-        return {'title': '', 'description': '', 'features': [], 'rating': '', 'review_count': '', 'out_of_stock': False, 'debug': debug}
+        return {'title': '', 'description': '', 'features': [], 'rating': '', 'review_count': '', 'debug': debug}
 
     working = html.unescape(str(html_text or ''))
     soup = BeautifulSoup(working, 'html.parser')
-    out_of_stock = is_albertsons_out_of_stock_html(working)
-    debug['Availability'] = 'Out of stock' if out_of_stock else 'Available / not flagged'
 
     title = ''
     og_title = soup.find('meta', attrs={'property': 'og:title'})
@@ -4284,7 +4300,6 @@ def extract_albertsons_text_from_html(html_text, retail_url='', target_rpc=''):
         'features': normalize_albertsons_features(features, max_features=8),
         'rating': '',
         'review_count': '',
-        'out_of_stock': out_of_stock,
         'debug': debug,
     }
 
@@ -4305,6 +4320,7 @@ def get_albertsons_bundle_from_uploaded(uploaded_html, retail_url='', target_rpc
     else:
         text_bundle.setdefault('debug', {})['Image Path'] = 'albertsons_txt_only_no_abs_urls_found'
 
+    text_bundle.setdefault('debug', {})['Albertsons Image Count'] = int(len(images or []))
     return {'text': text_bundle, 'images': images or []}
 
 
@@ -4316,6 +4332,7 @@ def get_albertsons_bundle(retail_url, target_rpc=''):
         'images': extract_albertsons_images_from_html(html_text, target_rpc=target_rpc),
     }
     bundle.setdefault('text', {}).setdefault('debug', {})['Image Path'] = 'albertsons_abs_image_lookup'
+    bundle.setdefault('text', {}).setdefault('debug', {})['Albertsons Image Count'] = int(len(bundle.get('images', []) or []))
     return bundle
 
 # =========================================
@@ -8138,8 +8155,6 @@ def get_visual_row_payload(
         r_images = reorder_cvs_retailer_images_for_visual(r_images, max_slots=cvs_max_slots)
     elif str(retailer_name or "").strip().lower() == "walgreens":
         r_images = r_images[:6]
-    elif str(retailer_name or "").strip().lower() == "albertsons":
-        r_images = r_images[:8]
 
     s_images, r_images = align_image_slots_for_comparison(
         s_images,
@@ -8204,10 +8219,6 @@ def process_row(row):
                 except Exception:
                     row_source_code = row_source_code or ""
 
-        is_albertsons_out_of_stock = False
-        if str(retailer_name_normalized).strip().lower() == "albertsons":
-            is_albertsons_out_of_stock = is_albertsons_out_of_stock_html(row_source_code)
-
         title_score = 0
         desc_score = 0
         avg_feature_score = 0
@@ -8217,8 +8228,6 @@ def process_row(row):
         image_position_scores = {}
 
         status_notes = []
-        if is_albertsons_out_of_stock:
-            status_notes.append("Out of stock")
 
         if not salsify_url:
             status_notes.append("Missing Salsify URL")
@@ -8241,7 +8250,6 @@ def process_row(row):
                     "Image Match %": avg_img_score,
                     "Overall %": overall,
                     "Status": ", ".join(status_notes),
-                    "Out of Stock": "Yes" if is_albertsons_out_of_stock else "No",
                     **feature_score_fields,
                     **image_position_scores,
                 },
@@ -8260,7 +8268,6 @@ def process_row(row):
                     "Image Match %": avg_img_score,
                     "Overall %": overall,
                     "Status": ", ".join(status_notes),
-                    "Out of Stock": "Yes" if is_albertsons_out_of_stock else "No",
                     **feature_score_fields,
                     **image_position_scores,
                 },
@@ -8274,7 +8281,6 @@ def process_row(row):
                     "Review Count": review_count_value,
                     "Salsify URL": salsify_url,
                     "Status": ", ".join(status_notes),
-                    "Out of Stock": "Yes" if is_albertsons_out_of_stock else "No",
                 },
             }
 
@@ -8313,9 +8319,10 @@ def process_row(row):
             retailer_name,
             r_bundle["text"] or {},
         )
-        if str(retailer_name_normalized).strip().lower() == "albertsons":
-            is_albertsons_out_of_stock = bool(r_text.get("out_of_stock", False)) or is_albertsons_out_of_stock
-        r_images = (r_bundle["images"] or [])[:6] if str(retailer_name or "").strip().lower() == "walgreens" else (r_bundle["images"] or [])
+        if str(retailer_name or "").strip().lower() == "walgreens":
+            r_images = (r_bundle["images"] or [])[:6]
+        else:
+            r_images = (r_bundle["images"] or [])
         s_images, r_images = align_image_slots_for_comparison(
             s_images,
             r_images,
@@ -8381,7 +8388,6 @@ def process_row(row):
                 "Image Match %": avg_img_score,
                 "Overall %": overall,
                 "Status": ", ".join(status_notes),
-                "Out of Stock": "Yes" if is_albertsons_out_of_stock else "No",
                 **feature_score_fields,
                 **image_position_scores,
             },
@@ -8399,8 +8405,7 @@ def process_row(row):
                 "Feature %": avg_feature_score,
                 "Image Match %": avg_img_score,
                 "Overall %": overall,
-                "Status": ", ".join(status_notes),
-                "Out of Stock": "Yes" if is_albertsons_out_of_stock else "No",
+                "Status": "",
                 "Salsify Title": s_text.get("title", ""),
                 "Retailer Title": r_text.get("title", ""),
                     "CVS Title": r_text.get("title", ""),
@@ -8487,7 +8492,6 @@ def process_row(row):
                 "rawTextHasVendorDetailsParagraph": debug_data.get("rawTextHasVendorDetailsParagraph", False),
                 "rawHtmlVendorExcerpt": debug_data.get("rawHtmlVendorExcerpt", ""),
                 "rawTextVendorExcerpt": debug_data.get("rawTextVendorExcerpt", ""),
-                "Availability": debug_data.get("Availability", ""),
             },
         }
 
@@ -9227,7 +9231,6 @@ if (
         )
         st.markdown("## 👁️ Full Visual QA Review")
         st.caption("This full visual UI appears only after the top batch run finishes and the extract/report rows are ready.")
-        st.caption("Albertsons rows flagged as Out of Stock are automatically kept in the Excel export and hidden from Full Visual QA review.")
         st.caption("This full visual UI appears only after the new top-section batch run finishes and the extract/report rows are ready. Kroger visual rows reuse the uploaded TXT-matched HTML instead of live fetch.")
 
         if hidden_count > 0:
@@ -9271,8 +9274,6 @@ if (
             r_desc = r_text.get("description") or ""
             retailer_features = r_text.get("features") or []
             retailer_norm = str(retailer_name or "").strip().lower()
-            if retailer_norm == "albertsons" and bool(r_text.get("out_of_stock", False)):
-                continue
             salsify_requirements = get_retailer_salsify_requirements(retailer_name)
             feature_fields = get_retailer_salsify_feature_fields(retailer_name)
 
