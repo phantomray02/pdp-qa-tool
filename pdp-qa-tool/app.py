@@ -959,13 +959,16 @@ def reorder_cvs_retailer_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_
         add_url(url)
     return ordered[:max_slots]
 
+
 def reorder_albertsons_salsify_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
     """
-    Albertsons Salsify order for visual QA:
-    1. Online Optimized Image-Grocery when present; otherwise Online Optimized Image-.
-       Never use Online Optimized Image- when the Grocery asset exists.
-    2+. ATF 2-Generic through ATF 8-Generic, shifting up when earlier ATF slots are missing.
-    Slot 1 stays reserved for the Online image and shows Missing if no Online asset exists.
+    Albertsons Salsify order for visual QA.
+    1. Online Optimized Image-Grocery when present; otherwise Online Optimized Image / Online Optimized Image-.
+       Never use the non-Grocery Online image when the Grocery asset exists.
+    2+. ATF 2-Generic through ATF 8-Generic only.
+       Missing ATFs shift up automatically because only present mapped assets are returned.
+    3. Do not append unmapped remainder assets for Albertsons.
+    4. ATF 8-Generic is the last Albertsons image when present.
     """
     imgs = [img for img in (images or []) if isinstance(img, dict)]
 
@@ -998,29 +1001,22 @@ def reorder_albertsons_salsify_images_for_visual(images, max_slots=MAX_IMAGE_SLO
     ordered = []
     used = set()
 
-    def add(img, blank_name=""):
+    def add(img):
         if not isinstance(img, dict):
-            if blank_name:
-                ordered.append(make_blank_salsify_image_slot(blank_name))
             return False
         key = image_key(img)
         if not key or key in used:
-            if blank_name:
-                ordered.append(make_blank_salsify_image_slot(blank_name))
             return False
         ordered.append(img)
         used.add(key)
         return True
 
     grocery_img = find_first("online optimized image grocery", "online optimized image-grocery")
-    regular_online_img = None if grocery_img else find_first("online optimized image-", "online optimized image")
-    add(grocery_img or regular_online_img, "albertsons_slot_1")
+    regular_online_img = None if grocery_img else find_first("online optimized image", "online optimized image-")
+    add(grocery_img or regular_online_img)
 
     for n in range(2, 9):
         add(find_first(f"atf {n} generic", f"atf {n}-generic", f"atf{n} generic", f"atf{n}-generic"))
-
-    for img in imgs:
-        add(img)
 
     return ordered[:max_slots]
 
@@ -3921,6 +3917,7 @@ def extract_albertsons_images_from_html(html_text, target_rpc=""):
             ordered.append(url)
     return ordered[:8]
 
+
 def extract_albertsons_text_from_html(html_text, retail_url="", target_rpc=""):
     debug = {
         "Title Path": "",
@@ -3938,6 +3935,7 @@ def extract_albertsons_text_from_html(html_text, retail_url="", target_rpc=""):
     title = ""
     generic_title_markers = {"shopped with us before?", "details", "more", "welcome back!"}
 
+    # Prefer the markdown page title from captured raw HTML, then og:title, then html title.
     heading_match = re.search(r'(?m)^#\s+(.+?)\s*-\s*albertsons\s*$', working, flags=re.IGNORECASE)
     if heading_match:
         title = normalize_space(heading_match.group(1))
@@ -3965,6 +3963,8 @@ def extract_albertsons_text_from_html(html_text, retail_url="", target_rpc=""):
 
     description = ""
     features = []
+
+    # Albertsons copy must come from product-detail-accordion > content-detail__marketing.
     marketing = soup.select_one('#detailsAccordionContent .content-detail__marketing') or soup.select_one('.content-detail__marketing')
     if marketing is not None:
         for div in marketing.find_all('div', class_=lambda c: c and 'pt-4' in str(c), recursive=True):
@@ -4026,7 +4026,7 @@ def extract_albertsons_text_from_html(html_text, retail_url="", target_rpc=""):
         "review_count": "",
         "debug": debug,
     }
-@st.cache_data(show_spinner=False)
+
 def get_albertsons_bundle(retail_url, target_rpc=""):
     html_text = get_html(retail_url)
     return {
@@ -7204,19 +7204,22 @@ def finalize_salsify_copy_for_retailer(retailer_name, s_text):
         albertsons_override = retailer_overrides.get("albertsons", {}) or {}
         selected_title = normalize_space(first_non_placeholder_copy_value(albertsons_override.get("title", ""), out.get("title", "")))
         selected_description = normalize_space(first_non_placeholder_copy_value(albertsons_override.get("description", ""), out.get("description", "")))
-        override_features = albertsons_override.get("features", []) or []
+        override_features = normalize_salsify_feature_values(albertsons_override.get("features", []) or [], max_features=8)
         override_feature_slots = albertsons_override.get("feature_slots", {}) or {}
-        generic_features = generic_feature_list()
+
+        # Albertsons should only include retailer-specific features that actually exist.
+        # No generic fallback and no padding for missing Albertsons slots.
         selected_features = []
         for i in range(1, 9):
             slot_value = first_non_placeholder_copy_value(override_feature_slots.get(i, ""))
             if slot_value:
                 selected_features.append(slot_value)
-        if not selected_features:
-            selected_features = normalize_salsify_feature_values(override_features or generic_features, max_features=8)
+
+        if selected_features:
+            selected_features = dedupe_preserve_order(selected_features)[:8]
         else:
-            tail_features = normalize_salsify_feature_values(override_features, max_features=8)
-            selected_features = dedupe_preserve_order(selected_features + tail_features)[:8]
+            selected_features = override_features[:8]
+
         out["title"] = selected_title
         out["description"] = selected_description
         out["features"] = selected_features
@@ -7235,6 +7238,7 @@ _original_finalize_salsify_copy_for_retailer = finalize_salsify_copy_for_retaile
 def finalize_salsify_copy_for_retailer(retailer_name, s_text):
     out = _original_finalize_salsify_copy_for_retailer(retailer_name, s_text)
     return apply_retailer_salsify_copy_limits(retailer_name, out)
+
 
 def finalize_retailer_copy(retailer_name, r_text):
     retailer = str(retailer_name or "").strip().lower()
@@ -7283,10 +7287,7 @@ def finalize_retailer_copy(retailer_name, r_text):
     out["description"] = clean_cvs_text(out.get("description", ""))
     out["features"] = normalize_cvs_features(out.get("features", []))
     return out
-    
-# =========================================
-# QUALITY HELPERS
-# =========================================
+
 def debug_description(desc):
     if not desc:
         return {"length": 0, "quality_score": 0, "issues": ["Missing description"]}
