@@ -99,9 +99,11 @@ CVS_VARIANT_MIN_MATCH_SCORE = 35
 CAPTURE_MODE_USE_EXTENSION = "Use extension + TXT upload"
 CAPTURE_MODE_SKIP_EXTENSION = "Skip extension and go straight to batch"
 AUTO_SKIP_EXTENSION_RETAILERS = {"CVS", "Walgreens"}
-# Retailers in this set use only retailer-specific Salsify copy/image fields for comparison.
-# Generic Salsify fallback is disabled so other retailer edits cannot change their result.
-EXCLUSIVE_SALSIFY_RETAILERS = {"walgreens"}
+# Retailer-specific Salsify isolation controls.
+# Copy can stay retailer-locked while images still fall back to generic locked Salsify slots if
+# retailer-labeled image assets do not exist yet.
+EXCLUSIVE_SALSIFY_COPY_RETAILERS = {"walgreens"}
+EXCLUSIVE_SALSIFY_IMAGE_RETAILERS = set()
 
 html_cache = {}
 image_hash_cache = {}
@@ -6813,7 +6815,7 @@ def finalize_salsify_copy_for_retailer(retailer_name, s_text):
 
     if retailer == "walgreens":
         walgreens_override = retailer_overrides.get("walgreens", {}) or {}
-        exclusive_mode = retailer in EXCLUSIVE_SALSIFY_RETAILERS
+        exclusive_mode = retailer in EXCLUSIVE_SALSIFY_COPY_RETAILERS
 
         if exclusive_mode:
             selected_title = clean_walgreens_title(
@@ -7256,7 +7258,7 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
 
     if retailer == "walgreens":
         aligned = []
-        exclusive_mode = retailer in EXCLUSIVE_SALSIFY_RETAILERS
+        strict_image_mode = retailer in EXCLUSIVE_SALSIFY_IMAGE_RETAILERS
         slot_plan = [
             (("online optimized image", "online image", "online", "front"), "online optimized image", True),
             (("flat back 2d", "flat back", "back 2d", "back"), "flat back 2d", True),
@@ -7273,7 +7275,7 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
                 source_images,
                 "walgreens",
                 *query_group,
-                strict=exclusive_mode,
+                strict=strict_image_mode,
             )
             if img:
                 aligned.append(img)
