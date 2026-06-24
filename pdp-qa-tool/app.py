@@ -4727,8 +4727,88 @@ def get_kroger_bundle(retail_url, target_rpc=""):
 def _safe_json_loads(text):
     try:
         return json.loads(text)
-    except Exception:
-        return None
+    except Exception as e:
+        error_text = f"{type(e).__name__}: {e}"
+        try:
+            retail_url = str(row.get("retail_url", "") or "").strip()
+            salsify_url = str(row.get("salsify_url", "") or "").strip()
+            cvs_rpc = str(row.get("retailer_rpc", "") or "").strip()
+            retailer_name = row.get("retailer", "") or infer_retailer_name_from_url(retail_url)
+            rating_value = row.get("rating", "")
+            review_count_value = row.get("review_count", "")
+            fallback_status = f"Batch row exception | {error_text}"
+            return {
+                "summary": {
+                    "SKU": row.get("sku", ""),
+                    "Retailer": retailer_name,
+                    "Retailer RPC": cvs_rpc,
+                    "Brand": row.get("brand", ""),
+                    "Salsify URL": salsify_url,
+                    "Retail URL": retail_url,
+                    "Rating": rating_value,
+                    "Review Count": review_count_value,
+                    "Title %": 0,
+                    "Description %": 0,
+                    "Feature %": 0,
+                    "Image Match %": 0,
+                    "Overall %": 0,
+                    "Status": fallback_status,
+                },
+                "detail": {
+                    "SKU": row.get("sku", ""),
+                    "Retailer": retailer_name,
+                    "Retailer RPC": cvs_rpc,
+                    "Brand": row.get("brand", ""),
+                    "Salsify URL": salsify_url,
+                    "Retail URL": retail_url,
+                    "Rating": rating_value,
+                    "Review Count": review_count_value,
+                    "Title %": 0,
+                    "Description %": 0,
+                    "Feature %": 0,
+                    "Image Match %": 0,
+                    "Overall %": 0,
+                    "Status": fallback_status,
+                    "Salsify Title": "",
+                    "Retailer Title": "",
+                    "Salsify Description": "",
+                    "Retailer Description": "",
+                    "Retailer Features": "",
+                    "Salsify Images": "",
+                    "Retailer Images": "",
+                },
+                "debug": {
+                    "SKU": row.get("sku", ""),
+                    "Retailer": retailer_name,
+                    "Retailer RPC": cvs_rpc,
+                    "Brand": row.get("brand", ""),
+                    "Retail URL": retail_url,
+                    "Rating": rating_value,
+                    "Review Count": review_count_value,
+                    "Salsify URL": salsify_url,
+                    "Status": fallback_status,
+                    "Exception Type": type(e).__name__,
+                    "Exception Text": str(e),
+                    "Trace Location": "process_row",
+                },
+            }
+        except Exception:
+            return {
+                "summary": None,
+                "detail": None,
+                "debug": {
+                    "SKU": row.get("sku", ""),
+                    "Retailer": row.get("retailer", ""),
+                    "Retailer RPC": row.get("retailer_rpc", ""),
+                    "Brand": row.get("brand", ""),
+                    "Retail URL": row.get("retail_url", ""),
+                    "Salsify URL": row.get("salsify_url", ""),
+                    "Status": f"Batch row exception | {error_text}",
+                    "Exception Type": type(e).__name__,
+                    "Exception Text": str(e),
+                    "Trace Location": "process_row_secondary_fallback",
+                },
+            }
 
 
 def _decode_walgreens_json_string(raw_value):
@@ -9081,15 +9161,15 @@ if retailer_df is not None and file_ready_for_batch and st.session_state.batch_s
                         detail = result.get("detail")
                         debug = result.get("debug")
 
-                        if summary and summary["SKU"] not in st.session_state.summary_skus:
+                        if summary and str(summary.get("SKU", "")) not in st.session_state.summary_skus:
                             st.session_state.summary_rows.append(summary)
-                            st.session_state.summary_skus.add(summary["SKU"])
-                        if detail and detail["SKU"] not in st.session_state.detail_skus:
+                            st.session_state.summary_skus.add(str(summary.get("SKU", "")))
+                        if detail and str(detail.get("SKU", "")) not in st.session_state.detail_skus:
                             st.session_state.export_rows.append(detail)
-                            st.session_state.detail_skus.add(detail["SKU"])
-                        if debug and debug["SKU"] not in st.session_state.debug_skus:
+                            st.session_state.detail_skus.add(str(detail.get("SKU", "")))
+                        if debug and str(debug.get("SKU", "")) not in st.session_state.debug_skus:
                             st.session_state.debug_rows.append(debug)
-                            st.session_state.debug_skus.add(debug["SKU"])
+                            st.session_state.debug_skus.add(str(debug.get("SKU", "")))
 
                     if completed % UI_UPDATE_EVERY == 0 or completed == total:
                         progress_bar.progress(completed / max(total, 1))
