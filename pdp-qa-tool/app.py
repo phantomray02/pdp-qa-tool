@@ -1657,12 +1657,10 @@ def lookup_uploaded_raw_html(uploaded_html_map, retail_url, target_rpc=""):
             if stored_no_query and stored_no_query == retail_no_query:
                 return str(stored_html or "")
 
-    # Albertsons fallback: match by product-details.<rpc>.html even if the row URL differs.
-    if target_rpc and retail_url and "albertsons.com" in retail_url.lower():
-        token = f"product-details.{target_rpc}.html"
-        for stored_key, stored_html in uploaded_html_map.items():
-            if token in str(stored_key or ""):
-                return str(stored_html or "")
+    # Albertsons fallback: always allow direct RPC matching from the uploaded TXT map.
+    matched_albertsons_key = find_albertsons_url_in_uploaded_map(uploaded_html_map, target_rpc=target_rpc)
+    if matched_albertsons_key:
+        return str(uploaded_html_map.get(matched_albertsons_key, "") or "")
 
     return ""
 
@@ -1894,6 +1892,18 @@ def find_kroger_url_in_uploaded_map(uploaded_html_map, target_rpc=""):
         for rpc in rpc_values:
             if rpc and rpc in key_str:
                 return key_str
+    return ""
+
+def find_albertsons_url_in_uploaded_map(uploaded_html_map, target_rpc=""):
+    uploaded_html_map = uploaded_html_map or {}
+    target_rpc = clean_item_number(target_rpc)
+    if not target_rpc:
+        return ""
+    token = f"product-details.{target_rpc}.html"
+    for key in uploaded_html_map.keys():
+        key_str = normalize_uploaded_capture_url(key)
+        if token in key_str:
+            return key_str
     return ""
 
 def resolve_debug_views(
@@ -4254,10 +4264,9 @@ def extract_albertsons_text_from_html(html_text, retail_url='', target_rpc=''):
 
 def get_albertsons_bundle_from_uploaded(uploaded_html, retail_url='', target_rpc=''):
     """
-    Albertsons uploaded TXT-first path.
-    Copy comes from the uploaded text capture.
-    Images try the uploaded text capture first; if that flattened capture has no ABS URLs,
-    fall back to the live retailer page for images only.
+    Albertsons TXT-only path.
+    Copy and images must come from the uploaded text capture only.
+    No live retailer fallback is allowed.
     """
     uploaded_html = str(uploaded_html or '')
     text_bundle = extract_albertsons_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc)
@@ -4266,16 +4275,10 @@ def get_albertsons_bundle_from_uploaded(uploaded_html, retail_url='', target_rpc
     images = extract_albertsons_images_from_html(uploaded_html, target_rpc=target_rpc)
     if images:
         text_bundle.setdefault('debug', {})['Image Path'] = 'albertsons_abs_image_lookup_uploaded'
-        return {'text': text_bundle, 'images': images}
+    else:
+        text_bundle.setdefault('debug', {})['Image Path'] = 'albertsons_txt_only_no_abs_urls_found'
 
-    live_html = get_html(retail_url)
-    live_images = extract_albertsons_images_from_html(live_html, target_rpc=target_rpc) if live_html else []
-    if live_images:
-        text_bundle.setdefault('debug', {})['Image Path'] = 'albertsons_live_abs_image_fallback'
-        return {'text': text_bundle, 'images': live_images}
-
-    text_bundle.setdefault('debug', {})['Image Path'] = 'albertsons_text_capture_no_abs_urls'
-    return {'text': text_bundle, 'images': []}
+    return {'text': text_bundle, 'images': images or []}
 
 
 @st.cache_data(show_spinner=False)
@@ -6771,6 +6774,12 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
             return bundle
         return build_empty_retailer_bundle("Kroger", "kroger_txt_required_missing_or_rpc_not_matched")
 
+    # Albertsons must use the uploaded TXT capture only.
+    if retailer == "albertsons":
+        if uploaded_html.strip():
+            return get_albertsons_bundle_from_uploaded(uploaded_html, retail_url=retail_url, target_rpc=target_rpc)
+        return build_empty_retailer_bundle("Albertsons", "albertsons_txt_required_missing_or_url_not_matched")
+
     if uploaded_html.strip():
         if retailer == "cvs":
             bundle = {"text": _extract_cvs_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_cvs_images_from_html(uploaded_html)}
@@ -6780,8 +6789,6 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
             bundle = {"text": extract_walgreens_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_walgreens_images_from_html(uploaded_html)}
             bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
             return bundle
-        if retailer == "albertsons":
-            return get_albertsons_bundle_from_uploaded(uploaded_html, retail_url=retail_url, target_rpc=target_rpc)
         if retailer == "sam's club":
             bundle = {"text": extract_sams_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_sams_images_from_html(uploaded_html)}
             bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
@@ -6790,7 +6797,6 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
     retailer_fetchers = {
         "cvs": lambda: get_cvs_bundle(retail_url, target_rpc),
         "walgreens": lambda: get_walgreens_bundle(retail_url, target_rpc, sku=sku),
-        "albertsons": lambda: get_albertsons_bundle(retail_url, target_rpc),
         "sam's club": lambda: get_sams_bundle(retail_url, target_rpc, sku=sku),
         "kroger": lambda: get_kroger_bundle(retail_url, target_rpc),
     }
@@ -8130,17 +8136,30 @@ def process_row(row):
         if str(retailer_name_normalized).strip().lower() == "kroger" and not retail_url and cvs_rpc:
             retail_url = find_kroger_url_in_uploaded_map(st.session_state.uploaded_raw_html_map or {}, target_rpc=cvs_rpc)
 
-        # Albertsons TXT captures can be extremely large. Resolve uploaded HTML lazily here
-        # instead of copying the full HTML block into every dataframe row before batching.
-        if not row_source_code and str(retailer_name_normalized).strip().lower() == "albertsons":
-            try:
-                row_source_code = lookup_uploaded_raw_html(
-                    st.session_state.uploaded_raw_html_map or {},
-                    retail_url,
-                    target_rpc=cvs_rpc,
-                )
-            except Exception:
-                row_source_code = ""
+        # Albertsons must use uploaded TXT only. Resolve the uploaded HTML lazily here.
+        if str(retailer_name_normalized).strip().lower() == "albertsons":
+            uploaded_map = st.session_state.uploaded_raw_html_map or {}
+            if not row_source_code:
+                try:
+                    row_source_code = lookup_uploaded_raw_html(
+                        uploaded_map,
+                        retail_url,
+                        target_rpc=cvs_rpc,
+                    )
+                except Exception:
+                    row_source_code = ""
+            if not row_source_code and cvs_rpc:
+                try:
+                    matched_albertsons_key = find_albertsons_url_in_uploaded_map(
+                        uploaded_map,
+                        target_rpc=cvs_rpc,
+                    )
+                    if matched_albertsons_key:
+                        row_source_code = str(uploaded_map.get(matched_albertsons_key, "") or "")
+                        if not retail_url:
+                            retail_url = matched_albertsons_key
+                except Exception:
+                    row_source_code = row_source_code or ""
 
         title_score = 0
         desc_score = 0
@@ -8696,8 +8715,12 @@ if uploaded_file:
                 st.session_state.auto_batch_upload_key = ""
 
             txt_ready_for_batch = bool(matched_uploaded_html_count > 0)
+            if selected_retailer == "Albertsons":
+                txt_ready_for_batch = bool(uploaded_raw_html_map) and bool(matched_uploaded_html_count > 0)
             isolated_unique_url_count = int(retailer_df["retail_url"].fillna("").astype(str).str.strip().replace("", pd.NA).dropna().nunique()) if retailer_df is not None and not retailer_df.empty and "retail_url" in retailer_df.columns else 0
             st.caption(f"Strict retailer isolation active: {selected_retailer} only. Rows queued: {len(retailer_df)}. Unique retailer URLs queued: {isolated_unique_url_count}.")
+            if selected_retailer == "Albertsons" and not txt_ready_for_batch:
+                st.warning("Albertsons is TXT-only. Batch rows without a matching uploaded TXT capture will return missing retailer content instead of using live retailer HTML.")
             if selected_capture_mode == CAPTURE_MODE_USE_EXTENSION:
                 extension_payload = build_extension_batch_payload(
                     retailer_df=retailer_df,
