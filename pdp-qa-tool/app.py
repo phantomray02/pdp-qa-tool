@@ -8104,8 +8104,21 @@ def process_row(row):
         retail_url = str(retail_url or "").strip()
         cvs_rpc = str(cvs_rpc or "").strip()
 
-        if str(retailer_name).strip().lower() == "kroger" and not retail_url and cvs_rpc:
+        retailer_name_normalized = normalize_retailer_name(retailer_name)
+        if str(retailer_name_normalized).strip().lower() == "kroger" and not retail_url and cvs_rpc:
             retail_url = find_kroger_url_in_uploaded_map(st.session_state.uploaded_raw_html_map or {}, target_rpc=cvs_rpc)
+
+        # Albertsons TXT captures can be extremely large. Resolve uploaded HTML lazily here
+        # instead of copying the full HTML block into every dataframe row before batching.
+        if not row_source_code and str(retailer_name_normalized).strip().lower() == "albertsons":
+            try:
+                row_source_code = lookup_uploaded_raw_html(
+                    st.session_state.uploaded_raw_html_map or {},
+                    retail_url,
+                    target_rpc=cvs_rpc,
+                )
+            except Exception:
+                row_source_code = ""
 
         title_score = 0
         desc_score = 0
@@ -8183,7 +8196,7 @@ def process_row(row):
         # The outer batch executor already parallelizes rows.
         s_bundle = get_salsify_bundle(salsify_url)
         r_bundle = get_retailer_bundle(
-            retailer_name,
+            retailer_name_normalized or retailer_name,
             retail_url,
             target_sku,
             sku=row.get("sku", ""),
@@ -8609,10 +8622,34 @@ if uploaded_file:
 
             if "copy_source_code" not in retailer_df.columns:
                 retailer_df["copy_source_code"] = ""
+            matched_uploaded_html_count = 0
+            missing_uploaded_html_count = 0
             if uploaded_raw_html_map:
-                retailer_df["copy_source_code"] = retailer_df.apply(lambda row: lookup_uploaded_raw_html(uploaded_raw_html_map, row.get("retail_url", ""), target_rpc=row.get("retailer_rpc", "")), axis=1)
-                matched_uploaded_html_count = int((retailer_df["copy_source_code"].astype(str).str.len() > 0).sum())
-                missing_uploaded_html_count = max(len(retailer_df) - matched_uploaded_html_count, 0)
+                if selected_retailer == "Albertsons":
+                    # Avoid copying very large Albertsons TXT blocks into every dataframe row.
+                    # Resolve the uploaded HTML lazily inside process_row().
+                    matched_uploaded_html_count = int(
+                        retailer_df.apply(
+                            lambda row: 1 if lookup_uploaded_raw_html(
+                                uploaded_raw_html_map,
+                                row.get("retail_url", ""),
+                                target_rpc=row.get("retailer_rpc", ""),
+                            ) else 0,
+                            axis=1,
+                        ).sum()
+                    )
+                    missing_uploaded_html_count = max(len(retailer_df) - matched_uploaded_html_count, 0)
+                else:
+                    retailer_df["copy_source_code"] = retailer_df.apply(
+                        lambda row: lookup_uploaded_raw_html(
+                            uploaded_raw_html_map,
+                            row.get("retail_url", ""),
+                            target_rpc=row.get("retailer_rpc", ""),
+                        ),
+                        axis=1,
+                    )
+                    matched_uploaded_html_count = int((retailer_df["copy_source_code"].astype(str).str.len() > 0).sum())
+                    missing_uploaded_html_count = max(len(retailer_df) - matched_uploaded_html_count, 0)
             current_batch_key = f"{file_hash}::{selected_retailer}::{capture_batch_key_part}"
 
             if st.session_state.active_batch_key != current_batch_key:
