@@ -99,6 +99,9 @@ CVS_VARIANT_MIN_MATCH_SCORE = 35
 CAPTURE_MODE_USE_EXTENSION = "Use extension + TXT upload"
 CAPTURE_MODE_SKIP_EXTENSION = "Skip extension and go straight to batch"
 AUTO_SKIP_EXTENSION_RETAILERS = {"CVS", "Walgreens"}
+# Retailers in this set use only retailer-specific Salsify copy/image fields for comparison.
+# Generic Salsify fallback is disabled so other retailer edits cannot change their result.
+EXCLUSIVE_SALSIFY_RETAILERS = {"walgreens"}
 
 html_cache = {}
 image_hash_cache = {}
@@ -6810,12 +6813,23 @@ def finalize_salsify_copy_for_retailer(retailer_name, s_text):
 
     if retailer == "walgreens":
         walgreens_override = retailer_overrides.get("walgreens", {}) or {}
-        selected_title = clean_walgreens_title(
-            first_non_placeholder_copy_value(walgreens_override.get("title", ""), out.get("title", ""))
-        )
-        selected_description = strip_walgreens_description_tail(
-            first_non_placeholder_copy_value(walgreens_override.get("description", ""), out.get("description", ""))
-        )
+        exclusive_mode = retailer in EXCLUSIVE_SALSIFY_RETAILERS
+
+        if exclusive_mode:
+            selected_title = clean_walgreens_title(
+                first_non_placeholder_copy_value(walgreens_override.get("title", ""))
+            )
+            selected_description = strip_walgreens_description_tail(
+                first_non_placeholder_copy_value(walgreens_override.get("description", ""))
+            )
+        else:
+            selected_title = clean_walgreens_title(
+                first_non_placeholder_copy_value(walgreens_override.get("title", ""), out.get("title", ""))
+            )
+            selected_description = strip_walgreens_description_tail(
+                first_non_placeholder_copy_value(walgreens_override.get("description", ""), out.get("description", ""))
+            )
+
         override_features = walgreens_override.get("features", []) or []
         override_feature_slots = walgreens_override.get("feature_slots", {}) or {}
         generic_features = generic_feature_list()
@@ -6825,8 +6839,9 @@ def finalize_salsify_copy_for_retailer(retailer_name, s_text):
             if slot_value:
                 selected_features.append(slot_value)
         if not selected_features:
+            source_features = override_features if exclusive_mode else (override_features or generic_features)
             selected_features = normalize_walgreens_features_final(
-                normalize_salsify_feature_values(override_features or generic_features, max_features=10),
+                normalize_salsify_feature_values(source_features, max_features=10),
                 max_features=10,
             )
         else:
@@ -7155,7 +7170,7 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
                     return img
         return None
 
-    def find_first_retailer_preferred_image(images, retailer_token, *queries):
+    def find_first_retailer_preferred_image(images, retailer_token, *queries, strict=False):
         retailer_token = normalize_salsify_asset_name(retailer_token or "")
         preferred = []
         fallback = []
@@ -7167,6 +7182,8 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
                 preferred.append(img)
             else:
                 fallback.append(img)
+        if strict:
+            return find_first_image(preferred, *queries)
         return find_first_image(preferred, *queries) or find_first_image(fallback, *queries)
 
     if retailer in {"sam's club", "sams club", "samsclub"}:
@@ -7239,6 +7256,7 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
 
     if retailer == "walgreens":
         aligned = []
+        exclusive_mode = retailer in EXCLUSIVE_SALSIFY_RETAILERS
         slot_plan = [
             (("online optimized image", "online image", "online", "front"), "online optimized image", True),
             (("flat back 2d", "flat back", "back 2d", "back"), "flat back 2d", True),
@@ -7251,7 +7269,12 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
             (("atf 6",), "atf 6", False),
         ]
         for query_group, blank_name, keep_blank in slot_plan:
-            img = find_first_retailer_preferred_image(source_images, "walgreens", *query_group)
+            img = find_first_retailer_preferred_image(
+                source_images,
+                "walgreens",
+                *query_group,
+                strict=exclusive_mode,
+            )
             if img:
                 aligned.append(img)
             elif keep_blank:
