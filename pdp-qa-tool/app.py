@@ -4342,48 +4342,70 @@ def extract_vendor_copy_from_nextjs(html_text, target_rpc="", retail_url=""):
 
 
 
+
 def _clean_cvs_image_url(url):
     """CVS-only image URL cleanup. No other retailer uses this helper."""
     url = html.unescape(str(url or '')).strip()
     if not url:
         return ''
+
+    # Decode common escaped forms from Next.js / TXT captures.
     url = url.replace('\\u0026', '&')
+    url = url.replace('\\u003d', '=')
     url = url.replace('\\/','/')
     url = url.replace('\\\\/', '/')
     url = url.replace('&amp;', '&')
-    url = url.strip().strip('"').strip("'").rstrip('),;')
+    url = url.strip().strip('"').strip("'").rstrip(';')
+
+    # If a regex capture grabbed CSS/function punctuation after the URL, trim only true wrappers.
+    while url and url[-1] in ('"', "'", ';'):
+        url = url[:-1]
+
     if url.startswith('//'):
         url = 'https:' + url
     if url.startswith('/bizcontent/'):
         url = 'https://www.cvs.com' + url
     if url.startswith('bizcontent/'):
         url = 'https://www.cvs.com/' + url
-    if not re.match(r'^https?://', url, flags=re.IGNORECASE):
+
+    # CVS product image paths often appear exactly like:
+    # /bizcontent/merchandising/productimages/high_res/3600041777.jpg?im=Resize=(160,160),aspect=ignore
+    # Keep the valid Resize query when it exists, but also tolerate URLs without query params.
+    if not re.match(r'^https?://(?:www\.)?cvs\.com/', url, flags=re.IGNORECASE):
         return ''
     lowered = url.lower()
-    if 'cvs.com' not in lowered:
+    if '/bizcontent/merchandising/productimages/' not in lowered:
         return ''
-    if '/productimages/' not in lowered and '/bizcontent/merchandising/' not in lowered:
+    image_match = re.search(r'\.(?:jpg|jpeg|png|webp)(?:\?|$)', lowered, flags=re.IGNORECASE)
+    if not image_match:
         return ''
-    if not re.search(r'\.(?:jpg|jpeg|png|webp)(?:\?|$)', lowered, flags=re.IGNORECASE):
-        return ''
-    return re.sub(r'\s+', '', url)
+
+    # Remove whitespace only; do not remove commas/parentheses from Resize=(160,160).
+    url = re.sub(r'\s+', '', url)
+    return url
 
 
 def _extract_possible_cvs_image_urls_from_text_blob(text_blob):
-    """CVS-only raw/escaped image URL extraction."""
+    """CVS-only raw/escaped image URL extraction. Keeps CVS Resize=(160,160),aspect=ignore intact."""
     text_blob = html.unescape(str(text_blob or ''))
     if not text_blob:
         return []
     text_blob = text_blob.replace('\\/','/')
+    text_blob = text_blob.replace('\\\\/', '/')
     patterns = [
-        r'https?://(?:www\.)?cvs\.com/bizcontent/merchandising/productimages/[^\s\"\'<>),;]+',
-        r'/bizcontent/merchandising/productimages/[^\s\"\'<>),;]+',
-        r'bizcontent/merchandising/productimages/[^\s\"\'<>),;]+',
+        # Absolute CVS image URLs.
+        r'https?://(?:www\.)?cvs\.com/bizcontent/merchandising/productimages/[^\s\"\'<>]+',
+        # Relative CVS image URLs exactly as seen in DevTools.
+        r'/bizcontent/merchandising/productimages/[^\s\"\'<>]+',
+        r'bizcontent/merchandising/productimages/[^\s\"\'<>]+',
     ]
     urls = []
     for pattern in patterns:
-        urls.extend(re.findall(pattern, text_blob, flags=re.IGNORECASE))
+        for raw in re.findall(pattern, text_blob, flags=re.IGNORECASE):
+            # Stop at common HTML/JS separators only after the image extension/query has been captured.
+            raw = str(raw or '').strip()
+            raw = re.split(r'(?=<)|(?=</)|(?=\\n)|(?=\\r)', raw)[0].strip()
+            urls.append(raw)
     return urls
 
 
@@ -4391,6 +4413,7 @@ def _cvs_image_dedupe_key(url):
     clean = _clean_cvs_image_url(url)
     if not clean:
         return ''
+    # Dedupe by actual image file, not by Resize query.
     base = clean.split('?', 1)[0]
     return base.lower()
 
@@ -4398,13 +4421,33 @@ def _cvs_image_dedupe_key(url):
 def _cvs_image_size_score(url):
     url = str(url or '')
     nums = []
-    for pattern in [r'Resize=\((\d+)', r'[?&]wid=(\d+)', r'[?&]width=(\d+)', r'[?&]hei=(\d+)', r'[?&]height=(\d+)']:
-        for value in re.findall(pattern, url, flags=re.IGNORECASE):
-            try:
-                nums.append(int(value))
-            except Exception:
-                pass
+    for pattern in [
+        r'Resize=\((\d+),\s*(\d+)\)',
+        r'Resize=\((\d+)',
+        r'[?&]wid=(\d+)',
+        r'[?&]width=(\d+)',
+        r'[?&]hei=(\d+)',
+        r'[?&]height=(\d+)'
+    ]:
+        for found in re.findall(pattern, url, flags=re.IGNORECASE):
+            values = found if isinstance(found, tuple) else (found,)
+            for value in values:
+                try:
+                    nums.append(int(value))
+                except Exception:
+                    pass
     return max(nums) if nums else 0
+
+
+def _cvs_canonical_display_url(url):
+    """Return a clean CVS image URL safe for Streamlit/HTML display."""
+    clean = _clean_cvs_image_url(url)
+    if not clean:
+        return ''
+    # If a Resize query is malformed by capture truncation, fall back to the base JPG.
+    if '?' in clean and 'resize=(' in clean.lower() and ')' not in clean.split('?', 1)[1]:
+        return clean.split('?', 1)[0]
+    return clean
 
 
 def extract_cvs_images_from_html(html_text):
@@ -4425,20 +4468,23 @@ def extract_cvs_images_from_html(html_text):
         for tag in soup.find_all(True):
             for attr in attr_names:
                 value = str(tag.get(attr, '') or '')
-                if 'productimages' in value.lower() or '/bizcontent/merchandising/' in value.lower():
+                if '/bizcontent/merchandising/productimages/' in value.lower():
                     raw_urls.append(value)
             for set_attr in ('srcset', 'data-srcset'):
                 srcset = str(tag.get(set_attr, '') or '')
-                if 'productimages' in srcset.lower() or '/bizcontent/merchandising/' in srcset.lower():
+                if '/bizcontent/merchandising/productimages/' in srcset.lower():
                     for part in srcset.split(','):
-                        raw_urls.append(part.strip().split(' ')[0])
+                        # Preserve commas inside Resize=(160,160) by only using srcset density/width suffixes.
+                        candidate = part.strip()
+                        candidate = re.sub(r'\s+(?:\d+w|\d+x)$', '', candidate).strip()
+                        raw_urls.append(candidate)
             style_value = str(tag.get('style', '') or '')
-            if 'productimages' in style_value.lower() or '/bizcontent/merchandising/' in style_value.lower():
-                for match in re.finditer(r'url\(([^)]+)\)', style_value, flags=re.IGNORECASE):
+            if '/bizcontent/merchandising/productimages/' in style_value.lower():
+                for match in re.finditer(r'url\(([^)]+\.(?:jpg|jpeg|png|webp)(?:\?[^)]*)?)\)', style_value, flags=re.IGNORECASE):
                     raw_urls.append(match.group(1).strip().strip('"').strip("'"))
         for script_tag in soup.find_all('script'):
             script_text = str(script_tag.string or script_tag.get_text(' ', strip=False) or '')
-            if 'productimages' in script_text.lower() or '/bizcontent/merchandising/' in script_text.lower():
+            if '/bizcontent/merchandising/productimages/' in script_text.lower():
                 raw_urls.extend(_extract_possible_cvs_image_urls_from_text_blob(script_text))
     except Exception:
         pass
@@ -4449,15 +4495,18 @@ def extract_cvs_images_from_html(html_text):
         clean = _clean_cvs_image_url(raw_url)
         if not clean:
             continue
-        key = _cvs_image_dedupe_key(clean)
+        display_url = _cvs_canonical_display_url(clean)
+        if not display_url:
+            continue
+        key = _cvs_image_dedupe_key(display_url)
         if not key:
             continue
-        score = _cvs_image_size_score(clean)
+        score = _cvs_image_size_score(display_url)
         if key not in best_by_key:
             order.append(key)
-            best_by_key[key] = {'url': clean, 'score': score}
+            best_by_key[key] = {'url': display_url, 'score': score}
         elif score >= best_by_key[key].get('score', 0):
-            best_by_key[key] = {'url': clean, 'score': score}
+            best_by_key[key] = {'url': display_url, 'score': score}
 
     ordered_urls = [best_by_key[key]['url'] for key in order if key in best_by_key]
     ordered_urls = dedupe_preserve_order(ordered_urls)
