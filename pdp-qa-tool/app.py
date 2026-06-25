@@ -1606,53 +1606,12 @@ def uploaded_capture_url_candidates(url):
 
 
 
-def _extract_uploaded_capture_supporting_blocks(raw_text):
-    raw_text = str(raw_text or "")
-    rendered_html_map = {}
-    image_url_map = {}
-    if not raw_text.strip():
-        return rendered_html_map, image_url_map
-
-    requested_url_pattern = re.compile(r'(?im)^Requested\s+URL\s*:\s*(https?://\S+)\s*$')
-    matches = list(requested_url_pattern.finditer(raw_text))
-    if not matches:
-        return rendered_html_map, image_url_map
-
-    marker_pairs = [
-        ('-----BEGIN RENDERED HTML-----', '-----END RENDERED HTML-----', rendered_html_map),
-        ('-----BEGIN LIVE DOM HTML-----', '-----END LIVE DOM HTML-----', rendered_html_map),
-        ('-----BEGIN IMAGE URLS-----', '-----END IMAGE URLS-----', image_url_map),
-        ('-----BEGIN ALBERTSONS CAROUSEL IMAGE URLS-----', '-----END ALBERTSONS CAROUSEL IMAGE URLS-----', image_url_map),
-    ]
-
-    for i, match in enumerate(matches):
-        requested_url = normalize_uploaded_capture_url(match.group(1) or "")
-        if not requested_url:
-            continue
-        seg_start = match.end()
-        seg_end = matches[i + 1].start() if i + 1 < len(matches) else len(raw_text)
-        segment = raw_text[seg_start:seg_end]
-        if not segment:
-            continue
-        for begin_marker, end_marker, target in marker_pairs:
-            search_pos = 0
-            while True:
-                begin_idx = segment.find(begin_marker, search_pos)
-                if begin_idx == -1:
-                    break
-                content_start = begin_idx + len(begin_marker)
-                end_idx = segment.find(end_marker, content_start)
-                if end_idx == -1:
-                    break
-                block_text = html.unescape(str(segment[content_start:end_idx] or "").strip())
-                if block_text:
-                    target[requested_url] = block_text
-                search_pos = end_idx + len(end_marker)
-
-    return rendered_html_map, image_url_map
-
-
 def _build_uploaded_html_fast_indexes(uploaded_html_map):
+    """
+    Build tiny cached lookup indexes for uploaded TXT HTML blocks so row matching
+    does not rescan the full map for every apply/row call.
+    This does not change parsing or UI behavior; it only speeds up lookups.
+    """
     uploaded_html_map = uploaded_html_map or {}
     cache_key = (id(uploaded_html_map), len(uploaded_html_map))
     cache = getattr(_build_uploaded_html_fast_indexes, '_cache', {})
@@ -1666,13 +1625,14 @@ def _build_uploaded_html_fast_indexes(uploaded_html_map):
         norm_key = normalize_uploaded_capture_url(stored_key)
         if not norm_key:
             continue
+
         no_query_key = norm_key.split('?', 1)[0].strip().lower()
         if no_query_key and no_query_key not in no_query_map:
             no_query_map[no_query_key] = str(stored_html or "")
 
-        m = re.search(r'product-details\.(\d+)\.html', norm_key, flags=re.IGNORECASE)
-        if m:
-            rpc = clean_item_number(m.group(1))
+        match = re.search(r'product-details\.(\d+)\.html', norm_key, flags=re.IGNORECASE)
+        if match:
+            rpc = clean_item_number(match.group(1))
             if rpc and rpc not in albertsons_rpc_map:
                 albertsons_rpc_map[rpc] = str(stored_html or "")
 
@@ -1682,19 +1642,21 @@ def _build_uploaded_html_fast_indexes(uploaded_html_map):
     }
     cache[cache_key] = result
     if len(cache) > 8:
-        # keep cache tiny and cheap
         first_key = next(iter(cache.keys()))
         cache.pop(first_key, None)
     _build_uploaded_html_fast_indexes._cache = cache
     return result
 
 def parse_uploaded_raw_html_map(raw_text):
+    """
+    Faster TXT parser that preserves the same output shape as the original
+    Requested URL / BEGIN HTML / END HTML block extraction.
+    """
     raw_text = str(raw_text or "")
     if not raw_text.strip():
         return {}
 
     html_map = {}
-    rendered_html_map, image_url_map = _extract_uploaded_capture_supporting_blocks(raw_text)
     requested_url_pattern = re.compile(r'(?im)^Requested\s+URL\s*:\s*(https?://\S+)\s*$')
     matches = list(requested_url_pattern.finditer(raw_text))
     if not matches:
@@ -1704,14 +1666,17 @@ def parse_uploaded_raw_html_map(raw_text):
     end_html = '-----END HTML-----'
 
     for i, match in enumerate(matches):
-        requested_url = normalize_uploaded_capture_url(match.group(1) or "")
-        if not requested_url:
+        requested_url = str(match.group(1) or "").strip()
+        key = normalize_uploaded_capture_url(requested_url)
+        if not key:
             continue
+
         seg_start = match.end()
         seg_end = matches[i + 1].start() if i + 1 < len(matches) else len(raw_text)
         segment = raw_text[seg_start:seg_end]
         if not segment:
             continue
+
         begin_idx = segment.find(begin_html)
         if begin_idx == -1:
             continue
@@ -1719,17 +1684,11 @@ def parse_uploaded_raw_html_map(raw_text):
         end_idx = segment.find(end_html, content_start)
         if end_idx == -1:
             continue
+
         html_text = html.unescape(str(segment[content_start:end_idx] or "").strip())
         if len(html_text) < 30:
             continue
-        merged_parts = [html_text]
-        rendered_html = str(rendered_html_map.get(requested_url, "") or "").strip()
-        image_urls_block = str(image_url_map.get(requested_url, "") or "").strip()
-        if rendered_html:
-            merged_parts.append("\n<!-- BEGIN_RENDERED_DOM_HTML -->\n" + rendered_html + "\n<!-- END_RENDERED_DOM_HTML -->")
-        if image_urls_block:
-            merged_parts.append("\n<!-- BEGIN_CAPTURED_IMAGE_URLS -->\n" + image_urls_block + "\n<!-- END_CAPTURED_IMAGE_URLS -->")
-        html_map[requested_url] = "\n".join(part for part in merged_parts if part)
+        html_map[key] = html_text
     return html_map
 
 def lookup_uploaded_raw_html(uploaded_html_map, retail_url, target_rpc=""):
@@ -4280,42 +4239,12 @@ def _albertsons_asset_sort_key(url):
     return (prefix_rank, number_value, suffix_upper)
 
 
-
-
-def _extract_albertsons_urls_from_style_value(style_text):
-    style_text = html.unescape(str(style_text or ""))
-    if not style_text:
-        return []
-    urls = []
-    for match in re.finditer(r'url\(([^)]+)\)', style_text, flags=re.IGNORECASE):
-        raw_value = str(match.group(1) or "").strip().strip('"').strip("'")
-        if 'images.albertsons-media.com/is/image/ABS/' in raw_value:
-            urls.append(raw_value)
-    return urls
-
-
-def _extract_possible_albertsons_urls_from_text_blob(text_blob):
-    text_blob = html.unescape(str(text_blob or ""))
-    if not text_blob:
-        return []
-    patterns = [
-        r"https?://images\.albertsons-media\.com/is/image/ABS/[^\s\"'>,)]+",
-        r"//images\.albertsons-media\.com/is/image/ABS/[^\s\"'>,)]+",
-        r"images\.albertsons-media\.com/is/image/ABS/[^\s\"'>,)]+",
-        r"https?:\\/\\/images\.albertsons-media\.com\\/is\\/image\\/ABS\\/[^\s\"'>,)]+",
-        r"images\.albertsons-media\.com\\/is\\/image\\/ABS\\/[^\s\"'>,)]+",
-    ]
-    urls = []
-    for pattern in patterns:
-        urls.extend(re.findall(pattern, text_blob, flags=re.IGNORECASE))
-    return urls
-
 def extract_albertsons_images_from_html(html_text, target_rpc=''):
     """
     Albertsons image extraction for both full DOM HTML and uploaded TXT captures.
     Rules:
     - Capture every ABS image URL tied to the product id / RPC group.
-    - Search raw HTML/text, rendered-DOM HTML, common DOM attributes, and CSS background-image values.
+    - Search raw HTML/text plus common DOM attributes.
     - Prefer desktop PDP variants when duplicate assets appear.
     - Do not hard-cap Albertsons to 8 images here; let downstream max slot rules decide.
     """
@@ -4323,14 +4252,20 @@ def extract_albertsons_images_from_html(html_text, target_rpc=''):
     target_rpc = clean_item_number(target_rpc)
 
     raw_urls = []
-    raw_urls.extend(_extract_possible_albertsons_urls_from_text_blob(working))
+
+    patterns = [
+        r'https?://images\.albertsons-media\.com/is/image/ABS/[^\s\"\'\>,)]+',
+        r'//images\.albertsons-media\.com/is/image/ABS/[^\s\"\'\>,)]+',
+        r'images\.albertsons-media\.com/is/image/ABS/[^\s\"\'\>,)]+',
+    ]
+    for pattern in patterns:
+        raw_urls.extend(re.findall(pattern, working, flags=re.IGNORECASE))
 
     soup = BeautifulSoup(working, 'html.parser')
     attr_names = (
         'src', 'data-src', 'data-zoom-image', 'content', 'href',
         'data-lazy', 'data-image-url', 'data-full-image', 'data-desktop-src',
-        'data-mobile-src', 'data-thumb', 'poster', 'data-full-src',
-        'data-hires', 'data-lazy-src', 'data-original', 'data-image'
+        'data-mobile-src', 'data-thumb', 'poster'
     )
     for tag in soup.find_all(True):
         for attr in attr_names:
@@ -4342,9 +4277,6 @@ def extract_albertsons_images_from_html(html_text, target_rpc=''):
             if srcset and 'images.albertsons-media.com/is/image/ABS/' in srcset:
                 for part in srcset.split(','):
                     raw_urls.append(part.strip().split(' ')[0])
-        style_value = str(tag.get('style', '') or '')
-        if 'images.albertsons-media.com/is/image/ABS/' in style_value:
-            raw_urls.extend(_extract_albertsons_urls_from_style_value(style_value))
 
     ordered_candidates = []
     seen_candidate = set()
@@ -4380,6 +4312,9 @@ def extract_albertsons_images_from_html(html_text, target_rpc=''):
 
     ordered = sorted(ordered, key=_albertsons_asset_sort_key)
     return ordered[:MAX_IMAGE_SLOTS_TO_COMPARE]
+
+
+
 def _extract_albertsons_description_from_marketing(marketing):
     if marketing is None:
         return ''
@@ -4520,7 +4455,7 @@ def get_albertsons_bundle_from_uploaded(uploaded_html, retail_url='', target_rpc
         text_bundle.setdefault('debug', {})['Image Path'] = 'albertsons_txt_only_no_abs_urls_found'
 
     text_bundle.setdefault('debug', {})['Albertsons Image Count'] = int(len(images or []))
-    text_bundle.setdefault('debug', {})['Albertsons Image Capture Note'] = 'Carousel / hidden thumbnail variants included when ABS asset URLs are present in raw HTML, rendered DOM HTML, or uploaded image-url blocks.'
+    text_bundle.setdefault('debug', {})['Albertsons Image Capture Note'] = 'Carousel / hidden thumbnail variants included when ABS asset URLs are present in HTML/TXT.'
     return {'text': text_bundle, 'images': images or []}
 
 
@@ -4533,7 +4468,7 @@ def get_albertsons_bundle(retail_url, target_rpc=''):
     }
     bundle.setdefault('text', {}).setdefault('debug', {})['Image Path'] = 'albertsons_abs_image_lookup'
     bundle.setdefault('text', {}).setdefault('debug', {})['Albertsons Image Count'] = int(len(bundle.get('images', []) or []))
-    bundle.setdefault('text', {}).setdefault('debug', {})['Albertsons Image Capture Note'] = 'Carousel / hidden thumbnail variants included when ABS asset URLs are present in HTML, rendered DOM, or uploaded image-url capture blocks.'
+    bundle.setdefault('text', {}).setdefault('debug', {})['Albertsons Image Capture Note'] = 'Carousel / hidden thumbnail variants included when ABS asset URLs are present in HTML.'
     return bundle
 
 # =========================================
