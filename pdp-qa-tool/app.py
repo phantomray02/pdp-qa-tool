@@ -984,23 +984,6 @@ def apply_retailer_salsify_copy_limits(retailer_name, text_bundle):
 
 
 def infer_cvs_image_slot_from_url(url):
-    """
-    Infer an explicit CVS retailer image slot only when the filename itself carries
-    a true slot suffix such as `_2`, `-3`, or `(4)`.
-
-    IMPORTANT:
-    Do NOT treat any filename containing digits as slot 1.
-    CVS image filenames are often product-id based (`3600041777.jpg`), so the old
-    digit fallback incorrectly marked every image as slot 1. That caused the visual
-    QA layout to render:
-    - slot 1 = first image
-    - slot 2 = Missing
-    - slot 3 = Missing
-    - remaining images pushed down.
-
-    If no explicit slot markers are present, return None and let
-    reorder_cvs_retailer_images_for_visual preserve the natural first-three order.
-    """
     url = str(url or "").strip().split("?", 1)[0]
     if not url:
         return None
@@ -1016,6 +999,8 @@ def infer_cvs_image_slot_from_url(url):
                 return slot_num
         except Exception:
             pass
+    if re.search(r'\d', stem):
+        return 1
     return None
 
 def reorder_cvs_salsify_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
@@ -1107,7 +1092,6 @@ def reorder_cvs_salsify_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_C
 
     return ordered[:max_slots]
 def reorder_cvs_retailer_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
-    # Product-id filenames into slot 1: disabled. Preserve natural first-three order unless explicit slot suffixes exist.
     urls = [str(u or "").strip() for u in (images or []) if str(u or "").strip()]
     if not urls:
         return []
@@ -9211,6 +9195,17 @@ def get_visual_row_payload(
     uploaded_html_map = st.session_state.uploaded_raw_html_map or {}
 
     # Visual QA must reuse the same TXT-matched retailer HTML used in batch processing.
+    if retailer_norm == "cvs":
+        # CVS visual rows come from exported/detail rows, which do not carry the full copy_source_code.
+        # Re-resolve the uploaded TXT HTML here so CVS image extraction uses the rendered extension capture
+        # instead of falling back to raw live requests HTML.
+        if not row_source_code:
+            row_source_code = lookup_uploaded_raw_html(
+                uploaded_html_map,
+                retail_url,
+                target_rpc=current_target_sku,
+            )
+
     if retailer_norm == "kroger":
         if not retail_url and current_target_sku:
             retail_url = find_kroger_url_in_uploaded_map(uploaded_html_map, target_rpc=current_target_sku)
@@ -9319,11 +9314,26 @@ def _process_row_core(row):
         if str(retailer_name_normalized).strip().lower() == "kroger" and not retail_url and cvs_rpc:
             retail_url = find_kroger_url_in_uploaded_map(st.session_state.uploaded_raw_html_map or {}, target_rpc=cvs_rpc)
 
+        uploaded_map = st.session_state.uploaded_raw_html_map or {}
+
+        # CVS visual + batch isolation: if copy_source_code is blank unexpectedly,
+        # re-resolve the matching uploaded TXT HTML from the uploaded map.
+        cvs_lookup_error = ""
+        if str(retailer_name_normalized).strip().lower() == "cvs" and not row_source_code:
+            try:
+                row_source_code = lookup_uploaded_raw_html(
+                    uploaded_map,
+                    retail_url,
+                    target_rpc=cvs_rpc,
+                )
+            except Exception as e:
+                row_source_code = ""
+                cvs_lookup_error = f"TXT lookup error: {e}"
+
         # Albertsons TXT captures can be extremely large. Resolve uploaded HTML lazily here
         # instead of copying the full HTML block into every dataframe row before batching.
         albertsons_lookup_error = ""
         if str(retailer_name_normalized).strip().lower() == "albertsons":
-            uploaded_map = st.session_state.uploaded_raw_html_map or {}
             if not row_source_code:
                 try:
                     row_source_code = lookup_uploaded_raw_html(
@@ -9470,6 +9480,10 @@ def _process_row_core(row):
         )
 
         debug_data = r_text.get("debug", {})
+        if str(retailer_name_normalized).strip().lower() == "cvs":
+            debug_data = dict(debug_data or {})
+            debug_data.setdefault("CVS Visual Row Source Used", "uploaded_txt_html" if row_source_code else "live_html_or_missing_txt")
+            debug_data.setdefault("CVS Visual Row Source Length", int(len(str(row_source_code or ""))))
 
         output_rating_value = (r_text.get("rating", "") if isinstance(r_text, dict) else "") or rating_value
         output_review_count_value = (r_text.get("review_count", "") if isinstance(r_text, dict) else "") or review_count_value
