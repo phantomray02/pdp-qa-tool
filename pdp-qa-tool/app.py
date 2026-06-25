@@ -964,6 +964,51 @@ def reorder_cvs_retailer_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_
         add_url(url)
     return ordered[:max_slots]
 
+
+def promote_cvs_ooi_image_first(s_images, r_images):
+    """
+    CVS-only hero image promotion.
+
+    CVS uploaded/live gallery order can place the hero / OOI packshot after
+    lifestyle frames. For CVS only, compare each retailer image against the
+    first Salsify image and move the best visual match into slot 1.
+
+    This keeps all non-CVS retailers untouched.
+    """
+    if not isinstance(s_images, list) or not isinstance(r_images, list):
+        return list(r_images or [])
+
+    s_first_url = ""
+    if s_images and isinstance(s_images[0], dict):
+        s_first_url = str(s_images[0].get("url", "") or "").strip()
+    if not s_first_url:
+        return list(r_images or [])
+
+    retailer_urls = [str(u or "").strip() for u in (r_images or []) if str(u or "").strip()]
+    if len(retailer_urls) <= 1:
+        return retailer_urls
+
+    best_idx = None
+    best_score = -1
+    for idx, r_url in enumerate(retailer_urls):
+        try:
+            score = int(compare_images_visually(s_first_url, r_url) or 0)
+        except Exception:
+            score = 0
+        if score > best_score:
+            best_score = score
+            best_idx = idx
+
+    # Keep captured order unless a materially better CVS hero match exists.
+    if best_idx is None or best_idx == 0:
+        return retailer_urls
+    if best_score < 35:
+        return retailer_urls
+
+    best_url = retailer_urls[best_idx]
+    reordered = [best_url] + [u for i, u in enumerate(retailer_urls) if i != best_idx]
+    return reordered
+
 def apply_retailer_salsify_image_limits(retailer_name, images):
     retailer = str(retailer_name or "").strip().lower()
     limits = get_retailer_salsify_requirements(retailer_name)
@@ -7536,6 +7581,7 @@ def get_visual_row_payload(
     if str(retailer_name or "").strip().lower() == "cvs":
         cvs_max_slots = int(get_retailer_salsify_requirements(retailer_name).get("max_images", MAX_IMAGE_SLOTS_TO_COMPARE) or MAX_IMAGE_SLOTS_TO_COMPARE)
         r_images = reorder_cvs_retailer_images_for_visual(r_images, max_slots=cvs_max_slots)
+        r_images = promote_cvs_ooi_image_first(s_images, r_images)
     elif str(retailer_name or "").strip().lower() == "walgreens":
         r_images = r_images[:6]
 
@@ -7544,6 +7590,10 @@ def get_visual_row_payload(
         r_images,
         max_slots=visual_max_slots,
     )
+
+    if str(retailer_name or "").strip().lower() == "cvs":
+        r_text.setdefault("debug", {})["CVS OOI Promotion Applied"] = True
+        r_text.setdefault("debug", {})["CVS OOI Promotion Rule"] = "Best visual match to Salsify slot 1 was moved to CVS slot 1."
 
     return {
         "s_text": s_text,
@@ -7676,7 +7726,17 @@ def process_row(row):
             retailer_name,
             r_bundle["text"] or {},
         )
-        r_images = (r_bundle["images"] or [])[:6] if str(retailer_name or "").strip().lower() == "walgreens" else (r_bundle["images"] or [])
+        retailer_norm = str(retailer_name or "").strip().lower()
+        if retailer_norm == "walgreens":
+            r_images = (r_bundle["images"] or [])[:6]
+        else:
+            r_images = (r_bundle["images"] or [])
+
+        if retailer_norm == "cvs":
+            cvs_max_slots = int(get_retailer_salsify_requirements(retailer_name).get("max_images", MAX_IMAGE_SLOTS_TO_COMPARE) or MAX_IMAGE_SLOTS_TO_COMPARE)
+            r_images = reorder_cvs_retailer_images_for_visual(r_images, max_slots=cvs_max_slots)
+            r_images = promote_cvs_ooi_image_first(s_images, r_images)
+
         s_images, r_images = align_image_slots_for_comparison(
             s_images,
             r_images,
