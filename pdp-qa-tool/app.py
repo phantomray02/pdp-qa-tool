@@ -858,6 +858,12 @@ def retailer_auto_skip_extension(retailer_name):
     return bool(get_retailer_runtime_config(retailer_name).get("auto_skip_extension", False))
 
 
+def retailer_requires_extension_for_images(retailer_name):
+    """Return True for retailers whose image QA depends on rendered extension TXT."""
+    retailer_key = normalize_retailer_name(retailer_name).strip().lower()
+    return retailer_key in {"cvs"}
+
+
 def prepare_retailer_batch_dataframe(master_df, selected_retailer, selected_capture_mode, uploaded_html_map=None):
     """
     Centralized retailer batch preparation.
@@ -4563,6 +4569,7 @@ def get_cvs_bundle(retail_url, target_rpc=""):
     text_bundle.setdefault("debug", {})["Image Path"] = "cvs_live_html_image_lookup"
     text_bundle.setdefault("debug", {})["CVS Image Count"] = int(len(images or []))
     text_bundle.setdefault("debug", {})["CVS Live HTML Caveat"] = "If CVS Image Count is 0 here, use extension + TXT capture; raw live HTML may not include rendered gallery image paths."
+    text_bundle.setdefault("debug", {})["CVS Skip-Extension Warning"] = "CVS skip-extension mode can produce blank retailer images because CVS gallery assets may exist only in rendered browser DOM HTML."
     return {
         "text": text_bundle,
         "images": images,
@@ -9781,6 +9788,20 @@ if uploaded_file:
                 )
                 file_ready_for_batch = True
 
+            if (
+                file_ready_for_batch
+                and str(selected_retailer or "").strip().lower() == "cvs"
+                and selected_capture_mode == CAPTURE_MODE_SKIP_EXTENSION
+                and retailer_requires_extension_for_images(selected_retailer)
+            ):
+                st.session_state.capture_mode = CAPTURE_MODE_USE_EXTENSION
+                selected_capture_mode = CAPTURE_MODE_USE_EXTENSION
+                st.warning(
+                    "CVS image QA requires Use extension + TXT upload. "
+                    "Skip extension can still run copy checks, but CVS gallery images often do not exist in raw live HTML. "
+                    "The app switched CVS back to extension mode automatically."
+                )
+
             # Albertsons-only: require a single brand to be selected before
             # running a batch. Albertsons capture now includes an extra
             # gallery-rendering step per page (see the extension's
@@ -9900,6 +9921,8 @@ if uploaded_file:
             st.caption(f"Strict retailer isolation active: {selected_retailer} only. Rows queued: {len(retailer_df)}. Unique retailer URLs queued: {isolated_unique_url_count}.")
             if runtime_cfg.get("notes"):
                 st.caption(str(runtime_cfg.get("notes", "")))
+            if str(selected_retailer or "").strip().lower() == "cvs":
+                st.caption("CVS note: if the goal is image QA, use the extension + TXT upload path. CVS live skip-extension mode may leave retailer images blank because the rendered gallery URLs are not always present in raw live HTML.")
             if selected_capture_mode == CAPTURE_MODE_USE_EXTENSION:
                 extension_payload = build_extension_batch_payload(
                     retailer_df=retailer_df,
