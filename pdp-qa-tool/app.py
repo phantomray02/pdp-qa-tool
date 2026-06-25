@@ -762,6 +762,149 @@ def get_retailer_salsify_feature_fields(retailer_name):
     return [f"feature{i}" for i in range(1, max_features + 1)]
 
 
+RETAILER_RUNTIME_CONFIG = {
+    "default": {
+        "requires_salsify_url": True,
+        "requires_retail_url": True,
+        "supports_uploaded_txt": True,
+        "auto_skip_extension": False,
+        "retailer_url_key": "retail_url",
+        "notes": "Default retailer runtime profile.",
+    },
+    "cvs": {
+        "supports_uploaded_txt": True,
+        "auto_skip_extension": True,
+        "retailer_url_key": "retail_url",
+        "notes": "CVS can run live or via uploaded TXT.",
+    },
+    "walgreens": {
+        "supports_uploaded_txt": True,
+        "auto_skip_extension": True,
+        "retailer_url_key": "retail_url",
+        "notes": "Walgreens can run live or via uploaded TXT.",
+    },
+    "kroger": {
+        "supports_uploaded_txt": True,
+        "auto_skip_extension": False,
+        "retailer_url_key": "retail_url",
+        "notes": "Kroger can backfill retailer PDP URLs from uploaded TXT using retailer RPC.",
+    },
+    "albertsons": {
+        "supports_uploaded_txt": True,
+        "auto_skip_extension": False,
+        "retailer_url_key": "retail_url",
+        "notes": "Albertsons can lazily resolve uploaded TXT HTML per row to avoid ballooning dataframe memory.",
+    },
+    "sam's club": {
+        "supports_uploaded_txt": True,
+        "auto_skip_extension": False,
+        "retailer_url_key": "retail_url",
+        "notes": "Sam's Club currently runs retailer-specific PDP parsing through the standard retail_url path.",
+    },
+}
+
+
+def get_retailer_runtime_config(retailer_name):
+    retailer_key = str(retailer_name or "").strip().lower()
+    base = dict(RETAILER_RUNTIME_CONFIG.get("default", {}))
+    override = RETAILER_RUNTIME_CONFIG.get(retailer_key, {})
+    base.update(override)
+    limits = get_retailer_salsify_requirements(retailer_name)
+    base.setdefault("max_features", int(limits.get("max_features", 5) or 5))
+    base.setdefault("max_images", int(limits.get("max_images", 6) or 6))
+    return base
+
+
+def retailer_supports_uploaded_txt(retailer_name):
+    return bool(get_retailer_runtime_config(retailer_name).get("supports_uploaded_txt", True))
+
+
+def retailer_auto_skip_extension(retailer_name):
+    return bool(get_retailer_runtime_config(retailer_name).get("auto_skip_extension", False))
+
+
+def prepare_retailer_batch_dataframe(master_df, selected_retailer, selected_capture_mode, uploaded_html_map=None):
+    """
+    Centralized retailer batch preparation.
+    Keeps retailer isolation strict, repairs retailer-specific URLs when needed,
+    and caches expensive TXT match work into a single prep pass per batch key.
+    """
+    uploaded_html_map = uploaded_html_map or {}
+    retailer_name = normalize_retailer_name(selected_retailer)
+    runtime_cfg = get_retailer_runtime_config(retailer_name)
+
+    retailer_df = strict_filter_rows_for_selected_retailer(
+        master_df,
+        retailer_name,
+        dedupe_by_url=(selected_capture_mode == CAPTURE_MODE_USE_EXTENSION),
+    )
+    if retailer_df is None or retailer_df.empty:
+        empty_cols = list(master_df.columns) if hasattr(master_df, 'columns') else []
+        if 'copy_source_code' not in empty_cols:
+            empty_cols.append('copy_source_code')
+        return {
+            'retailer_df': pd.DataFrame(columns=empty_cols),
+            'matched_uploaded_html_count': 0,
+            'missing_uploaded_html_count': 0,
+            'isolated_unique_url_count': 0,
+            'runtime_cfg': runtime_cfg,
+        }
+
+    retailer_df = retailer_df.copy()
+    if 'retail_url' not in retailer_df.columns:
+        retailer_df['retail_url'] = ''
+    retailer_df['retail_url'] = retailer_df['retail_url'].fillna('').astype(str).str.strip()
+    if 'retailer_rpc' not in retailer_df.columns:
+        retailer_df['retailer_rpc'] = ''
+    retailer_df['retailer_rpc'] = retailer_df['retailer_rpc'].fillna('').astype(str).str.strip()
+    if 'copy_source_code' not in retailer_df.columns:
+        retailer_df['copy_source_code'] = ''
+    else:
+        retailer_df['copy_source_code'] = retailer_df['copy_source_code'].fillna('').astype(str)
+
+    if retailer_name == 'Kroger' and uploaded_html_map:
+        repaired_urls = []
+        for retail_url, rpc in zip(retailer_df['retail_url'].tolist(), retailer_df['retailer_rpc'].tolist()):
+            existing_url = str(retail_url or '').strip()
+            repaired_urls.append(existing_url or find_kroger_url_in_uploaded_map(uploaded_html_map, target_rpc=rpc) or '')
+        retailer_df['retail_url'] = repaired_urls
+        retailer_df = strict_filter_rows_for_selected_retailer(
+            retailer_df,
+            retailer_name,
+            dedupe_by_url=(selected_capture_mode == CAPTURE_MODE_USE_EXTENSION),
+        )
+        if 'copy_source_code' not in retailer_df.columns:
+            retailer_df['copy_source_code'] = ''
+        retailer_df['retailer_rpc'] = retailer_df['retailer_rpc'].fillna('').astype(str).str.strip()
+
+    matched_uploaded_html_count = 0
+    missing_uploaded_html_count = 0
+    if uploaded_html_map and retailer_supports_uploaded_txt(retailer_name):
+        retail_urls = retailer_df['retail_url'].tolist()
+        rpc_values = retailer_df['retailer_rpc'].tolist()
+        resolved_html = [
+            lookup_uploaded_raw_html(uploaded_html_map, retail_url, target_rpc=rpc)
+            for retail_url, rpc in zip(retail_urls, rpc_values)
+        ]
+        matched_flags = [1 if str(value or '').strip() else 0 for value in resolved_html]
+        matched_uploaded_html_count = int(sum(matched_flags))
+        missing_uploaded_html_count = max(len(retailer_df) - matched_uploaded_html_count, 0)
+        if retailer_name != 'Albertsons':
+            retailer_df['copy_source_code'] = resolved_html
+
+    isolated_unique_url_count = int(
+        retailer_df['retail_url'].fillna('').astype(str).str.strip().replace('', pd.NA).dropna().nunique()
+    ) if not retailer_df.empty else 0
+
+    return {
+        'retailer_df': retailer_df,
+        'matched_uploaded_html_count': matched_uploaded_html_count,
+        'missing_uploaded_html_count': missing_uploaded_html_count,
+        'isolated_unique_url_count': isolated_unique_url_count,
+        'runtime_cfg': runtime_cfg,
+    }
+
+
 def classify_cvs_generic_asset_name(value):
     name = normalize_salsify_asset_name(value or "")
     if any(token in name for token in [
@@ -6939,50 +7082,221 @@ def get_sams_bundle(retail_url, target_rpc="", sku=""):
         "images": [] if is_sams_robot_page(html_text) else extract_sams_images_from_html(html_text),
     }
     
+
+
+def _normalize_retailer_bundle_contract(retailer_name, bundle, fallback_reason=""):
+    retailer_display = normalize_retailer_name(retailer_name)
+    if not isinstance(bundle, dict):
+        return build_empty_retailer_bundle(retailer_display, fallback_reason or "invalid_bundle_contract")
+
+    text_part = dict(bundle.get("text") or {})
+    debug_part = dict(text_part.get("debug") or {})
+
+    text_part.setdefault("title", "")
+    text_part.setdefault("description", "")
+    text_part.setdefault("features", [])
+    text_part.setdefault("rating", text_part.get("rating", "") or "")
+    text_part.setdefault("review_count", text_part.get("review_count", "") or "")
+    if not isinstance(text_part.get("features", []), list):
+        value = text_part.get("features", [])
+        text_part["features"] = [value] if value else []
+    debug_part.setdefault("Retailer", retailer_display)
+    debug_part.setdefault("Source Used", fallback_reason or debug_part.get("Source Used", ""))
+    text_part["debug"] = debug_part
+
+    images = bundle.get("images", []) or []
+    normalized_images = []
+    for img in images:
+        if isinstance(img, dict):
+            normalized_images.append({
+                "name": str(img.get("name", "") or ""),
+                "url": str(img.get("url", "") or "").strip(),
+            })
+        elif isinstance(img, str):
+            normalized_images.append({"name": "", "url": str(img or "").strip()})
+    return {
+        "text": text_part,
+        "images": normalized_images,
+    }
+
+
+def _build_uploaded_bundle_cvs(uploaded_html, retail_url="", target_rpc="", sku=""):
+    bundle = {
+        "text": _extract_cvs_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc),
+        "images": extract_cvs_images_from_html(uploaded_html),
+    }
+    bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
+    return _normalize_retailer_bundle_contract("CVS", bundle, fallback_reason="uploaded_txt_html")
+
+
+def _build_uploaded_bundle_walgreens(uploaded_html, retail_url="", target_rpc="", sku=""):
+    bundle = {
+        "text": extract_walgreens_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc),
+        "images": extract_walgreens_images_from_html(uploaded_html),
+    }
+    bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
+    return _normalize_retailer_bundle_contract("Walgreens", bundle, fallback_reason="uploaded_txt_html")
+
+
+def _build_uploaded_bundle_sams(uploaded_html, retail_url="", target_rpc="", sku=""):
+    bundle = {
+        "text": extract_sams_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc),
+        "images": extract_sams_images_from_html(uploaded_html),
+    }
+    bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
+    return _normalize_retailer_bundle_contract("Sam's Club", bundle, fallback_reason="uploaded_txt_html")
+
+
+def _build_uploaded_bundle_kroger(uploaded_html, retail_url="", target_rpc="", sku=""):
+    bundle = {
+        "text": extract_kroger_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc),
+        "images": extract_kroger_images_from_html(uploaded_html),
+    }
+    bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
+    bundle.setdefault("text", {}).setdefault("debug", {})["Image Path"] = "kroger_main_image_perspective"
+    return _normalize_retailer_bundle_contract("Kroger", bundle, fallback_reason="uploaded_txt_html")
+
+
+def _build_uploaded_bundle_albertsons(uploaded_html, retail_url="", target_rpc="", sku=""):
+    bundle = get_albertsons_bundle_from_uploaded(uploaded_html, retail_url=retail_url, target_rpc=target_rpc)
+    return _normalize_retailer_bundle_contract("Albertsons", bundle, fallback_reason="uploaded_txt_html")
+
+
+def _build_live_bundle_cvs(retail_url="", target_rpc="", sku=""):
+    return _normalize_retailer_bundle_contract("CVS", get_cvs_bundle(retail_url, target_rpc), fallback_reason="cvs_live_html")
+
+
+def _build_live_bundle_walgreens(retail_url="", target_rpc="", sku=""):
+    return _normalize_retailer_bundle_contract("Walgreens", get_walgreens_bundle(retail_url, target_rpc, sku=sku), fallback_reason="walgreens_live_html")
+
+
+def _build_live_bundle_sams(retail_url="", target_rpc="", sku=""):
+    return _normalize_retailer_bundle_contract("Sam's Club", get_sams_bundle(retail_url, target_rpc, sku=sku), fallback_reason="sams_live_html")
+
+
+def _build_live_bundle_kroger(retail_url="", target_rpc="", sku=""):
+    return _normalize_retailer_bundle_contract("Kroger", get_kroger_bundle(retail_url, target_rpc), fallback_reason="kroger_live_html")
+
+
+def _build_live_bundle_albertsons(retail_url="", target_rpc="", sku=""):
+    return _normalize_retailer_bundle_contract("Albertsons", get_albertsons_bundle(retail_url, target_rpc), fallback_reason="albertsons_live_html")
+
+
+def _default_uploaded_missing_bundle(retailer_name, reason):
+    return build_empty_retailer_bundle(retailer_name, reason)
+
+
+RETAILER_PARSER_REGISTRY = {
+    "cvs": {
+        "display_name": "CVS",
+        "live_loader": _build_live_bundle_cvs,
+        "uploaded_loader": _build_uploaded_bundle_cvs,
+        "uploaded_required_reason": "cvs_uploaded_txt_missing",
+        "prefer_uploaded_when_present": True,
+        "txt_required_only": False,
+    },
+    "walgreens": {
+        "display_name": "Walgreens",
+        "live_loader": _build_live_bundle_walgreens,
+        "uploaded_loader": _build_uploaded_bundle_walgreens,
+        "uploaded_required_reason": "walgreens_uploaded_txt_missing",
+        "prefer_uploaded_when_present": True,
+        "txt_required_only": False,
+    },
+    "sam's club": {
+        "display_name": "Sam's Club",
+        "live_loader": _build_live_bundle_sams,
+        "uploaded_loader": _build_uploaded_bundle_sams,
+        "uploaded_required_reason": "sams_uploaded_txt_missing",
+        "prefer_uploaded_when_present": True,
+        "txt_required_only": False,
+    },
+    "kroger": {
+        "display_name": "Kroger",
+        "live_loader": _build_live_bundle_kroger,
+        "uploaded_loader": _build_uploaded_bundle_kroger,
+        "uploaded_required_reason": "kroger_txt_required_missing_or_rpc_not_matched",
+        "prefer_uploaded_when_present": True,
+        "txt_required_only": True,
+    },
+    "albertsons": {
+        "display_name": "Albertsons",
+        "live_loader": _build_live_bundle_albertsons,
+        "uploaded_loader": _build_uploaded_bundle_albertsons,
+        "uploaded_required_reason": "albertsons_txt_required_missing_or_url_not_matched",
+        "prefer_uploaded_when_present": True,
+        "txt_required_only": True,
+    },
+}
+
+
+def get_retailer_parser_config(retailer_name):
+    retailer_key = normalize_retailer_name(retailer_name).strip().lower()
+    return dict(RETAILER_PARSER_REGISTRY.get(retailer_key, {}))
+
+
+def load_retailer_bundle_from_uploaded_capture(retailer_name, uploaded_html, retail_url="", target_rpc="", sku=""):
+    config = get_retailer_parser_config(retailer_name)
+    loader = config.get("uploaded_loader")
+    if not callable(loader):
+        return build_empty_retailer_bundle(retailer_name or "Retailer", "uploaded_loader_not_configured")
+    return _normalize_retailer_bundle_contract(
+        retailer_name,
+        loader(uploaded_html, retail_url=retail_url, target_rpc=target_rpc, sku=sku),
+        fallback_reason="uploaded_txt_html",
+    )
+
+
+def load_retailer_bundle_live(retailer_name, retail_url="", target_rpc="", sku=""):
+    config = get_retailer_parser_config(retailer_name)
+    loader = config.get("live_loader")
+    if not callable(loader):
+        return build_empty_retailer_bundle(retailer_name or "Retailer", "live_loader_not_configured")
+    return _normalize_retailer_bundle_contract(
+        retailer_name,
+        loader(retail_url=retail_url, target_rpc=target_rpc, sku=sku),
+        fallback_reason="live_loader_html",
+    )
+
 def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_source_code=""):
-    retailer = normalize_retailer_name(retailer_name).strip().lower()
+    retailer_display = normalize_retailer_name(retailer_name)
+    retailer_key = retailer_display.strip().lower()
     uploaded_html = str(row_source_code or "")
+    parser_cfg = get_retailer_parser_config(retailer_display)
+    if not parser_cfg:
+        return build_empty_retailer_bundle(retailer_display or "Retailer", "retailer_parser_not_registered")
 
-    if retailer == "kroger":
-        if uploaded_html.strip():
-            bundle = {
-                "text": extract_kroger_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc),
-                "images": extract_kroger_images_from_html(uploaded_html),
-            }
-            bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
-            bundle.setdefault("text", {}).setdefault("debug", {})["Image Path"] = "kroger_main_image_perspective"
-            return bundle
-        return build_empty_retailer_bundle("Kroger", "kroger_txt_required_missing_or_rpc_not_matched")
+    prefer_uploaded = bool(parser_cfg.get("prefer_uploaded_when_present", True))
+    txt_required_only = bool(parser_cfg.get("txt_required_only", False))
+    uploaded_missing_reason = str(parser_cfg.get("uploaded_required_reason", "uploaded_txt_missing") or "uploaded_txt_missing")
 
-    if retailer == "albertsons":
-        if uploaded_html.strip():
-            return get_albertsons_bundle_from_uploaded(uploaded_html, retail_url=retail_url, target_rpc=target_rpc)
-        return build_empty_retailer_bundle("Albertsons", "albertsons_txt_required_missing_or_url_not_matched")
+    if uploaded_html.strip() and prefer_uploaded:
+        return load_retailer_bundle_from_uploaded_capture(
+            retailer_display,
+            uploaded_html,
+            retail_url=retail_url,
+            target_rpc=target_rpc,
+            sku=sku,
+        )
+
+    if txt_required_only:
+        return build_empty_retailer_bundle(retailer_display, uploaded_missing_reason)
 
     if uploaded_html.strip():
-        if retailer == "cvs":
-            bundle = {"text": _extract_cvs_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_cvs_images_from_html(uploaded_html)}
-            bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
-            return bundle
-        if retailer == "walgreens":
-            bundle = {"text": extract_walgreens_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_walgreens_images_from_html(uploaded_html)}
-            bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
-            return bundle
-        if retailer == "sam's club":
-            bundle = {"text": extract_sams_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_sams_images_from_html(uploaded_html)}
-            bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
-            return bundle
+        return load_retailer_bundle_from_uploaded_capture(
+            retailer_display,
+            uploaded_html,
+            retail_url=retail_url,
+            target_rpc=target_rpc,
+            sku=sku,
+        )
 
-    retailer_fetchers = {
-        "cvs": lambda: get_cvs_bundle(retail_url, target_rpc),
-        "walgreens": lambda: get_walgreens_bundle(retail_url, target_rpc, sku=sku),
-        "sam's club": lambda: get_sams_bundle(retail_url, target_rpc, sku=sku),
-        "kroger": lambda: get_kroger_bundle(retail_url, target_rpc),
-    }
-    fetcher = retailer_fetchers.get(retailer)
-    if fetcher is None:
-        return build_empty_retailer_bundle(retailer_name or "Retailer", "retailer_not_supported_no_default_cvs_fallback")
-    return fetcher()
+    return load_retailer_bundle_live(
+        retailer_display,
+        retail_url=retail_url,
+        target_rpc=target_rpc,
+        sku=sku,
+    )
 
 def strip_walgreens_description_tail(text):
     """
@@ -8708,6 +9022,12 @@ if "raw_html_upload_hash" not in st.session_state:
     st.session_state.raw_html_upload_hash = ""
 if "auto_batch_upload_key" not in st.session_state:
     st.session_state.auto_batch_upload_key = ""
+if "prepared_batch_key" not in st.session_state:
+    st.session_state.prepared_batch_key = ""
+if "prepared_retailer_df" not in st.session_state:
+    st.session_state.prepared_retailer_df = None
+if "prepared_match_stats" not in st.session_state:
+    st.session_state.prepared_match_stats = {}
 
 # =========================================
 # TOP UPLOAD + DOWNLOAD UI
@@ -8781,6 +9101,9 @@ if uploaded_file:
             st.session_state.uploaded_raw_html_filename = ""
             st.session_state.raw_html_upload_hash = ""
             st.session_state.auto_batch_upload_key = ""
+            st.session_state.prepared_batch_key = ""
+            st.session_state.prepared_retailer_df = None
+            st.session_state.prepared_match_stats = {}
             clear_in_memory_caches()
             st.cache_data.clear()
 
@@ -8844,6 +9167,9 @@ if uploaded_file:
                     st.session_state.uploaded_raw_html_filename = uploaded_raw_html_file.name
                     st.session_state.raw_html_upload_hash = raw_html_hash
                     st.session_state.auto_batch_upload_key = ""
+                    st.session_state.prepared_batch_key = ""
+                    st.session_state.prepared_retailer_df = None
+                    st.session_state.prepared_match_stats = {}
                     st.session_state.batch_error_text = ""
                 uploaded_raw_html_map = st.session_state.uploaded_raw_html_map or {}
                 if uploaded_raw_html_map:
@@ -8857,57 +9183,29 @@ if uploaded_file:
             capture_batch_key_part = "use_ext" if selected_capture_mode == CAPTURE_MODE_USE_EXTENSION else "skip_ext"
             if st.session_state.raw_html_upload_hash:
                 capture_batch_key_part += f"::{st.session_state.raw_html_upload_hash}"
-            retailer_df = strict_filter_rows_for_selected_retailer(
-                master_df,
-                selected_retailer,
-                dedupe_by_url=(selected_capture_mode == CAPTURE_MODE_USE_EXTENSION),
-            )
-
-            if selected_retailer == "Kroger":
-                retailer_df = retailer_df.copy()
-                retailer_df["retail_url"] = retailer_df["retail_url"].fillna("").astype(str).str.strip()
-                if uploaded_raw_html_map and "retailer_rpc" in retailer_df.columns:
-                    retailer_df["retail_url"] = retailer_df.apply(
-                        lambda row: row["retail_url"] if str(row.get("retail_url", "")).strip() else find_kroger_url_in_uploaded_map(uploaded_raw_html_map, target_rpc=row.get("retailer_rpc", "")),
-                        axis=1,
-                    )
-                retailer_df = strict_filter_rows_for_selected_retailer(
-                    retailer_df,
-                    selected_retailer,
-                    dedupe_by_url=(selected_capture_mode == CAPTURE_MODE_USE_EXTENSION),
-                )
-
-            if "copy_source_code" not in retailer_df.columns:
-                retailer_df["copy_source_code"] = ""
-            matched_uploaded_html_count = 0
-            missing_uploaded_html_count = 0
-            if uploaded_raw_html_map:
-                if selected_retailer == "Albertsons":
-                    # Avoid copying very large Albertsons TXT blocks into every dataframe row.
-                    # Resolve the uploaded HTML lazily inside process_row().
-                    matched_uploaded_html_count = int(
-                        retailer_df.apply(
-                            lambda row: 1 if lookup_uploaded_raw_html(
-                                uploaded_raw_html_map,
-                                row.get("retail_url", ""),
-                                target_rpc=row.get("retailer_rpc", ""),
-                            ) else 0,
-                            axis=1,
-                        ).sum()
-                    )
-                    missing_uploaded_html_count = max(len(retailer_df) - matched_uploaded_html_count, 0)
-                else:
-                    retailer_df["copy_source_code"] = retailer_df.apply(
-                        lambda row: lookup_uploaded_raw_html(
-                            uploaded_raw_html_map,
-                            row.get("retail_url", ""),
-                            target_rpc=row.get("retailer_rpc", ""),
-                        ),
-                        axis=1,
-                    )
-                    matched_uploaded_html_count = int((retailer_df["copy_source_code"].astype(str).str.len() > 0).sum())
-                    missing_uploaded_html_count = max(len(retailer_df) - matched_uploaded_html_count, 0)
             current_batch_key = f"{file_hash}::{selected_retailer}::{capture_batch_key_part}"
+
+            if st.session_state.prepared_batch_key != current_batch_key:
+                prepared_batch = prepare_retailer_batch_dataframe(
+                    master_df=master_df,
+                    selected_retailer=selected_retailer,
+                    selected_capture_mode=selected_capture_mode,
+                    uploaded_html_map=uploaded_raw_html_map,
+                )
+                st.session_state.prepared_batch_key = current_batch_key
+                st.session_state.prepared_retailer_df = prepared_batch.get("retailer_df")
+                st.session_state.prepared_match_stats = {
+                    "matched_uploaded_html_count": int(prepared_batch.get("matched_uploaded_html_count", 0) or 0),
+                    "missing_uploaded_html_count": int(prepared_batch.get("missing_uploaded_html_count", 0) or 0),
+                    "isolated_unique_url_count": int(prepared_batch.get("isolated_unique_url_count", 0) or 0),
+                    "runtime_cfg": prepared_batch.get("runtime_cfg", {}) or {},
+                }
+
+            retailer_df = st.session_state.prepared_retailer_df.copy() if isinstance(st.session_state.prepared_retailer_df, pd.DataFrame) else pd.DataFrame()
+            matched_uploaded_html_count = int((st.session_state.prepared_match_stats or {}).get("matched_uploaded_html_count", 0) or 0)
+            missing_uploaded_html_count = int((st.session_state.prepared_match_stats or {}).get("missing_uploaded_html_count", 0) or 0)
+            isolated_unique_url_count = int((st.session_state.prepared_match_stats or {}).get("isolated_unique_url_count", 0) or 0)
+            runtime_cfg = (st.session_state.prepared_match_stats or {}).get("runtime_cfg", {}) or get_retailer_runtime_config(selected_retailer)
 
             if st.session_state.active_batch_key != current_batch_key:
                 st.session_state.summary_rows = []
@@ -8934,8 +9232,9 @@ if uploaded_file:
                 st.session_state.auto_batch_upload_key = ""
 
             txt_ready_for_batch = bool(matched_uploaded_html_count > 0)
-            isolated_unique_url_count = int(retailer_df["retail_url"].fillna("").astype(str).str.strip().replace("", pd.NA).dropna().nunique()) if retailer_df is not None and not retailer_df.empty and "retail_url" in retailer_df.columns else 0
             st.caption(f"Strict retailer isolation active: {selected_retailer} only. Rows queued: {len(retailer_df)}. Unique retailer URLs queued: {isolated_unique_url_count}.")
+            if runtime_cfg.get("notes"):
+                st.caption(str(runtime_cfg.get("notes", "")))
             if selected_capture_mode == CAPTURE_MODE_USE_EXTENSION:
                 extension_payload = build_extension_batch_payload(
                     retailer_df=retailer_df,
@@ -8946,7 +9245,10 @@ if uploaded_file:
                 )
                 render_extension_batch_bridge(extension_payload)
                 st.caption(f"Extension bridge ready for {selected_retailer}. For Kroger, the app can now connect Kroger RPC to the matching Requested URL in the TXT file, fill retail_url from that match, and use that matched retail_url for lookup and display.")
-            elif selected_retailer in AUTO_SKIP_EXTENSION_RETAILERS:
+                parser_cfg = get_retailer_parser_config(selected_retailer)
+                if parser_cfg:
+                    st.caption(f"Parser framework active for {selected_retailer}: live loader + uploaded TXT loader normalized through one retailer registry.")
+            elif retailer_auto_skip_extension(selected_retailer):
                 st.caption(f"{selected_retailer} is in skip-extension mode, so the app can auto-run straight to batch with live retailer fetches.")
 
             if uploaded_raw_html_map:
@@ -8957,7 +9259,7 @@ if uploaded_file:
             if selected_capture_mode == CAPTURE_MODE_USE_EXTENSION and txt_ready_for_batch:
                 should_auto_run = True
                 auto_run_reason = "uploaded TXT capture"
-            elif selected_capture_mode == CAPTURE_MODE_SKIP_EXTENSION and selected_retailer in AUTO_SKIP_EXTENSION_RETAILERS:
+            elif selected_capture_mode == CAPTURE_MODE_SKIP_EXTENSION and retailer_auto_skip_extension(selected_retailer):
                 should_auto_run = True
                 auto_run_reason = "skip-extension direct batch"
 
@@ -9026,7 +9328,7 @@ if uploaded_file:
                     st.success(st.session_state.batch_status_message or f"Batch finished for {selected_retailer}. Visual QA review is ready below.")
                 elif selected_capture_mode == CAPTURE_MODE_USE_EXTENSION and not matched_uploaded_html_count:
                     st.info(f"Load the extension, run the retailer batch, then upload the TXT capture for {selected_retailer}. As soon as the TXT has matches, batch will run from that captured HTML.")
-                elif selected_capture_mode == CAPTURE_MODE_SKIP_EXTENSION and selected_retailer in AUTO_SKIP_EXTENSION_RETAILERS:
+                elif selected_capture_mode == CAPTURE_MODE_SKIP_EXTENSION and retailer_auto_skip_extension(selected_retailer):
                     st.info(f"Skip-extension mode is enabled for {selected_retailer}. The app will go straight into batch automatically.")
                 else:
                     st.info(f"Use the top selections, then click Run Batch for {selected_retailer}. The visual QA review will appear below after extract/report generation finishes.")
