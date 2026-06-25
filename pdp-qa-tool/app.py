@@ -832,10 +832,12 @@ def reorder_cvs_salsify_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_C
     1. Online/Main image.
     2. Flat Back_2D / back.
     3. Flat Left_2D / side.
-    4. ATF I/O-Generic if present, otherwise ATF 6-Generic.
-    5+. ATF 2-Generic through ATF 5-Generic.
+    4. ATF I/O-Generic when present.
+       - If ATF I/O-Generic is missing, ATF 2 moves up into this slot.
+    5+. Continue remaining ATF 2-5 Generic images in order.
+    Last. ATF 6-Generic is always kept last and is never used as the ATF I/O fallback.
 
-    Missing slots 1-4 stay blank so later ATF images do not shift up.
+    Missing slots 1-3 stay blank so later ATF images do not shift up.
     """
     imgs = [img for img in (images or []) if isinstance(img, dict)]
 
@@ -871,6 +873,14 @@ def reorder_cvs_salsify_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_C
         used.add(key)
         return True
 
+    def add_first_available(query_groups, blank_name=""):
+        for query_group in query_groups:
+            if add(find_first(*query_group)):
+                return True
+        if blank_name:
+            ordered.append(make_blank_salsify_image_slot(blank_name))
+        return False
+
     add(find_first(
         "online optimized image", "online image", "main variant image", "main image", "hero", "primary", "front", "product image 1", "image 1",
     ), "cvs_slot_1")
@@ -881,18 +891,29 @@ def reorder_cvs_salsify_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_C
         "flat left 2d", "flat left", "left 2d", "left", "flat right 2d", "flat right", "right 2d", "right", "side", "product image 3", "image 3",
     ), "cvs_slot_3")
 
-    io_img = find_first("atf i/o generic", "atf i o generic", "atf io generic", "atf i/o-generic", "atf io-generic")
-    atf6_img = find_first("atf 6 generic", "atf 6-generic", "atf6 generic", "atf6-generic")
-    add(io_img if io_img else atf6_img, "cvs_slot_4")
+    io_queries = (("atf i/o generic", "atf i o generic", "atf io generic", "atf i/o-generic", "atf io-generic"),)
+    atf2_queries = (("atf 2 generic", "atf 2-generic", "atf2 generic", "atf2-generic"),)
+    atf3_queries = (("atf 3 generic", "atf 3-generic", "atf3 generic", "atf3-generic"),)
+    atf4_queries = (("atf 4 generic", "atf 4-generic", "atf4 generic", "atf4-generic"),)
+    atf5_queries = (("atf 5 generic", "atf 5-generic", "atf5 generic", "atf5-generic"),)
+    atf6_queries = (("atf 6 generic", "atf 6-generic", "atf6 generic", "atf6-generic"),)
 
-    for n in range(2, 6):
-        add(find_first(f"atf {n} generic", f"atf {n}-generic", f"atf{n} generic", f"atf{n}-generic"))
+    # Slot 4: ATF I/O if present; otherwise ATF 2 moves up.
+    add_first_available(io_queries + atf2_queries)
+
+    # Continue remaining core ATF images in order. Used URLs are skipped automatically.
+    add_first_available(atf2_queries)
+    add_first_available(atf3_queries)
+    add_first_available(atf4_queries)
+    add_first_available(atf5_queries)
+
+    # ATF 6 is always last among CVS ATF assets.
+    add_first_available(atf6_queries)
 
     for img in imgs:
         add(img)
 
     return ordered[:max_slots]
-
 def reorder_cvs_retailer_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
     urls = [str(u or "").strip() for u in (images or []) if str(u or "").strip()]
     if not urls:
@@ -7172,21 +7193,35 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
                     return img
         return None
 
-    def find_first_retailer_preferred_image(images, retailer_token, *queries, strict=False):
+    def find_first_retailer_preferred_image(images, retailer_token, *queries, strict=False, excluded_retailer_tokens=None, used_urls=None):
         retailer_token = normalize_salsify_asset_name(retailer_token or "")
+        excluded_retailer_tokens = {
+            normalize_salsify_asset_name(x)
+            for x in (excluded_retailer_tokens or [])
+            if normalize_salsify_asset_name(x)
+        }
+        used_urls = {str(x or "").strip() for x in (used_urls or set()) if str(x or "").strip()}
+
         preferred = []
-        fallback = []
+        generic_only = []
+
         for img in images or []:
             if not isinstance(img, dict):
+                continue
+            url = str(img.get("url", "") or "").strip()
+            if used_urls and url in used_urls:
                 continue
             name = normalize_salsify_asset_name(img.get("name", ""))
             if retailer_token and retailer_token in name:
                 preferred.append(img)
-            else:
-                fallback.append(img)
+                continue
+            if any(token and token in name for token in excluded_retailer_tokens):
+                continue
+            generic_only.append(img)
+
         if strict:
             return find_first_image(preferred, *queries)
-        return find_first_image(preferred, *queries) or find_first_image(fallback, *queries)
+        return find_first_image(preferred, *queries) or find_first_image(generic_only, *queries)
 
     if retailer in {"sam's club", "sams club", "samsclub"}:
         sams_brands = {"depend", "kotex", "u by kotex", "poise", "thinx", "thix"}
@@ -7257,12 +7292,28 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
         return reorder_cvs_salsify_images_for_visual(source_images, max_slots=max_slots)
 
     if retailer == "walgreens":
-        aligned = []
         strict_image_mode = retailer in EXCLUSIVE_SALSIFY_IMAGE_RETAILERS
+        used_urls = set()
+        aligned = []
+        excluded_retailer_tokens = {
+            "cvs",
+            "kroger",
+            "sam's club",
+            "sams club",
+            "samsclub",
+            "walmart",
+            "target",
+            "amazon",
+        }
+
+        # Walgreens Salsify rules:
+        # 1. Slot 1 must be Online Optimized Image.
+        # 2. Slot 2 must be Ingredient Label Image.
+        # 3. If either slot is missing, keep that slot blank.
+        # 4. ATF images must start only after slots 1 and 2 and never move up.
         slot_plan = [
-            (("online optimized image", "online image", "online", "front"), "online optimized image", True),
-            (("flat back 2d", "flat back", "back 2d", "back"), "flat back 2d", True),
-            (("flat left 2d", "flat left", "left 2d", "left"), "flat left 2d", True),
+            (("online optimized image-", "online optimized image", "online image", "online", "front"), "online optimized image", True),
+            (("ingredient label image", "ingredients label image", "ingredient label", "ingredients label"), "ingredient label image", True),
             (("atf io", "atf i/o generic", "atf i o generic", "atf io generic"), "atf io", False),
             (("atf 2",), "atf 2", False),
             (("atf 3",), "atf 3", False),
@@ -7270,18 +7321,23 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
             (("atf 5",), "atf 5", False),
             (("atf 6",), "atf 6", False),
         ]
+
         for query_group, blank_name, keep_blank in slot_plan:
             img = find_first_retailer_preferred_image(
                 source_images,
                 "walgreens",
                 *query_group,
                 strict=strict_image_mode,
+                excluded_retailer_tokens=excluded_retailer_tokens,
+                used_urls=used_urls,
             )
-            if img:
+            if isinstance(img, dict) and str(img.get("url", "") or "").strip():
                 aligned.append(img)
+                used_urls.add(str(img.get("url", "") or "").strip())
             elif keep_blank:
                 aligned.append(make_blank_salsify_image_slot(blank_name))
-        return dedupe_images_preserve_order(aligned)[:min(max_slots, 6)]
+
+        return aligned[:min(max_slots, 6)]
 
     return dedupe_images_preserve_order(source_images)[:max_slots]
 
