@@ -1613,19 +1613,80 @@ def _extract_uploaded_capture_supporting_blocks(raw_text):
     if not raw_text.strip():
         return rendered_html_map, image_url_map
 
-    block_specs = [
-        (r'(?is)Requested\s+URL\s*:\s*(https?://\S+).*?-----BEGIN\s+RENDERED\s+HTML-----(.*?)-----END\s+RENDERED\s+HTML-----', rendered_html_map),
-        (r'(?is)Requested\s+URL\s*:\s*(https?://\S+).*?-----BEGIN\s+LIVE\s+DOM\s+HTML-----(.*?)-----END\s+LIVE\s+DOM\s+HTML-----', rendered_html_map),
-        (r'(?is)Requested\s+URL\s*:\s*(https?://\S+).*?-----BEGIN\s+IMAGE\s+URLS-----(.*?)-----END\s+IMAGE\s+URLS-----', image_url_map),
-        (r'(?is)Requested\s+URL\s*:\s*(https?://\S+).*?-----BEGIN\s+ALBERTSONS\s+CAROUSEL\s+IMAGE\s+URLS-----(.*?)-----END\s+ALBERTSONS\s+CAROUSEL\s+IMAGE\s+URLS-----', image_url_map),
+    requested_url_pattern = re.compile(r'(?im)^Requested\s+URL\s*:\s*(https?://\S+)\s*$')
+    matches = list(requested_url_pattern.finditer(raw_text))
+    if not matches:
+        return rendered_html_map, image_url_map
+
+    marker_pairs = [
+        ('-----BEGIN RENDERED HTML-----', '-----END RENDERED HTML-----', rendered_html_map),
+        ('-----BEGIN LIVE DOM HTML-----', '-----END LIVE DOM HTML-----', rendered_html_map),
+        ('-----BEGIN IMAGE URLS-----', '-----END IMAGE URLS-----', image_url_map),
+        ('-----BEGIN ALBERTSONS CAROUSEL IMAGE URLS-----', '-----END ALBERTSONS CAROUSEL IMAGE URLS-----', image_url_map),
     ]
-    for pattern, target in block_specs:
-        for match in re.finditer(pattern, raw_text):
-            requested_url = normalize_uploaded_capture_url(match.group(1) or "")
-            block_text = html.unescape(str(match.group(2) or "").strip())
-            if requested_url and block_text:
-                target[requested_url] = block_text
+
+    for i, match in enumerate(matches):
+        requested_url = normalize_uploaded_capture_url(match.group(1) or "")
+        if not requested_url:
+            continue
+        seg_start = match.end()
+        seg_end = matches[i + 1].start() if i + 1 < len(matches) else len(raw_text)
+        segment = raw_text[seg_start:seg_end]
+        if not segment:
+            continue
+        for begin_marker, end_marker, target in marker_pairs:
+            search_pos = 0
+            while True:
+                begin_idx = segment.find(begin_marker, search_pos)
+                if begin_idx == -1:
+                    break
+                content_start = begin_idx + len(begin_marker)
+                end_idx = segment.find(end_marker, content_start)
+                if end_idx == -1:
+                    break
+                block_text = html.unescape(str(segment[content_start:end_idx] or "").strip())
+                if block_text:
+                    target[requested_url] = block_text
+                search_pos = end_idx + len(end_marker)
+
     return rendered_html_map, image_url_map
+
+
+def _build_uploaded_html_fast_indexes(uploaded_html_map):
+    uploaded_html_map = uploaded_html_map or {}
+    cache_key = (id(uploaded_html_map), len(uploaded_html_map))
+    cache = getattr(_build_uploaded_html_fast_indexes, '_cache', {})
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    no_query_map = {}
+    albertsons_rpc_map = {}
+    for stored_key, stored_html in uploaded_html_map.items():
+        norm_key = normalize_uploaded_capture_url(stored_key)
+        if not norm_key:
+            continue
+        no_query_key = norm_key.split('?', 1)[0].strip().lower()
+        if no_query_key and no_query_key not in no_query_map:
+            no_query_map[no_query_key] = str(stored_html or "")
+
+        m = re.search(r'product-details\.(\d+)\.html', norm_key, flags=re.IGNORECASE)
+        if m:
+            rpc = clean_item_number(m.group(1))
+            if rpc and rpc not in albertsons_rpc_map:
+                albertsons_rpc_map[rpc] = str(stored_html or "")
+
+    result = {
+        'no_query_map': no_query_map,
+        'albertsons_rpc_map': albertsons_rpc_map,
+    }
+    cache[cache_key] = result
+    if len(cache) > 8:
+        # keep cache tiny and cheap
+        first_key = next(iter(cache.keys()))
+        cache.pop(first_key, None)
+    _build_uploaded_html_fast_indexes._cache = cache
+    return result
 
 def parse_uploaded_raw_html_map(raw_text):
     raw_text = str(raw_text or "")
@@ -1634,32 +1695,50 @@ def parse_uploaded_raw_html_map(raw_text):
 
     html_map = {}
     rendered_html_map, image_url_map = _extract_uploaded_capture_supporting_blocks(raw_text)
-    block_pattern = re.compile(
-        r'(?is)Requested\s+URL\s*:\s*(https?://\S+).*?-----BEGIN HTML-----(.*?)-----END HTML-----'
-    )
+    requested_url_pattern = re.compile(r'(?im)^Requested\s+URL\s*:\s*(https?://\S+)\s*$')
+    matches = list(requested_url_pattern.finditer(raw_text))
+    if not matches:
+        return html_map
 
-    for match in block_pattern.finditer(raw_text):
-        requested_url = str(match.group(1) or "").strip()
-        html_text = html.unescape(str(match.group(2) or "").strip())
-        if not requested_url or len(html_text) < 30:
+    begin_html = '-----BEGIN HTML-----'
+    end_html = '-----END HTML-----'
+
+    for i, match in enumerate(matches):
+        requested_url = normalize_uploaded_capture_url(match.group(1) or "")
+        if not requested_url:
             continue
-        key = normalize_uploaded_capture_url(requested_url)
-        if not key:
+        seg_start = match.end()
+        seg_end = matches[i + 1].start() if i + 1 < len(matches) else len(raw_text)
+        segment = raw_text[seg_start:seg_end]
+        if not segment:
+            continue
+        begin_idx = segment.find(begin_html)
+        if begin_idx == -1:
+            continue
+        content_start = begin_idx + len(begin_html)
+        end_idx = segment.find(end_html, content_start)
+        if end_idx == -1:
+            continue
+        html_text = html.unescape(str(segment[content_start:end_idx] or "").strip())
+        if len(html_text) < 30:
             continue
         merged_parts = [html_text]
-        rendered_html = str(rendered_html_map.get(key, "") or "").strip()
-        image_urls_block = str(image_url_map.get(key, "") or "").strip()
+        rendered_html = str(rendered_html_map.get(requested_url, "") or "").strip()
+        image_urls_block = str(image_url_map.get(requested_url, "") or "").strip()
         if rendered_html:
             merged_parts.append("\n<!-- BEGIN_RENDERED_DOM_HTML -->\n" + rendered_html + "\n<!-- END_RENDERED_DOM_HTML -->")
         if image_urls_block:
             merged_parts.append("\n<!-- BEGIN_CAPTURED_IMAGE_URLS -->\n" + image_urls_block + "\n<!-- END_CAPTURED_IMAGE_URLS -->")
-        html_map[key] = "\n".join(part for part in merged_parts if part)
+        html_map[requested_url] = "\n".join(part for part in merged_parts if part)
     return html_map
 
 def lookup_uploaded_raw_html(uploaded_html_map, retail_url, target_rpc=""):
     uploaded_html_map = uploaded_html_map or {}
     retail_url = str(retail_url or "").strip()
     target_rpc = str(target_rpc or "").strip()
+    fast_indexes = _build_uploaded_html_fast_indexes(uploaded_html_map)
+    no_query_map = fast_indexes.get('no_query_map', {}) or {}
+    albertsons_rpc_map = fast_indexes.get('albertsons_rpc_map', {}) or {}
 
     if retail_url and "kroger.com" in retail_url.lower():
         key = normalize_uploaded_capture_url(retail_url)
@@ -1683,10 +1762,15 @@ def lookup_uploaded_raw_html(uploaded_html_map, retail_url, target_rpc=""):
 
     retail_no_query = normalize_uploaded_capture_url(retail_url).split("?", 1)[0].strip().lower()
     if retail_no_query:
-        for stored_key, stored_html in uploaded_html_map.items():
-            stored_no_query = normalize_uploaded_capture_url(stored_key).split("?", 1)[0].strip().lower()
-            if stored_no_query and stored_no_query == retail_no_query:
-                return str(stored_html or "")
+        fast_match = no_query_map.get(retail_no_query, "")
+        if fast_match:
+            return str(fast_match or "")
+
+    clean_rpc = clean_item_number(target_rpc)
+    if clean_rpc:
+        fast_match = albertsons_rpc_map.get(clean_rpc, "")
+        if fast_match:
+            return str(fast_match or "")
 
     matched_albertsons_key = find_albertsons_url_in_uploaded_map(uploaded_html_map, target_rpc=target_rpc)
     if matched_albertsons_key:
@@ -9598,4 +9682,5 @@ if (
         st.error("🔥 CRITICAL APP ERROR")
         st.text(str(e))
         st.text(traceback.format_exc())
+
                       
