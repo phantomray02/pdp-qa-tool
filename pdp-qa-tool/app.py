@@ -107,7 +107,7 @@ CVS_VARIANT_MIN_MATCH_SCORE = 35
 
 CAPTURE_MODE_USE_EXTENSION = "Use extension + TXT upload"
 CAPTURE_MODE_SKIP_EXTENSION = "Skip extension and go straight to batch"
-AUTO_SKIP_EXTENSION_RETAILERS = {"CVS", "Walgreens"}
+AUTO_SKIP_EXTENSION_RETAILERS = {"Walgreens"}
 # Retailer-specific Salsify isolation controls.
 # Copy can stay retailer-locked while images still fall back to generic locked Salsify slots if
 # retailer-labeled image assets do not exist yet.
@@ -808,9 +808,9 @@ RETAILER_RUNTIME_CONFIG = {
     },
     "cvs": {
         "supports_uploaded_txt": True,
-        "auto_skip_extension": True,
+        "auto_skip_extension": False,
         "retailer_url_key": "retail_url",
-        "notes": "CVS can run live or via uploaded TXT.",
+        "notes": "CVS image QA should use extension + TXT capture because CVS gallery image paths are in the rendered browser DOM; raw live HTML may not include /bizcontent/merchandising/productimages URLs.",
     },
     "walgreens": {
         "supports_uploaded_txt": True,
@@ -4562,6 +4562,7 @@ def get_cvs_bundle(retail_url, target_rpc=""):
     )
     text_bundle.setdefault("debug", {})["Image Path"] = "cvs_live_html_image_lookup"
     text_bundle.setdefault("debug", {})["CVS Image Count"] = int(len(images or []))
+    text_bundle.setdefault("debug", {})["CVS Live HTML Caveat"] = "If CVS Image Count is 0 here, use extension + TXT capture; raw live HTML may not include rendered gallery image paths."
     return {
         "text": text_bundle,
         "images": images,
@@ -7747,6 +7748,7 @@ def _build_uploaded_bundle_cvs(uploaded_html, retail_url="", target_rpc="", sku=
     bundle.setdefault("text", {}).setdefault("debug", {})["CVS Uploaded Image Count"] = int(len(uploaded_images or []))
     bundle.setdefault("text", {}).setdefault("debug", {})["CVS Live Image Count"] = int(len(live_images or []))
     bundle.setdefault("text", {}).setdefault("debug", {})["CVS Image Count"] = int(len(images or []))
+    bundle.setdefault("text", {}).setdefault("debug", {})["CVS Image Source Requirement"] = "CVS images are expected from rendered extension TXT because raw live HTML may not contain the browser image gallery productimages paths."
     return _normalize_retailer_bundle_contract("CVS", bundle, fallback_reason="uploaded_txt_html")
 
 
