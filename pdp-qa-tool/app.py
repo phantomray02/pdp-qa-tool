@@ -1217,6 +1217,128 @@ def apply_retailer_salsify_image_limits(retailer_name, images):
             break
     return out
 
+
+
+def derive_albertsons_target_rpc(retail_url="", target_rpc=""):
+    direct_rpc = clean_item_number(target_rpc)
+    if direct_rpc:
+        return direct_rpc
+    retail_url = str(retail_url or "").strip()
+    match = re.search(r'product-details\.(\d+)\.html', retail_url, flags=re.IGNORECASE)
+    return clean_item_number(match.group(1)) if match else ""
+
+
+def merge_albertsons_image_lists(primary_images, fallback_images, capture_label_count=0):
+    primary_images = [str(x or "").strip() for x in (primary_images or []) if str(x or "").strip()]
+    fallback_images = [str(x or "").strip() for x in (fallback_images or []) if str(x or "").strip()]
+    capture_label_count = int(capture_label_count or 0)
+
+    ordered = []
+    seen = set()
+
+    def add_many(values):
+        for value in values:
+            family_key = _albertsons_image_family_key(value)
+            if not family_key or family_key in seen:
+                continue
+            seen.add(family_key)
+            ordered.append(value)
+
+    add_many(primary_images)
+    add_many(fallback_images)
+
+    if fallback_images and (len(fallback_images) > len(primary_images) or len(ordered) < capture_label_count):
+        ordered = []
+        seen = set()
+        add_many(fallback_images)
+        add_many(primary_images)
+
+    ordered = sorted(ordered, key=_albertsons_asset_sort_key)
+    return ordered[:MAX_IMAGE_SLOTS_TO_COMPARE]
+
+
+def init_session_state_defaults():
+    defaults = {
+        "start_idx": 0,
+        "summary_rows": [],
+        "export_rows": [],
+        "debug_rows": [],
+        "summary_skus": set(),
+        "detail_skus": set(),
+        "debug_skus": set(),
+        "processing_done": False,
+        "progress_bar": None,
+        "last_file_hash": None,
+        "uploaded_file_bytes": None,
+        "selected_retailer": "-- Select Retailer --",
+        "selected_brand_visual": "All",
+        "active_batch_key": "",
+        "completed_batch_key": "",
+        "auto_download_done": False,
+        "report_bytes": None,
+        "report_filename": None,
+        "report_batch_key": "",
+        "report_row_signature": "",
+        "batch_run_requested": False,
+        "batch_started_key": "",
+        "batch_status_message": "",
+        "batch_error_text": "",
+        "capture_mode": CAPTURE_MODE_USE_EXTENSION,
+        "uploaded_raw_html_map": {},
+        "uploaded_raw_html_filename": "",
+        "raw_html_upload_hash": "",
+        "auto_batch_upload_key": "",
+        "prepared_batch_key": "",
+        "prepared_retailer_df": None,
+        "prepared_match_stats": {},
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+
+def reset_batch_output_state(clear_report=True, clear_runtime_only=True):
+    st.session_state.summary_rows = []
+    st.session_state.export_rows = []
+    st.session_state.debug_rows = []
+    st.session_state.summary_skus = set()
+    st.session_state.detail_skus = set()
+    st.session_state.debug_skus = set()
+    st.session_state.start_idx = 0
+    st.session_state.processing_done = False
+    st.session_state.progress_bar = None
+    if clear_report:
+        st.session_state.report_bytes = None
+        st.session_state.report_filename = None
+        st.session_state.report_batch_key = ""
+        st.session_state.report_row_signature = ""
+        st.session_state.auto_download_done = False
+    if clear_runtime_only:
+        clear_runtime_result_caches(clear_network_caches=False)
+
+
+def reset_batch_request_state():
+    st.session_state.batch_run_requested = False
+    st.session_state.batch_started_key = ""
+    st.session_state.batch_status_message = ""
+    st.session_state.batch_error_text = ""
+
+
+def build_batch_records(df_slice):
+    if df_slice is None or len(df_slice) == 0:
+        return []
+    needed_cols = [
+        "sku", "retail_url", "salsify_url", "retailer_rpc", "copy_source_code",
+        "retailer", "rating", "review_count", "brand",
+    ]
+    working = df_slice.copy()
+    for col in needed_cols:
+        if col not in working.columns:
+            working[col] = ""
+    working = working[needed_cols]
+    return working.to_dict(orient="records")
+
+
 def prepare_input_df(df):
     df = df.copy()
     df.columns = [str(c).strip().lower() for c in df.columns]
@@ -4746,49 +4868,55 @@ def extract_albertsons_text_from_html(html_text, retail_url='', target_rpc=''):
 def get_albertsons_bundle_from_uploaded(uploaded_html, retail_url='', target_rpc=''):
     """
     Albertsons uploaded-path bundle.
-    Prefer uploaded TXT capture for copy. For images, use uploaded TXT first and,
-    if the TXT only contains image labels without ABS URLs, recover retailer images
-    from the live PDP HTML using the retailer URL.
+    Keep uploaded TXT as the copy source of truth, but recover and merge live PDP
+    gallery images whenever the TXT capture only contains labels or incomplete ABS URLs.
     """
     uploaded_html = str(uploaded_html or '')
-    text_bundle = extract_albertsons_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc)
+    effective_rpc = derive_albertsons_target_rpc(retail_url=retail_url, target_rpc=target_rpc)
+    text_bundle = extract_albertsons_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=effective_rpc)
     text_bundle.setdefault('debug', {})['Source Used'] = 'uploaded_txt_html'
 
-    images = extract_albertsons_images_from_html(uploaded_html, target_rpc=target_rpc)
+    uploaded_images = extract_albertsons_images_from_html(uploaded_html, target_rpc=effective_rpc)
     capture_label_count = _count_albertsons_capture_image_labels(uploaded_html)
+    live_images = []
 
-    if images:
+    if uploaded_images:
         text_bundle.setdefault('debug', {})['Image Path'] = 'albertsons_abs_image_lookup_uploaded'
     else:
         text_bundle.setdefault('debug', {})['Image Path'] = 'albertsons_txt_only_no_abs_urls_found'
 
-    # If the TXT clearly shows gallery labels (Image 1..Image N) but the capture lacks ABS URLs,
-    # recover the retailer gallery from the live PDP HTML.
-    if retail_url and (not images or (capture_label_count and len(images) < capture_label_count)):
+    if retail_url and (not uploaded_images or capture_label_count or effective_rpc):
         try:
             live_html = get_html(retail_url)
         except Exception:
             live_html = ''
-        live_images = extract_albertsons_images_from_html(live_html, target_rpc=target_rpc) if live_html else []
-        if live_images and len(live_images) >= max(len(images), capture_label_count or 0):
-            images = live_images
-            text_bundle.setdefault('debug', {})['Image Path'] = 'albertsons_live_html_image_recovery'
-            text_bundle.setdefault('debug', {})['Source Used'] = 'uploaded_txt_html_plus_live_image_recovery'
+        if live_html:
+            live_images = extract_albertsons_images_from_html(live_html, target_rpc=effective_rpc)
 
+    images = merge_albertsons_image_lists(uploaded_images, live_images, capture_label_count=capture_label_count)
+    if live_images and len(images) > len(uploaded_images):
+        text_bundle.setdefault('debug', {})['Image Path'] = 'albertsons_live_html_image_recovery'
+        text_bundle.setdefault('debug', {})['Source Used'] = 'uploaded_txt_html_plus_live_image_recovery'
+
+    text_bundle.setdefault('debug', {})['Albertsons Derived RPC'] = str(effective_rpc or '')
     text_bundle.setdefault('debug', {})['Albertsons Capture Label Count'] = int(capture_label_count or 0)
+    text_bundle.setdefault('debug', {})['Albertsons Uploaded Image Count'] = int(len(uploaded_images or []))
+    text_bundle.setdefault('debug', {})['Albertsons Live Image Count'] = int(len(live_images or []))
     text_bundle.setdefault('debug', {})['Albertsons Image Count'] = int(len(images or []))
-    text_bundle.setdefault('debug', {})['Albertsons Image Capture Note'] = 'Uploaded TXT copy retained. Albertsons images now search raw HTML, rendered DOM, script blobs, CSS background-image values, and can recover retailer images from the live PDP when the TXT contains labels but not ABS URLs.'
+    text_bundle.setdefault('debug', {})['Albertsons Image Capture Note'] = 'Uploaded TXT copy retained. Albertsons images now search raw HTML, rendered DOM, script blobs, CSS background-image values, derive RPC from the retailer URL when needed, and merge/recover retailer images from the live PDP when the TXT is incomplete.'
     return {'text': text_bundle, 'images': images or []}
 
 
 @st.cache_data(show_spinner=False)
 def get_albertsons_bundle(retail_url, target_rpc=''):
+    effective_rpc = derive_albertsons_target_rpc(retail_url=retail_url, target_rpc=target_rpc)
     html_text = get_html(retail_url)
     bundle = {
-        'text': extract_albertsons_text_from_html(html_text, retail_url=retail_url, target_rpc=target_rpc),
-        'images': extract_albertsons_images_from_html(html_text, target_rpc=target_rpc),
+        'text': extract_albertsons_text_from_html(html_text, retail_url=retail_url, target_rpc=effective_rpc),
+        'images': extract_albertsons_images_from_html(html_text, target_rpc=effective_rpc),
     }
     bundle.setdefault('text', {}).setdefault('debug', {})['Image Path'] = 'albertsons_abs_image_lookup'
+    bundle.setdefault('text', {}).setdefault('debug', {})['Albertsons Derived RPC'] = str(effective_rpc or '')
     bundle.setdefault('text', {}).setdefault('debug', {})['Albertsons Image Count'] = int(len(bundle.get('images', []) or []))
     bundle.setdefault('text', {}).setdefault('debug', {})['Albertsons Image Capture Note'] = 'Carousel / hidden thumbnail variants included when ABS asset URLs are present in raw HTML, script blobs, or CSS background-image values.'
     return bundle
@@ -9169,70 +9297,7 @@ def process_row(row):
 # =========================================
 # SESSION STATE
 # =========================================
-if "start_idx" not in st.session_state:
-    st.session_state.start_idx = 0
-if "summary_rows" not in st.session_state:
-    st.session_state.summary_rows = []
-if "export_rows" not in st.session_state:
-    st.session_state.export_rows = []
-if "debug_rows" not in st.session_state:
-    st.session_state.debug_rows = []
-if "summary_skus" not in st.session_state:
-    st.session_state.summary_skus = set()
-if "detail_skus" not in st.session_state:
-    st.session_state.detail_skus = set()
-if "debug_skus" not in st.session_state:
-    st.session_state.debug_skus = set()
-if "processing_done" not in st.session_state:
-    st.session_state.processing_done = False
-if "progress_bar" not in st.session_state:
-    st.session_state.progress_bar = None
-if "last_file_hash" not in st.session_state:
-    st.session_state.last_file_hash = None
-if "uploaded_file_bytes" not in st.session_state:
-    st.session_state.uploaded_file_bytes = None
-if "selected_retailer" not in st.session_state:
-    st.session_state.selected_retailer = "-- Select Retailer --"
-if "selected_brand_visual" not in st.session_state:
-    st.session_state.selected_brand_visual = "All"
-if "active_batch_key" not in st.session_state:
-    st.session_state.active_batch_key = ""
-if "completed_batch_key" not in st.session_state:
-    st.session_state.completed_batch_key = ""
-if "auto_download_done" not in st.session_state:
-    st.session_state.auto_download_done = False
-if "report_bytes" not in st.session_state:
-    st.session_state.report_bytes = None
-if "report_filename" not in st.session_state:
-    st.session_state.report_filename = None
-if "report_batch_key" not in st.session_state:
-    st.session_state.report_batch_key = ""
-if "report_row_signature" not in st.session_state:
-    st.session_state.report_row_signature = ""
-if "batch_run_requested" not in st.session_state:
-    st.session_state.batch_run_requested = False
-if "batch_started_key" not in st.session_state:
-    st.session_state.batch_started_key = ""
-if "batch_status_message" not in st.session_state:
-    st.session_state.batch_status_message = ""
-if "batch_error_text" not in st.session_state:
-    st.session_state.batch_error_text = ""
-if "capture_mode" not in st.session_state:
-    st.session_state.capture_mode = CAPTURE_MODE_USE_EXTENSION
-if "uploaded_raw_html_map" not in st.session_state:
-    st.session_state.uploaded_raw_html_map = {}
-if "uploaded_raw_html_filename" not in st.session_state:
-    st.session_state.uploaded_raw_html_filename = ""
-if "raw_html_upload_hash" not in st.session_state:
-    st.session_state.raw_html_upload_hash = ""
-if "auto_batch_upload_key" not in st.session_state:
-    st.session_state.auto_batch_upload_key = ""
-if "prepared_batch_key" not in st.session_state:
-    st.session_state.prepared_batch_key = ""
-if "prepared_retailer_df" not in st.session_state:
-    st.session_state.prepared_retailer_df = None
-if "prepared_match_stats" not in st.session_state:
-    st.session_state.prepared_match_stats = {}
+init_session_state_defaults()
 
 # =========================================
 # TOP UPLOAD + DOWNLOAD UI
@@ -9278,29 +9343,13 @@ if uploaded_file:
         file_hash = hashlib.md5(file_bytes).hexdigest()
 
         if st.session_state.last_file_hash != file_hash:
-            st.session_state.summary_rows = []
-            st.session_state.export_rows = []
-            st.session_state.debug_rows = []
-            st.session_state.summary_skus = set()
-            st.session_state.detail_skus = set()
-            st.session_state.debug_skus = set()
-            st.session_state.start_idx = 0
-            st.session_state.processing_done = False
-            st.session_state.progress_bar = None
+            reset_batch_output_state(clear_report=True, clear_runtime_only=False)
             st.session_state.last_file_hash = file_hash
             st.session_state.selected_retailer = "-- Select Retailer --"
             st.session_state.selected_brand_visual = "All"
             st.session_state.active_batch_key = ""
             st.session_state.completed_batch_key = ""
-            st.session_state.auto_download_done = False
-            st.session_state.report_bytes = None
-            st.session_state.report_filename = None
-            st.session_state.report_batch_key = ""
-            st.session_state.report_row_signature = ""
-            st.session_state.batch_run_requested = False
-            st.session_state.batch_started_key = ""
-            st.session_state.batch_status_message = ""
-            st.session_state.batch_error_text = ""
+            reset_batch_request_state()
             st.session_state.capture_mode = CAPTURE_MODE_USE_EXTENSION
             st.session_state.uploaded_raw_html_map = {}
             st.session_state.uploaded_raw_html_filename = ""
@@ -9412,27 +9461,11 @@ if uploaded_file:
             runtime_cfg = (st.session_state.prepared_match_stats or {}).get("runtime_cfg", {}) or get_retailer_runtime_config(selected_retailer)
 
             if st.session_state.active_batch_key != current_batch_key:
-                st.session_state.summary_rows = []
-                st.session_state.export_rows = []
-                st.session_state.debug_rows = []
-                st.session_state.summary_skus = set()
-                st.session_state.detail_skus = set()
-                st.session_state.debug_skus = set()
-                st.session_state.start_idx = 0
-                st.session_state.processing_done = False
-                st.session_state.progress_bar = None
+                reset_batch_output_state(clear_report=True, clear_runtime_only=True)
                 st.session_state.active_batch_key = current_batch_key
                 st.session_state.completed_batch_key = ""
                 st.session_state.selected_brand_visual = "All"
-                st.session_state.auto_download_done = False
-                st.session_state.report_batch_key = ""
-                st.session_state.report_row_signature = ""
-                st.session_state.report_bytes = None
-                st.session_state.report_filename = None
-                st.session_state.batch_run_requested = False
-                st.session_state.batch_started_key = ""
-                st.session_state.batch_status_message = ""
-                st.session_state.batch_error_text = ""
+                reset_batch_request_state()
                 st.session_state.auto_batch_upload_key = ""
 
             txt_ready_for_batch = bool(matched_uploaded_html_count > 0)
@@ -9451,7 +9484,7 @@ if uploaded_file:
                 st.caption(f"Extension bridge ready for {selected_retailer}. For Kroger, the app can now connect Kroger RPC to the matching Requested URL in the TXT file, fill retail_url from that match, and use that matched retail_url for lookup and display.")
                 parser_cfg = get_retailer_parser_config(selected_retailer)
                 if parser_cfg:
-                    st.caption(f"Parser framework active for {selected_retailer}: live loader + uploaded TXT loader normalized through one retailer registry.")
+                    st.caption(f"Parser framework active for {selected_retailer}: live loader + uploaded TXT loader normalized through one retailer registry. This keeps the current UI design intact while making retailer expansion cleaner and faster.")
             elif retailer_auto_skip_extension(selected_retailer):
                 st.caption(f"{selected_retailer} is in skip-extension mode, so the app can auto-run straight to batch with live retailer fetches.")
 
@@ -9473,25 +9506,13 @@ if uploaded_file:
                 and st.session_state.batch_started_key != current_batch_key
                 and not st.session_state.processing_done
             ):
+                reset_batch_output_state(clear_report=True, clear_runtime_only=True)
                 st.session_state.batch_run_requested = True
                 st.session_state.batch_started_key = current_batch_key
                 st.session_state.batch_status_message = f"Auto-starting batch for {selected_retailer} using {auto_run_reason}."
                 st.session_state.batch_error_text = ""
                 st.session_state.completed_batch_key = ""
-                st.session_state.start_idx = 0
-                st.session_state.summary_rows = []
-                st.session_state.export_rows = []
-                st.session_state.debug_rows = []
-                st.session_state.summary_skus = set()
-                st.session_state.detail_skus = set()
-                st.session_state.debug_skus = set()
-                st.session_state.progress_bar = None
-                st.session_state.report_bytes = None
-                st.session_state.report_filename = None
-                st.session_state.report_batch_key = ""
-                st.session_state.auto_download_done = False
                 st.session_state.auto_batch_upload_key = current_batch_key
-                clear_runtime_result_caches(clear_network_caches=False)
                 st.rerun()
 
 
@@ -9502,25 +9523,12 @@ if uploaded_file:
                     key=f"run_batch_btn::{current_batch_key}",
                     use_container_width=True,
                 ):
+                    reset_batch_output_state(clear_report=True, clear_runtime_only=True)
                     st.session_state.batch_run_requested = True
                     st.session_state.batch_started_key = current_batch_key
                     st.session_state.batch_status_message = ""
                     st.session_state.batch_error_text = ""
-                    st.session_state.processing_done = False
                     st.session_state.completed_batch_key = ""
-                    st.session_state.start_idx = 0
-                    st.session_state.summary_rows = []
-                    st.session_state.export_rows = []
-                    st.session_state.debug_rows = []
-                    st.session_state.summary_skus = set()
-                    st.session_state.detail_skus = set()
-                    st.session_state.debug_skus = set()
-                    st.session_state.progress_bar = None
-                    st.session_state.report_bytes = None
-                    st.session_state.report_filename = None
-                    st.session_state.report_batch_key = ""
-                    st.session_state.auto_download_done = False
-                    clear_runtime_result_caches(clear_network_caches=False)
                     st.rerun()
 
             with run_msg_col:
@@ -9676,7 +9684,7 @@ if retailer_df is not None and file_ready_for_batch and st.session_state.batch_s
 
             total = len(batch_df)
             completed = 0
-            batch_records = batch_df.to_dict("records")
+            batch_records = build_batch_records(batch_df)
 
             with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                 futures = [executor.submit(process_row, row_dict) for row_dict in batch_records]
