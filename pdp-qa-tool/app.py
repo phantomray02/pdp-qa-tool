@@ -3700,27 +3700,131 @@ def extract_vendor_copy_from_nextjs(html_text, target_rpc="", retail_url=""):
     }
 
 
+def _clean_cvs_image_url(url):
+    url = html.unescape(str(url or "").strip())
+    if not url:
+        return ""
+    url = url.strip().strip('"').strip("'")
+    url = url.replace('\/', '/')
+    if url.startswith('//'):
+        url = 'https:' + url
+    elif url.startswith('/'):
+        url = 'https://www.cvs.com' + url
+    if not re.match(r'^https?://', url, flags=re.IGNORECASE):
+        return ""
+    lowered = url.lower()
+    if '/bizcontent/merchandising/productimages/' not in lowered:
+        return ""
+    if not re.search(r'\.(?:jpg|jpeg|png|webp)(?:\?|$)', lowered, flags=re.IGNORECASE):
+        return ""
+    return url
+
+
+def _cvs_image_display_url(url):
+    clean = _clean_cvs_image_url(url)
+    if not clean:
+        return ""
+    return clean.split('#', 1)[0].strip()
+
+
+def _cvs_image_family_key(url):
+    display = _cvs_image_display_url(url)
+    if not display:
+        return ""
+    lower = display.lower()
+    base = lower.split('?', 1)[0]
+    name = base.rsplit('/', 1)[-1]
+    name = re.sub(r'\.(jpg|jpeg|png|webp)$', '', name, flags=re.IGNORECASE)
+    name = re.sub(r'_(?:\d{2,4})$', '', name)
+    return name or base
+
+
+def _cvs_image_size_score(url):
+    clean = _clean_cvs_image_url(url)
+    if not clean:
+        return 0
+    score = 0
+    for match in re.finditer(r'(?:Resize|width|w)=\(?([0-9]{2,4})', clean, flags=re.IGNORECASE):
+        try:
+            score = max(score, int(match.group(1)))
+        except Exception:
+            pass
+    if score <= 0:
+        score = 1
+    return score
+
+
+def _extract_possible_cvs_image_urls_from_text_blob(text):
+    working = str(text or '')
+    if not working:
+        return []
+    pattern = r'(?:https?:)?//[^\s"<>]+/bizcontent/merchandising/productimages/[^\s"<>]+\.(?:jpg|jpeg|png|webp)(?:\?[^\s"<>]*)?|/bizcontent/merchandising/productimages/[^\s"<>]+\.(?:jpg|jpeg|png|webp)(?:\?[^\s"<>]*)?'
+    return [m.group(0) for m in re.finditer(pattern, working, flags=re.IGNORECASE)]
+
+
 def extract_cvs_images_from_html(html_text):
-    matches = re.findall(r'/bizcontent/merchandising/productimages/high_res/[^\s\"]+\.jpg\?[^\"]*', html_text or "")
+    """
+    CVS-only image extraction.
 
-    best_images = {}
-    order = []
+    Goal:
+    - capture all CVS gallery images that appear in the rendered HTML/TXT,
+    - preserve the onsite gallery order as closely as possible,
+    - dedupe repeated sizes/duplicates while keeping the best-quality URL for each
+      image family,
+    - avoid CVS-specific slot forcing or OOI promotion here.
+    """
+    working = html.unescape(str(html_text or ''))
+    if not working.strip():
+        return []
 
-    for m in matches:
-        full = "https://www.cvs.com" + m
-        base = full.split("?")[0]
-        name = base.split("/")[-1]
-        size_match = re.search(r"Resize=\((\d+)", m)
-        size = int(size_match.group(1)) if size_match else 0
+    raw_urls = []
+    raw_urls.extend(_extract_possible_cvs_image_urls_from_text_blob(working))
 
-        if name not in best_images:
-            order.append(name)
-            best_images[name] = {"url": base, "size": size}
-        elif size > best_images[name]["size"]:
-            best_images[name] = {"url": base, "size": size}
+    try:
+        soup = BeautifulSoup(working, 'html.parser')
+        attr_names = (
+            'src', 'data-src', 'data-image-src', 'data-lazy-src', 'data-original',
+            'data-zoom-image', 'content', 'href', 'poster'
+        )
+        for tag in soup.find_all(True):
+            for attr in attr_names:
+                value = str(tag.get(attr, '') or '')
+                if '/bizcontent/merchandising/productimages/' in value.lower():
+                    raw_urls.append(value)
+            for set_attr in ('srcset', 'data-srcset'):
+                srcset = str(tag.get(set_attr, '') or '')
+                if '/bizcontent/merchandising/productimages/' in srcset.lower():
+                    raw_urls.extend(_extract_possible_cvs_image_urls_from_text_blob(srcset))
+            style_value = str(tag.get('style', '') or '')
+            if '/bizcontent/merchandising/productimages/' in style_value.lower():
+                raw_urls.extend(_extract_possible_cvs_image_urls_from_text_blob(style_value))
+        for script_tag in soup.find_all('script'):
+            script_text = str(script_tag.string or script_tag.get_text(' ', strip=False) or '')
+            if '/bizcontent/merchandising/productimages/' in script_text.lower():
+                raw_urls.extend(_extract_possible_cvs_image_urls_from_text_blob(script_text))
+    except Exception:
+        pass
 
-    ordered_urls = [best_images[name]["url"] for name in order]
-    return reorder_cvs_retailer_images_for_visual(ordered_urls, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE)
+    best_by_family = {}
+    family_order = []
+    for raw_url in raw_urls:
+        clean = _clean_cvs_image_url(raw_url)
+        if not clean:
+            continue
+        family_key = _cvs_image_family_key(clean)
+        if not family_key:
+            continue
+        display_url = _cvs_image_display_url(clean)
+        score = _cvs_image_size_score(clean)
+        if family_key not in best_by_family:
+            family_order.append(family_key)
+            best_by_family[family_key] = {'url': display_url, 'score': score}
+        elif score > best_by_family[family_key].get('score', 0):
+            best_by_family[family_key] = {'url': display_url, 'score': score}
+
+    ordered_urls = [best_by_family[key]['url'] for key in family_order if key in best_by_family]
+    ordered_urls = dedupe_preserve_order(ordered_urls)
+    return ordered_urls[:MAX_IMAGE_SLOTS_TO_COMPARE]
 
 
 def _extract_cvs_text_from_html(html_text, retail_url="", target_rpc=""):
@@ -3774,6 +3878,7 @@ def get_cvs_bundle(retail_url, target_rpc=""):
     text_bundle.setdefault("debug", {})["CVS Image Count"] = int(len(images or []))
     text_bundle.setdefault("debug", {})["CVS Isolated Parser"] = "cvs_only_live_bundle"
     text_bundle.setdefault("debug", {})["CVS Live HTML Caveat"] = "If CVS Image Count is 0 here, use extension + TXT capture; raw live HTML may not include rendered gallery image paths."
+    text_bundle.setdefault("debug", {})["CVS Image Order Rule"] = "Renderer/site order preserved from CVS HTML/TXT capture; no CVS OOI promotion or slot forcing."
     return {
         "text": text_bundle,
         "images": images,
@@ -6282,6 +6387,7 @@ def _build_uploaded_bundle_cvs(uploaded_html, retail_url="", target_rpc="", sku=
     bundle.setdefault("text", {}).setdefault("debug", {})["CVS Live Image Count"] = int(len(live_images or []))
     bundle.setdefault("text", {}).setdefault("debug", {})["CVS Image Count"] = int(len(images or []))
     bundle.setdefault("text", {}).setdefault("debug", {})["CVS Isolated Parser"] = "cvs_only_uploaded_bundle"
+    bundle.setdefault("text", {}).setdefault("debug", {})["CVS Image Order Rule"] = "Renderer/site order preserved from CVS HTML/TXT capture; no CVS OOI promotion or slot forcing."
     return bundle
 
 
@@ -7580,8 +7686,7 @@ def get_visual_row_payload(
 
     if str(retailer_name or "").strip().lower() == "cvs":
         cvs_max_slots = int(get_retailer_salsify_requirements(retailer_name).get("max_images", MAX_IMAGE_SLOTS_TO_COMPARE) or MAX_IMAGE_SLOTS_TO_COMPARE)
-        r_images = reorder_cvs_retailer_images_for_visual(r_images, max_slots=cvs_max_slots)
-        r_images = promote_cvs_ooi_image_first(s_images, r_images)
+        r_images = [str(u or "").strip() for u in (r_images or []) if str(u or "").strip()][:cvs_max_slots]
     elif str(retailer_name or "").strip().lower() == "walgreens":
         r_images = r_images[:6]
 
@@ -7590,10 +7695,6 @@ def get_visual_row_payload(
         r_images,
         max_slots=visual_max_slots,
     )
-
-    if str(retailer_name or "").strip().lower() == "cvs":
-        r_text.setdefault("debug", {})["CVS OOI Promotion Applied"] = True
-        r_text.setdefault("debug", {})["CVS OOI Promotion Rule"] = "Best visual match to Salsify slot 1 was moved to CVS slot 1."
 
     return {
         "s_text": s_text,
@@ -7734,8 +7835,7 @@ def process_row(row):
 
         if retailer_norm == "cvs":
             cvs_max_slots = int(get_retailer_salsify_requirements(retailer_name).get("max_images", MAX_IMAGE_SLOTS_TO_COMPARE) or MAX_IMAGE_SLOTS_TO_COMPARE)
-            r_images = reorder_cvs_retailer_images_for_visual(r_images, max_slots=cvs_max_slots)
-            r_images = promote_cvs_ooi_image_first(s_images, r_images)
+            r_images = [str(u or "").strip() for u in (r_images or []) if str(u or "").strip()][:cvs_max_slots]
 
         s_images, r_images = align_image_slots_for_comparison(
             s_images,
