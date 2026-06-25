@@ -7,6 +7,7 @@ import json
 import time
 import hashlib
 import traceback
+import copy
 from io import BytesIO
 from difflib import SequenceMatcher
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -84,8 +85,12 @@ IMAGE_HASH_WIDTH = 9
 IMAGE_HASH_HEIGHT = 8
 
 # Larger caches to reduce repeat fetches during batch + visual QA.
-HTML_CACHE_MAX = 200
-IMAGE_HASH_CACHE_MAX = 300
+HTML_CACHE_MAX = 400
+IMAGE_HASH_CACHE_MAX = 700
+UPLOADED_BUNDLE_CACHE_MAX = 500
+ROW_RESULT_CACHE_MAX = 1200
+MASTER_FILE_CACHE_TTL_SECONDS = 3600
+RAW_HTML_MAP_CACHE_TTL_SECONDS = 3600
 
 # Hard image safety limits.
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
@@ -108,7 +113,9 @@ EXCLUSIVE_SALSIFY_IMAGE_RETAILERS = set()
 html_cache = {}
 image_hash_cache = {}
 image_compare_cache = {}
-IMAGE_COMPARE_CACHE_MAX = 600
+uploaded_bundle_cache = {}
+row_result_cache = {}
+IMAGE_COMPARE_CACHE_MAX = 1200
 
 thread_local = threading.local()
 
@@ -132,10 +139,12 @@ DESCRIPTION_TO_FEATURES_GAP_PX = 28
 def get_session():
     if not hasattr(thread_local, "session"):
         session = requests.Session()
+        pool_size = max(64, MAX_WORKERS * 8)
         adapter = HTTPAdapter(
-            pool_connections=100,
-            pool_maxsize=100,
+            pool_connections=pool_size,
+            pool_maxsize=pool_size,
             max_retries=0,
+            pool_block=True,
         )
         session.mount("http://", adapter)
         session.mount("https://", adapter)
@@ -583,6 +592,28 @@ def read_uploaded_file_from_bytes(file_bytes, file_name):
             last_error = e
 
     raise last_error if last_error else EmptyDataError("Could not parse uploaded file.")
+
+
+@st.cache_data(show_spinner=False, ttl=MASTER_FILE_CACHE_TTL_SECONDS)
+def load_prepared_master_file(file_bytes, file_name):
+    raw_df = read_uploaded_file_from_bytes(file_bytes, file_name)
+    return prepare_input_df(raw_df)
+
+
+@st.cache_data(show_spinner=False, ttl=RAW_HTML_MAP_CACHE_TTL_SECONDS)
+def load_uploaded_raw_html_map_cached(raw_html_bytes, file_name):
+    raw_html_bytes = raw_html_bytes or b""
+    raw_text = ""
+    for encoding in ["utf-8", "utf-8-sig", "latin1"]:
+        try:
+            raw_text = raw_html_bytes.decode(encoding)
+            break
+        except Exception:
+            continue
+    if not raw_text and isinstance(raw_html_bytes, bytes):
+        raw_text = raw_html_bytes.decode("utf-8", errors="ignore")
+    return parse_uploaded_raw_html_map(raw_text)
+
 
 def infer_retailer_name_from_url(url):
     if pd.isna(url):
@@ -1297,6 +1328,82 @@ def clear_in_memory_caches():
 # =========================================
 # HTML FETCH
 # =========================================
+
+def clear_runtime_result_caches(clear_network_caches=False):
+    global uploaded_bundle_cache, row_result_cache
+
+    if "uploaded_bundle_cache" not in globals() or not isinstance(globals().get("uploaded_bundle_cache"), dict):
+        uploaded_bundle_cache = {}
+    if "row_result_cache" not in globals() or not isinstance(globals().get("row_result_cache"), dict):
+        row_result_cache = {}
+
+    uploaded_bundle_cache.clear()
+    row_result_cache.clear()
+
+    if clear_network_caches:
+        clear_in_memory_caches()
+
+
+def _build_uploaded_bundle_cache_key(retailer_name, uploaded_html, retail_url="", target_rpc="", sku=""):
+    uploaded_html = str(uploaded_html or "")
+    digest = hashlib.md5(uploaded_html.encode("utf-8", errors="ignore")).hexdigest() if uploaded_html else ""
+    return (
+        normalize_retailer_name(retailer_name),
+        str(retail_url or "").strip(),
+        str(target_rpc or "").strip(),
+        str(sku or "").strip(),
+        digest,
+    )
+
+
+def _cache_uploaded_bundle_result(cache_key, bundle):
+    global uploaded_bundle_cache
+    if "uploaded_bundle_cache" not in globals() or not isinstance(globals().get("uploaded_bundle_cache"), dict):
+        uploaded_bundle_cache = {}
+    uploaded_bundle_cache[cache_key] = copy.deepcopy(bundle)
+    while len(uploaded_bundle_cache) > UPLOADED_BUNDLE_CACHE_MAX:
+        uploaded_bundle_cache.pop(next(iter(uploaded_bundle_cache)))
+
+
+def _get_cached_uploaded_bundle_result(cache_key):
+    global uploaded_bundle_cache
+    if "uploaded_bundle_cache" not in globals() or not isinstance(globals().get("uploaded_bundle_cache"), dict):
+        uploaded_bundle_cache = {}
+    cached = uploaded_bundle_cache.get(cache_key)
+    return copy.deepcopy(cached) if cached is not None else None
+
+
+def _build_row_result_cache_key(row):
+    payload = {
+        "sku": str(row.get("sku", "") or "").strip(),
+        "retailer": normalize_retailer_name(row.get("retailer", "") or infer_retailer_name_from_url(row.get("retail_url", ""))),
+        "retail_url": str(row.get("retail_url", "") or "").strip(),
+        "salsify_url": str(row.get("salsify_url", "") or "").strip(),
+        "retailer_rpc": str(row.get("retailer_rpc", "") or "").strip(),
+        "copy_source_code": hashlib.md5(str(row.get("copy_source_code", "") or "").encode("utf-8", errors="ignore")).hexdigest() if str(row.get("copy_source_code", "") or "") else "",
+        "rating": str(row.get("rating", "") or "").strip(),
+        "review_count": str(row.get("review_count", "") or "").strip(),
+        "raw_html_upload_hash": str(st.session_state.get("raw_html_upload_hash", "") or ""),
+    }
+    return hashlib.md5(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _cache_row_result(cache_key, payload):
+    global row_result_cache
+    if "row_result_cache" not in globals() or not isinstance(globals().get("row_result_cache"), dict):
+        row_result_cache = {}
+    row_result_cache[cache_key] = copy.deepcopy(payload)
+    while len(row_result_cache) > ROW_RESULT_CACHE_MAX:
+        row_result_cache.pop(next(iter(row_result_cache)))
+
+
+def _get_cached_row_result(cache_key):
+    global row_result_cache
+    if "row_result_cache" not in globals() or not isinstance(globals().get("row_result_cache"), dict):
+        row_result_cache = {}
+    cached = row_result_cache.get(cache_key)
+    return copy.deepcopy(cached) if cached is not None else None
+
 def get_html(url):
     global html_cache
 
@@ -1898,13 +2005,13 @@ def build_extension_batch_payload(retailer_df, retailer_name, current_batch_key,
         ]
         row_payload = [
             {
-                "sku": str(row.get("sku", "") or "").strip(),
-                "retail_url": str(row.get("retail_url", "") or "").strip(),
-                "retailer_rpc": str(row.get("retailer_rpc", "") or "").strip(),
+                "sku": str(getattr(row, "sku", "") or "").strip(),
+                "retail_url": str(getattr(row, "retail_url", "") or "").strip(),
+                "retailer_rpc": str(getattr(row, "retailer_rpc", "") or "").strip(),
                 "retailer": retailer_name_norm,
             }
-            for _, row in retailer_df.iterrows()
-            if str(row.get("retail_url", "") or "").strip()
+            for row in retailer_df.itertuples(index=False)
+            if str(getattr(row, "retail_url", "") or "").strip()
         ]
 
     return {
@@ -4239,6 +4346,52 @@ def _is_albertsons_packaging_blob(value):
     return sum(1 for s in signals if s in lowered) >= 2
 
 
+
+
+def _is_albertsons_missing_sentinel(value):
+    value = normalize_space(value)
+    lowered = value.lower()
+    return lowered in {'missing', 'missing.', 'missing value'} or lowered.startswith('missing ')
+
+
+def _extract_albertsons_urls_from_style_value(style_text):
+    style_text = html.unescape(str(style_text or ''))
+    if not style_text:
+        return []
+    urls = []
+    for match in re.finditer(r'url\(([^)]+)\)', style_text, flags=re.IGNORECASE):
+        raw_value = str(match.group(1) or '').strip().strip('"').strip("'")
+        if 'images.albertsons-media.com/is/image/ABS/' in raw_value:
+            urls.append(raw_value)
+    return urls
+
+
+def _extract_possible_albertsons_urls_from_text_blob(text_blob):
+    text_blob = html.unescape(str(text_blob or ''))
+    if not text_blob:
+        return []
+    patterns = [
+        r"https?://images\.albertsons-media\.com/is/image/ABS/[^\s\"'>,)]+",
+        r"//images\.albertsons-media\.com/is/image/ABS/[^\s\"'>,)]+",
+        r"images\.albertsons-media\.com/is/image/ABS/[^\s\"'>,)]+",
+        r"https?:\\/\\/images\.albertsons-media\.com\\/is\\/image\\/ABS\\/[^\s\"'>,)]+",
+        r"images\.albertsons-media\.com\\/is\\/image\\/ABS\\/[^\s\"'>,)]+",
+    ]
+    urls = []
+    for pattern in patterns:
+        urls.extend(re.findall(pattern, text_blob, flags=re.IGNORECASE))
+    return urls
+
+
+def _count_albertsons_capture_image_labels(text_blob):
+    text_blob = str(text_blob or '')
+    image_numbers = []
+    for match in re.finditer(r'\bImage\s+(\d+)\b', text_blob, flags=re.IGNORECASE):
+        try:
+            image_numbers.append(int(match.group(1)))
+        except Exception:
+            continue
+    return max(image_numbers) if image_numbers else 0
 def normalize_albertsons_features(items, max_features=8):
     out = []
     for item in items or []:
@@ -4247,6 +4400,8 @@ def normalize_albertsons_features(items, max_features=8):
             continue
         value = re.sub(r'^[-•]\s*', '', value).strip()
         value = re.sub(r'^(::marker\s*)+', '', value, flags=re.IGNORECASE).strip()
+        if _is_albertsons_missing_sentinel(value):
+            break
         if _is_albertsons_noise_line(value):
             continue
         out.append(value)
@@ -4265,10 +4420,15 @@ def _extract_albertsons_details_from_text(working):
         low = line.lower()
         if low.startswith('### ingredients') or low.startswith('### more'):
             break
+        if _is_albertsons_missing_sentinel(line):
+            break
         if _is_albertsons_noise_line(line):
             continue
         if line.startswith('- '):
-            feat_parts.append(line[2:].strip())
+            clean_feature = line[2:].strip()
+            if _is_albertsons_missing_sentinel(clean_feature):
+                break
+            feat_parts.append(clean_feature)
             continue
         if feat_parts and _is_albertsons_packaging_blob(line):
             continue
@@ -4387,28 +4547,24 @@ def extract_albertsons_images_from_html(html_text, target_rpc=''):
     Albertsons image extraction for both full DOM HTML and uploaded TXT captures.
     Rules:
     - Capture every ABS image URL tied to the product id / RPC group.
-    - Search raw HTML/text plus common DOM attributes.
+    - Search raw HTML/text, rendered-DOM HTML, JSON/script blobs, common DOM attributes,
+      and CSS background-image values.
     - Prefer desktop PDP variants when duplicate assets appear.
-    - Do not hard-cap Albertsons to 8 images here; let downstream max slot rules decide.
+    - Do not hard-cap Albertsons here; let downstream slot rules decide.
     """
     working = html.unescape(str(html_text or ''))
     target_rpc = clean_item_number(target_rpc)
 
     raw_urls = []
-
-    patterns = [
-        r'https?://images\.albertsons-media\.com/is/image/ABS/[^\s\"\'\>,)]+',
-        r'//images\.albertsons-media\.com/is/image/ABS/[^\s\"\'\>,)]+',
-        r'images\.albertsons-media\.com/is/image/ABS/[^\s\"\'\>,)]+',
-    ]
-    for pattern in patterns:
-        raw_urls.extend(re.findall(pattern, working, flags=re.IGNORECASE))
+    raw_urls.extend(_extract_possible_albertsons_urls_from_text_blob(working))
 
     soup = BeautifulSoup(working, 'html.parser')
     attr_names = (
         'src', 'data-src', 'data-zoom-image', 'content', 'href',
         'data-lazy', 'data-image-url', 'data-full-image', 'data-desktop-src',
-        'data-mobile-src', 'data-thumb', 'poster'
+        'data-mobile-src', 'data-thumb', 'poster', 'data-full-src',
+        'data-hires', 'data-lazy-src', 'data-original', 'data-image',
+        'data-qa-src', 'data-slide-image', 'data-gallery-image'
     )
     for tag in soup.find_all(True):
         for attr in attr_names:
@@ -4420,6 +4576,14 @@ def extract_albertsons_images_from_html(html_text, target_rpc=''):
             if srcset and 'images.albertsons-media.com/is/image/ABS/' in srcset:
                 for part in srcset.split(','):
                     raw_urls.append(part.strip().split(' ')[0])
+        style_value = str(tag.get('style', '') or '')
+        if 'images.albertsons-media.com/is/image/ABS/' in style_value:
+            raw_urls.extend(_extract_albertsons_urls_from_style_value(style_value))
+
+    for script_tag in soup.find_all('script'):
+        script_text = str(script_tag.string or script_tag.get_text(' ', strip=False) or '')
+        if 'images.albertsons-media.com/is/image/ABS/' in script_text:
+            raw_urls.extend(_extract_possible_albertsons_urls_from_text_blob(script_text))
 
     ordered_candidates = []
     seen_candidate = set()
@@ -4455,8 +4619,6 @@ def extract_albertsons_images_from_html(html_text, target_rpc=''):
 
     ordered = sorted(ordered, key=_albertsons_asset_sort_key)
     return ordered[:MAX_IMAGE_SLOTS_TO_COMPARE]
-
-
 
 def _extract_albertsons_description_from_marketing(marketing):
     if marketing is None:
@@ -4583,22 +4745,39 @@ def extract_albertsons_text_from_html(html_text, retail_url='', target_rpc=''):
 
 def get_albertsons_bundle_from_uploaded(uploaded_html, retail_url='', target_rpc=''):
     """
-    Albertsons TXT-only path.
-    Copy and images must come from the uploaded text capture only.
-    No live retailer fallback is allowed.
+    Albertsons uploaded-path bundle.
+    Prefer uploaded TXT capture for copy. For images, use uploaded TXT first and,
+    if the TXT only contains image labels without ABS URLs, recover retailer images
+    from the live PDP HTML using the retailer URL.
     """
     uploaded_html = str(uploaded_html or '')
     text_bundle = extract_albertsons_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc)
     text_bundle.setdefault('debug', {})['Source Used'] = 'uploaded_txt_html'
 
     images = extract_albertsons_images_from_html(uploaded_html, target_rpc=target_rpc)
+    capture_label_count = _count_albertsons_capture_image_labels(uploaded_html)
+
     if images:
         text_bundle.setdefault('debug', {})['Image Path'] = 'albertsons_abs_image_lookup_uploaded'
     else:
         text_bundle.setdefault('debug', {})['Image Path'] = 'albertsons_txt_only_no_abs_urls_found'
 
+    # If the TXT clearly shows gallery labels (Image 1..Image N) but the capture lacks ABS URLs,
+    # recover the retailer gallery from the live PDP HTML.
+    if retail_url and (not images or (capture_label_count and len(images) < capture_label_count)):
+        try:
+            live_html = get_html(retail_url)
+        except Exception:
+            live_html = ''
+        live_images = extract_albertsons_images_from_html(live_html, target_rpc=target_rpc) if live_html else []
+        if live_images and len(live_images) >= max(len(images), capture_label_count or 0):
+            images = live_images
+            text_bundle.setdefault('debug', {})['Image Path'] = 'albertsons_live_html_image_recovery'
+            text_bundle.setdefault('debug', {})['Source Used'] = 'uploaded_txt_html_plus_live_image_recovery'
+
+    text_bundle.setdefault('debug', {})['Albertsons Capture Label Count'] = int(capture_label_count or 0)
     text_bundle.setdefault('debug', {})['Albertsons Image Count'] = int(len(images or []))
-    text_bundle.setdefault('debug', {})['Albertsons Image Capture Note'] = 'Carousel / hidden thumbnail variants included when ABS asset URLs are present in HTML/TXT.'
+    text_bundle.setdefault('debug', {})['Albertsons Image Capture Note'] = 'Uploaded TXT copy retained. Albertsons images now search raw HTML, rendered DOM, script blobs, CSS background-image values, and can recover retailer images from the live PDP when the TXT contains labels but not ABS URLs.'
     return {'text': text_bundle, 'images': images or []}
 
 
@@ -4611,7 +4790,7 @@ def get_albertsons_bundle(retail_url, target_rpc=''):
     }
     bundle.setdefault('text', {}).setdefault('debug', {})['Image Path'] = 'albertsons_abs_image_lookup'
     bundle.setdefault('text', {}).setdefault('debug', {})['Albertsons Image Count'] = int(len(bundle.get('images', []) or []))
-    bundle.setdefault('text', {}).setdefault('debug', {})['Albertsons Image Capture Note'] = 'Carousel / hidden thumbnail variants included when ABS asset URLs are present in HTML.'
+    bundle.setdefault('text', {}).setdefault('debug', {})['Albertsons Image Capture Note'] = 'Carousel / hidden thumbnail variants included when ABS asset URLs are present in raw HTML, script blobs, or CSS background-image values.'
     return bundle
 
 # =========================================
@@ -7236,15 +7415,28 @@ def get_retailer_parser_config(retailer_name):
 
 
 def load_retailer_bundle_from_uploaded_capture(retailer_name, uploaded_html, retail_url="", target_rpc="", sku=""):
+    cache_key = _build_uploaded_bundle_cache_key(
+        retailer_name,
+        uploaded_html,
+        retail_url=retail_url,
+        target_rpc=target_rpc,
+        sku=sku,
+    )
+    cached = _get_cached_uploaded_bundle_result(cache_key)
+    if cached is not None:
+        return cached
+
     config = get_retailer_parser_config(retailer_name)
     loader = config.get("uploaded_loader")
     if not callable(loader):
         return build_empty_retailer_bundle(retailer_name or "Retailer", "uploaded_loader_not_configured")
-    return _normalize_retailer_bundle_contract(
+    bundle = _normalize_retailer_bundle_contract(
         retailer_name,
         loader(uploaded_html, retail_url=retail_url, target_rpc=target_rpc, sku=sku),
         fallback_reason="uploaded_txt_html",
     )
+    _cache_uploaded_bundle_result(cache_key, bundle)
+    return copy.deepcopy(bundle)
 
 
 def load_retailer_bundle_live(retailer_name, retail_url="", target_rpc="", sku=""):
@@ -8617,7 +8809,7 @@ def get_visual_row_payload(
         "r_images": r_images,
     }
 
-def process_row(row):
+def _process_row_core(row):
     try:
         retail_url = row.get("retail_url", "")
         salsify_url = row.get("salsify_url", "")
@@ -8961,6 +9153,19 @@ def process_row(row):
 
     except Exception:
         return None
+
+
+def process_row(row):
+    cache_key = _build_row_result_cache_key(row)
+    cached = _get_cached_row_result(cache_key)
+    if cached is not None:
+        return cached
+
+    result = _process_row_core(row)
+    if result is not None:
+        _cache_row_result(cache_key, result)
+        return copy.deepcopy(result)
+    return result
 # =========================================
 # SESSION STATE
 # =========================================
@@ -9104,11 +9309,10 @@ if uploaded_file:
             st.session_state.prepared_batch_key = ""
             st.session_state.prepared_retailer_df = None
             st.session_state.prepared_match_stats = {}
-            clear_in_memory_caches()
+            clear_runtime_result_caches(clear_network_caches=True)
             st.cache_data.clear()
 
-        master_df = read_uploaded_file_from_bytes(file_bytes, uploaded_file.name)
-        master_df = prepare_input_df(master_df)
+        master_df = load_prepared_master_file(file_bytes, uploaded_file.name)
         all_retailers = sorted(master_df["retailer"].dropna().astype(str).unique().tolist()) if "retailer" in master_df.columns else ["CVS"]
         if not all_retailers:
             all_retailers = ["CVS"]
@@ -9162,8 +9366,8 @@ if uploaded_file:
                 raw_html_bytes = uploaded_raw_html_file.getvalue()
                 raw_html_hash = hashlib.md5(raw_html_bytes or b"").hexdigest()
                 if st.session_state.raw_html_upload_hash != raw_html_hash:
-                    raw_html_text = get_uploaded_text_file_bytes(uploaded_raw_html_file)
-                    st.session_state.uploaded_raw_html_map = parse_uploaded_raw_html_map(raw_html_text)
+                    st.session_state.uploaded_raw_html_map = load_uploaded_raw_html_map_cached(raw_html_bytes, uploaded_raw_html_file.name)
+                    clear_runtime_result_caches(clear_network_caches=False)
                     st.session_state.uploaded_raw_html_filename = uploaded_raw_html_file.name
                     st.session_state.raw_html_upload_hash = raw_html_hash
                     st.session_state.auto_batch_upload_key = ""
@@ -9287,8 +9491,7 @@ if uploaded_file:
                 st.session_state.report_batch_key = ""
                 st.session_state.auto_download_done = False
                 st.session_state.auto_batch_upload_key = current_batch_key
-                clear_in_memory_caches()
-                st.cache_data.clear()
+                clear_runtime_result_caches(clear_network_caches=False)
                 st.rerun()
 
 
@@ -9317,8 +9520,7 @@ if uploaded_file:
                     st.session_state.report_filename = None
                     st.session_state.report_batch_key = ""
                     st.session_state.auto_download_done = False
-                    clear_in_memory_caches()
-                    st.cache_data.clear()
+                    clear_runtime_result_caches(clear_network_caches=False)
                     st.rerun()
 
             with run_msg_col:
