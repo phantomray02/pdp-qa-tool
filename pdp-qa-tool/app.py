@@ -984,6 +984,23 @@ def apply_retailer_salsify_copy_limits(retailer_name, text_bundle):
 
 
 def infer_cvs_image_slot_from_url(url):
+    """
+    Infer an explicit CVS retailer image slot only when the filename itself carries
+    a true slot suffix such as `_2`, `-3`, or `(4)`.
+
+    IMPORTANT:
+    Do NOT treat any filename containing digits as slot 1.
+    CVS image filenames are often product-id based (`3600041777.jpg`), so the old
+    digit fallback incorrectly marked every image as slot 1. That caused the visual
+    QA layout to render:
+    - slot 1 = first image
+    - slot 2 = Missing
+    - slot 3 = Missing
+    - remaining images pushed down.
+
+    If no explicit slot markers are present, return None and let
+    reorder_cvs_retailer_images_for_visual preserve the natural first-three order.
+    """
     url = str(url or "").strip().split("?", 1)[0]
     if not url:
         return None
@@ -999,8 +1016,6 @@ def infer_cvs_image_slot_from_url(url):
                 return slot_num
         except Exception:
             pass
-    if re.search(r'\d', stem):
-        return 1
     return None
 
 def reorder_cvs_salsify_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
@@ -1092,6 +1107,7 @@ def reorder_cvs_salsify_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_C
 
     return ordered[:max_slots]
 def reorder_cvs_retailer_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
+    # Product-id filenames into slot 1: disabled. Preserve natural first-three order unless explicit slot suffixes exist.
     urls = [str(u or "").strip() for u in (images or []) if str(u or "").strip()]
     if not urls:
         return []
