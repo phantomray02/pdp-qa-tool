@@ -1010,24 +1010,29 @@ def promote_cvs_ooi_image_first(s_images, r_images):
     return reordered
 
 
-def shift_cvs_missing_top3_slots(s_images, r_images, top_slots=3, match_threshold=60):
+def shift_cvs_missing_top3_slots(
+    s_images,
+    r_images,
+    top_slots=3,
+    keep_threshold=55,
+    shift_threshold=70,
+    shift_margin=15,
+    max_total_blanks=1,
+):
     """
     CVS-only missing-top-slots alignment.
 
-    Business case:
-    sometimes one or more of the first packaging images have not gone live on CVS
-    yet even though the later lifestyle / secondary images are already on site.
-    In those cases, later CVS images should shift DOWN rather than being scored
-    against missing top packaging slots.
+    Goal:
+    allow a limited top-slot blank when a packaging image has not gone live on CVS yet,
+    but avoid shifting the CVS stack too far down.
 
-    Rule:
-    walk the first top_slots Salsify images in order and compare each one against
-    the current CVS image in site order. If the visual score is strong enough,
-    keep the CVS image in that slot and advance. Otherwise, insert a blank for
-    that missing top slot and keep the current CVS image for the next Salsify slot.
+    Safer rule:
+    - compare the current CVS image to the current Salsify slot,
+    - also compare that same CVS image to the NEXT top slot,
+    - only insert one blank when the next-slot match is clearly stronger.
 
-    This keeps the extracted CVS site order intact while allowing missing top-slot
-    blanks so later CVS images do not shift up incorrectly.
+    This prevents the earlier aggressive behavior where multiple blanks could be inserted
+    even when the current CVS image still belonged reasonably close to the current slot.
     """
     s_seq = list(s_images or [])
     r_seq = [str(u or "").strip() for u in (r_images or []) if str(u or "").strip()]
@@ -1040,6 +1045,7 @@ def shift_cvs_missing_top3_slots(s_images, r_images, top_slots=3, match_threshol
 
     aligned = []
     r_idx = 0
+    blanks_used = 0
 
     for s_idx in range(top_slots):
         s_url = get_image_slot_url(s_seq[s_idx]) if s_idx < len(s_seq) else ""
@@ -1052,15 +1058,34 @@ def shift_cvs_missing_top3_slots(s_images, r_images, top_slots=3, match_threshol
 
         current_r_url = r_seq[r_idx]
         try:
-            score = int(compare_images_visually(s_url, current_r_url) or 0)
+            current_score = int(compare_images_visually(s_url, current_r_url) or 0)
         except Exception:
-            score = 0
+            current_score = 0
 
-        if score >= match_threshold:
-            aligned.append(current_r_url)
-            r_idx += 1
-        else:
+        next_score = -1
+        next_idx = s_idx + 1
+        if next_idx < top_slots:
+            next_s_url = get_image_slot_url(s_seq[next_idx]) if next_idx < len(s_seq) else ""
+            if next_s_url:
+                try:
+                    next_score = int(compare_images_visually(next_s_url, current_r_url) or 0)
+                except Exception:
+                    next_score = 0
+
+        should_shift_one_slot = (
+            blanks_used < max_total_blanks
+            and next_score >= shift_threshold
+            and next_score >= current_score + shift_margin
+            and current_score < keep_threshold
+        )
+
+        if should_shift_one_slot:
             aligned.append("")
+            blanks_used += 1
+            continue
+
+        aligned.append(current_r_url)
+        r_idx += 1
 
     aligned.extend(r_seq[r_idx:])
     return aligned
@@ -3935,7 +3960,7 @@ def get_cvs_bundle(retail_url, target_rpc=""):
     text_bundle.setdefault("debug", {})["CVS Isolated Parser"] = "cvs_only_live_bundle"
     text_bundle.setdefault("debug", {})["CVS Live HTML Caveat"] = "If CVS Image Count is 0 here, use extension + TXT capture; raw live HTML may not include rendered gallery image paths."
     text_bundle.setdefault("debug", {})["CVS Image Order Rule"] = "Renderer/site order preserved from CVS HTML/TXT capture; no CVS OOI promotion or slot forcing."
-    text_bundle.setdefault("debug", {})["CVS Top 3 Shift Rule"] = "When one of the first 3 packaging images is missing on CVS, the slot can stay blank so later CVS images shift down."
+    text_bundle.setdefault("debug", {})["CVS Top 3 Shift Rule"] = "CVS may insert one top-3 blank when the next slot is clearly a better match; this prevents over-shifting later CVS images."
     return {
         "text": text_bundle,
         "images": images,
@@ -6445,7 +6470,7 @@ def _build_uploaded_bundle_cvs(uploaded_html, retail_url="", target_rpc="", sku=
     bundle.setdefault("text", {}).setdefault("debug", {})["CVS Image Count"] = int(len(images or []))
     bundle.setdefault("text", {}).setdefault("debug", {})["CVS Isolated Parser"] = "cvs_only_uploaded_bundle"
     bundle.setdefault("text", {}).setdefault("debug", {})["CVS Image Order Rule"] = "Renderer/site order preserved from CVS HTML/TXT capture; no CVS OOI promotion or slot forcing."
-    bundle.setdefault("text", {}).setdefault("debug", {})["CVS Top 3 Shift Rule"] = "When one of the first 3 packaging images is missing on CVS, the slot can stay blank so later CVS images shift down."
+    bundle.setdefault("text", {}).setdefault("debug", {})["CVS Top 3 Shift Rule"] = "CVS may insert one top-3 blank when the next slot is clearly a better match; this prevents over-shifting later CVS images."
     return bundle
 
 
@@ -7745,7 +7770,7 @@ def get_visual_row_payload(
     if str(retailer_name or "").strip().lower() == "cvs":
         cvs_max_slots = int(get_retailer_salsify_requirements(retailer_name).get("max_images", MAX_IMAGE_SLOTS_TO_COMPARE) or MAX_IMAGE_SLOTS_TO_COMPARE)
         r_images = [str(u or "").strip() for u in (r_images or []) if str(u or "").strip()][:cvs_max_slots]
-        r_images = shift_cvs_missing_top3_slots(s_images, r_images, top_slots=3, match_threshold=60)
+        r_images = shift_cvs_missing_top3_slots(s_images, r_images, top_slots=3, keep_threshold=55, shift_threshold=70, shift_margin=15, max_total_blanks=1)
     elif str(retailer_name or "").strip().lower() == "walgreens":
         r_images = r_images[:6]
 
@@ -7756,7 +7781,7 @@ def get_visual_row_payload(
     )
 
     if str(retailer_name or "").strip().lower() == "cvs":
-        r_text.setdefault("debug", {})["CVS Top 3 Shift Rule"] = "Top 3 CVS slots can stay blank when packaging images are missing, so later CVS images shift down instead of up."
+        r_text.setdefault("debug", {})["CVS Top 3 Shift Rule"] = "CVS can insert at most one top-3 blank only when the next slot is clearly a better match, so later CVS images do not shift down too far."
 
     return {
         "s_text": s_text,
@@ -7898,7 +7923,7 @@ def process_row(row):
         if retailer_norm == "cvs":
             cvs_max_slots = int(get_retailer_salsify_requirements(retailer_name).get("max_images", MAX_IMAGE_SLOTS_TO_COMPARE) or MAX_IMAGE_SLOTS_TO_COMPARE)
             r_images = [str(u or "").strip() for u in (r_images or []) if str(u or "").strip()][:cvs_max_slots]
-            r_images = shift_cvs_missing_top3_slots(s_images, r_images, top_slots=3, match_threshold=60)
+            r_images = shift_cvs_missing_top3_slots(s_images, r_images, top_slots=3, keep_threshold=55, shift_threshold=70, shift_margin=15, max_total_blanks=1)
 
         s_images, r_images = align_image_slots_for_comparison(
             s_images,
