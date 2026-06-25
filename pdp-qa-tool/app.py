@@ -98,7 +98,7 @@ CVS_VARIANT_MIN_MATCH_SCORE = 35
 
 CAPTURE_MODE_USE_EXTENSION = "Use extension + TXT upload"
 CAPTURE_MODE_SKIP_EXTENSION = "Skip extension and go straight to batch"
-AUTO_SKIP_EXTENSION_RETAILERS = {"CVS", "Walgreens"}
+AUTO_SKIP_EXTENSION_RETAILERS = {"Walgreens"}
 # Retailer-specific Salsify isolation controls.
 # Copy can stay retailer-locked while images still fall back to generic locked Salsify slots if
 # retailer-labeled image assets do not exist yet.
@@ -807,6 +807,12 @@ def apply_retailer_salsify_copy_limits(retailer_name, text_bundle):
 
 
 def infer_cvs_image_slot_from_url(url):
+    """
+    CVS-only slot inference.
+    Infer an explicit slot only when the filename has a real slot suffix such as
+    _2, -3, or (4). Product-id filenames like 3600041777.jpg must NOT be forced
+    into slot 1.
+    """
     url = str(url or "").strip().split("?", 1)[0]
     if not url:
         return None
@@ -822,8 +828,6 @@ def infer_cvs_image_slot_from_url(url):
                 return slot_num
         except Exception:
             pass
-    if re.search(r'\d', stem):
-        return 1
     return None
 
 def reorder_cvs_salsify_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
@@ -3715,13 +3719,19 @@ def _extract_cvs_text_from_html(html_text, retail_url="", target_rpc=""):
 @st.cache_data(show_spinner=False)
 def get_cvs_bundle(retail_url, target_rpc=""):
     html_text = get_html(retail_url)
+    images = extract_cvs_images_from_html(html_text)
+    text_bundle = _extract_cvs_text_from_html(
+        html_text,
+        retail_url=retail_url,
+        target_rpc=target_rpc,
+    )
+    text_bundle.setdefault("debug", {})["Image Path"] = "cvs_live_html_image_lookup"
+    text_bundle.setdefault("debug", {})["CVS Image Count"] = int(len(images or []))
+    text_bundle.setdefault("debug", {})["CVS Isolated Parser"] = "cvs_only_live_bundle"
+    text_bundle.setdefault("debug", {})["CVS Live HTML Caveat"] = "If CVS Image Count is 0 here, use extension + TXT capture; raw live HTML may not include rendered gallery image paths."
     return {
-        "text": _extract_cvs_text_from_html(
-            html_text,
-            retail_url=retail_url,
-            target_rpc=target_rpc,
-        ),
-        "images": extract_cvs_images_from_html(html_text),
+        "text": text_bundle,
+        "images": images,
     }
 
 # =========================================
@@ -6192,6 +6202,44 @@ def get_sams_bundle(retail_url, target_rpc="", sku=""):
         "images": [] if is_sams_robot_page(html_text) else extract_sams_images_from_html(html_text),
     }
     
+def _build_uploaded_bundle_cvs(uploaded_html, retail_url="", target_rpc="", sku=""):
+    """
+    CVS-only uploaded bundle path.
+    Keeps CVS TXT + image behavior isolated so CVS changes do not affect Kroger,
+    Walgreens, Sam's Club, or other retailers.
+    """
+    uploaded_images = extract_cvs_images_from_html(uploaded_html)
+    live_images = []
+    image_path = "cvs_uploaded_txt_image_lookup"
+
+    # CVS-only recovery: if uploaded TXT copy is present but TXT image URLs are
+    # missing or incomplete, recover images from the live CVS PDP.
+    if retail_url and (not uploaded_images or len(uploaded_images) < 2):
+        try:
+            live_html = get_html(retail_url)
+        except Exception:
+            live_html = ""
+        if live_html:
+            live_images = extract_cvs_images_from_html(live_html)
+
+    images = uploaded_images
+    if live_images and len(live_images) > len(uploaded_images):
+        images = live_images
+        image_path = "cvs_live_html_image_recovery"
+
+    bundle = {
+        "text": _extract_cvs_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc),
+        "images": images,
+    }
+    bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
+    bundle.setdefault("text", {}).setdefault("debug", {})["Image Path"] = image_path
+    bundle.setdefault("text", {}).setdefault("debug", {})["CVS Uploaded Image Count"] = int(len(uploaded_images or []))
+    bundle.setdefault("text", {}).setdefault("debug", {})["CVS Live Image Count"] = int(len(live_images or []))
+    bundle.setdefault("text", {}).setdefault("debug", {})["CVS Image Count"] = int(len(images or []))
+    bundle.setdefault("text", {}).setdefault("debug", {})["CVS Isolated Parser"] = "cvs_only_uploaded_bundle"
+    return bundle
+
+
 def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_source_code=""):
     retailer = normalize_retailer_name(retailer_name).strip().lower()
     uploaded_html = str(row_source_code or "")
@@ -6209,9 +6257,7 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
 
     if uploaded_html.strip():
         if retailer == "cvs":
-            bundle = {"text": _extract_cvs_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_cvs_images_from_html(uploaded_html)}
-            bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
-            return bundle
+            return _build_uploaded_bundle_cvs(uploaded_html, retail_url=retail_url, target_rpc=target_rpc, sku=sku)
         if retailer == "walgreens":
             bundle = {"text": extract_walgreens_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_walgreens_images_from_html(uploaded_html)}
             bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
@@ -7432,7 +7478,15 @@ def get_visual_row_payload(
     row_source_code = str(row_source_code or "")
     uploaded_html_map = st.session_state.uploaded_raw_html_map or {}
 
-    # Visual QA must reuse the same Kroger TXT-matched HTML used in batch processing.
+    # Visual QA must reuse retailer-specific TXT HTML without cross-retailer side effects.
+    if retailer_norm == "cvs":
+        if not row_source_code:
+            row_source_code = lookup_uploaded_raw_html(
+                uploaded_html_map,
+                retail_url,
+                target_rpc=current_target_sku,
+            )
+
     if retailer_norm == "kroger":
         if not retail_url and current_target_sku:
             retail_url = find_kroger_url_in_uploaded_map(uploaded_html_map, target_rpc=current_target_sku)
@@ -7514,6 +7568,13 @@ def process_row(row):
 
         if str(retailer_name).strip().lower() == "kroger" and not retail_url and cvs_rpc:
             retail_url = find_kroger_url_in_uploaded_map(st.session_state.uploaded_raw_html_map or {}, target_rpc=cvs_rpc)
+
+        if str(retailer_name).strip().lower() == "cvs" and not str(row_source_code or "").strip():
+            row_source_code = lookup_uploaded_raw_html(
+                st.session_state.uploaded_raw_html_map or {},
+                retail_url,
+                target_rpc=cvs_rpc,
+            )
 
         title_score = 0
         desc_score = 0
@@ -8047,6 +8108,8 @@ if uploaded_file:
             txt_ready_for_batch = bool(matched_uploaded_html_count > 0)
             isolated_unique_url_count = int(retailer_df["retail_url"].fillna("").astype(str).str.strip().replace("", pd.NA).dropna().nunique()) if retailer_df is not None and not retailer_df.empty and "retail_url" in retailer_df.columns else 0
             st.caption(f"Strict retailer isolation active: {selected_retailer} only. Rows queued: {len(retailer_df)}. Unique retailer URLs queued: {isolated_unique_url_count}.")
+            if str(selected_retailer or "").strip().lower() == "cvs":
+                st.caption("CVS isolation note: CVS image handling now runs through CVS-only helpers so CVS updates stay isolated from Walgreens, Kroger, Albertsons, and Sam's Club.")
             if selected_capture_mode == CAPTURE_MODE_USE_EXTENSION:
                 extension_payload = build_extension_batch_payload(
                     retailer_df=retailer_df,
