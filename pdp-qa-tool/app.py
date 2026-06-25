@@ -9598,5 +9598,4 @@ if (
         st.error("🔥 CRITICAL APP ERROR")
         st.text(str(e))
         st.text(traceback.format_exc())
-
                       
