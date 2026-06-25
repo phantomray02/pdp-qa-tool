@@ -4333,9 +4333,37 @@ def get_cvs_bundle(retail_url, target_rpc=""):
 # ALBERTSONS PARSERS
 # =========================================
 def is_albertsons_out_of_stock_html(html_text):
+    """
+    Detect whether THIS product is out of stock.
+
+    Checks the page's own structured product availability field first
+    (e.g. "availability":"InStock" / "OutOfStock" from JSON-LD or embedded
+    product JSON), since that's tied specifically to the product being
+    viewed. Only falls back to a whole-page text search for "out of stock"
+    if no structured field is present at all — that fallback is intentionally
+    last-resort, because Albertsons PDPs commonly include "out of stock" /
+    "unavailable" text elsewhere on the page (e.g. substitution or "similar
+    products" UI) even when the actual product being viewed is in stock,
+    which previously caused false positives that suppressed real scoring
+    and image comparison for in-stock products.
+    """
     working = html.unescape(str(html_text or ''))
     if not working.strip():
         return False
+
+    # Prefer the page's own structured availability signal, which is tied
+    # to the specific product rather than to any text appearing anywhere
+    # on the page.
+    availability_match = re.search(r'"availability"\s*:\s*"([^"]+)"', working, flags=re.IGNORECASE)
+    if availability_match:
+        availability_value = availability_match.group(1).strip().lower()
+        if 'outofstock' in availability_value or 'out_of_stock' in availability_value:
+            return True
+        if 'instock' in availability_value or 'in_stock' in availability_value or 'limitedavailability' in availability_value:
+            return False
+        # Any other explicit availability value (preorder, discontinued,
+        # etc.) is treated as "not confirmed out of stock" here — this
+        # function's job is only to flag the specific out-of-stock case.
 
     html_lower = working.lower()
     try:
@@ -9439,6 +9467,38 @@ if uploaded_file:
                 )
                 file_ready_for_batch = True
 
+            # Albertsons-only: require a single brand to be selected before
+            # running a batch. Albertsons capture now includes an extra
+            # gallery-rendering step per page (see the extension's
+            # background.js) to pick up all product images, which makes
+            # each page fetch noticeably slower than other retailers.
+            # Scoping a run to one brand at a time keeps each batch's page
+            # count (and therefore total run time) manageable instead of
+            # fetching every Albertsons row in the file in one go.
+            selected_albertsons_brand = "All"
+            if file_ready_for_batch and str(selected_retailer or "").strip().lower() == "albertsons":
+                albertsons_rows_preview = master_df[
+                    master_df["retailer"].astype(str).str.strip().str.lower() == "albertsons"
+                ] if master_df is not None else pd.DataFrame()
+                albertsons_brand_options = ["-- Select Brand --"] + sorted(
+                    {
+                        str(b).strip()
+                        for b in albertsons_rows_preview.get("brand", pd.Series(dtype=str)).dropna().tolist()
+                        if str(b).strip()
+                    }
+                )
+                if st.session_state.get("selected_albertsons_brand") not in albertsons_brand_options:
+                    st.session_state.selected_albertsons_brand = "-- Select Brand --"
+                selected_albertsons_brand = st.selectbox(
+                    "🏷️ Select Brand (Albertsons)",
+                    albertsons_brand_options,
+                    key="selected_albertsons_brand",
+                    help="Albertsons batches run one brand at a time, since each page now takes longer to capture (full image gallery rendering).",
+                )
+                if selected_albertsons_brand == "-- Select Brand --":
+                    st.info("Select a brand to run an Albertsons batch.")
+                    file_ready_for_batch = False
+
             uploaded_raw_html_file = st.file_uploader(
                 "Upload Captured Retailer HTML TXT",
                 type=["txt", "html"],
@@ -9470,7 +9530,8 @@ if uploaded_file:
             capture_batch_key_part = "use_ext" if selected_capture_mode == CAPTURE_MODE_USE_EXTENSION else "skip_ext"
             if st.session_state.raw_html_upload_hash:
                 capture_batch_key_part += f"::{st.session_state.raw_html_upload_hash}"
-            current_batch_key = f"{file_hash}::{selected_retailer}::{capture_batch_key_part}"
+            brand_batch_key_part = f"::brand={selected_albertsons_brand}" if str(selected_retailer or "").strip().lower() == "albertsons" else ""
+            current_batch_key = f"{file_hash}::{selected_retailer}::{capture_batch_key_part}{brand_batch_key_part}"
 
             if st.session_state.prepared_batch_key != current_batch_key:
                 prepared_batch = prepare_retailer_batch_dataframe(
@@ -9479,8 +9540,27 @@ if uploaded_file:
                     selected_capture_mode=selected_capture_mode,
                     uploaded_html_map=uploaded_raw_html_map,
                 )
+                prepared_retailer_df = prepared_batch.get("retailer_df")
+
+                # Albertsons-only: narrow the prepared rows down to the
+                # selected brand. Done here (after the shared retailer-prep
+                # function) rather than inside that function, so this
+                # brand-scoping is isolated to Albertsons and can't affect
+                # how other retailers' batches are prepared.
+                if (
+                    str(selected_retailer or "").strip().lower() == "albertsons"
+                    and isinstance(prepared_retailer_df, pd.DataFrame)
+                    and not prepared_retailer_df.empty
+                    and "brand" in prepared_retailer_df.columns
+                    and selected_albertsons_brand not in ("All", "-- Select Brand --", "")
+                ):
+                    prepared_retailer_df = prepared_retailer_df[
+                        prepared_retailer_df["brand"].astype(str).str.strip().str.lower()
+                        == str(selected_albertsons_brand).strip().lower()
+                    ].copy()
+
                 st.session_state.prepared_batch_key = current_batch_key
-                st.session_state.prepared_retailer_df = prepared_batch.get("retailer_df")
+                st.session_state.prepared_retailer_df = prepared_retailer_df
                 st.session_state.prepared_match_stats = {
                     "matched_uploaded_html_count": int(prepared_batch.get("matched_uploaded_html_count", 0) or 0),
                     "missing_uploaded_html_count": int(prepared_batch.get("missing_uploaded_html_count", 0) or 0),
