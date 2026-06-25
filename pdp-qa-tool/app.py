@@ -1,7 +1,3 @@
-
-
-
-
 # =========================================
 # IMPORTS
 # =========================================
@@ -11,7 +7,6 @@ import json
 import time
 import hashlib
 import traceback
-import copy
 from io import BytesIO
 from difflib import SequenceMatcher
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -89,12 +84,8 @@ IMAGE_HASH_WIDTH = 9
 IMAGE_HASH_HEIGHT = 8
 
 # Larger caches to reduce repeat fetches during batch + visual QA.
-HTML_CACHE_MAX = 400
-IMAGE_HASH_CACHE_MAX = 700
-UPLOADED_BUNDLE_CACHE_MAX = 500
-ROW_RESULT_CACHE_MAX = 1200
-MASTER_FILE_CACHE_TTL_SECONDS = 3600
-RAW_HTML_MAP_CACHE_TTL_SECONDS = 3600
+HTML_CACHE_MAX = 200
+IMAGE_HASH_CACHE_MAX = 300
 
 # Hard image safety limits.
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
@@ -107,7 +98,7 @@ CVS_VARIANT_MIN_MATCH_SCORE = 35
 
 CAPTURE_MODE_USE_EXTENSION = "Use extension + TXT upload"
 CAPTURE_MODE_SKIP_EXTENSION = "Skip extension and go straight to batch"
-AUTO_SKIP_EXTENSION_RETAILERS = {"Walgreens"}
+AUTO_SKIP_EXTENSION_RETAILERS = {"CVS", "Walgreens"}
 # Retailer-specific Salsify isolation controls.
 # Copy can stay retailer-locked while images still fall back to generic locked Salsify slots if
 # retailer-labeled image assets do not exist yet.
@@ -117,9 +108,7 @@ EXCLUSIVE_SALSIFY_IMAGE_RETAILERS = set()
 html_cache = {}
 image_hash_cache = {}
 image_compare_cache = {}
-uploaded_bundle_cache = {}
-row_result_cache = {}
-IMAGE_COMPARE_CACHE_MAX = 1200
+IMAGE_COMPARE_CACHE_MAX = 600
 
 thread_local = threading.local()
 
@@ -143,12 +132,10 @@ DESCRIPTION_TO_FEATURES_GAP_PX = 28
 def get_session():
     if not hasattr(thread_local, "session"):
         session = requests.Session()
-        pool_size = max(64, MAX_WORKERS * 8)
         adapter = HTTPAdapter(
-            pool_connections=pool_size,
-            pool_maxsize=pool_size,
+            pool_connections=100,
+            pool_maxsize=100,
             max_retries=0,
-            pool_block=True,
         )
         session.mount("http://", adapter)
         session.mount("https://", adapter)
@@ -597,28 +584,6 @@ def read_uploaded_file_from_bytes(file_bytes, file_name):
 
     raise last_error if last_error else EmptyDataError("Could not parse uploaded file.")
 
-
-@st.cache_data(show_spinner=False, ttl=MASTER_FILE_CACHE_TTL_SECONDS)
-def load_prepared_master_file(file_bytes, file_name):
-    raw_df = read_uploaded_file_from_bytes(file_bytes, file_name)
-    return prepare_input_df(raw_df)
-
-
-@st.cache_data(show_spinner=False, ttl=RAW_HTML_MAP_CACHE_TTL_SECONDS)
-def load_uploaded_raw_html_map_cached(raw_html_bytes, file_name):
-    raw_html_bytes = raw_html_bytes or b""
-    raw_text = ""
-    for encoding in ["utf-8", "utf-8-sig", "latin1"]:
-        try:
-            raw_text = raw_html_bytes.decode(encoding)
-            break
-        except Exception:
-            continue
-    if not raw_text and isinstance(raw_html_bytes, bytes):
-        raw_text = raw_html_bytes.decode("utf-8", errors="ignore")
-    return parse_uploaded_raw_html_map(raw_text)
-
-
 def infer_retailer_name_from_url(url):
     if pd.isna(url):
         return "Retailer"
@@ -642,10 +607,11 @@ def infer_retailer_name_from_url(url):
         return "Walgreens"
     if "amazon.com" in url:
         return "Amazon"
-    if "albertsons.com" in url:
-        return "Albertsons"
 
     return "Retailer"
+    
+
+
 def normalize_retailer_name(value):
     value = normalize_space(value)
     if not value:
@@ -662,10 +628,11 @@ def normalize_retailer_name(value):
         "target": "Target",
         "kroger": "Kroger",
         "amazon": "Amazon",
-        "albertsons": "Albertsons",
         "retailer": "Retailer",
     }
     return mapping.get(lowered, value)
+
+
 def build_empty_retailer_bundle(retailer_name="Retailer", reason=""):
     retailer_name = normalize_retailer_name(retailer_name)
     reason = normalize_space(reason) or "retailer_not_supported"
@@ -778,7 +745,6 @@ RETAILER_SALSIFY_REQUIREMENTS = {
     "default": {"max_features": 5, "max_images": 6},
     "cvs": {"max_features": 5, "max_images": 8},
     "walgreens": {"max_features": 5, "max_images": 6},
-    "albertsons": {"max_features": 6, "max_images": 20},
     "kroger": {"max_features": 7, "max_images": 7},
     "sam's club": {"max_features": 10, "max_images": 10},
     "sams club": {"max_features": 10, "max_images": 10},
@@ -795,155 +761,6 @@ def get_retailer_salsify_feature_fields(retailer_name):
     max_features = int(get_retailer_salsify_requirements(retailer_name).get("max_features", 5) or 5)
     max_features = max(0, min(max_features, 10))
     return [f"feature{i}" for i in range(1, max_features + 1)]
-
-
-RETAILER_RUNTIME_CONFIG = {
-    "default": {
-        "requires_salsify_url": True,
-        "requires_retail_url": True,
-        "supports_uploaded_txt": True,
-        "auto_skip_extension": False,
-        "retailer_url_key": "retail_url",
-        "notes": "Default retailer runtime profile.",
-    },
-    "cvs": {
-        "supports_uploaded_txt": True,
-        "auto_skip_extension": False,
-        "retailer_url_key": "retail_url",
-        "notes": "CVS image QA should use extension + TXT capture because CVS gallery image paths are in the rendered browser DOM; raw live HTML may not include /bizcontent/merchandising/productimages URLs.",
-    },
-    "walgreens": {
-        "supports_uploaded_txt": True,
-        "auto_skip_extension": True,
-        "retailer_url_key": "retail_url",
-        "notes": "Walgreens can run live or via uploaded TXT.",
-    },
-    "kroger": {
-        "supports_uploaded_txt": True,
-        "auto_skip_extension": False,
-        "retailer_url_key": "retail_url",
-        "notes": "Kroger can backfill retailer PDP URLs from uploaded TXT using retailer RPC.",
-    },
-    "albertsons": {
-        "supports_uploaded_txt": True,
-        "auto_skip_extension": False,
-        "retailer_url_key": "retail_url",
-        "notes": "Albertsons can lazily resolve uploaded TXT HTML per row to avoid ballooning dataframe memory.",
-    },
-    "sam's club": {
-        "supports_uploaded_txt": True,
-        "auto_skip_extension": False,
-        "retailer_url_key": "retail_url",
-        "notes": "Sam's Club currently runs retailer-specific PDP parsing through the standard retail_url path.",
-    },
-}
-
-
-def get_retailer_runtime_config(retailer_name):
-    retailer_key = str(retailer_name or "").strip().lower()
-    base = dict(RETAILER_RUNTIME_CONFIG.get("default", {}))
-    override = RETAILER_RUNTIME_CONFIG.get(retailer_key, {})
-    base.update(override)
-    limits = get_retailer_salsify_requirements(retailer_name)
-    base.setdefault("max_features", int(limits.get("max_features", 5) or 5))
-    base.setdefault("max_images", int(limits.get("max_images", 6) or 6))
-    return base
-
-
-def retailer_supports_uploaded_txt(retailer_name):
-    return bool(get_retailer_runtime_config(retailer_name).get("supports_uploaded_txt", True))
-
-
-def retailer_auto_skip_extension(retailer_name):
-    return bool(get_retailer_runtime_config(retailer_name).get("auto_skip_extension", False))
-
-
-def retailer_requires_extension_for_images(retailer_name):
-    """Return True for retailers whose image QA depends on rendered extension TXT."""
-    retailer_key = normalize_retailer_name(retailer_name).strip().lower()
-    return retailer_key in {"cvs"}
-
-
-def prepare_retailer_batch_dataframe(master_df, selected_retailer, selected_capture_mode, uploaded_html_map=None):
-    """
-    Centralized retailer batch preparation.
-    Keeps retailer isolation strict, repairs retailer-specific URLs when needed,
-    and caches expensive TXT match work into a single prep pass per batch key.
-    """
-    uploaded_html_map = uploaded_html_map or {}
-    retailer_name = normalize_retailer_name(selected_retailer)
-    runtime_cfg = get_retailer_runtime_config(retailer_name)
-
-    retailer_df = strict_filter_rows_for_selected_retailer(
-        master_df,
-        retailer_name,
-        dedupe_by_url=(selected_capture_mode == CAPTURE_MODE_USE_EXTENSION),
-    )
-    if retailer_df is None or retailer_df.empty:
-        empty_cols = list(master_df.columns) if hasattr(master_df, 'columns') else []
-        if 'copy_source_code' not in empty_cols:
-            empty_cols.append('copy_source_code')
-        return {
-            'retailer_df': pd.DataFrame(columns=empty_cols),
-            'matched_uploaded_html_count': 0,
-            'missing_uploaded_html_count': 0,
-            'isolated_unique_url_count': 0,
-            'runtime_cfg': runtime_cfg,
-        }
-
-    retailer_df = retailer_df.copy()
-    if 'retail_url' not in retailer_df.columns:
-        retailer_df['retail_url'] = ''
-    retailer_df['retail_url'] = retailer_df['retail_url'].fillna('').astype(str).str.strip()
-    if 'retailer_rpc' not in retailer_df.columns:
-        retailer_df['retailer_rpc'] = ''
-    retailer_df['retailer_rpc'] = retailer_df['retailer_rpc'].fillna('').astype(str).str.strip()
-    if 'copy_source_code' not in retailer_df.columns:
-        retailer_df['copy_source_code'] = ''
-    else:
-        retailer_df['copy_source_code'] = retailer_df['copy_source_code'].fillna('').astype(str)
-
-    if retailer_name == 'Kroger' and uploaded_html_map:
-        repaired_urls = []
-        for retail_url, rpc in zip(retailer_df['retail_url'].tolist(), retailer_df['retailer_rpc'].tolist()):
-            existing_url = str(retail_url or '').strip()
-            repaired_urls.append(existing_url or find_kroger_url_in_uploaded_map(uploaded_html_map, target_rpc=rpc) or '')
-        retailer_df['retail_url'] = repaired_urls
-        retailer_df = strict_filter_rows_for_selected_retailer(
-            retailer_df,
-            retailer_name,
-            dedupe_by_url=(selected_capture_mode == CAPTURE_MODE_USE_EXTENSION),
-        )
-        if 'copy_source_code' not in retailer_df.columns:
-            retailer_df['copy_source_code'] = ''
-        retailer_df['retailer_rpc'] = retailer_df['retailer_rpc'].fillna('').astype(str).str.strip()
-
-    matched_uploaded_html_count = 0
-    missing_uploaded_html_count = 0
-    if uploaded_html_map and retailer_supports_uploaded_txt(retailer_name):
-        retail_urls = retailer_df['retail_url'].tolist()
-        rpc_values = retailer_df['retailer_rpc'].tolist()
-        resolved_html = [
-            lookup_uploaded_raw_html(uploaded_html_map, retail_url, target_rpc=rpc)
-            for retail_url, rpc in zip(retail_urls, rpc_values)
-        ]
-        matched_flags = [1 if str(value or '').strip() else 0 for value in resolved_html]
-        matched_uploaded_html_count = int(sum(matched_flags))
-        missing_uploaded_html_count = max(len(retailer_df) - matched_uploaded_html_count, 0)
-        if retailer_name != 'Albertsons':
-            retailer_df['copy_source_code'] = resolved_html
-
-    isolated_unique_url_count = int(
-        retailer_df['retail_url'].fillna('').astype(str).str.strip().replace('', pd.NA).dropna().nunique()
-    ) if not retailer_df.empty else 0
-
-    return {
-        'retailer_df': retailer_df,
-        'matched_uploaded_html_count': matched_uploaded_html_count,
-        'missing_uploaded_html_count': missing_uploaded_html_count,
-        'isolated_unique_url_count': isolated_unique_url_count,
-        'runtime_cfg': runtime_cfg,
-    }
 
 
 def classify_cvs_generic_asset_name(value):
@@ -1015,12 +832,10 @@ def reorder_cvs_salsify_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_C
     1. Online/Main image.
     2. Flat Back_2D / back.
     3. Flat Left_2D / side.
-    4. ATF I/O-Generic when present.
-       - If ATF I/O-Generic is missing, ATF 2 moves up into this slot.
-    5+. Continue remaining ATF 2-5 Generic images in order.
-    Last. ATF 6-Generic is always kept last and is never used as the ATF I/O fallback.
+    4. ATF I/O-Generic if present, otherwise ATF 6-Generic.
+    5+. ATF 2-Generic through ATF 5-Generic.
 
-    Missing slots 1-3 stay blank so later ATF images do not shift up.
+    Missing slots 1-4 stay blank so later ATF images do not shift up.
     """
     imgs = [img for img in (images or []) if isinstance(img, dict)]
 
@@ -1056,14 +871,6 @@ def reorder_cvs_salsify_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_C
         used.add(key)
         return True
 
-    def add_first_available(query_groups, blank_name=""):
-        for query_group in query_groups:
-            if add(find_first(*query_group)):
-                return True
-        if blank_name:
-            ordered.append(make_blank_salsify_image_slot(blank_name))
-        return False
-
     add(find_first(
         "online optimized image", "online image", "main variant image", "main image", "hero", "primary", "front", "product image 1", "image 1",
     ), "cvs_slot_1")
@@ -1074,29 +881,18 @@ def reorder_cvs_salsify_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_C
         "flat left 2d", "flat left", "left 2d", "left", "flat right 2d", "flat right", "right 2d", "right", "side", "product image 3", "image 3",
     ), "cvs_slot_3")
 
-    io_queries = (("atf i/o generic", "atf i o generic", "atf io generic", "atf i/o-generic", "atf io-generic"),)
-    atf2_queries = (("atf 2 generic", "atf 2-generic", "atf2 generic", "atf2-generic"),)
-    atf3_queries = (("atf 3 generic", "atf 3-generic", "atf3 generic", "atf3-generic"),)
-    atf4_queries = (("atf 4 generic", "atf 4-generic", "atf4 generic", "atf4-generic"),)
-    atf5_queries = (("atf 5 generic", "atf 5-generic", "atf5 generic", "atf5-generic"),)
-    atf6_queries = (("atf 6 generic", "atf 6-generic", "atf6 generic", "atf6-generic"),)
+    io_img = find_first("atf i/o generic", "atf i o generic", "atf io generic", "atf i/o-generic", "atf io-generic")
+    atf6_img = find_first("atf 6 generic", "atf 6-generic", "atf6 generic", "atf6-generic")
+    add(io_img if io_img else atf6_img, "cvs_slot_4")
 
-    # Slot 4: ATF I/O if present; otherwise ATF 2 moves up.
-    add_first_available(io_queries + atf2_queries)
-
-    # Continue remaining core ATF images in order. Used URLs are skipped automatically.
-    add_first_available(atf2_queries)
-    add_first_available(atf3_queries)
-    add_first_available(atf4_queries)
-    add_first_available(atf5_queries)
-
-    # ATF 6 is always last among CVS ATF assets.
-    add_first_available(atf6_queries)
+    for n in range(2, 6):
+        add(find_first(f"atf {n} generic", f"atf {n}-generic", f"atf{n} generic", f"atf{n}-generic"))
 
     for img in imgs:
         add(img)
 
     return ordered[:max_slots]
+
 def reorder_cvs_retailer_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
     urls = [str(u or "").strip() for u in (images or []) if str(u or "").strip()]
     if not urls:
@@ -1143,67 +939,6 @@ def reorder_cvs_retailer_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_
         add_url(url)
     return ordered[:max_slots]
 
-
-def reorder_albertsons_salsify_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
-    """
-    Albertsons Salsify order for visual QA.
-    1. Online Optimized Image-Grocery when present; otherwise Online Optimized Image / Online Optimized Image-.
-       Never use the non-Grocery Online image when the Grocery asset exists.
-    2+. ATF 2-Generic through ATF 8-Generic only.
-       Missing ATFs shift up automatically because only present mapped assets are returned.
-    3. Do not append unmapped remainder assets for Albertsons.
-    4. ATF 8-Generic is the last Albertsons image when present.
-    """
-    imgs = [img for img in (images or []) if isinstance(img, dict)]
-
-    def norm_name(img):
-        return normalize_salsify_asset_name((img or {}).get("name", "")) if isinstance(img, dict) else ""
-
-    excluded_tokens = [
-        normalize_salsify_asset_name(x)
-        for x in ["cvs", "walgreens", "sam's club", "sams club", "samsclub", "kroger", "walmart", "target", "amazon"]
-    ]
-
-    def is_excluded(img):
-        name = norm_name(img)
-        return any(token and token in name for token in excluded_tokens)
-
-    def find_first(*queries):
-        query_tokens = [normalize_salsify_asset_name(q) for q in queries if normalize_salsify_asset_name(q)]
-        for q in query_tokens:
-            for img in imgs:
-                if is_excluded(img):
-                    continue
-                name = norm_name(img)
-                if name and (q == name or q in name):
-                    return img
-        return None
-
-    def image_key(img):
-        return str(img.get("url", "") or "").strip() if isinstance(img, dict) else ""
-
-    ordered = []
-    used = set()
-
-    def add(img):
-        if not isinstance(img, dict):
-            return False
-        key = image_key(img)
-        if not key or key in used:
-            return False
-        ordered.append(img)
-        used.add(key)
-        return True
-
-    grocery_img = find_first("online optimized image grocery", "online optimized image-grocery")
-    regular_online_img = None if grocery_img else find_first("online optimized image", "online optimized image-")
-    add(grocery_img or regular_online_img)
-
-    for n in range(2, 9):
-        add(find_first(f"atf {n} generic", f"atf {n}-generic", f"atf{n} generic", f"atf{n}-generic"))
-
-    return ordered[:max_slots]
-
 def apply_retailer_salsify_image_limits(retailer_name, images):
     retailer = str(retailer_name or "").strip().lower()
     limits = get_retailer_salsify_requirements(retailer_name)
@@ -1211,8 +946,6 @@ def apply_retailer_salsify_image_limits(retailer_name, images):
     max_images = max(0, min(max_images, MAX_IMAGE_SLOTS_TO_COMPARE))
     if retailer == "cvs":
         return reorder_cvs_salsify_images_for_visual(images, max_slots=max_images)
-    if retailer == "albertsons":
-        return reorder_albertsons_salsify_images_for_visual(images, max_slots=max_images)
     out = []
     seen_urls = set()
     for img in list(images or []):
@@ -1226,213 +959,6 @@ def apply_retailer_salsify_image_limits(retailer_name, images):
         if len(out) >= max_images:
             break
     return out
-
-
-
-def derive_albertsons_target_rpc(retail_url="", target_rpc=""):
-    direct_rpc = clean_item_number(target_rpc)
-    if direct_rpc:
-        return direct_rpc
-    retail_url = str(retail_url or "").strip()
-    match = re.search(r'product-details\.(\d+)\.html', retail_url, flags=re.IGNORECASE)
-    return clean_item_number(match.group(1)) if match else ""
-
-
-def merge_albertsons_image_lists(primary_images, fallback_images, capture_label_count=0):
-    primary_images = [str(x or "").strip() for x in (primary_images or []) if str(x or "").strip()]
-    fallback_images = [str(x or "").strip() for x in (fallback_images or []) if str(x or "").strip()]
-    capture_label_count = int(capture_label_count or 0)
-
-    ordered = []
-    seen = set()
-
-    def add_many(values):
-        for value in values:
-            family_key = _albertsons_image_family_key(value)
-            if not family_key or family_key in seen:
-                continue
-            seen.add(family_key)
-            ordered.append(value)
-
-    add_many(primary_images)
-    add_many(fallback_images)
-
-    if fallback_images and (len(fallback_images) > len(primary_images) or len(ordered) < capture_label_count):
-        ordered = []
-        seen = set()
-        add_many(fallback_images)
-        add_many(primary_images)
-
-    ordered = sorted(ordered, key=_albertsons_asset_sort_key)
-    return ordered[:MAX_IMAGE_SLOTS_TO_COMPARE]
-
-
-
-
-def _albertsons_desktop_variant_url(asset_name):
-    asset_name = str(asset_name or '').strip().strip('/').rstrip(chr(92))
-    if not asset_name:
-        return ''
-    return f"https://images.albertsons-media.com/is/image/ABS/{asset_name}?$ng-ecom-pdp-desktop$"
-
-
-def _build_albertsons_constructed_asset_names(product_id, desired_count=8):
-    product_id = clean_item_number(product_id)
-    if not product_id:
-        return []
-    desired_count = max(int(desired_count or 0), 1)
-    names = [product_id]
-    # Albertsons/Safeway gallery assets are commonly bare product id plus C/H/A/U/L/R suffix groups.
-    # The order keeps the main image first, then common carousel/detail shots.
-    for prefix in ['C', 'H', 'A', 'U', 'L', 'R']:
-        for idx in range(1, max(desired_count, 8) + 1):
-            names.append(f"{product_id}-{prefix}{idx}")
-    return dedupe_preserve_order(names)
-
-
-@st.cache_data(show_spinner=False, ttl=86400)
-def _is_reachable_albertsons_image_url(url):
-    url = _clean_albertsons_image_url(url)
-    if not url:
-        return False
-    try:
-        session = get_session()
-        response = session.get(url, timeout=6, stream=True, allow_redirects=True)
-        status_ok = int(getattr(response, 'status_code', 0) or 0) == 200
-        content_type = str(response.headers.get('content-type', '') or '').lower()
-        first_chunk = b''
-        try:
-            first_chunk = next(response.iter_content(chunk_size=64), b'') or b''
-        except Exception:
-            first_chunk = b''
-        try:
-            response.close()
-        except Exception:
-            pass
-        if not status_ok:
-            return False
-        if content_type.startswith('image/'):
-            return True
-        return bool(
-            first_chunk[:2] == bytes([0xFF, 0xD8])
-            or first_chunk[:4] == bytes([0x89, 0x50, 0x4E, 0x47])
-            or first_chunk[:4] == b'GIF8'
-            or first_chunk[:4] == b'RIFF'
-        )
-    except Exception:
-        return False
-
-
-@st.cache_data(show_spinner=False, ttl=86400)
-def build_constructed_albertsons_images(product_id, desired_count=8):
-    product_id = clean_item_number(product_id)
-    desired_count = max(int(desired_count or 0), 1)
-    if not product_id:
-        return []
-    out = []
-    for asset_name in _build_albertsons_constructed_asset_names(product_id, desired_count=desired_count):
-        url = _albertsons_desktop_variant_url(asset_name)
-        if not url:
-            continue
-        if _is_reachable_albertsons_image_url(url):
-            out.append(url)
-            if len(out) >= desired_count:
-                break
-    return sorted(dedupe_preserve_order(out), key=_albertsons_asset_sort_key)[:MAX_IMAGE_SLOTS_TO_COMPARE]
-
-
-def ensure_albertsons_images_with_constructed_fallback(images, retail_url='', target_rpc='', capture_label_count=0):
-    # Albertsons-only fallback. Do not call this from CVS, Walgreens, Kroger, or Sam's paths.
-    images = [str(x or '').strip() for x in (images or []) if str(x or '').strip()]
-    effective_rpc = derive_albertsons_target_rpc(retail_url=retail_url, target_rpc=target_rpc)
-    capture_label_count = int(capture_label_count or 0)
-    desired_count = capture_label_count if capture_label_count else MAX_IMAGE_SLOTS_TO_COMPARE
-    if effective_rpc and (not images or len(images) < min(desired_count, MAX_IMAGE_SLOTS_TO_COMPARE)):
-        constructed = build_constructed_albertsons_images(effective_rpc, desired_count=desired_count)
-        images = merge_albertsons_image_lists(images, constructed, capture_label_count=capture_label_count)
-    return images[:MAX_IMAGE_SLOTS_TO_COMPARE]
-
-def init_session_state_defaults():
-    defaults = {
-        "start_idx": 0,
-        "summary_rows": [],
-        "export_rows": [],
-        "debug_rows": [],
-        "summary_skus": set(),
-        "detail_skus": set(),
-        "debug_skus": set(),
-        "processing_done": False,
-        "progress_bar": None,
-        "last_file_hash": None,
-        "uploaded_file_bytes": None,
-        "selected_retailer": "-- Select Retailer --",
-        "selected_brand_visual": "All",
-        "active_batch_key": "",
-        "completed_batch_key": "",
-        "auto_download_done": False,
-        "report_bytes": None,
-        "report_filename": None,
-        "report_batch_key": "",
-        "report_row_signature": "",
-        "batch_run_requested": False,
-        "batch_started_key": "",
-        "batch_status_message": "",
-        "batch_error_text": "",
-        "capture_mode": CAPTURE_MODE_USE_EXTENSION,
-        "uploaded_raw_html_map": {},
-        "uploaded_raw_html_filename": "",
-        "raw_html_upload_hash": "",
-        "auto_batch_upload_key": "",
-        "prepared_batch_key": "",
-        "prepared_retailer_df": None,
-        "prepared_match_stats": {},
-    }
-    for key, value in defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = value
-
-
-def reset_batch_output_state(clear_report=True, clear_runtime_only=True):
-    st.session_state.summary_rows = []
-    st.session_state.export_rows = []
-    st.session_state.debug_rows = []
-    st.session_state.summary_skus = set()
-    st.session_state.detail_skus = set()
-    st.session_state.debug_skus = set()
-    st.session_state.start_idx = 0
-    st.session_state.processing_done = False
-    st.session_state.progress_bar = None
-    if clear_report:
-        st.session_state.report_bytes = None
-        st.session_state.report_filename = None
-        st.session_state.report_batch_key = ""
-        st.session_state.report_row_signature = ""
-        st.session_state.auto_download_done = False
-    if clear_runtime_only:
-        clear_runtime_result_caches(clear_network_caches=False)
-
-
-def reset_batch_request_state():
-    st.session_state.batch_run_requested = False
-    st.session_state.batch_started_key = ""
-    st.session_state.batch_status_message = ""
-    st.session_state.batch_error_text = ""
-
-
-def build_batch_records(df_slice):
-    if df_slice is None or len(df_slice) == 0:
-        return []
-    needed_cols = [
-        "sku", "retail_url", "salsify_url", "retailer_rpc", "copy_source_code",
-        "retailer", "rating", "review_count", "brand",
-    ]
-    working = df_slice.copy()
-    for col in needed_cols:
-        if col not in working.columns:
-            working[col] = ""
-    working = working[needed_cols]
-    return working.to_dict(orient="records")
-
 
 def prepare_input_df(df):
     df = df.copy()
@@ -1454,7 +980,7 @@ def prepare_input_df(df):
     )
 
     rpc_candidates = []
-    for rpc_col in ["retailer_rpc", "kroger_rpc", "cvs rpc", "walgreens rpc", "sams club rpc", "albertsons rpc", "albertsons_rpc"]:
+    for rpc_col in ["retailer_rpc", "kroger_rpc", "cvs rpc", "walgreens rpc", "sams club rpc"]:
         if rpc_col in df.columns:
             rpc_candidates.append(
                 df[rpc_col]
@@ -1472,7 +998,7 @@ def prepare_input_df(df):
     else:
         df["retailer_rpc"] = ""
 
-    for rpc_col in ["kroger_rpc", "cvs rpc", "walgreens rpc", "sams club rpc", "albertsons rpc", "albertsons_rpc"]:
+    for rpc_col in ["kroger_rpc", "cvs rpc", "walgreens rpc", "sams club rpc"]:
         if rpc_col in df.columns:
             df.drop(columns=[rpc_col], inplace=True)
 
@@ -1545,82 +1071,6 @@ def clear_in_memory_caches():
 # =========================================
 # HTML FETCH
 # =========================================
-
-def clear_runtime_result_caches(clear_network_caches=False):
-    global uploaded_bundle_cache, row_result_cache
-
-    if "uploaded_bundle_cache" not in globals() or not isinstance(globals().get("uploaded_bundle_cache"), dict):
-        uploaded_bundle_cache = {}
-    if "row_result_cache" not in globals() or not isinstance(globals().get("row_result_cache"), dict):
-        row_result_cache = {}
-
-    uploaded_bundle_cache.clear()
-    row_result_cache.clear()
-
-    if clear_network_caches:
-        clear_in_memory_caches()
-
-
-def _build_uploaded_bundle_cache_key(retailer_name, uploaded_html, retail_url="", target_rpc="", sku=""):
-    uploaded_html = str(uploaded_html or "")
-    digest = hashlib.md5(uploaded_html.encode("utf-8", errors="ignore")).hexdigest() if uploaded_html else ""
-    return (
-        normalize_retailer_name(retailer_name),
-        str(retail_url or "").strip(),
-        str(target_rpc or "").strip(),
-        str(sku or "").strip(),
-        digest,
-    )
-
-
-def _cache_uploaded_bundle_result(cache_key, bundle):
-    global uploaded_bundle_cache
-    if "uploaded_bundle_cache" not in globals() or not isinstance(globals().get("uploaded_bundle_cache"), dict):
-        uploaded_bundle_cache = {}
-    uploaded_bundle_cache[cache_key] = copy.deepcopy(bundle)
-    while len(uploaded_bundle_cache) > UPLOADED_BUNDLE_CACHE_MAX:
-        uploaded_bundle_cache.pop(next(iter(uploaded_bundle_cache)))
-
-
-def _get_cached_uploaded_bundle_result(cache_key):
-    global uploaded_bundle_cache
-    if "uploaded_bundle_cache" not in globals() or not isinstance(globals().get("uploaded_bundle_cache"), dict):
-        uploaded_bundle_cache = {}
-    cached = uploaded_bundle_cache.get(cache_key)
-    return copy.deepcopy(cached) if cached is not None else None
-
-
-def _build_row_result_cache_key(row):
-    payload = {
-        "sku": str(row.get("sku", "") or "").strip(),
-        "retailer": normalize_retailer_name(row.get("retailer", "") or infer_retailer_name_from_url(row.get("retail_url", ""))),
-        "retail_url": str(row.get("retail_url", "") or "").strip(),
-        "salsify_url": str(row.get("salsify_url", "") or "").strip(),
-        "retailer_rpc": str(row.get("retailer_rpc", "") or "").strip(),
-        "copy_source_code": hashlib.md5(str(row.get("copy_source_code", "") or "").encode("utf-8", errors="ignore")).hexdigest() if str(row.get("copy_source_code", "") or "") else "",
-        "rating": str(row.get("rating", "") or "").strip(),
-        "review_count": str(row.get("review_count", "") or "").strip(),
-        "raw_html_upload_hash": str(st.session_state.get("raw_html_upload_hash", "") or ""),
-    }
-    return hashlib.md5(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
-
-
-def _cache_row_result(cache_key, payload):
-    global row_result_cache
-    if "row_result_cache" not in globals() or not isinstance(globals().get("row_result_cache"), dict):
-        row_result_cache = {}
-    row_result_cache[cache_key] = copy.deepcopy(payload)
-    while len(row_result_cache) > ROW_RESULT_CACHE_MAX:
-        row_result_cache.pop(next(iter(row_result_cache)))
-
-
-def _get_cached_row_result(cache_key):
-    global row_result_cache
-    if "row_result_cache" not in globals() or not isinstance(globals().get("row_result_cache"), dict):
-        row_result_cache = {}
-    cached = row_result_cache.get(cache_key)
-    return copy.deepcopy(cached) if cached is not None else None
-
 def get_html(url):
     global html_cache
 
@@ -2071,100 +1521,30 @@ def uploaded_capture_url_candidates(url):
     return candidates
 
 
-
-
-def _build_uploaded_html_fast_indexes(uploaded_html_map):
-    """
-    Build tiny cached lookup indexes for uploaded TXT HTML blocks so row matching
-    does not rescan the full map for every apply/row call.
-    This does not change parsing or UI behavior; it only speeds up lookups.
-    """
-    uploaded_html_map = uploaded_html_map or {}
-    cache_key = (id(uploaded_html_map), len(uploaded_html_map))
-    cache = getattr(_build_uploaded_html_fast_indexes, '_cache', {})
-    cached = cache.get(cache_key)
-    if cached is not None:
-        return cached
-
-    no_query_map = {}
-    albertsons_rpc_map = {}
-    for stored_key, stored_html in uploaded_html_map.items():
-        norm_key = normalize_uploaded_capture_url(stored_key)
-        if not norm_key:
-            continue
-
-        no_query_key = norm_key.split('?', 1)[0].strip().lower()
-        if no_query_key and no_query_key not in no_query_map:
-            no_query_map[no_query_key] = str(stored_html or "")
-
-        match = re.search(r'product-details\.(\d+)\.html', norm_key, flags=re.IGNORECASE)
-        if match:
-            rpc = clean_item_number(match.group(1))
-            if rpc and rpc not in albertsons_rpc_map:
-                albertsons_rpc_map[rpc] = str(stored_html or "")
-
-    result = {
-        'no_query_map': no_query_map,
-        'albertsons_rpc_map': albertsons_rpc_map,
-    }
-    cache[cache_key] = result
-    if len(cache) > 8:
-        first_key = next(iter(cache.keys()))
-        cache.pop(first_key, None)
-    _build_uploaded_html_fast_indexes._cache = cache
-    return result
-
 def parse_uploaded_raw_html_map(raw_text):
-    """
-    Faster TXT parser that preserves the same output shape as the original
-    Requested URL / BEGIN HTML / END HTML block extraction.
-    """
     raw_text = str(raw_text or "")
     if not raw_text.strip():
         return {}
 
     html_map = {}
-    requested_url_pattern = re.compile(r'(?im)^Requested\s+URL\s*:\s*(https?://\S+)\s*$')
-    matches = list(requested_url_pattern.finditer(raw_text))
-    if not matches:
-        return html_map
+    block_pattern = re.compile(
+        r'(?is)Requested\s+URL\s*:\s*(https?://\S+).*?-----BEGIN HTML-----(.*?)-----END HTML-----'
+    )
 
-    begin_html = '-----BEGIN HTML-----'
-    end_html = '-----END HTML-----'
-
-    for i, match in enumerate(matches):
+    for match in block_pattern.finditer(raw_text):
         requested_url = str(match.group(1) or "").strip()
+        html_text = html.unescape(str(match.group(2) or "").strip())
+        if not requested_url or len(html_text) < 30:
+            continue
         key = normalize_uploaded_capture_url(requested_url)
-        if not key:
-            continue
-
-        seg_start = match.end()
-        seg_end = matches[i + 1].start() if i + 1 < len(matches) else len(raw_text)
-        segment = raw_text[seg_start:seg_end]
-        if not segment:
-            continue
-
-        begin_idx = segment.find(begin_html)
-        if begin_idx == -1:
-            continue
-        content_start = begin_idx + len(begin_html)
-        end_idx = segment.find(end_html, content_start)
-        if end_idx == -1:
-            continue
-
-        html_text = html.unescape(str(segment[content_start:end_idx] or "").strip())
-        if len(html_text) < 30:
-            continue
-        html_map[key] = html_text
+        if key:
+            html_map[key] = html_text
     return html_map
 
 def lookup_uploaded_raw_html(uploaded_html_map, retail_url, target_rpc=""):
     uploaded_html_map = uploaded_html_map or {}
     retail_url = str(retail_url or "").strip()
     target_rpc = str(target_rpc or "").strip()
-    fast_indexes = _build_uploaded_html_fast_indexes(uploaded_html_map)
-    no_query_map = fast_indexes.get('no_query_map', {}) or {}
-    albertsons_rpc_map = fast_indexes.get('albertsons_rpc_map', {}) or {}
 
     if retail_url and "kroger.com" in retail_url.lower():
         key = normalize_uploaded_capture_url(retail_url)
@@ -2185,23 +1565,6 @@ def lookup_uploaded_raw_html(uploaded_html_map, retail_url, target_rpc=""):
         html_text = uploaded_html_map.get(key, "")
         if html_text:
             return html_text
-
-    retail_no_query = normalize_uploaded_capture_url(retail_url).split("?", 1)[0].strip().lower()
-    if retail_no_query:
-        fast_match = no_query_map.get(retail_no_query, "")
-        if fast_match:
-            return str(fast_match or "")
-
-    clean_rpc = clean_item_number(target_rpc)
-    if clean_rpc:
-        fast_match = albertsons_rpc_map.get(clean_rpc, "")
-        if fast_match:
-            return str(fast_match or "")
-
-    matched_albertsons_key = find_albertsons_url_in_uploaded_map(uploaded_html_map, target_rpc=target_rpc)
-    if matched_albertsons_key:
-        return str(uploaded_html_map.get(matched_albertsons_key, "") or "")
-
     return ""
 
 def build_extension_batch_payload(retailer_df, retailer_name, current_batch_key, capture_mode, txt_ready=False):
@@ -2222,13 +1585,13 @@ def build_extension_batch_payload(retailer_df, retailer_name, current_batch_key,
         ]
         row_payload = [
             {
-                "sku": str(getattr(row, "sku", "") or "").strip(),
-                "retail_url": str(getattr(row, "retail_url", "") or "").strip(),
-                "retailer_rpc": str(getattr(row, "retailer_rpc", "") or "").strip(),
+                "sku": str(row.get("sku", "") or "").strip(),
+                "retail_url": str(row.get("retail_url", "") or "").strip(),
+                "retailer_rpc": str(row.get("retailer_rpc", "") or "").strip(),
                 "retailer": retailer_name_norm,
             }
-            for row in retailer_df.itertuples(index=False)
-            if str(getattr(row, "retail_url", "") or "").strip()
+            for _, row in retailer_df.iterrows()
+            if str(row.get("retail_url", "") or "").strip()
         ]
 
     return {
@@ -2432,18 +1795,6 @@ def find_kroger_url_in_uploaded_map(uploaded_html_map, target_rpc=""):
         for rpc in rpc_values:
             if rpc and rpc in key_str:
                 return key_str
-    return ""
-
-def find_albertsons_url_in_uploaded_map(uploaded_html_map, target_rpc=""):
-    uploaded_html_map = uploaded_html_map or {}
-    target_rpc = clean_item_number(target_rpc)
-    if not target_rpc:
-        return ""
-    token = f"product-details.{target_rpc}.html"
-    for key in uploaded_html_map.keys():
-        key_str = normalize_uploaded_capture_url(key)
-        if token in key_str:
-            return key_str
     return ""
 
 def resolve_debug_views(
@@ -2922,7 +2273,6 @@ def _parse_salsify_page(html_text):
     cvs_feature_values = []
     cvs_feature_slots = {}
     general_feature_values = []
-    general_feature_slots = {}
     for i in range(1, 11):
         cvs_exact_values = collect_property_values(
             f"CVS Feature {i}",
@@ -2950,16 +2300,14 @@ def _parse_salsify_page(html_text):
             cvs_feature_slots[i] = cvs_slot_values[0]
             cvs_feature_values.extend(cvs_slot_values)
 
-        general_slot_values = collect_property_values(
-            f"General Feature {i}",
-            f"General Feature{i}",
-            f"General Bullet {i}",
-            f"General Bullet{i}",
+        general_feature_values.extend(
+            collect_property_values(
+                f"General Feature {i}",
+                f"General Feature{i}",
+                f"General Bullet {i}",
+                f"General Bullet{i}",
+            )
         )
-        general_slot_values = [v for v in general_slot_values if v and not is_placeholder_salsify_copy_value(v)]
-        if general_slot_values:
-            general_feature_slots[i] = general_slot_values[0]
-            general_feature_values.extend(general_slot_values)
 
     if not cvs_feature_values:
         broad_cvs_feature_values = []
@@ -3027,45 +2375,6 @@ def _parse_salsify_page(html_text):
     )
 
 
-    albertsons_feature_values = []
-    albertsons_feature_slots = {}
-    for i in range(1, 9):
-        exact_keys = [f"Albertsons Feature {i}"]
-        loose_keys = [f"Albertsons Feature {i}"]
-        if i == 1:
-            exact_keys.extend(["Albertsons Feature 1 (Each)", "Albertsons Feature1 (Each)", "Albertsons Feature1"])
-            loose_keys.extend(["Albertsons Feature 1 (Each)", "Albertsons Feature 1"])
-        elif i == 5:
-            exact_keys.extend(["Albertsons Feature 5 (Each)", "Albertsons Feature5 (Each)", "Albertsons Feature5"])
-            loose_keys.extend(["Albertsons Feature 5 (Each)", "Albertsons Feature 5"])
-        else:
-            exact_keys.extend([f"Albertsons Feature{i}", f"Retailer Feature {i} - Albertsons", f"Retailer Bullet {i} - Albertsons"])
-            loose_keys.extend([f"Retailer Feature {i} - Albertsons", f"Retailer Bullet {i} - Albertsons"])
-        slot_values = dedupe_preserve_order((collect_property_values(*exact_keys) or []) + (collect_property_values_loose(*loose_keys) or []))
-        slot_values = [v for v in slot_values if v and not is_placeholder_salsify_copy_value(v)]
-        if slot_values:
-            albertsons_feature_slots[i] = slot_values[0]
-            albertsons_feature_values.extend(slot_values)
-
-    if not albertsons_feature_values:
-        broad_albertsons_feature_values = []
-        for prop_key, values in property_values.items():
-            pk = normalize_space(prop_key).lower().replace('_', ' ')
-            if 'albertsons' not in pk:
-                continue
-            if not any(token in pk for token in ['feature', 'bullet', 'selling point', 'benefit', 'highlight']):
-                continue
-            for value in values or []:
-                clean_value = normalize_space(value)
-                if clean_value and not is_placeholder_salsify_copy_value(clean_value):
-                    broad_albertsons_feature_values.append(clean_value)
-        albertsons_feature_values = dedupe_preserve_order(broad_albertsons_feature_values)
-
-    albertsons_feature_values = normalize_salsify_feature_values(
-        dedupe_preserve_order(albertsons_feature_values),
-        max_features=8,
-    )
-
     retailer_overrides = {
         "kroger": {
             "title": first_property("Kroger Product Title", "Kroger Title"),
@@ -3117,32 +2426,6 @@ def _parse_salsify_page(html_text):
                 max_features=10,
             ),
             "feature_slots": walgreens_feature_slots,
-        },
-        "albertsons": {
-            "title": first_non_placeholder_copy_value(
-                first_property("Albertsons Product Title (Each)"),
-                first_property("General Product Title", "General Title", "Product Title"),
-            ),
-            "description": first_non_placeholder_copy_value(
-                first_property("Albertsons Description"),
-                first_property("General Description", "General Product Description", "Description"),
-            ),
-            "features": normalize_salsify_feature_values([
-                first_non_placeholder_copy_value(albertsons_feature_slots.get(2, ""), general_feature_slots.get(1, "")),
-                first_non_placeholder_copy_value(albertsons_feature_slots.get(3, ""), general_feature_slots.get(2, "")),
-                first_non_placeholder_copy_value(albertsons_feature_slots.get(4, ""), general_feature_slots.get(3, "")),
-                first_non_placeholder_copy_value(albertsons_feature_slots.get(5, ""), general_feature_slots.get(4, "")),
-                first_non_placeholder_copy_value(albertsons_feature_slots.get(6, ""), general_feature_slots.get(5, "")),
-                first_non_placeholder_copy_value(albertsons_feature_slots.get(7, ""), general_feature_slots.get(6, "")),
-            ], max_features=6),
-            "feature_slots": {
-                1: first_non_placeholder_copy_value(albertsons_feature_slots.get(2, ""), general_feature_slots.get(1, "")),
-                2: first_non_placeholder_copy_value(albertsons_feature_slots.get(3, ""), general_feature_slots.get(2, "")),
-                3: first_non_placeholder_copy_value(albertsons_feature_slots.get(4, ""), general_feature_slots.get(3, "")),
-                4: first_non_placeholder_copy_value(albertsons_feature_slots.get(5, ""), general_feature_slots.get(4, "")),
-                5: first_non_placeholder_copy_value(albertsons_feature_slots.get(6, ""), general_feature_slots.get(5, "")),
-                6: first_non_placeholder_copy_value(albertsons_feature_slots.get(7, ""), general_feature_slots.get(6, "")),
-            },
         },
     }
 
@@ -4347,175 +3630,26 @@ def extract_vendor_copy_from_nextjs(html_text, target_rpc="", retail_url=""):
     }
 
 
-
-
-def _clean_cvs_image_url(url):
-    """CVS-only image URL cleanup. No other retailer uses this helper."""
-    url = html.unescape(str(url or '')).strip()
-    if not url:
-        return ''
-
-    # Decode common escaped forms from Next.js / TXT captures.
-    url = url.replace('\\u0026', '&')
-    url = url.replace('\\u003d', '=')
-    url = url.replace('\\/','/')
-    url = url.replace('\\\\/', '/')
-    url = url.replace('&amp;', '&')
-    url = url.strip().strip('"').strip("'").rstrip(';')
-
-    # If a regex capture grabbed CSS/function punctuation after the URL, trim only true wrappers.
-    while url and url[-1] in ('"', "'", ';'):
-        url = url[:-1]
-
-    if url.startswith('//'):
-        url = 'https:' + url
-    if url.startswith('/bizcontent/'):
-        url = 'https://www.cvs.com' + url
-    if url.startswith('bizcontent/'):
-        url = 'https://www.cvs.com/' + url
-
-    # CVS product image paths often appear exactly like:
-    # /bizcontent/merchandising/productimages/high_res/3600041777.jpg?im=Resize=(160,160),aspect=ignore
-    # Keep the valid Resize query when it exists, but also tolerate URLs without query params.
-    if not re.match(r'^https?://(?:www\.)?cvs\.com/', url, flags=re.IGNORECASE):
-        return ''
-    lowered = url.lower()
-    if '/bizcontent/merchandising/productimages/' not in lowered:
-        return ''
-    image_match = re.search(r'\.(?:jpg|jpeg|png|webp)(?:\?|$)', lowered, flags=re.IGNORECASE)
-    if not image_match:
-        return ''
-
-    # Remove whitespace only; do not remove commas/parentheses from Resize=(160,160).
-    url = re.sub(r'\s+', '', url)
-    return url
-
-
-def _extract_possible_cvs_image_urls_from_text_blob(text_blob):
-    """CVS-only raw/escaped image URL extraction. Keeps CVS Resize=(160,160),aspect=ignore intact."""
-    text_blob = html.unescape(str(text_blob or ''))
-    if not text_blob:
-        return []
-    text_blob = text_blob.replace('\\/','/')
-    text_blob = text_blob.replace('\\\\/', '/')
-    patterns = [
-        # Absolute CVS image URLs.
-        r'https?://(?:www\.)?cvs\.com/bizcontent/merchandising/productimages/[^\s\"\'<>]+',
-        # Relative CVS image URLs exactly as seen in DevTools.
-        r'/bizcontent/merchandising/productimages/[^\s\"\'<>]+',
-        r'bizcontent/merchandising/productimages/[^\s\"\'<>]+',
-    ]
-    urls = []
-    for pattern in patterns:
-        for raw in re.findall(pattern, text_blob, flags=re.IGNORECASE):
-            # Stop at common HTML/JS separators only after the image extension/query has been captured.
-            raw = str(raw or '').strip()
-            raw = re.split(r'(?=<)|(?=</)|(?=\\n)|(?=\\r)', raw)[0].strip()
-            urls.append(raw)
-    return urls
-
-
-def _cvs_image_dedupe_key(url):
-    clean = _clean_cvs_image_url(url)
-    if not clean:
-        return ''
-    # Dedupe by actual image file, not by Resize query.
-    base = clean.split('?', 1)[0]
-    return base.lower()
-
-
-def _cvs_image_size_score(url):
-    url = str(url or '')
-    nums = []
-    for pattern in [
-        r'Resize=\((\d+),\s*(\d+)\)',
-        r'Resize=\((\d+)',
-        r'[?&]wid=(\d+)',
-        r'[?&]width=(\d+)',
-        r'[?&]hei=(\d+)',
-        r'[?&]height=(\d+)'
-    ]:
-        for found in re.findall(pattern, url, flags=re.IGNORECASE):
-            values = found if isinstance(found, tuple) else (found,)
-            for value in values:
-                try:
-                    nums.append(int(value))
-                except Exception:
-                    pass
-    return max(nums) if nums else 0
-
-
-def _cvs_canonical_display_url(url):
-    """Return a clean CVS image URL safe for Streamlit/HTML display."""
-    clean = _clean_cvs_image_url(url)
-    if not clean:
-        return ''
-    # If a Resize query is malformed by capture truncation, fall back to the base JPG.
-    if '?' in clean and 'resize=(' in clean.lower() and ')' not in clean.split('?', 1)[1]:
-        return clean.split('?', 1)[0]
-    return clean
-
-
 def extract_cvs_images_from_html(html_text):
-    """
-    CVS-only image extraction.
-    This intentionally does not call Albertsons, Walgreens, Kroger, or Sam's logic.
-    """
-    working = html.unescape(str(html_text or ''))
-    raw_urls = []
-    raw_urls.extend(_extract_possible_cvs_image_urls_from_text_blob(working))
+    matches = re.findall(r'/bizcontent/merchandising/productimages/high_res/[^\s\"]+\.jpg\?[^\"]*', html_text or "")
 
-    try:
-        soup = BeautifulSoup(working, 'html.parser')
-        attr_names = (
-            'src', 'data-src', 'data-image-src', 'data-lazy-src', 'data-original',
-            'data-zoom-image', 'content', 'href', 'poster', 'data-testid',
-        )
-        for tag in soup.find_all(True):
-            for attr in attr_names:
-                value = str(tag.get(attr, '') or '')
-                if '/bizcontent/merchandising/productimages/' in value.lower():
-                    raw_urls.append(value)
-            for set_attr in ('srcset', 'data-srcset'):
-                srcset = str(tag.get(set_attr, '') or '')
-                if '/bizcontent/merchandising/productimages/' in srcset.lower():
-                    for part in srcset.split(','):
-                        # Preserve commas inside Resize=(160,160) by only using srcset density/width suffixes.
-                        candidate = part.strip()
-                        candidate = re.sub(r'\s+(?:\d+w|\d+x)$', '', candidate).strip()
-                        raw_urls.append(candidate)
-            style_value = str(tag.get('style', '') or '')
-            if '/bizcontent/merchandising/productimages/' in style_value.lower():
-                for match in re.finditer(r'url\(([^)]+\.(?:jpg|jpeg|png|webp)(?:\?[^)]*)?)\)', style_value, flags=re.IGNORECASE):
-                    raw_urls.append(match.group(1).strip().strip('"').strip("'"))
-        for script_tag in soup.find_all('script'):
-            script_text = str(script_tag.string or script_tag.get_text(' ', strip=False) or '')
-            if '/bizcontent/merchandising/productimages/' in script_text.lower():
-                raw_urls.extend(_extract_possible_cvs_image_urls_from_text_blob(script_text))
-    except Exception:
-        pass
-
-    best_by_key = {}
+    best_images = {}
     order = []
-    for raw_url in raw_urls:
-        clean = _clean_cvs_image_url(raw_url)
-        if not clean:
-            continue
-        display_url = _cvs_canonical_display_url(clean)
-        if not display_url:
-            continue
-        key = _cvs_image_dedupe_key(display_url)
-        if not key:
-            continue
-        score = _cvs_image_size_score(display_url)
-        if key not in best_by_key:
-            order.append(key)
-            best_by_key[key] = {'url': display_url, 'score': score}
-        elif score >= best_by_key[key].get('score', 0):
-            best_by_key[key] = {'url': display_url, 'score': score}
 
-    ordered_urls = [best_by_key[key]['url'] for key in order if key in best_by_key]
-    ordered_urls = dedupe_preserve_order(ordered_urls)
+    for m in matches:
+        full = "https://www.cvs.com" + m
+        base = full.split("?")[0]
+        name = base.split("/")[-1]
+        size_match = re.search(r"Resize=\((\d+)", m)
+        size = int(size_match.group(1)) if size_match else 0
+
+        if name not in best_images:
+            order.append(name)
+            best_images[name] = {"url": base, "size": size}
+        elif size > best_images[name]["size"]:
+            best_images[name] = {"url": base, "size": size}
+
+    ordered_urls = [best_images[name]["url"] for name in order]
     return reorder_cvs_retailer_images_for_visual(ordered_urls, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE)
 
 
@@ -4560,665 +3694,14 @@ def _extract_cvs_text_from_html(html_text, retail_url="", target_rpc=""):
 @st.cache_data(show_spinner=False)
 def get_cvs_bundle(retail_url, target_rpc=""):
     html_text = get_html(retail_url)
-    images = extract_cvs_images_from_html(html_text)
-    text_bundle = _extract_cvs_text_from_html(
-        html_text,
-        retail_url=retail_url,
-        target_rpc=target_rpc,
-    )
-    text_bundle.setdefault("debug", {})["Image Path"] = "cvs_live_html_image_lookup"
-    text_bundle.setdefault("debug", {})["CVS Image Count"] = int(len(images or []))
-    text_bundle.setdefault("debug", {})["CVS Live HTML Caveat"] = "If CVS Image Count is 0 here, use extension + TXT capture; raw live HTML may not include rendered gallery image paths."
-    text_bundle.setdefault("debug", {})["CVS Skip-Extension Warning"] = "CVS skip-extension mode can produce blank retailer images because CVS gallery assets may exist only in rendered browser DOM HTML."
     return {
-        "text": text_bundle,
-        "images": images,
+        "text": _extract_cvs_text_from_html(
+            html_text,
+            retail_url=retail_url,
+            target_rpc=target_rpc,
+        ),
+        "images": extract_cvs_images_from_html(html_text),
     }
-
-# =========================================
-# ALBERTSONS PARSERS
-# =========================================
-def is_albertsons_out_of_stock_html(html_text):
-    """
-    Detect whether THIS product is out of stock.
-
-    Checks the page's own structured product availability field first
-    (e.g. "availability":"InStock" / "OutOfStock" from JSON-LD or embedded
-    product JSON), since that's tied specifically to the product being
-    viewed. Only falls back to a whole-page text search for "out of stock"
-    if no structured field is present at all — that fallback is intentionally
-    last-resort, because Albertsons PDPs commonly include "out of stock" /
-    "unavailable" text elsewhere on the page (e.g. substitution or "similar
-    products" UI) even when the actual product being viewed is in stock,
-    which previously caused false positives that suppressed real scoring
-    and image comparison for in-stock products.
-    """
-    working = html.unescape(str(html_text or ''))
-    if not working.strip():
-        return False
-
-    # Prefer the page's own structured availability signal, which is tied
-    # to the specific product rather than to any text appearing anywhere
-    # on the page.
-    availability_match = re.search(r'"availability"\s*:\s*"([^"]+)"', working, flags=re.IGNORECASE)
-    if availability_match:
-        availability_value = availability_match.group(1).strip().lower()
-        if 'outofstock' in availability_value or 'out_of_stock' in availability_value:
-            return True
-        if 'instock' in availability_value or 'in_stock' in availability_value or 'limitedavailability' in availability_value:
-            return False
-        # Any other explicit availability value (preorder, discontinued,
-        # etc.) is treated as "not confirmed out of stock" here — this
-        # function's job is only to flag the specific out-of-stock case.
-
-    html_lower = working.lower()
-    try:
-        soup = BeautifulSoup(working, 'html.parser')
-        text_blob = normalize_space(soup.get_text(' ', strip=True))
-    except Exception:
-        text_blob = normalize_space(working)
-    text_lower = text_blob.lower()
-
-    if 'out of stock' not in text_lower:
-        return False
-
-    supporting_markers = [
-        'product-unavailability',
-        'similar products',
-        'similar product',
-        'unavailable',
-    ]
-    return any(marker in html_lower or marker in text_lower for marker in supporting_markers)
-
-
-def clean_albertsons_text(text):
-    if not text:
-        return ""
-    text = str(text)
-    text = html.unescape(text)
-    text = text.replace("\\u0026", "&")
-    text = text.replace("\\u003c", "<")
-    text = text.replace("\\u003e", ">")
-    text = text.replace("\\n", " ")
-    text = text.replace("\\/", "/")
-    text = text.replace('\\"', '"')
-    if "<" in text and ">" in text:
-        text = BeautifulSoup(text, "html.parser").get_text(" ", strip=True)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text.strip(" |:-")
-
-
-def _normalize_albertsons_title(value):
-    value = clean_albertsons_text(value)
-    value = re.sub(r"\s*-\s*albertsons\s*$", "", value, flags=re.IGNORECASE).strip()
-    value = re.sub(r"\s*\|\s*Albertsons\s*$", "", value, flags=re.IGNORECASE).strip()
-    return value
-
-
-def _is_albertsons_noise_line(value):
-    value = normalize_space(value)
-    if not value:
-        return True
-    lowered = value.lower()
-    bad_prefixes = [
-        'unsupported browser',
-        "you're currently",
-        'got it',
-        'welcome back!',
-        'welcome',
-        'sign in',
-        'create account',
-        'top members save',
-        'get personalized deals',
-        'earn points',
-        'shop anytime',
-        'related links',
-        'shopping options for',
-        'deliveryavailable',
-        'pickupavailable',
-        'sponsored 3rd party ad content',
-        'similar items',
-        'featured items',
-        'disclaimer',
-        'allergen notice',
-        "we'd love to hear",
-        'share feedback',
-        'quick links',
-        'company info',
-        'policies & disclosures',
-        'currently shopping',
-        'previously shopped',
-        'continue',
-        'warning',
-        'about the producer',
-        'session expired',
-        'sorry, we\'re having issues.',
-        'close',
-        'view supported browsers',
-        'skip to search',
-        'skip to main content',
-        'skip to cookie settings',
-        'skip to chat',
-        'try again',
-        'member pricevalid',
-        'your price $',
-        'out of stock',
-        'sign in to add',
-        'editing order for',
-        'reserve new time',
-        'choose time later',
-        "don't add item",
-        "item can't be added to cart",
-        'this preorder item',
-        'place order by',
-        'necessary only continue with all',
-    ]
-    if any(lowered.startswith(x) for x in bad_prefixes):
-        return True
-    if lowered in {'details', 'ingredients', 'more', 'previous', 'next', 'false'}:
-        return True
-    if lowered.startswith('© '):
-        return True
-    if any(tok in lowered for tok in ['privacy policy', 'terms of use', 'accessibility statement', 'hipaa notice']):
-        return True
-    return False
-
-
-def _is_albertsons_packaging_blob(value):
-    value = normalize_space(value)
-    if not value:
-        return False
-    lowered = value.lower()
-    signals = [
-        'square feet',
-        'sq ft',
-        'how2recycle',
-        '.com.',
-        '1-800-',
-        'made in the usa',
-        'fsc:',
-        'sustainability promise',
-        'recyclable packaging',
-        'responsibly managed forests',
-        '100% recycled content used in cores',
-        'domestic and imported material',
-    ]
-    return sum(1 for s in signals if s in lowered) >= 2
-
-
-
-
-def _is_albertsons_missing_sentinel(value):
-    value = normalize_space(value)
-    lowered = value.lower()
-    return lowered in {'missing', 'missing.', 'missing value'} or lowered.startswith('missing ')
-
-
-def _extract_albertsons_urls_from_style_value(style_text):
-    style_text = html.unescape(str(style_text or ''))
-    if not style_text:
-        return []
-    urls = []
-    for match in re.finditer(r'url\(([^)]+)\)', style_text, flags=re.IGNORECASE):
-        raw_value = str(match.group(1) or '').strip().strip('"').strip("'")
-        if 'images.albertsons-media.com/is/image/ABS/' in raw_value:
-            urls.append(raw_value)
-    return urls
-
-
-def _extract_possible_albertsons_urls_from_text_blob(text_blob):
-    text_blob = html.unescape(str(text_blob or ''))
-    if not text_blob:
-        return []
-    patterns = [
-        r"https?://images\.albertsons-media\.com/is/image/ABS/[^\s\"'>,)]+",
-        r"//images\.albertsons-media\.com/is/image/ABS/[^\s\"'>,)]+",
-        r"images\.albertsons-media\.com/is/image/ABS/[^\s\"'>,)]+",
-        r"https?:\\/\\/images\.albertsons-media\.com\\/is\\/image\\/ABS\\/[^\s\"'>,)]+",
-        r"images\.albertsons-media\.com\\/is\\/image\\/ABS\\/[^\s\"'>,)]+",
-    ]
-    urls = []
-    for pattern in patterns:
-        urls.extend(re.findall(pattern, text_blob, flags=re.IGNORECASE))
-    return urls
-
-
-def _count_albertsons_capture_image_labels(text_blob):
-    text_blob = str(text_blob or '')
-    image_numbers = []
-    for match in re.finditer(r'\bImage\s+(\d+)\b', text_blob, flags=re.IGNORECASE):
-        try:
-            image_numbers.append(int(match.group(1)))
-        except Exception:
-            continue
-    return max(image_numbers) if image_numbers else 0
-def normalize_albertsons_features(items, max_features=8):
-    out = []
-    for item in items or []:
-        value = clean_albertsons_text(item)
-        if not value:
-            continue
-        value = re.sub(r'^[-•]\s*', '', value).strip()
-        value = re.sub(r'^(::marker\s*)+', '', value, flags=re.IGNORECASE).strip()
-        if _is_albertsons_missing_sentinel(value):
-            break
-        if _is_albertsons_noise_line(value):
-            continue
-        out.append(value)
-    return dedupe_preserve_order(out[:max_features])
-
-
-def _extract_albertsons_details_from_text(working):
-    lines = [normalize_space(line) for line in str(working or '').splitlines()]
-    lines = [line for line in lines if line]
-    start_idx = next((idx for idx, line in enumerate(lines) if line.lower() == '### details'), -1)
-    if start_idx == -1:
-        return '', []
-    desc_parts = []
-    feat_parts = []
-    for line in lines[start_idx + 1:]:
-        low = line.lower()
-        if low.startswith('### ingredients') or low.startswith('### more'):
-            break
-        if _is_albertsons_missing_sentinel(line):
-            break
-        if _is_albertsons_noise_line(line):
-            continue
-        if line.startswith('- '):
-            clean_feature = line[2:].strip()
-            if _is_albertsons_missing_sentinel(clean_feature):
-                break
-            feat_parts.append(clean_feature)
-            continue
-        if feat_parts and _is_albertsons_packaging_blob(line):
-            continue
-        if not feat_parts:
-            desc_parts.append(line)
-    description = clean_albertsons_text(' '.join(desc_parts))
-    features = normalize_albertsons_features(feat_parts, max_features=8)
-    return description, features
-
-
-def _extract_albertsons_title_from_text_capture(working):
-    title_match = re.search(r'(?m)^#\s+(.+?)\s*-\s*albertsons\s*$', str(working or ''), flags=re.IGNORECASE)
-    if title_match:
-        return _normalize_albertsons_title(title_match.group(1))
-    for m in re.finditer(r'([^\r\n]{15,220}?)\s*-\s*Image\s+[1-9][0-9]*\b', str(working or ''), flags=re.IGNORECASE):
-        candidate = _normalize_albertsons_title(m.group(1))
-        if candidate and len(candidate.split()) >= 4:
-            return candidate
-    return ''
-
-
-def _clean_albertsons_image_url(url):
-    url = html.unescape(str(url or '')).strip()
-    url = url.replace('\\u0026', '&')
-    url = url.replace('\\\\u003d', '=')
-    url = url.replace('\\u003d', '=')
-    url = url.replace('&amp;', '&')
-    while url and url[-1] in (')', chr(92), chr(34), chr(39), ','):
-        url = url[:-1]
-    if url.startswith('//'):
-        url = 'https:' + url
-    if url.startswith('images.albertsons-media.com/'):
-        url = 'https://' + url
-    if not re.match(r'^https?://images\.albertsons-media\.com/is/image/ABS/', url, flags=re.IGNORECASE):
-        return ''
-    if '${product.id}' in url:
-        return ''
-    asset_name = url.split('/is/image/ABS/', 1)[-1].split('?', 1)[0].strip().rstrip(chr(92))
-    low_asset = asset_name.lower()
-    bad_exact = {
-        'nav-albertsons-logo',
-        'privacyoptions730x350',
-        'grocery-bag',
-        'progressive_profile_web',
-        'rewards34',
-        'referral',
-    }
-    if low_asset in bad_exact:
-        return ''
-    url = re.sub(r'\$ng-ecom-pdp-tn\$', '$ng-ecom-pdp-desktop$', url, flags=re.IGNORECASE)
-    url = re.sub(r'\s+', '', url)
-    return url
-
-
-def _albertsons_image_family_key(url):
-    base = str(url or '').split('?', 1)[0].strip().rstrip(chr(92))
-    return base.lower()
-
-
-def _extract_albertsons_asset_name(url):
-    clean_url = _clean_albertsons_image_url(url)
-    if not clean_url:
-        return ''
-    return clean_url.split('/is/image/ABS/', 1)[-1].split('?', 1)[0].strip().rstrip(chr(92))
-
-
-def _extract_albertsons_asset_product_id(url):
-    asset_name = _extract_albertsons_asset_name(url)
-    if not asset_name:
-        return ''
-    m = re.match(r'^(\d+)', asset_name)
-    return str(m.group(1) or '') if m else ''
-
-
-def _is_valid_albertsons_asset_name(asset_name, target_rpc=''):
-    asset_name = str(asset_name or '').strip().rstrip(chr(92))
-    if not asset_name:
-        return False
-    m = re.match(r'^(\d+)(?:-(.+))?$', asset_name)
-    if not m:
-        return False
-    product_id = str(m.group(1) or '')
-    if target_rpc and product_id != str(target_rpc or '').strip():
-        return False
-    # Albertsons commonly uses a bare ABS/{product_id} URL for the main PDP image.
-    # Previous builds rejected bare product-id URLs, which made Albertsons images show as Missing.
-    # Keep the bare product-id image and suffix assets such as -C1, -H1, -A1, etc.
-    return bool(product_id)
-
-def _albertsons_asset_sort_key(url):
-    asset_name = _extract_albertsons_asset_name(url)
-    if not asset_name:
-        return (999, 999, url)
-    if '-' not in asset_name:
-        # Bare ABS/{product_id} is the main PDP image.
-        return (-1, 0, asset_name)
-    suffix = asset_name.split('-', 1)[-1]
-    suffix_upper = suffix.upper()
-    prefix_match = re.match(r'^([A-Z]+)', suffix_upper)
-    prefix = prefix_match.group(1) if prefix_match else suffix_upper[:1]
-    number_match = re.search(r'(\d+)', suffix_upper)
-    number_value = int(number_match.group(1)) if number_match else 999
-    prefix_rank_map = {
-        'C': 0,
-        'H': 1,
-        'U': 2,
-        'A': 3,
-        'L': 4,
-        'R': 5,
-    }
-    prefix_rank = prefix_rank_map.get(prefix[:1], 50)
-    return (prefix_rank, number_value, suffix_upper)
-
-def extract_albertsons_images_from_html(html_text, target_rpc=''):
-    """
-    Albertsons image extraction for both full DOM HTML and uploaded TXT captures.
-    Rules:
-    - Capture every ABS image URL tied to the product id / RPC group.
-    - Search raw HTML/text, rendered-DOM HTML, JSON/script blobs, common DOM attributes,
-      and CSS background-image values.
-    - Prefer desktop PDP variants when duplicate assets appear.
-    - Do not hard-cap Albertsons here; let downstream slot rules decide.
-    """
-    working = html.unescape(str(html_text or ''))
-    target_rpc = clean_item_number(target_rpc)
-
-    raw_urls = []
-    raw_urls.extend(_extract_possible_albertsons_urls_from_text_blob(working))
-
-    soup = BeautifulSoup(working, 'html.parser')
-    attr_names = (
-        'src', 'data-src', 'data-zoom-image', 'content', 'href',
-        'data-lazy', 'data-image-url', 'data-full-image', 'data-desktop-src',
-        'data-mobile-src', 'data-thumb', 'poster', 'data-full-src',
-        'data-hires', 'data-lazy-src', 'data-original', 'data-image',
-        'data-qa-src', 'data-slide-image', 'data-gallery-image'
-    )
-    for tag in soup.find_all(True):
-        for attr in attr_names:
-            value = tag.get(attr, '')
-            if value and 'images.albertsons-media.com/is/image/ABS/' in str(value):
-                raw_urls.append(str(value))
-        for set_attr in ('srcset', 'data-srcset', 'data-image-set'):
-            srcset = str(tag.get(set_attr, '') or '')
-            if srcset and 'images.albertsons-media.com/is/image/ABS/' in srcset:
-                for part in srcset.split(','):
-                    raw_urls.append(part.strip().split(' ')[0])
-        style_value = str(tag.get('style', '') or '')
-        if 'images.albertsons-media.com/is/image/ABS/' in style_value:
-            raw_urls.extend(_extract_albertsons_urls_from_style_value(style_value))
-
-    for script_tag in soup.find_all('script'):
-        script_text = str(script_tag.string or script_tag.get_text(' ', strip=False) or '')
-        if 'images.albertsons-media.com/is/image/ABS/' in script_text:
-            raw_urls.extend(_extract_possible_albertsons_urls_from_text_blob(script_text))
-
-    ordered_candidates = []
-    seen_candidate = set()
-    for raw_url in raw_urls:
-        clean_url = _clean_albertsons_image_url(raw_url)
-        if not clean_url:
-            continue
-        asset_name = _extract_albertsons_asset_name(clean_url)
-        if not _is_valid_albertsons_asset_name(asset_name, target_rpc=target_rpc):
-            continue
-        if clean_url not in seen_candidate:
-            seen_candidate.add(clean_url)
-            ordered_candidates.append(clean_url)
-
-    if not ordered_candidates:
-        return []
-
-    family_order = []
-    best_by_family = {}
-    for clean_url in ordered_candidates:
-        family_key = _albertsons_image_family_key(clean_url)
-        if family_key not in family_order:
-            family_order.append(family_key)
-        current = best_by_family.get(family_key, '')
-        if (not current) or ('$ng-ecom-pdp-desktop$' in clean_url and '$ng-ecom-pdp-desktop$' not in current):
-            best_by_family[family_key] = clean_url
-
-    ordered = []
-    for family_key in family_order:
-        url = best_by_family.get(family_key, '')
-        if url and url not in ordered:
-            ordered.append(url)
-
-    ordered = sorted(ordered, key=_albertsons_asset_sort_key)
-    return ordered[:MAX_IMAGE_SLOTS_TO_COMPARE]
-
-def _extract_albertsons_description_from_marketing(marketing):
-    if marketing is None:
-        return ''
-    candidate_nodes = []
-    candidate_nodes.extend(marketing.select(':scope > div > div.pt-4'))
-    candidate_nodes.extend(marketing.select('div.pt-4'))
-    seen = set()
-    for node in candidate_nodes:
-        marker = str(node)
-        if marker in seen:
-            continue
-        seen.add(marker)
-        parent_classes = ' '.join(node.parent.get('class', [])) if getattr(node, 'parent', None) else ''
-        node_classes = ' '.join(node.get('class', []))
-        if 'text-m' in parent_classes or 'text-m' in node_classes:
-            continue
-        candidate = clean_albertsons_text(node.get_text(' ', strip=True))
-        if candidate and len(candidate.split()) >= 8 and not _is_albertsons_noise_line(candidate):
-            return candidate
-    return ''
-
-
-def _extract_albertsons_features_from_marketing(marketing):
-    if marketing is None:
-        return []
-    ul = marketing.find('ul', class_=lambda c: c and 'pt-4' in str(c)) or marketing.find('ul')
-    if ul is None:
-        return []
-    feature_values = []
-    for li in ul.find_all('li'):
-        li_clone = BeautifulSoup(str(li), 'html.parser')
-        for marker in li_clone.select('span'):
-            txt = normalize_space(marker.get_text(' ', strip=True))
-            if txt == '::marker':
-                marker.decompose()
-        feature_values.append(li_clone.get_text(' ', strip=True))
-    return normalize_albertsons_features(feature_values, max_features=8)
-
-
-def extract_albertsons_text_from_html(html_text, retail_url='', target_rpc=''):
-    debug = {
-        'Title Path': '',
-        'Description Path': '',
-        'Features Path': '',
-        'Source Used': 'albertsons_live_html',
-        'Retailer': 'Albertsons',
-        'Image Path': 'albertsons_abs_image_lookup',
-        'Availability': '',
-    }
-    if not html_text:
-        return {'title': '', 'description': '', 'features': [], 'rating': '', 'review_count': '', 'out_of_stock': False, 'debug': debug}
-
-    working = html.unescape(str(html_text or ''))
-    soup = BeautifulSoup(working, 'html.parser')
-    out_of_stock = is_albertsons_out_of_stock_html(working)
-    debug['Availability'] = 'Out of stock' if out_of_stock else 'Available / not flagged'
-
-    title = ''
-    og_title = soup.find('meta', attrs={'property': 'og:title'})
-    if og_title and og_title.get('content'):
-        title = _normalize_albertsons_title(og_title.get('content', ''))
-        debug['Title Path'] = 'og:title'
-    if not title and soup.title:
-        title = _normalize_albertsons_title(soup.title.get_text(' ', strip=True))
-        debug['Title Path'] = 'html_title'
-    if not title:
-        title = _extract_albertsons_title_from_text_capture(working)
-        if title:
-            debug['Title Path'] = 'markdown_h1_or_image_alt_title'
-    if not title:
-        h1 = soup.find('h1')
-        if h1:
-            h1_title = _normalize_albertsons_title(h1.get_text(' ', strip=True))
-            if h1_title and h1_title.lower() not in {'shopped with us before?', 'details', 'more', 'welcome back!'}:
-                title = h1_title
-                debug['Title Path'] = 'h1'
-
-    description = ''
-    features = []
-
-    selectors = [
-        '#detailsAccordionContent .content-detail__marketing',
-        '[data-testid="product-detail-accordion"] .content-detail__marketing',
-        '#detailsAccordion .content-detail__marketing',
-        '.content-detail__marketing',
-    ]
-    marketing = None
-    marketing_path = ''
-    for selector in selectors:
-        marketing = soup.select_one(selector)
-        if marketing is not None:
-            marketing_path = selector
-            break
-
-    if marketing is not None:
-        description = _extract_albertsons_description_from_marketing(marketing)
-        if description:
-            debug['Description Path'] = f'{marketing_path} > div.pt-4'
-        features = _extract_albertsons_features_from_marketing(marketing)
-        if features:
-            debug['Features Path'] = f'{marketing_path} > ul li'
-
-    # Text-file / flattened capture fallback.
-    if not description or not features:
-        text_description, text_features = _extract_albertsons_details_from_text(working)
-        if text_description and not description:
-            description = text_description
-            debug['Description Path'] = 'markdown details block'
-        if text_features and not features:
-            features = text_features
-            debug['Features Path'] = 'markdown details block'
-
-    return {
-        'title': _normalize_albertsons_title(title),
-        'description': clean_albertsons_text(description),
-        'features': normalize_albertsons_features(features, max_features=8),
-        'rating': '',
-        'review_count': '',
-        'out_of_stock': out_of_stock,
-        'debug': debug,
-    }
-
-
-def get_albertsons_bundle_from_uploaded(uploaded_html, retail_url='', target_rpc=''):
-    """
-    Albertsons uploaded-path bundle.
-    Keep uploaded TXT as the copy source of truth, but recover and merge live PDP
-    gallery images whenever the TXT capture only contains labels or incomplete ABS URLs.
-    """
-    uploaded_html = str(uploaded_html or '')
-    effective_rpc = derive_albertsons_target_rpc(retail_url=retail_url, target_rpc=target_rpc)
-    text_bundle = extract_albertsons_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=effective_rpc)
-    text_bundle.setdefault('debug', {})['Source Used'] = 'uploaded_txt_html'
-
-    uploaded_images = extract_albertsons_images_from_html(uploaded_html, target_rpc=effective_rpc)
-    capture_label_count = _count_albertsons_capture_image_labels(uploaded_html)
-    live_images = []
-
-    if uploaded_images:
-        text_bundle.setdefault('debug', {})['Image Path'] = 'albertsons_abs_image_lookup_uploaded'
-    else:
-        text_bundle.setdefault('debug', {})['Image Path'] = 'albertsons_txt_only_no_abs_urls_found'
-
-    if retail_url and (not uploaded_images or capture_label_count or effective_rpc):
-        try:
-            live_html = get_html(retail_url)
-        except Exception:
-            live_html = ''
-        if live_html:
-            live_images = extract_albertsons_images_from_html(live_html, target_rpc=effective_rpc)
-
-    images = merge_albertsons_image_lists(uploaded_images, live_images, capture_label_count=capture_label_count)
-    pre_constructed_count = len(images or [])
-    images = ensure_albertsons_images_with_constructed_fallback(
-        images,
-        retail_url=retail_url,
-        target_rpc=effective_rpc,
-        capture_label_count=capture_label_count,
-    )
-
-    if live_images and len(images) > len(uploaded_images):
-        text_bundle.setdefault('debug', {})['Image Path'] = 'albertsons_live_html_image_recovery'
-        text_bundle.setdefault('debug', {})['Source Used'] = 'uploaded_txt_html_plus_live_image_recovery'
-    if images and len(images) > pre_constructed_count:
-        text_bundle.setdefault('debug', {})['Image Path'] = 'albertsons_constructed_abs_url_recovery'
-        text_bundle.setdefault('debug', {})['Source Used'] = 'uploaded_txt_html_plus_constructed_image_recovery'
-
-    text_bundle.setdefault('debug', {})['Albertsons Derived RPC'] = str(effective_rpc or '')
-    text_bundle.setdefault('debug', {})['Albertsons Capture Label Count'] = int(capture_label_count or 0)
-    text_bundle.setdefault('debug', {})['Albertsons Uploaded Image Count'] = int(len(uploaded_images or []))
-    text_bundle.setdefault('debug', {})['Albertsons Live Image Count'] = int(len(live_images or []))
-    text_bundle.setdefault('debug', {})['Albertsons Pre-Constructed Image Count'] = int(pre_constructed_count or 0)
-    text_bundle.setdefault('debug', {})['Albertsons Image Count'] = int(len(images or []))
-    text_bundle.setdefault('debug', {})['Albertsons Image Capture Note'] = 'Uploaded TXT copy retained. Albertsons images now search raw HTML, rendered DOM, script blobs, CSS background-image values, derive RPC from the retailer URL when needed, and merge/recover retailer images from the live PDP when the TXT is incomplete.'
-    return {'text': text_bundle, 'images': images or []}
-
-
-@st.cache_data(show_spinner=False)
-def get_albertsons_bundle(retail_url, target_rpc=''):
-    effective_rpc = derive_albertsons_target_rpc(retail_url=retail_url, target_rpc=target_rpc)
-    html_text = get_html(retail_url)
-    live_images = extract_albertsons_images_from_html(html_text, target_rpc=effective_rpc)
-    pre_constructed_count = len(live_images or [])
-    final_images = ensure_albertsons_images_with_constructed_fallback(
-        live_images,
-        retail_url=retail_url,
-        target_rpc=effective_rpc,
-        capture_label_count=0,
-    )
-    bundle = {
-        'text': extract_albertsons_text_from_html(html_text, retail_url=retail_url, target_rpc=effective_rpc),
-        'images': final_images,
-    }
-    bundle.setdefault('text', {}).setdefault('debug', {})['Image Path'] = 'albertsons_abs_image_lookup' if pre_constructed_count else 'albertsons_constructed_abs_url_recovery'
-    bundle.setdefault('text', {}).setdefault('debug', {})['Albertsons Derived RPC'] = str(effective_rpc or '')
-    bundle.setdefault('text', {}).setdefault('debug', {})['Albertsons Live Image Count'] = int(pre_constructed_count or 0)
-    bundle.setdefault('text', {}).setdefault('debug', {})['Albertsons Image Count'] = int(len(bundle.get('images', []) or []))
-    bundle.setdefault('text', {}).setdefault('debug', {})['Albertsons Image Capture Note'] = 'Carousel / hidden thumbnail variants included when ABS asset URLs are present in raw HTML, script blobs, or CSS background-image values.'
-    return bundle
 
 # =========================================
 # KROGER PARSERS
@@ -7688,258 +6171,45 @@ def get_sams_bundle(retail_url, target_rpc="", sku=""):
         "images": [] if is_sams_robot_page(html_text) else extract_sams_images_from_html(html_text),
     }
     
-
-
-def _normalize_retailer_bundle_contract(retailer_name, bundle, fallback_reason=""):
-    retailer_display = normalize_retailer_name(retailer_name)
-    if not isinstance(bundle, dict):
-        return build_empty_retailer_bundle(retailer_display, fallback_reason or "invalid_bundle_contract")
-
-    text_part = dict(bundle.get("text") or {})
-    debug_part = dict(text_part.get("debug") or {})
-
-    text_part.setdefault("title", "")
-    text_part.setdefault("description", "")
-    text_part.setdefault("features", [])
-    text_part.setdefault("rating", text_part.get("rating", "") or "")
-    text_part.setdefault("review_count", text_part.get("review_count", "") or "")
-    if not isinstance(text_part.get("features", []), list):
-        value = text_part.get("features", [])
-        text_part["features"] = [value] if value else []
-    debug_part.setdefault("Retailer", retailer_display)
-    debug_part.setdefault("Source Used", fallback_reason or debug_part.get("Source Used", ""))
-    text_part["debug"] = debug_part
-
-    images = bundle.get("images", []) or []
-    normalized_images = []
-    for img in images:
-        if isinstance(img, dict):
-            normalized_images.append({
-                "name": str(img.get("name", "") or ""),
-                "url": str(img.get("url", "") or "").strip(),
-            })
-        elif isinstance(img, str):
-            normalized_images.append({"name": "", "url": str(img or "").strip()})
-    return {
-        "text": text_part,
-        "images": normalized_images,
-    }
-
-
-def _build_uploaded_bundle_cvs(uploaded_html, retail_url="", target_rpc="", sku=""):
-    uploaded_images = extract_cvs_images_from_html(uploaded_html)
-    live_images = []
-    image_path = "cvs_uploaded_txt_image_lookup"
-
-    # CVS-only recovery: if TXT copy is present but TXT image URLs are missing/incomplete,
-    # recover CVS images from the live CVS PDP. This does not touch any other retailer.
-    if retail_url and (not uploaded_images or len(uploaded_images) < 2):
-        try:
-            live_html = get_html(retail_url)
-        except Exception:
-            live_html = ""
-        if live_html:
-            live_images = extract_cvs_images_from_html(live_html)
-
-    images = uploaded_images
-    if live_images and len(live_images) > len(uploaded_images):
-        images = live_images
-        image_path = "cvs_live_html_image_recovery"
-
-    bundle = {
-        "text": _extract_cvs_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc),
-        "images": images,
-    }
-    bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
-    bundle.setdefault("text", {}).setdefault("debug", {})["Image Path"] = image_path
-    bundle.setdefault("text", {}).setdefault("debug", {})["CVS Uploaded Image Count"] = int(len(uploaded_images or []))
-    bundle.setdefault("text", {}).setdefault("debug", {})["CVS Live Image Count"] = int(len(live_images or []))
-    bundle.setdefault("text", {}).setdefault("debug", {})["CVS Image Count"] = int(len(images or []))
-    bundle.setdefault("text", {}).setdefault("debug", {})["CVS Image Source Requirement"] = "CVS images are expected from rendered extension TXT because raw live HTML may not contain the browser image gallery productimages paths."
-    return _normalize_retailer_bundle_contract("CVS", bundle, fallback_reason="uploaded_txt_html")
-
-
-def _build_uploaded_bundle_walgreens(uploaded_html, retail_url="", target_rpc="", sku=""):
-    bundle = {
-        "text": extract_walgreens_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc),
-        "images": extract_walgreens_images_from_html(uploaded_html),
-    }
-    bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
-    return _normalize_retailer_bundle_contract("Walgreens", bundle, fallback_reason="uploaded_txt_html")
-
-
-def _build_uploaded_bundle_sams(uploaded_html, retail_url="", target_rpc="", sku=""):
-    bundle = {
-        "text": extract_sams_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc),
-        "images": extract_sams_images_from_html(uploaded_html),
-    }
-    bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
-    return _normalize_retailer_bundle_contract("Sam's Club", bundle, fallback_reason="uploaded_txt_html")
-
-
-def _build_uploaded_bundle_kroger(uploaded_html, retail_url="", target_rpc="", sku=""):
-    bundle = {
-        "text": extract_kroger_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc),
-        "images": extract_kroger_images_from_html(uploaded_html),
-    }
-    bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
-    bundle.setdefault("text", {}).setdefault("debug", {})["Image Path"] = "kroger_main_image_perspective"
-    return _normalize_retailer_bundle_contract("Kroger", bundle, fallback_reason="uploaded_txt_html")
-
-
-def _build_uploaded_bundle_albertsons(uploaded_html, retail_url="", target_rpc="", sku=""):
-    bundle = get_albertsons_bundle_from_uploaded(uploaded_html, retail_url=retail_url, target_rpc=target_rpc)
-    return _normalize_retailer_bundle_contract("Albertsons", bundle, fallback_reason="uploaded_txt_html")
-
-
-def _build_live_bundle_cvs(retail_url="", target_rpc="", sku=""):
-    return _normalize_retailer_bundle_contract("CVS", get_cvs_bundle(retail_url, target_rpc), fallback_reason="cvs_live_html")
-
-
-def _build_live_bundle_walgreens(retail_url="", target_rpc="", sku=""):
-    return _normalize_retailer_bundle_contract("Walgreens", get_walgreens_bundle(retail_url, target_rpc, sku=sku), fallback_reason="walgreens_live_html")
-
-
-def _build_live_bundle_sams(retail_url="", target_rpc="", sku=""):
-    return _normalize_retailer_bundle_contract("Sam's Club", get_sams_bundle(retail_url, target_rpc, sku=sku), fallback_reason="sams_live_html")
-
-
-def _build_live_bundle_kroger(retail_url="", target_rpc="", sku=""):
-    return _normalize_retailer_bundle_contract("Kroger", get_kroger_bundle(retail_url, target_rpc), fallback_reason="kroger_live_html")
-
-
-def _build_live_bundle_albertsons(retail_url="", target_rpc="", sku=""):
-    return _normalize_retailer_bundle_contract("Albertsons", get_albertsons_bundle(retail_url, target_rpc), fallback_reason="albertsons_live_html")
-
-
-def _default_uploaded_missing_bundle(retailer_name, reason):
-    return build_empty_retailer_bundle(retailer_name, reason)
-
-
-RETAILER_PARSER_REGISTRY = {
-    "cvs": {
-        "display_name": "CVS",
-        "live_loader": _build_live_bundle_cvs,
-        "uploaded_loader": _build_uploaded_bundle_cvs,
-        "uploaded_required_reason": "cvs_uploaded_txt_missing",
-        "prefer_uploaded_when_present": True,
-        "txt_required_only": False,
-    },
-    "walgreens": {
-        "display_name": "Walgreens",
-        "live_loader": _build_live_bundle_walgreens,
-        "uploaded_loader": _build_uploaded_bundle_walgreens,
-        "uploaded_required_reason": "walgreens_uploaded_txt_missing",
-        "prefer_uploaded_when_present": True,
-        "txt_required_only": False,
-    },
-    "sam's club": {
-        "display_name": "Sam's Club",
-        "live_loader": _build_live_bundle_sams,
-        "uploaded_loader": _build_uploaded_bundle_sams,
-        "uploaded_required_reason": "sams_uploaded_txt_missing",
-        "prefer_uploaded_when_present": True,
-        "txt_required_only": False,
-    },
-    "kroger": {
-        "display_name": "Kroger",
-        "live_loader": _build_live_bundle_kroger,
-        "uploaded_loader": _build_uploaded_bundle_kroger,
-        "uploaded_required_reason": "kroger_txt_required_missing_or_rpc_not_matched",
-        "prefer_uploaded_when_present": True,
-        "txt_required_only": True,
-    },
-    "albertsons": {
-        "display_name": "Albertsons",
-        "live_loader": _build_live_bundle_albertsons,
-        "uploaded_loader": _build_uploaded_bundle_albertsons,
-        "uploaded_required_reason": "albertsons_txt_required_missing_or_url_not_matched",
-        "prefer_uploaded_when_present": True,
-        "txt_required_only": True,
-    },
-}
-
-
-def get_retailer_parser_config(retailer_name):
-    retailer_key = normalize_retailer_name(retailer_name).strip().lower()
-    return dict(RETAILER_PARSER_REGISTRY.get(retailer_key, {}))
-
-
-def load_retailer_bundle_from_uploaded_capture(retailer_name, uploaded_html, retail_url="", target_rpc="", sku=""):
-    cache_key = _build_uploaded_bundle_cache_key(
-        retailer_name,
-        uploaded_html,
-        retail_url=retail_url,
-        target_rpc=target_rpc,
-        sku=sku,
-    )
-    cached = _get_cached_uploaded_bundle_result(cache_key)
-    if cached is not None:
-        return cached
-
-    config = get_retailer_parser_config(retailer_name)
-    loader = config.get("uploaded_loader")
-    if not callable(loader):
-        return build_empty_retailer_bundle(retailer_name or "Retailer", "uploaded_loader_not_configured")
-    bundle = _normalize_retailer_bundle_contract(
-        retailer_name,
-        loader(uploaded_html, retail_url=retail_url, target_rpc=target_rpc, sku=sku),
-        fallback_reason="uploaded_txt_html",
-    )
-    _cache_uploaded_bundle_result(cache_key, bundle)
-    return copy.deepcopy(bundle)
-
-
-def load_retailer_bundle_live(retailer_name, retail_url="", target_rpc="", sku=""):
-    config = get_retailer_parser_config(retailer_name)
-    loader = config.get("live_loader")
-    if not callable(loader):
-        return build_empty_retailer_bundle(retailer_name or "Retailer", "live_loader_not_configured")
-    return _normalize_retailer_bundle_contract(
-        retailer_name,
-        loader(retail_url=retail_url, target_rpc=target_rpc, sku=sku),
-        fallback_reason="live_loader_html",
-    )
-
 def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_source_code=""):
-    retailer_display = normalize_retailer_name(retailer_name)
-    retailer_key = retailer_display.strip().lower()
+    retailer = normalize_retailer_name(retailer_name).strip().lower()
     uploaded_html = str(row_source_code or "")
-    parser_cfg = get_retailer_parser_config(retailer_display)
-    if not parser_cfg:
-        return build_empty_retailer_bundle(retailer_display or "Retailer", "retailer_parser_not_registered")
 
-    prefer_uploaded = bool(parser_cfg.get("prefer_uploaded_when_present", True))
-    txt_required_only = bool(parser_cfg.get("txt_required_only", False))
-    uploaded_missing_reason = str(parser_cfg.get("uploaded_required_reason", "uploaded_txt_missing") or "uploaded_txt_missing")
-
-    if uploaded_html.strip() and prefer_uploaded:
-        return load_retailer_bundle_from_uploaded_capture(
-            retailer_display,
-            uploaded_html,
-            retail_url=retail_url,
-            target_rpc=target_rpc,
-            sku=sku,
-        )
-
-    if txt_required_only:
-        return build_empty_retailer_bundle(retailer_display, uploaded_missing_reason)
+    if retailer == "kroger":
+        if uploaded_html.strip():
+            bundle = {
+                "text": extract_kroger_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc),
+                "images": extract_kroger_images_from_html(uploaded_html),
+            }
+            bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
+            bundle.setdefault("text", {}).setdefault("debug", {})["Image Path"] = "kroger_main_image_perspective"
+            return bundle
+        return build_empty_retailer_bundle("Kroger", "kroger_txt_required_missing_or_rpc_not_matched")
 
     if uploaded_html.strip():
-        return load_retailer_bundle_from_uploaded_capture(
-            retailer_display,
-            uploaded_html,
-            retail_url=retail_url,
-            target_rpc=target_rpc,
-            sku=sku,
-        )
+        if retailer == "cvs":
+            bundle = {"text": _extract_cvs_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_cvs_images_from_html(uploaded_html)}
+            bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
+            return bundle
+        if retailer == "walgreens":
+            bundle = {"text": extract_walgreens_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_walgreens_images_from_html(uploaded_html)}
+            bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
+            return bundle
+        if retailer == "sam's club":
+            bundle = {"text": extract_sams_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_sams_images_from_html(uploaded_html)}
+            bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
+            return bundle
 
-    return load_retailer_bundle_live(
-        retailer_display,
-        retail_url=retail_url,
-        target_rpc=target_rpc,
-        sku=sku,
-    )
+    retailer_fetchers = {
+        "cvs": lambda: get_cvs_bundle(retail_url, target_rpc),
+        "walgreens": lambda: get_walgreens_bundle(retail_url, target_rpc, sku=sku),
+        "sam's club": lambda: get_sams_bundle(retail_url, target_rpc, sku=sku),
+        "kroger": lambda: get_kroger_bundle(retail_url, target_rpc),
+    }
+    fetcher = retailer_fetchers.get(retailer)
+    if fetcher is None:
+        return build_empty_retailer_bundle(retailer_name or "Retailer", "retailer_not_supported_no_default_cvs_fallback")
+    return fetcher()
 
 def strip_walgreens_description_tail(text):
     """
@@ -8408,9 +6678,6 @@ def is_placeholder_salsify_copy_value(value):
         "description",
         "cvs description",
         "cvs product description",
-        "albertsons product title each",
-        "albertsons product title",
-        "albertsons description",
         "feature",
         "bullet",
     }
@@ -8421,8 +6688,6 @@ def is_placeholder_salsify_copy_value(value):
     if re.fullmatch(r"cvs feature ?\d+", normalized):
         return True
     if re.fullmatch(r"feature ?\d+", normalized):
-        return True
-    if re.fullmatch(r"albertsons feature ?\d+( each)?", normalized):
         return True
     if re.fullmatch(r"general bullet ?\d+", normalized):
         return True
@@ -8459,18 +6724,12 @@ def normalize_salsify_feature_values(values, max_features=10):
             break
     return out
 
-def _finalize_salsify_copy_for_retailer_core(retailer_name, s_text):
+def finalize_salsify_copy_for_retailer(retailer_name, s_text):
     """
     Normalize Salsify copy for retailer-specific comparison only.
     Kroger should prefer Kroger Product Title / Kroger Description / Kroger Feature N.
     Sam's Club should prefer Sam's Club Product Title / Description / Feature N.
     CVS should prefer CVS-specific Salsify fields first, then General fields only as fallback.
-
-    This is the core per-retailer selection logic only. It does not apply
-    final copy-length limits — that step happens once, in
-    finalize_salsify_copy_for_retailer() below, after this function
-    returns, so every retailer branch gets the limits step applied
-    consistently without needing to remember to call it from each branch.
     """
     retailer = str(retailer_name or "").strip().lower()
     out = dict(s_text or {})
@@ -8600,50 +6859,17 @@ def _finalize_salsify_copy_for_retailer_core(retailer_name, s_text):
             out[f"feature{i}"] = selected_features[i - 1] if i - 1 < len(selected_features) else ""
         return out
 
-    if retailer == "albertsons":
-        albertsons_override = retailer_overrides.get("albertsons", {}) or {}
-        selected_title = normalize_space(first_non_placeholder_copy_value(albertsons_override.get("title", ""), out.get("title", "")))
-        selected_description = normalize_space(first_non_placeholder_copy_value(albertsons_override.get("description", ""), out.get("description", "")))
-        override_features = normalize_salsify_feature_values(albertsons_override.get("features", []) or [], max_features=6)
-        override_feature_slots = albertsons_override.get("feature_slots", {}) or {}
-
-        selected_features = []
-        for i in range(1, 7):
-            slot_value = first_non_placeholder_copy_value(override_feature_slots.get(i, ""))
-            if slot_value:
-                selected_features.append(slot_value)
-
-        if selected_features:
-            selected_features = dedupe_preserve_order(selected_features)[:6]
-        else:
-            selected_features = override_features[:6]
-
-        out["title"] = selected_title
-        out["description"] = selected_description
-        out["features"] = selected_features
-        for i in range(1, 11):
-            out[f"feature{i}"] = selected_features[i - 1] if i - 1 < len(selected_features) else ""
-        return out
-
     out["title"] = first_non_placeholder_copy_value(out.get("title", ""))
     out["description"] = first_non_placeholder_copy_value(out.get("description", ""))
     out["features"] = normalize_salsify_feature_values(out.get("features", []) or generic_feature_list(), max_features=10)
     return out
 
 
-def finalize_salsify_copy_for_retailer(retailer_name, s_text):
-    """
-    Public entry point: runs the per-retailer copy selection logic above,
-    then always applies the final retailer copy-length limits before
-    returning. Combining these into one function (rather than the previous
-    two-definition wrap-via-reassignment pattern) means there's only ever
-    one place this needs to be read or changed, and no risk of the limits
-    step silently not running if these were ever reordered or split across
-    files in the future.
-    """
-    out = _finalize_salsify_copy_for_retailer_core(retailer_name, s_text)
-    return apply_retailer_salsify_copy_limits(retailer_name, out)
+_original_finalize_salsify_copy_for_retailer = finalize_salsify_copy_for_retailer
 
+def finalize_salsify_copy_for_retailer(retailer_name, s_text):
+    out = _original_finalize_salsify_copy_for_retailer(retailer_name, s_text)
+    return apply_retailer_salsify_copy_limits(retailer_name, out)
 
 def finalize_retailer_copy(retailer_name, r_text):
     retailer = str(retailer_name or "").strip().lower()
@@ -8673,12 +6899,6 @@ def finalize_retailer_copy(retailer_name, r_text):
         out["features"] = cleaned_features
         return out
 
-    if retailer == "albertsons":
-        out["title"] = normalize_space(out.get("title", ""))
-        out["description"] = clean_albertsons_text(out.get("description", ""))
-        out["features"] = normalize_albertsons_features(out.get("features", []), max_features=8)
-        return out
-
     if retailer in ["sam's club", "sams club", "samsclub"]:
         out["title"] = clean_sams_title(out.get("title", ""))
         out["description"] = clean_sams_text(out.get("description", ""))
@@ -8692,7 +6912,10 @@ def finalize_retailer_copy(retailer_name, r_text):
     out["description"] = clean_cvs_text(out.get("description", ""))
     out["features"] = normalize_cvs_features(out.get("features", []))
     return out
-
+    
+# =========================================
+# QUALITY HELPERS
+# =========================================
 def debug_description(desc):
     if not desc:
         return {"length": 0, "quality_score": 0, "issues": ["Missing description"]}
@@ -8905,7 +7128,7 @@ def compare_images_visually(s_url, r_url):
 
 
 
-def _align_salsify_images_for_retailer_core(retailer_name, s_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE, brand=""):
+def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE, brand=""):
     """
     Build the retailer-specific Salsify comparison image list.
 
@@ -8920,12 +7143,6 @@ def _align_salsify_images_for_retailer_core(retailer_name, s_images, max_slots=M
     - Lock only the top 3 Salsify slots.
     - If one of the top 3 is missing, keep the slot blank and do not shift later images up.
     - After slot 3, continue with the remaining Salsify images in original order.
-
-    This is the core per-retailer slot-selection logic only. It does not
-    apply final image-count limits — that step happens once, in
-    align_salsify_images_for_retailer() below, after this function
-    returns, so every retailer branch gets the limits step applied
-    consistently without needing to remember to call it from each branch.
     """
     retailer = str(retailer_name or "").strip().lower()
     brand_norm = normalize_salsify_asset_name(brand or "")
@@ -8955,35 +7172,21 @@ def _align_salsify_images_for_retailer_core(retailer_name, s_images, max_slots=M
                     return img
         return None
 
-    def find_first_retailer_preferred_image(images, retailer_token, *queries, strict=False, excluded_retailer_tokens=None, used_urls=None):
+    def find_first_retailer_preferred_image(images, retailer_token, *queries, strict=False):
         retailer_token = normalize_salsify_asset_name(retailer_token or "")
-        excluded_retailer_tokens = {
-            normalize_salsify_asset_name(x)
-            for x in (excluded_retailer_tokens or [])
-            if normalize_salsify_asset_name(x)
-        }
-        used_urls = {str(x or "").strip() for x in (used_urls or set()) if str(x or "").strip()}
-
         preferred = []
-        generic_only = []
-
+        fallback = []
         for img in images or []:
             if not isinstance(img, dict):
-                continue
-            url = str(img.get("url", "") or "").strip()
-            if used_urls and url in used_urls:
                 continue
             name = normalize_salsify_asset_name(img.get("name", ""))
             if retailer_token and retailer_token in name:
                 preferred.append(img)
-                continue
-            if any(token and token in name for token in excluded_retailer_tokens):
-                continue
-            generic_only.append(img)
-
+            else:
+                fallback.append(img)
         if strict:
             return find_first_image(preferred, *queries)
-        return find_first_image(preferred, *queries) or find_first_image(generic_only, *queries)
+        return find_first_image(preferred, *queries) or find_first_image(fallback, *queries)
 
     if retailer in {"sam's club", "sams club", "samsclub"}:
         sams_brands = {"depend", "kotex", "u by kotex", "poise", "thinx", "thix"}
@@ -9054,28 +7257,12 @@ def _align_salsify_images_for_retailer_core(retailer_name, s_images, max_slots=M
         return reorder_cvs_salsify_images_for_visual(source_images, max_slots=max_slots)
 
     if retailer == "walgreens":
-        strict_image_mode = retailer in EXCLUSIVE_SALSIFY_IMAGE_RETAILERS
-        used_urls = set()
         aligned = []
-        excluded_retailer_tokens = {
-            "cvs",
-            "kroger",
-            "sam's club",
-            "sams club",
-            "samsclub",
-            "walmart",
-            "target",
-            "amazon",
-        }
-
-        # Walgreens Salsify rules:
-        # 1. Slot 1 must be Online Optimized Image- only. Show Missing if unavailable.
-        # 2. Slot 2 must be Ingredient Label Image only. Show Missing if unavailable.
-        # 3. If slot 1 or slot 2 is missing, keep the blank slot so ATF images move down.
-        # 4. Walgreens lookups must not overlap with other retailer-labeled assets.
+        strict_image_mode = retailer in EXCLUSIVE_SALSIFY_IMAGE_RETAILERS
         slot_plan = [
-            (("online optimized image-", "online optimized image"), "online optimized image", True),
-            (("ingredient label image", "ingredients label image", "ingredient label", "ingredients label"), "ingredient label image", True),
+            (("online optimized image", "online image", "online", "front"), "online optimized image", True),
+            (("flat back 2d", "flat back", "back 2d", "back"), "flat back 2d", True),
+            (("flat left 2d", "flat left", "left 2d", "left"), "flat left 2d", True),
             (("atf io", "atf i/o generic", "atf i o generic", "atf io generic"), "atf io", False),
             (("atf 2",), "atf 2", False),
             (("atf 3",), "atf 3", False),
@@ -9083,38 +7270,26 @@ def _align_salsify_images_for_retailer_core(retailer_name, s_images, max_slots=M
             (("atf 5",), "atf 5", False),
             (("atf 6",), "atf 6", False),
         ]
-
         for query_group, blank_name, keep_blank in slot_plan:
             img = find_first_retailer_preferred_image(
                 source_images,
                 "walgreens",
                 *query_group,
                 strict=strict_image_mode,
-                excluded_retailer_tokens=excluded_retailer_tokens,
-                used_urls=used_urls,
             )
-            if isinstance(img, dict) and str(img.get("url", "") or "").strip():
+            if img:
                 aligned.append(img)
-                used_urls.add(str(img.get("url", "") or "").strip())
             elif keep_blank:
                 aligned.append(make_blank_salsify_image_slot(blank_name))
-
-        return aligned[:min(max_slots, 6)]
+        return dedupe_images_preserve_order(aligned)[:min(max_slots, 6)]
 
     return dedupe_images_preserve_order(source_images)[:max_slots]
 
 
+_original_align_salsify_images_for_retailer = align_salsify_images_for_retailer
+
 def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE, brand=""):
-    """
-    Public entry point: runs the per-retailer image slot selection logic
-    above, then always applies the final retailer image-count limits
-    before returning. Combining these into one function (rather than the
-    previous two-definition wrap-via-reassignment pattern) means there's
-    only ever one place this needs to be read or changed, and no risk of
-    the limits step silently not running if these were ever reordered or
-    split across files in the future.
-    """
-    aligned = _align_salsify_images_for_retailer_core(retailer_name, s_images, max_slots=max_slots, brand=brand)
+    aligned = _original_align_salsify_images_for_retailer(retailer_name, s_images, max_slots=max_slots, brand=brand)
     return apply_retailer_salsify_image_limits(retailer_name, aligned)
 
 def align_image_slots_for_comparison(s_images, r_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE, strong_threshold=80):
@@ -9201,18 +7376,7 @@ def get_visual_row_payload(
     row_source_code = str(row_source_code or "")
     uploaded_html_map = st.session_state.uploaded_raw_html_map or {}
 
-    # Visual QA must reuse the same TXT-matched retailer HTML used in batch processing.
-    if retailer_norm == "cvs":
-        # CVS visual rows come from exported/detail rows, which do not carry the full copy_source_code.
-        # Re-resolve the uploaded TXT HTML here so CVS image extraction uses the rendered extension capture
-        # instead of falling back to raw live requests HTML.
-        if not row_source_code:
-            row_source_code = lookup_uploaded_raw_html(
-                uploaded_html_map,
-                retail_url,
-                target_rpc=current_target_sku,
-            )
-
+    # Visual QA must reuse the same Kroger TXT-matched HTML used in batch processing.
     if retailer_norm == "kroger":
         if not retail_url and current_target_sku:
             retail_url = find_kroger_url_in_uploaded_map(uploaded_html_map, target_rpc=current_target_sku)
@@ -9223,22 +7387,6 @@ def get_visual_row_payload(
                 target_rpc=current_target_sku,
             )
 
-    if retailer_norm == "albertsons":
-        if not retail_url and current_target_sku:
-            retail_url = find_albertsons_url_in_uploaded_map(uploaded_html_map, target_rpc=current_target_sku)
-        if not row_source_code:
-            row_source_code = lookup_uploaded_raw_html(
-                uploaded_html_map,
-                retail_url,
-                target_rpc=current_target_sku,
-            )
-        if not row_source_code and current_target_sku:
-            matched_albertsons_key = find_albertsons_url_in_uploaded_map(uploaded_html_map, target_rpc=current_target_sku)
-            if matched_albertsons_key:
-                row_source_code = str(uploaded_html_map.get(matched_albertsons_key, "") or "")
-                if not retail_url:
-                    retail_url = matched_albertsons_key
-
     r_bundle = get_retailer_bundle(
         retailer_name,
         retail_url,
@@ -9248,11 +7396,8 @@ def get_visual_row_payload(
     )
 
     visual_max_slots = MAX_IMAGE_SLOTS_TO_COMPARE
-    retailer_name_norm = str(retailer_name or "").strip().lower()
-    if retailer_name_norm == "walgreens":
+    if str(retailer_name or "").strip().lower() == "walgreens":
         visual_max_slots = 6
-    elif retailer_name_norm == "albertsons":
-        visual_max_slots = 8
 
     s_text = finalize_salsify_copy_for_retailer(retailer_name, s_bundle["text"] or {})
     if str(retailer_name or "").strip().lower() == "cvs":
@@ -9297,7 +7442,7 @@ def get_visual_row_payload(
         "r_images": r_images,
     }
 
-def _process_row_core(row):
+def process_row(row):
     try:
         retail_url = row.get("retail_url", "")
         salsify_url = row.get("salsify_url", "")
@@ -9310,64 +7455,9 @@ def _process_row_core(row):
         salsify_url = str(salsify_url or "").strip()
         retail_url = str(retail_url or "").strip()
         cvs_rpc = str(cvs_rpc or "").strip()
-        if pd.isna(row_source_code):
-            row_source_code = ""
-        else:
-            row_source_code = str(row_source_code or "").strip()
-            if row_source_code.lower() == "nan":
-                row_source_code = ""
 
-        retailer_name_normalized = normalize_retailer_name(retailer_name)
-        if str(retailer_name_normalized).strip().lower() == "kroger" and not retail_url and cvs_rpc:
+        if str(retailer_name).strip().lower() == "kroger" and not retail_url and cvs_rpc:
             retail_url = find_kroger_url_in_uploaded_map(st.session_state.uploaded_raw_html_map or {}, target_rpc=cvs_rpc)
-
-        uploaded_map = st.session_state.uploaded_raw_html_map or {}
-
-        # CVS visual + batch isolation: if copy_source_code is blank unexpectedly,
-        # re-resolve the matching uploaded TXT HTML from the uploaded map.
-        cvs_lookup_error = ""
-        if str(retailer_name_normalized).strip().lower() == "cvs" and not row_source_code:
-            try:
-                row_source_code = lookup_uploaded_raw_html(
-                    uploaded_map,
-                    retail_url,
-                    target_rpc=cvs_rpc,
-                )
-            except Exception as e:
-                row_source_code = ""
-                cvs_lookup_error = f"TXT lookup error: {e}"
-
-        # Albertsons TXT captures can be extremely large. Resolve uploaded HTML lazily here
-        # instead of copying the full HTML block into every dataframe row before batching.
-        albertsons_lookup_error = ""
-        if str(retailer_name_normalized).strip().lower() == "albertsons":
-            if not row_source_code:
-                try:
-                    row_source_code = lookup_uploaded_raw_html(
-                        uploaded_map,
-                        retail_url,
-                        target_rpc=cvs_rpc,
-                    )
-                except Exception as e:
-                    row_source_code = ""
-                    albertsons_lookup_error = f"TXT lookup error: {e}"
-            if not row_source_code and cvs_rpc:
-                try:
-                    matched_albertsons_key = find_albertsons_url_in_uploaded_map(
-                        uploaded_map,
-                        target_rpc=cvs_rpc,
-                    )
-                    if matched_albertsons_key:
-                        row_source_code = str(uploaded_map.get(matched_albertsons_key, "") or "")
-                        if not retail_url:
-                            retail_url = matched_albertsons_key
-                except Exception as e:
-                    row_source_code = row_source_code or ""
-                    albertsons_lookup_error = albertsons_lookup_error or f"TXT RPC lookup error: {e}"
-
-        is_albertsons_out_of_stock = False
-        if str(retailer_name_normalized).strip().lower() == "albertsons":
-            is_albertsons_out_of_stock = is_albertsons_out_of_stock_html(row_source_code)
 
         title_score = 0
         desc_score = 0
@@ -9378,8 +7468,6 @@ def _process_row_core(row):
         image_position_scores = {}
 
         status_notes = []
-        if is_albertsons_out_of_stock:
-            status_notes.append("Out of stock")
 
         if not salsify_url:
             status_notes.append("Missing Salsify URL")
@@ -9402,7 +7490,6 @@ def _process_row_core(row):
                     "Image Match %": avg_img_score,
                     "Overall %": overall,
                     "Status": ", ".join(status_notes),
-                    "Out of Stock": "Yes" if is_albertsons_out_of_stock else "No",
                     **feature_score_fields,
                     **image_position_scores,
                 },
@@ -9421,7 +7508,6 @@ def _process_row_core(row):
                     "Image Match %": avg_img_score,
                     "Overall %": overall,
                     "Status": ", ".join(status_notes),
-                    "Out of Stock": "Yes" if is_albertsons_out_of_stock else "No",
                     **feature_score_fields,
                     **image_position_scores,
                 },
@@ -9435,7 +7521,6 @@ def _process_row_core(row):
                     "Review Count": review_count_value,
                     "Salsify URL": salsify_url,
                     "Status": ", ".join(status_notes),
-                    "Out of Stock": "Yes" if is_albertsons_out_of_stock else "No",
                 },
             }
 
@@ -9450,7 +7535,7 @@ def _process_row_core(row):
         # The outer batch executor already parallelizes rows.
         s_bundle = get_salsify_bundle(salsify_url)
         r_bundle = get_retailer_bundle(
-            retailer_name_normalized or retailer_name,
+            retailer_name,
             retail_url,
             target_sku,
             sku=row.get("sku", ""),
@@ -9474,12 +7559,7 @@ def _process_row_core(row):
             retailer_name,
             r_bundle["text"] or {},
         )
-        if str(retailer_name_normalized).strip().lower() == "albertsons":
-            is_albertsons_out_of_stock = bool(r_text.get("out_of_stock", False)) or is_albertsons_out_of_stock
-        if str(retailer_name or "").strip().lower() == "walgreens":
-            r_images = (r_bundle["images"] or [])[:6]
-        else:
-            r_images = (r_bundle["images"] or [])
+        r_images = (r_bundle["images"] or [])[:6] if str(retailer_name or "").strip().lower() == "walgreens" else (r_bundle["images"] or [])
         s_images, r_images = align_image_slots_for_comparison(
             s_images,
             r_images,
@@ -9487,10 +7567,6 @@ def _process_row_core(row):
         )
 
         debug_data = r_text.get("debug", {})
-        if str(retailer_name_normalized).strip().lower() == "cvs":
-            debug_data = dict(debug_data or {})
-            debug_data.setdefault("CVS Visual Row Source Used", "uploaded_txt_html" if row_source_code else "live_html_or_missing_txt")
-            debug_data.setdefault("CVS Visual Row Source Length", int(len(str(row_source_code or ""))))
 
         output_rating_value = (r_text.get("rating", "") if isinstance(r_text, dict) else "") or rating_value
         output_review_count_value = (r_text.get("review_count", "") if isinstance(r_text, dict) else "") or review_count_value
@@ -9549,7 +7625,6 @@ def _process_row_core(row):
                 "Image Match %": avg_img_score,
                 "Overall %": overall,
                 "Status": ", ".join(status_notes),
-                "Out of Stock": "Yes" if is_albertsons_out_of_stock else "No",
                 **feature_score_fields,
                 **image_position_scores,
             },
@@ -9567,8 +7642,7 @@ def _process_row_core(row):
                 "Feature %": avg_feature_score,
                 "Image Match %": avg_img_score,
                 "Overall %": overall,
-                "Status": ", ".join(status_notes),
-                "Out of Stock": "Yes" if is_albertsons_out_of_stock else "No",
+                "Status": "",
                 "Salsify Title": s_text.get("title", ""),
                 "Retailer Title": r_text.get("title", ""),
                     "CVS Title": r_text.get("title", ""),
@@ -9613,7 +7687,6 @@ def _process_row_core(row):
                 "Rating": output_rating_value,
                 "Review Count": output_review_count_value,
                 "Salsify URL": salsify_url,
-                "Albertsons TXT Lookup Error": albertsons_lookup_error,
                 "Retailer Title": r_text.get("title", ""),
                     "Retailer Description": r_text.get("description", ""),
                     "Retailer Features": " | ".join(r_text.get("features", [])),
@@ -9656,31 +7729,70 @@ def _process_row_core(row):
                 "rawTextHasVendorDetailsParagraph": debug_data.get("rawTextHasVendorDetailsParagraph", False),
                 "rawHtmlVendorExcerpt": debug_data.get("rawHtmlVendorExcerpt", ""),
                 "rawTextVendorExcerpt": debug_data.get("rawTextVendorExcerpt", ""),
-                "Availability": debug_data.get("Availability", ""),
-                "Albertsons Image Count": debug_data.get("Albertsons Image Count", 0),
-                "Albertsons Image Capture Note": debug_data.get("Albertsons Image Capture Note", ""),
             },
         }
 
     except Exception:
         return None
-
-
-def process_row(row):
-    cache_key = _build_row_result_cache_key(row)
-    cached = _get_cached_row_result(cache_key)
-    if cached is not None:
-        return cached
-
-    result = _process_row_core(row)
-    if result is not None:
-        _cache_row_result(cache_key, result)
-        return copy.deepcopy(result)
-    return result
 # =========================================
 # SESSION STATE
 # =========================================
-init_session_state_defaults()
+if "start_idx" not in st.session_state:
+    st.session_state.start_idx = 0
+if "summary_rows" not in st.session_state:
+    st.session_state.summary_rows = []
+if "export_rows" not in st.session_state:
+    st.session_state.export_rows = []
+if "debug_rows" not in st.session_state:
+    st.session_state.debug_rows = []
+if "summary_skus" not in st.session_state:
+    st.session_state.summary_skus = set()
+if "detail_skus" not in st.session_state:
+    st.session_state.detail_skus = set()
+if "debug_skus" not in st.session_state:
+    st.session_state.debug_skus = set()
+if "processing_done" not in st.session_state:
+    st.session_state.processing_done = False
+if "progress_bar" not in st.session_state:
+    st.session_state.progress_bar = None
+if "last_file_hash" not in st.session_state:
+    st.session_state.last_file_hash = None
+if "uploaded_file_bytes" not in st.session_state:
+    st.session_state.uploaded_file_bytes = None
+if "selected_retailer" not in st.session_state:
+    st.session_state.selected_retailer = "-- Select Retailer --"
+if "selected_brand_visual" not in st.session_state:
+    st.session_state.selected_brand_visual = "All"
+if "active_batch_key" not in st.session_state:
+    st.session_state.active_batch_key = ""
+if "completed_batch_key" not in st.session_state:
+    st.session_state.completed_batch_key = ""
+if "auto_download_done" not in st.session_state:
+    st.session_state.auto_download_done = False
+if "report_bytes" not in st.session_state:
+    st.session_state.report_bytes = None
+if "report_filename" not in st.session_state:
+    st.session_state.report_filename = None
+if "report_batch_key" not in st.session_state:
+    st.session_state.report_batch_key = ""
+if "batch_run_requested" not in st.session_state:
+    st.session_state.batch_run_requested = False
+if "batch_started_key" not in st.session_state:
+    st.session_state.batch_started_key = ""
+if "batch_status_message" not in st.session_state:
+    st.session_state.batch_status_message = ""
+if "batch_error_text" not in st.session_state:
+    st.session_state.batch_error_text = ""
+if "capture_mode" not in st.session_state:
+    st.session_state.capture_mode = CAPTURE_MODE_USE_EXTENSION
+if "uploaded_raw_html_map" not in st.session_state:
+    st.session_state.uploaded_raw_html_map = {}
+if "uploaded_raw_html_filename" not in st.session_state:
+    st.session_state.uploaded_raw_html_filename = ""
+if "raw_html_upload_hash" not in st.session_state:
+    st.session_state.raw_html_upload_hash = ""
+if "auto_batch_upload_key" not in st.session_state:
+    st.session_state.auto_batch_upload_key = ""
 
 # =========================================
 # TOP UPLOAD + DOWNLOAD UI
@@ -9701,8 +7813,6 @@ with top_download_col:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key="download_excel_report_top_single",
         )
-        if st.session_state.report_row_signature:
-            st.caption(f"Report snapshot: {st.session_state.report_row_signature}")
 
 master_df = None
 retailer_df = None
@@ -9726,25 +7836,38 @@ if uploaded_file:
         file_hash = hashlib.md5(file_bytes).hexdigest()
 
         if st.session_state.last_file_hash != file_hash:
-            reset_batch_output_state(clear_report=True, clear_runtime_only=False)
+            st.session_state.summary_rows = []
+            st.session_state.export_rows = []
+            st.session_state.debug_rows = []
+            st.session_state.summary_skus = set()
+            st.session_state.detail_skus = set()
+            st.session_state.debug_skus = set()
+            st.session_state.start_idx = 0
+            st.session_state.processing_done = False
+            st.session_state.progress_bar = None
             st.session_state.last_file_hash = file_hash
             st.session_state.selected_retailer = "-- Select Retailer --"
             st.session_state.selected_brand_visual = "All"
             st.session_state.active_batch_key = ""
             st.session_state.completed_batch_key = ""
-            reset_batch_request_state()
+            st.session_state.auto_download_done = False
+            st.session_state.report_bytes = None
+            st.session_state.report_filename = None
+            st.session_state.report_batch_key = ""
+            st.session_state.batch_run_requested = False
+            st.session_state.batch_started_key = ""
+            st.session_state.batch_status_message = ""
+            st.session_state.batch_error_text = ""
             st.session_state.capture_mode = CAPTURE_MODE_USE_EXTENSION
             st.session_state.uploaded_raw_html_map = {}
             st.session_state.uploaded_raw_html_filename = ""
             st.session_state.raw_html_upload_hash = ""
             st.session_state.auto_batch_upload_key = ""
-            st.session_state.prepared_batch_key = ""
-            st.session_state.prepared_retailer_df = None
-            st.session_state.prepared_match_stats = {}
-            clear_runtime_result_caches(clear_network_caches=True)
+            clear_in_memory_caches()
             st.cache_data.clear()
 
-        master_df = load_prepared_master_file(file_bytes, uploaded_file.name)
+        master_df = read_uploaded_file_from_bytes(file_bytes, uploaded_file.name)
+        master_df = prepare_input_df(master_df)
         all_retailers = sorted(master_df["retailer"].dropna().astype(str).unique().tolist()) if "retailer" in master_df.columns else ["CVS"]
         if not all_retailers:
             all_retailers = ["CVS"]
@@ -9788,52 +7911,6 @@ if uploaded_file:
                 )
                 file_ready_for_batch = True
 
-            if (
-                file_ready_for_batch
-                and str(selected_retailer or "").strip().lower() == "cvs"
-                and selected_capture_mode == CAPTURE_MODE_SKIP_EXTENSION
-                and retailer_requires_extension_for_images(selected_retailer)
-            ):
-                st.session_state.capture_mode = CAPTURE_MODE_USE_EXTENSION
-                selected_capture_mode = CAPTURE_MODE_USE_EXTENSION
-                st.warning(
-                    "CVS image QA requires Use extension + TXT upload. "
-                    "Skip extension can still run copy checks, but CVS gallery images often do not exist in raw live HTML. "
-                    "The app switched CVS back to extension mode automatically."
-                )
-
-            # Albertsons-only: require a single brand to be selected before
-            # running a batch. Albertsons capture now includes an extra
-            # gallery-rendering step per page (see the extension's
-            # background.js) to pick up all product images, which makes
-            # each page fetch noticeably slower than other retailers.
-            # Scoping a run to one brand at a time keeps each batch's page
-            # count (and therefore total run time) manageable instead of
-            # fetching every Albertsons row in the file in one go.
-            selected_albertsons_brand = "All"
-            if file_ready_for_batch and str(selected_retailer or "").strip().lower() == "albertsons":
-                albertsons_rows_preview = master_df[
-                    master_df["retailer"].astype(str).str.strip().str.lower() == "albertsons"
-                ] if master_df is not None else pd.DataFrame()
-                albertsons_brand_options = ["-- Select Brand --"] + sorted(
-                    {
-                        str(b).strip()
-                        for b in albertsons_rows_preview.get("brand", pd.Series(dtype=str)).dropna().tolist()
-                        if str(b).strip()
-                    }
-                )
-                if st.session_state.get("selected_albertsons_brand") not in albertsons_brand_options:
-                    st.session_state.selected_albertsons_brand = "-- Select Brand --"
-                selected_albertsons_brand = st.selectbox(
-                    "🏷️ Select Brand (Albertsons)",
-                    albertsons_brand_options,
-                    key="selected_albertsons_brand",
-                    help="Albertsons batches run one brand at a time, since each page now takes longer to capture (full image gallery rendering).",
-                )
-                if selected_albertsons_brand == "-- Select Brand --":
-                    st.info("Select a brand to run an Albertsons batch.")
-                    file_ready_for_batch = False
-
             uploaded_raw_html_file = st.file_uploader(
                 "Upload Captured Retailer HTML TXT",
                 type=["txt", "html"],
@@ -9844,14 +7921,11 @@ if uploaded_file:
                 raw_html_bytes = uploaded_raw_html_file.getvalue()
                 raw_html_hash = hashlib.md5(raw_html_bytes or b"").hexdigest()
                 if st.session_state.raw_html_upload_hash != raw_html_hash:
-                    st.session_state.uploaded_raw_html_map = load_uploaded_raw_html_map_cached(raw_html_bytes, uploaded_raw_html_file.name)
-                    clear_runtime_result_caches(clear_network_caches=False)
+                    raw_html_text = get_uploaded_text_file_bytes(uploaded_raw_html_file)
+                    st.session_state.uploaded_raw_html_map = parse_uploaded_raw_html_map(raw_html_text)
                     st.session_state.uploaded_raw_html_filename = uploaded_raw_html_file.name
                     st.session_state.raw_html_upload_hash = raw_html_hash
                     st.session_state.auto_batch_upload_key = ""
-                    st.session_state.prepared_batch_key = ""
-                    st.session_state.prepared_retailer_df = None
-                    st.session_state.prepared_match_stats = {}
                     st.session_state.batch_error_text = ""
                 uploaded_raw_html_map = st.session_state.uploaded_raw_html_map or {}
                 if uploaded_raw_html_map:
@@ -9865,64 +7939,58 @@ if uploaded_file:
             capture_batch_key_part = "use_ext" if selected_capture_mode == CAPTURE_MODE_USE_EXTENSION else "skip_ext"
             if st.session_state.raw_html_upload_hash:
                 capture_batch_key_part += f"::{st.session_state.raw_html_upload_hash}"
-            brand_batch_key_part = f"::brand={selected_albertsons_brand}" if str(selected_retailer or "").strip().lower() == "albertsons" else ""
-            current_batch_key = f"{file_hash}::{selected_retailer}::{capture_batch_key_part}{brand_batch_key_part}"
+            retailer_df = strict_filter_rows_for_selected_retailer(
+                master_df,
+                selected_retailer,
+                dedupe_by_url=(selected_capture_mode == CAPTURE_MODE_USE_EXTENSION),
+            )
 
-            if st.session_state.prepared_batch_key != current_batch_key:
-                prepared_batch = prepare_retailer_batch_dataframe(
-                    master_df=master_df,
-                    selected_retailer=selected_retailer,
-                    selected_capture_mode=selected_capture_mode,
-                    uploaded_html_map=uploaded_raw_html_map,
+            if selected_retailer == "Kroger":
+                retailer_df = retailer_df.copy()
+                retailer_df["retail_url"] = retailer_df["retail_url"].fillna("").astype(str).str.strip()
+                if uploaded_raw_html_map and "retailer_rpc" in retailer_df.columns:
+                    retailer_df["retail_url"] = retailer_df.apply(
+                        lambda row: row["retail_url"] if str(row.get("retail_url", "")).strip() else find_kroger_url_in_uploaded_map(uploaded_raw_html_map, target_rpc=row.get("retailer_rpc", "")),
+                        axis=1,
+                    )
+                retailer_df = strict_filter_rows_for_selected_retailer(
+                    retailer_df,
+                    selected_retailer,
+                    dedupe_by_url=(selected_capture_mode == CAPTURE_MODE_USE_EXTENSION),
                 )
-                prepared_retailer_df = prepared_batch.get("retailer_df")
 
-                # Albertsons-only: narrow the prepared rows down to the
-                # selected brand. Done here (after the shared retailer-prep
-                # function) rather than inside that function, so this
-                # brand-scoping is isolated to Albertsons and can't affect
-                # how other retailers' batches are prepared.
-                if (
-                    str(selected_retailer or "").strip().lower() == "albertsons"
-                    and isinstance(prepared_retailer_df, pd.DataFrame)
-                    and not prepared_retailer_df.empty
-                    and "brand" in prepared_retailer_df.columns
-                    and selected_albertsons_brand not in ("All", "-- Select Brand --", "")
-                ):
-                    prepared_retailer_df = prepared_retailer_df[
-                        prepared_retailer_df["brand"].astype(str).str.strip().str.lower()
-                        == str(selected_albertsons_brand).strip().lower()
-                    ].copy()
-
-                st.session_state.prepared_batch_key = current_batch_key
-                st.session_state.prepared_retailer_df = prepared_retailer_df
-                st.session_state.prepared_match_stats = {
-                    "matched_uploaded_html_count": int(prepared_batch.get("matched_uploaded_html_count", 0) or 0),
-                    "missing_uploaded_html_count": int(prepared_batch.get("missing_uploaded_html_count", 0) or 0),
-                    "isolated_unique_url_count": int(prepared_batch.get("isolated_unique_url_count", 0) or 0),
-                    "runtime_cfg": prepared_batch.get("runtime_cfg", {}) or {},
-                }
-
-            retailer_df = st.session_state.prepared_retailer_df.copy() if isinstance(st.session_state.prepared_retailer_df, pd.DataFrame) else pd.DataFrame()
-            matched_uploaded_html_count = int((st.session_state.prepared_match_stats or {}).get("matched_uploaded_html_count", 0) or 0)
-            missing_uploaded_html_count = int((st.session_state.prepared_match_stats or {}).get("missing_uploaded_html_count", 0) or 0)
-            isolated_unique_url_count = int((st.session_state.prepared_match_stats or {}).get("isolated_unique_url_count", 0) or 0)
-            runtime_cfg = (st.session_state.prepared_match_stats or {}).get("runtime_cfg", {}) or get_retailer_runtime_config(selected_retailer)
+            if "copy_source_code" not in retailer_df.columns:
+                retailer_df["copy_source_code"] = ""
+            if uploaded_raw_html_map:
+                retailer_df["copy_source_code"] = retailer_df.apply(lambda row: lookup_uploaded_raw_html(uploaded_raw_html_map, row.get("retail_url", ""), target_rpc=row.get("retailer_rpc", "")), axis=1)
+                matched_uploaded_html_count = int((retailer_df["copy_source_code"].astype(str).str.len() > 0).sum())
+                missing_uploaded_html_count = max(len(retailer_df) - matched_uploaded_html_count, 0)
+            current_batch_key = f"{file_hash}::{selected_retailer}::{capture_batch_key_part}"
 
             if st.session_state.active_batch_key != current_batch_key:
-                reset_batch_output_state(clear_report=True, clear_runtime_only=True)
+                st.session_state.summary_rows = []
+                st.session_state.export_rows = []
+                st.session_state.debug_rows = []
+                st.session_state.summary_skus = set()
+                st.session_state.detail_skus = set()
+                st.session_state.debug_skus = set()
+                st.session_state.start_idx = 0
+                st.session_state.processing_done = False
+                st.session_state.progress_bar = None
                 st.session_state.active_batch_key = current_batch_key
                 st.session_state.completed_batch_key = ""
                 st.session_state.selected_brand_visual = "All"
-                reset_batch_request_state()
+                st.session_state.auto_download_done = False
+                st.session_state.report_batch_key = ""
+                st.session_state.batch_run_requested = False
+                st.session_state.batch_started_key = ""
+                st.session_state.batch_status_message = ""
+                st.session_state.batch_error_text = ""
                 st.session_state.auto_batch_upload_key = ""
 
             txt_ready_for_batch = bool(matched_uploaded_html_count > 0)
+            isolated_unique_url_count = int(retailer_df["retail_url"].fillna("").astype(str).str.strip().replace("", pd.NA).dropna().nunique()) if retailer_df is not None and not retailer_df.empty and "retail_url" in retailer_df.columns else 0
             st.caption(f"Strict retailer isolation active: {selected_retailer} only. Rows queued: {len(retailer_df)}. Unique retailer URLs queued: {isolated_unique_url_count}.")
-            if runtime_cfg.get("notes"):
-                st.caption(str(runtime_cfg.get("notes", "")))
-            if str(selected_retailer or "").strip().lower() == "cvs":
-                st.caption("CVS note: if the goal is image QA, use the extension + TXT upload path. CVS live skip-extension mode may leave retailer images blank because the rendered gallery URLs are not always present in raw live HTML.")
             if selected_capture_mode == CAPTURE_MODE_USE_EXTENSION:
                 extension_payload = build_extension_batch_payload(
                     retailer_df=retailer_df,
@@ -9933,10 +8001,7 @@ if uploaded_file:
                 )
                 render_extension_batch_bridge(extension_payload)
                 st.caption(f"Extension bridge ready for {selected_retailer}. For Kroger, the app can now connect Kroger RPC to the matching Requested URL in the TXT file, fill retail_url from that match, and use that matched retail_url for lookup and display.")
-                parser_cfg = get_retailer_parser_config(selected_retailer)
-                if parser_cfg:
-                    st.caption(f"Parser framework active for {selected_retailer}: live loader + uploaded TXT loader normalized through one retailer registry. This keeps the current UI design intact while making retailer expansion cleaner and faster.")
-            elif retailer_auto_skip_extension(selected_retailer):
+            elif selected_retailer in AUTO_SKIP_EXTENSION_RETAILERS:
                 st.caption(f"{selected_retailer} is in skip-extension mode, so the app can auto-run straight to batch with live retailer fetches.")
 
             if uploaded_raw_html_map:
@@ -9947,7 +8012,7 @@ if uploaded_file:
             if selected_capture_mode == CAPTURE_MODE_USE_EXTENSION and txt_ready_for_batch:
                 should_auto_run = True
                 auto_run_reason = "uploaded TXT capture"
-            elif selected_capture_mode == CAPTURE_MODE_SKIP_EXTENSION and retailer_auto_skip_extension(selected_retailer):
+            elif selected_capture_mode == CAPTURE_MODE_SKIP_EXTENSION and selected_retailer in AUTO_SKIP_EXTENSION_RETAILERS:
                 should_auto_run = True
                 auto_run_reason = "skip-extension direct batch"
 
@@ -9957,13 +8022,26 @@ if uploaded_file:
                 and st.session_state.batch_started_key != current_batch_key
                 and not st.session_state.processing_done
             ):
-                reset_batch_output_state(clear_report=True, clear_runtime_only=True)
                 st.session_state.batch_run_requested = True
                 st.session_state.batch_started_key = current_batch_key
                 st.session_state.batch_status_message = f"Auto-starting batch for {selected_retailer} using {auto_run_reason}."
                 st.session_state.batch_error_text = ""
                 st.session_state.completed_batch_key = ""
+                st.session_state.start_idx = 0
+                st.session_state.summary_rows = []
+                st.session_state.export_rows = []
+                st.session_state.debug_rows = []
+                st.session_state.summary_skus = set()
+                st.session_state.detail_skus = set()
+                st.session_state.debug_skus = set()
+                st.session_state.progress_bar = None
+                st.session_state.report_bytes = None
+                st.session_state.report_filename = None
+                st.session_state.report_batch_key = ""
+                st.session_state.auto_download_done = False
                 st.session_state.auto_batch_upload_key = current_batch_key
+                clear_in_memory_caches()
+                st.cache_data.clear()
                 st.rerun()
 
 
@@ -9974,12 +8052,26 @@ if uploaded_file:
                     key=f"run_batch_btn::{current_batch_key}",
                     use_container_width=True,
                 ):
-                    reset_batch_output_state(clear_report=True, clear_runtime_only=True)
                     st.session_state.batch_run_requested = True
                     st.session_state.batch_started_key = current_batch_key
                     st.session_state.batch_status_message = ""
                     st.session_state.batch_error_text = ""
+                    st.session_state.processing_done = False
                     st.session_state.completed_batch_key = ""
+                    st.session_state.start_idx = 0
+                    st.session_state.summary_rows = []
+                    st.session_state.export_rows = []
+                    st.session_state.debug_rows = []
+                    st.session_state.summary_skus = set()
+                    st.session_state.detail_skus = set()
+                    st.session_state.debug_skus = set()
+                    st.session_state.progress_bar = None
+                    st.session_state.report_bytes = None
+                    st.session_state.report_filename = None
+                    st.session_state.report_batch_key = ""
+                    st.session_state.auto_download_done = False
+                    clear_in_memory_caches()
+                    st.cache_data.clear()
                     st.rerun()
 
             with run_msg_col:
@@ -9989,7 +8081,7 @@ if uploaded_file:
                     st.success(st.session_state.batch_status_message or f"Batch finished for {selected_retailer}. Visual QA review is ready below.")
                 elif selected_capture_mode == CAPTURE_MODE_USE_EXTENSION and not matched_uploaded_html_count:
                     st.info(f"Load the extension, run the retailer batch, then upload the TXT capture for {selected_retailer}. As soon as the TXT has matches, batch will run from that captured HTML.")
-                elif selected_capture_mode == CAPTURE_MODE_SKIP_EXTENSION and retailer_auto_skip_extension(selected_retailer):
+                elif selected_capture_mode == CAPTURE_MODE_SKIP_EXTENSION and selected_retailer in AUTO_SKIP_EXTENSION_RETAILERS:
                     st.info(f"Skip-extension mode is enabled for {selected_retailer}. The app will go straight into batch automatically.")
                 else:
                     st.info(f"Use the top selections, then click Run Batch for {selected_retailer}. The visual QA review will appear below after extract/report generation finishes.")
@@ -10135,7 +8227,7 @@ if retailer_df is not None and file_ready_for_batch and st.session_state.batch_s
 
             total = len(batch_df)
             completed = 0
-            batch_records = build_batch_records(batch_df)
+            batch_records = batch_df.to_dict("records")
 
             with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                 futures = [executor.submit(process_row, row_dict) for row_dict in batch_records]
@@ -10184,27 +8276,14 @@ if retailer_df is not None and file_ready_for_batch and st.session_state.batch_s
 # =========================================
 # TOP EXPORT SECTION
 # =========================================
-current_report_signature = ""
-if st.session_state.completed_batch_key:
-    current_report_signature = "::".join([
-        str(st.session_state.completed_batch_key or ""),
-        str(len(st.session_state.summary_rows or [])),
-        str(len(st.session_state.export_rows or [])),
-        str(len(st.session_state.debug_rows or [])),
-    ])
-
 if (
     st.session_state.processing_done
     and st.session_state.completed_batch_key
-    and (
-        st.session_state.report_batch_key != st.session_state.completed_batch_key
-        or st.session_state.report_row_signature != current_report_signature
-        or st.session_state.report_bytes is None
-    )
+    and st.session_state.report_batch_key != st.session_state.completed_batch_key
 ):
-    summary_df = pd.DataFrame(list(st.session_state.summary_rows or []))
-    detail_df = pd.DataFrame(list(st.session_state.export_rows or []))
-    debug_df = pd.DataFrame(list(st.session_state.debug_rows or []))
+    summary_df = pd.DataFrame(st.session_state.summary_rows)
+    detail_df = pd.DataFrame(st.session_state.export_rows)
+    debug_df = pd.DataFrame(st.session_state.debug_rows)
 
     selected_retailer_rpc_header = f"{str(selected_retailer or '').strip() or 'Retailer'} RPC"
     for _df in [summary_df, detail_df, debug_df]:
@@ -10216,95 +8295,76 @@ if (
             inplace=True,
         )
 
-    export_rerun_needed = False
+    output = BytesIO()
 
-    if summary_df.empty and detail_df.empty and debug_df.empty:
-        st.session_state.report_bytes = None
-        st.session_state.report_filename = None
-        # Mark this exact empty state as handled so Streamlit does not get stuck in an export rerun loop.
-        st.session_state.report_batch_key = st.session_state.completed_batch_key
-        st.session_state.report_row_signature = current_report_signature
-        st.session_state.auto_download_done = False
-        st.session_state.batch_status_message = (
-            f"Batch finished for {selected_retailer}, but no report rows were captured yet. "
-            "The app cleared the previous report instead of exporting an empty workbook."
-        )
-    else:
-        output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        summary_df.to_excel(writer, sheet_name="Summary", index=False)
+        detail_df.to_excel(writer, sheet_name="Details", index=False)
+        debug_df.to_excel(writer, sheet_name="Debug", index=False)
 
-        with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            summary_df.to_excel(writer, sheet_name="Summary", index=False)
-            detail_df.to_excel(writer, sheet_name="Details", index=False)
-            debug_df.to_excel(writer, sheet_name="Debug", index=False)
+        wb = writer.book
 
-            wb = writer.book
+        green_fill = PatternFill(fill_type="solid", fgColor="C6EFCE")
+        yellow_fill = PatternFill(fill_type="solid", fgColor="FFEB9C")
+        red_fill = PatternFill(fill_type="solid", fgColor="FFC7CE")
 
-            green_fill = PatternFill(fill_type="solid", fgColor="C6EFCE")
-            yellow_fill = PatternFill(fill_type="solid", fgColor="FFEB9C")
-            red_fill = PatternFill(fill_type="solid", fgColor="FFC7CE")
+        for sheet_name in ["Summary", "Details"]:
+            ws = wb[sheet_name]
 
-            for sheet_name in ["Summary", "Details"]:
-                ws = wb[sheet_name]
+            header_map = {}
+            for cell in ws[1]:
+                header_map[str(cell.value).strip()] = cell.column
 
-                header_map = {}
-                for cell in ws[1]:
-                    header_map[str(cell.value).strip()] = cell.column
+            for col_name, col_idx in header_map.items():
+                if "%" in col_name:
+                    for row_idx in range(2, ws.max_row + 1):
+                        cell = ws.cell(row=row_idx, column=col_idx)
+                        value = cell.value
 
-                for col_name, col_idx in header_map.items():
-                    if "%" in col_name:
-                        for row_idx in range(2, ws.max_row + 1):
-                            cell = ws.cell(row=row_idx, column=col_idx)
-                            value = cell.value
+                        if value is None or value == "":
+                            continue
 
-                            if value is None or value == "":
-                                continue
-
-                            try:
-                                score_val = float(value)
-                            except Exception:
-                                continue
-
-                            if score_val >= 80:
-                                cell.fill = green_fill
-                            elif score_val >= 50:
-                                cell.fill = yellow_fill
-                            else:
-                                cell.fill = red_fill
-
-                for col_cells in ws.columns:
-                    max_length = 0
-                    col_letter = col_cells[0].column_letter
-
-                    for cell in col_cells:
                         try:
-                            cell_len = len(str(cell.value or ""))
-                            if cell_len > max_length:
-                                max_length = cell_len
+                            score_val = float(value)
                         except Exception:
-                            pass
+                            continue
 
-                    adjusted_width = min(max(max_length + 2, 12), 60)
-                    ws.column_dimensions[col_letter].width = adjusted_width
+                        if score_val >= 80:
+                            cell.fill = green_fill
+                        elif score_val >= 50:
+                            cell.fill = yellow_fill
+                        else:
+                            cell.fill = red_fill
 
-        safe_retailer = re.sub(
-            r"[^a-z0-9]+",
-            "_",
-            str(selected_retailer or "retailer").lower().strip(),
-        ).strip("_") or "retailer"
+            for col_cells in ws.columns:
+                max_length = 0
+                col_letter = col_cells[0].column_letter
 
-        st.session_state.report_bytes = output.getvalue()
-        st.session_state.report_filename = f"pdp_qa_results_{safe_retailer}_all_brands.xlsx"
-        st.session_state.report_batch_key = st.session_state.completed_batch_key
-        st.session_state.report_row_signature = current_report_signature
-        st.session_state.auto_download_done = False
-        st.session_state.batch_status_message = (
-            f"Report ready for {selected_retailer}. "
-            f"Summary rows: {len(summary_df)}, Details rows: {len(detail_df)}, Debug rows: {len(debug_df)}."
-        )
-        export_rerun_needed = True
-    if export_rerun_needed:
-        st.rerun()
+                for cell in col_cells:
+                    try:
+                        cell_len = len(str(cell.value or ""))
+                        if cell_len > max_length:
+                            max_length = cell_len
+                    except Exception:
+                        pass
 
+                adjusted_width = min(max(max_length + 2, 12), 60)
+                ws.column_dimensions[col_letter].width = adjusted_width
+
+    safe_retailer = re.sub(
+        r"[^a-z0-9]+",
+        "_",
+        str(selected_retailer or "retailer").lower().strip(),
+    ).strip("_") or "retailer"
+
+    st.session_state.report_bytes = output.getvalue()
+    st.session_state.report_filename = f"pdp_qa_results_{safe_retailer}_all_brands.xlsx"
+    st.session_state.report_batch_key = st.session_state.completed_batch_key
+    st.session_state.auto_download_done = False
+    if not st.session_state.batch_status_message:
+        st.session_state.batch_status_message = f"Batch finished for {selected_retailer}. Extract/report generated successfully."
+    st.rerun()
+        
 # =========================================
 # FULL VISUAL MODE
 # =========================================
@@ -10344,7 +8404,6 @@ if (
         )
         st.markdown("## 👁️ Full Visual QA Review")
         st.caption("This full visual UI appears only after the top batch run finishes and the extract/report rows are ready.")
-        st.caption("Albertsons rows flagged as Out of Stock stay in the Excel export and are hidden from Full Visual QA review.")
         st.caption("This full visual UI appears only after the new top-section batch run finishes and the extract/report rows are ready. Kroger visual rows reuse the uploaded TXT-matched HTML instead of live fetch.")
 
         if hidden_count > 0:
@@ -10388,8 +8447,6 @@ if (
             r_desc = r_text.get("description") or ""
             retailer_features = r_text.get("features") or []
             retailer_norm = str(retailer_name or "").strip().lower()
-            if retailer_norm == "albertsons" and bool(r_text.get("out_of_stock", False)):
-                continue
             salsify_requirements = get_retailer_salsify_requirements(retailer_name)
             feature_fields = get_retailer_salsify_feature_fields(retailer_name)
 
