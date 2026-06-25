@@ -1604,6 +1604,8 @@ def uploaded_capture_url_candidates(url):
     return candidates
 
 
+
+
 def _extract_uploaded_capture_supporting_blocks(raw_text):
     raw_text = str(raw_text or "")
     rendered_html_map = {}
@@ -1613,9 +1615,9 @@ def _extract_uploaded_capture_supporting_blocks(raw_text):
 
     block_specs = [
         (r'(?is)Requested\s+URL\s*:\s*(https?://\S+).*?-----BEGIN\s+RENDERED\s+HTML-----(.*?)-----END\s+RENDERED\s+HTML-----', rendered_html_map),
+        (r'(?is)Requested\s+URL\s*:\s*(https?://\S+).*?-----BEGIN\s+LIVE\s+DOM\s+HTML-----(.*?)-----END\s+LIVE\s+DOM\s+HTML-----', rendered_html_map),
         (r'(?is)Requested\s+URL\s*:\s*(https?://\S+).*?-----BEGIN\s+IMAGE\s+URLS-----(.*?)-----END\s+IMAGE\s+URLS-----', image_url_map),
         (r'(?is)Requested\s+URL\s*:\s*(https?://\S+).*?-----BEGIN\s+ALBERTSONS\s+CAROUSEL\s+IMAGE\s+URLS-----(.*?)-----END\s+ALBERTSONS\s+CAROUSEL\s+IMAGE\s+URLS-----', image_url_map),
-        (r'(?is)Requested\s+URL\s*:\s*(https?://\S+).*?-----BEGIN\s+LIVE\s+DOM\s+HTML-----(.*?)-----END\s+LIVE\s+DOM\s+HTML-----', rendered_html_map),
     ]
     for pattern, target in block_specs:
         for match in re.finditer(pattern, raw_text):
@@ -1624,7 +1626,6 @@ def _extract_uploaded_capture_supporting_blocks(raw_text):
             if requested_url and block_text:
                 target[requested_url] = block_text
     return rendered_html_map, image_url_map
-
 
 def parse_uploaded_raw_html_map(raw_text):
     raw_text = str(raw_text or "")
@@ -1693,46 +1694,6 @@ def lookup_uploaded_raw_html(uploaded_html_map, retail_url, target_rpc=""):
 
     return ""
 
-def get_albertsons_extension_capture_profile():
-    """
-    Metadata for the browser extension so Albertsons pages can be captured after
-    hydration and carousel interaction, not just from the original server HTML.
-    The extension can use this object to know it should expand / scroll the
-    thumbnail rail, sample live DOM image attributes repeatedly, and export those
-    URLs back into the TXT bundle.
-    """
-    return {
-        "mode": "rendered_dom_and_image_urls",
-        "requiresRenderedDom": True,
-        "captureRenderedOuterHtml": True,
-        "captureImageUrls": True,
-        "maxCarouselPasses": 18,
-        "settleDelayMs": 450,
-        "thumbRailSelectors": [
-            '[data-testid*="thumbnail"]',
-            '[class*="thumbnail"]',
-            '[class*="carousel"]',
-            '[class*="thumb"]',
-            '[aria-label*="thumbnail" i]',
-        ],
-        "carouselNextSelectors": [
-            'button[aria-label*="next" i]',
-            'button[aria-label*="down" i]',
-            'button[aria-label*="scroll" i]',
-            'button[class*="next"]',
-            'button[class*="down"]',
-        ],
-        "imageAttrSelectors": [
-            'img[src]', 'img[srcset]', 'source[srcset]',
-            '[data-src]', '[data-srcset]', '[data-image-url]', '[data-full-image]',
-            '[data-full-src]', '[data-hires]', '[data-lazy-src]', '[data-original]',
-            '[data-desktop-src]', '[data-mobile-src]', '[style*="images.albertsons-media.com/is/image/ABS/"]',
-        ],
-        "imgUrlPattern": 'images.albertsons-media.com/is/image/ABS/',
-        "notes": 'Albertsons carousel images may only appear in the rendered DOM after hydration or when the thumbnail rail is scrolled. Capture rendered outerHTML plus a deduped image URL list after each carousel pass.'
-    }
-
-
 def build_extension_batch_payload(retailer_df, retailer_name, current_batch_key, capture_mode, txt_ready=False):
     retailer_name_norm = normalize_retailer_name(retailer_name)
     retailer_df = strict_filter_rows_for_selected_retailer(
@@ -1760,7 +1721,7 @@ def build_extension_batch_payload(retailer_df, retailer_name, current_batch_key,
             if str(row.get("retail_url", "") or "").strip()
         ]
 
-    output = {
+    return {
         "ready": True,
         "retailer": retailer_name_norm,
         "retailerGuard": retailer_name_norm,
@@ -1773,9 +1734,6 @@ def build_extension_batch_payload(retailer_df, retailer_name, current_batch_key,
         "rows": row_payload,
         "timestamp": int(time.time()),
     }
-    if str(retailer_name_norm or "").strip().lower() == "albertsons":
-        output["captureProfile"] = get_albertsons_extension_capture_profile()
-    return output
 
 
 def render_extension_batch_bridge(payload):
@@ -1806,7 +1764,6 @@ def render_extension_batch_bridge(payload):
     (function() {{
       const payload = {payload_json};
       const payloadB64 = '{payload_b64}';
-      const albertsonsCaptureProfile = payload && payload.captureProfile ? payload.captureProfile : null;
       const TARGET_KEYS = [
         '__PDP_EXTENSION_BATCH__', '__RAW_HTML_EXTENSION_BATCH__', '__STREAMLIT_EXTENSION_BATCH__', '__EXTENSION_BATCH__',
         '__RAW_HTML_BATCH__', 'pdpExtensionBatch', 'rawHtmlExtensionBatch', 'streamlitExtensionBatch', 'extensionBatch'
@@ -1841,7 +1798,6 @@ def render_extension_batch_bridge(payload):
             root.setAttribute('data-pdp-extension-retailer', payload && payload.retailer ? String(payload.retailer) : '');
             root.setAttribute('data-pdp-extension-batch-key', payload && payload.batchKey ? String(payload.batchKey) : '');
             root.setAttribute('data-pdp-extension-capture-mode', payload && payload.captureMode ? String(payload.captureMode) : '');
-            if (albertsonsCaptureProfile) root.setAttribute('data-pdp-extension-capture-profile', JSON.stringify(albertsonsCaptureProfile));
           }}
           if (body) {{
             body.setAttribute('data-pdp-extension-batch-ready', payload && payload.ready ? '1' : '0');
@@ -4240,14 +4196,15 @@ def _albertsons_asset_sort_key(url):
     return (prefix_rank, number_value, suffix_upper)
 
 
+
+
 def _extract_albertsons_urls_from_style_value(style_text):
     style_text = html.unescape(str(style_text or ""))
     if not style_text:
         return []
     urls = []
     for match in re.finditer(r'url\(([^)]+)\)', style_text, flags=re.IGNORECASE):
-        raw_value = str(match.group(1) or "").strip()
-        raw_value = raw_value.strip('"').strip("'")
+        raw_value = str(match.group(1) or "").strip().strip('"').strip("'")
         if 'images.albertsons-media.com/is/image/ABS/' in raw_value:
             urls.append(raw_value)
     return urls
@@ -4268,7 +4225,6 @@ def _extract_possible_albertsons_urls_from_text_blob(text_blob):
     for pattern in patterns:
         urls.extend(re.findall(pattern, text_blob, flags=re.IGNORECASE))
     return urls
-
 
 def extract_albertsons_images_from_html(html_text, target_rpc=''):
     """
@@ -4340,9 +4296,6 @@ def extract_albertsons_images_from_html(html_text, target_rpc=''):
 
     ordered = sorted(ordered, key=_albertsons_asset_sort_key)
     return ordered[:MAX_IMAGE_SLOTS_TO_COMPARE]
-
-
-
 def _extract_albertsons_description_from_marketing(marketing):
     if marketing is None:
         return ''
@@ -4496,7 +4449,7 @@ def get_albertsons_bundle(retail_url, target_rpc=''):
     }
     bundle.setdefault('text', {}).setdefault('debug', {})['Image Path'] = 'albertsons_abs_image_lookup'
     bundle.setdefault('text', {}).setdefault('debug', {})['Albertsons Image Count'] = int(len(bundle.get('images', []) or []))
-    bundle.setdefault('text', {}).setdefault('debug', {})['Albertsons Image Capture Note'] = 'Carousel / hidden thumbnail variants included when ABS asset URLs are present in HTML, rendered DOM, or extension image-url capture blocks.'
+    bundle.setdefault('text', {}).setdefault('debug', {})['Albertsons Image Capture Note'] = 'Carousel / hidden thumbnail variants included when ABS asset URLs are present in HTML, rendered DOM, or uploaded image-url capture blocks.'
     return bundle
 
 # =========================================
