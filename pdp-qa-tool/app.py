@@ -1,3 +1,7 @@
+
+
+
+
 # =========================================
 # IMPORTS
 # =========================================
@@ -8136,12 +8140,18 @@ def normalize_salsify_feature_values(values, max_features=10):
             break
     return out
 
-def finalize_salsify_copy_for_retailer(retailer_name, s_text):
+def _finalize_salsify_copy_for_retailer_core(retailer_name, s_text):
     """
     Normalize Salsify copy for retailer-specific comparison only.
     Kroger should prefer Kroger Product Title / Kroger Description / Kroger Feature N.
     Sam's Club should prefer Sam's Club Product Title / Description / Feature N.
     CVS should prefer CVS-specific Salsify fields first, then General fields only as fallback.
+
+    This is the core per-retailer selection logic only. It does not apply
+    final copy-length limits — that step happens once, in
+    finalize_salsify_copy_for_retailer() below, after this function
+    returns, so every retailer branch gets the limits step applied
+    consistently without needing to remember to call it from each branch.
     """
     retailer = str(retailer_name or "").strip().lower()
     out = dict(s_text or {})
@@ -8302,10 +8312,17 @@ def finalize_salsify_copy_for_retailer(retailer_name, s_text):
     return out
 
 
-_original_finalize_salsify_copy_for_retailer = finalize_salsify_copy_for_retailer
-
 def finalize_salsify_copy_for_retailer(retailer_name, s_text):
-    out = _original_finalize_salsify_copy_for_retailer(retailer_name, s_text)
+    """
+    Public entry point: runs the per-retailer copy selection logic above,
+    then always applies the final retailer copy-length limits before
+    returning. Combining these into one function (rather than the previous
+    two-definition wrap-via-reassignment pattern) means there's only ever
+    one place this needs to be read or changed, and no risk of the limits
+    step silently not running if these were ever reordered or split across
+    files in the future.
+    """
+    out = _finalize_salsify_copy_for_retailer_core(retailer_name, s_text)
     return apply_retailer_salsify_copy_limits(retailer_name, out)
 
 
@@ -8569,7 +8586,7 @@ def compare_images_visually(s_url, r_url):
 
 
 
-def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE, brand=""):
+def _align_salsify_images_for_retailer_core(retailer_name, s_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE, brand=""):
     """
     Build the retailer-specific Salsify comparison image list.
 
@@ -8584,6 +8601,12 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
     - Lock only the top 3 Salsify slots.
     - If one of the top 3 is missing, keep the slot blank and do not shift later images up.
     - After slot 3, continue with the remaining Salsify images in original order.
+
+    This is the core per-retailer slot-selection logic only. It does not
+    apply final image-count limits — that step happens once, in
+    align_salsify_images_for_retailer() below, after this function
+    returns, so every retailer branch gets the limits step applied
+    consistently without needing to remember to call it from each branch.
     """
     retailer = str(retailer_name or "").strip().lower()
     brand_norm = normalize_salsify_asset_name(brand or "")
@@ -8762,10 +8785,17 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
     return dedupe_images_preserve_order(source_images)[:max_slots]
 
 
-_original_align_salsify_images_for_retailer = align_salsify_images_for_retailer
-
 def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE, brand=""):
-    aligned = _original_align_salsify_images_for_retailer(retailer_name, s_images, max_slots=max_slots, brand=brand)
+    """
+    Public entry point: runs the per-retailer image slot selection logic
+    above, then always applies the final retailer image-count limits
+    before returning. Combining these into one function (rather than the
+    previous two-definition wrap-via-reassignment pattern) means there's
+    only ever one place this needs to be read or changed, and no risk of
+    the limits step silently not running if these were ever reordered or
+    split across files in the future.
+    """
+    aligned = _align_salsify_images_for_retailer_core(retailer_name, s_images, max_slots=max_slots, brand=brand)
     return apply_retailer_salsify_image_limits(retailer_name, aligned)
 
 def align_image_slots_for_comparison(s_images, r_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE, strong_threshold=80):
@@ -8963,6 +8993,7 @@ def _process_row_core(row):
 
         # Albertsons TXT captures can be extremely large. Resolve uploaded HTML lazily here
         # instead of copying the full HTML block into every dataframe row before batching.
+        albertsons_lookup_error = ""
         if str(retailer_name_normalized).strip().lower() == "albertsons":
             uploaded_map = st.session_state.uploaded_raw_html_map or {}
             if not row_source_code:
@@ -8972,8 +9003,9 @@ def _process_row_core(row):
                         retail_url,
                         target_rpc=cvs_rpc,
                     )
-                except Exception:
+                except Exception as e:
                     row_source_code = ""
+                    albertsons_lookup_error = f"TXT lookup error: {e}"
             if not row_source_code and cvs_rpc:
                 try:
                     matched_albertsons_key = find_albertsons_url_in_uploaded_map(
@@ -8984,8 +9016,9 @@ def _process_row_core(row):
                         row_source_code = str(uploaded_map.get(matched_albertsons_key, "") or "")
                         if not retail_url:
                             retail_url = matched_albertsons_key
-                except Exception:
+                except Exception as e:
                     row_source_code = row_source_code or ""
+                    albertsons_lookup_error = albertsons_lookup_error or f"TXT RPC lookup error: {e}"
 
         is_albertsons_out_of_stock = False
         if str(retailer_name_normalized).strip().lower() == "albertsons":
@@ -9231,6 +9264,7 @@ def _process_row_core(row):
                 "Rating": output_rating_value,
                 "Review Count": output_review_count_value,
                 "Salsify URL": salsify_url,
+                "Albertsons TXT Lookup Error": albertsons_lookup_error,
                 "Retailer Title": r_text.get("title", ""),
                     "Retailer Description": r_text.get("description", ""),
                     "Retailer Features": " | ".join(r_text.get("features", [])),
