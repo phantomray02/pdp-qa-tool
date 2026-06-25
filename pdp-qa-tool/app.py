@@ -98,7 +98,7 @@ CVS_VARIANT_MIN_MATCH_SCORE = 35
 
 CAPTURE_MODE_USE_EXTENSION = "Use extension + TXT upload"
 CAPTURE_MODE_SKIP_EXTENSION = "Skip extension and go straight to batch"
-AUTO_SKIP_EXTENSION_RETAILERS = {"Walgreens"}
+AUTO_SKIP_EXTENSION_RETAILERS = {"CVS", "Walgreens"}
 # Retailer-specific Salsify isolation controls.
 # Copy can stay retailer-locked while images still fall back to generic locked Salsify slots if
 # retailer-labeled image assets do not exist yet.
@@ -807,12 +807,6 @@ def apply_retailer_salsify_copy_limits(retailer_name, text_bundle):
 
 
 def infer_cvs_image_slot_from_url(url):
-    """
-    CVS-only slot inference.
-    Infer an explicit slot only when the filename has a real slot suffix such as
-    _2, -3, or (4). Product-id filenames like 3600041777.jpg must NOT be forced
-    into slot 1.
-    """
     url = str(url or "").strip().split("?", 1)[0]
     if not url:
         return None
@@ -828,6 +822,8 @@ def infer_cvs_image_slot_from_url(url):
                 return slot_num
         except Exception:
             pass
+    if re.search(r'\d', stem):
+        return 1
     return None
 
 def reorder_cvs_salsify_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
@@ -963,137 +959,6 @@ def reorder_cvs_retailer_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_
     for url in unslotted:
         add_url(url)
     return ordered[:max_slots]
-
-
-def promote_cvs_ooi_image_first(s_images, r_images):
-    """
-    CVS-only hero image promotion.
-
-    CVS uploaded/live gallery order can place the hero / OOI packshot after
-    lifestyle frames. For CVS only, compare each retailer image against the
-    first Salsify image and move the best visual match into slot 1.
-
-    This keeps all non-CVS retailers untouched.
-    """
-    if not isinstance(s_images, list) or not isinstance(r_images, list):
-        return list(r_images or [])
-
-    s_first_url = ""
-    if s_images and isinstance(s_images[0], dict):
-        s_first_url = str(s_images[0].get("url", "") or "").strip()
-    if not s_first_url:
-        return list(r_images or [])
-
-    retailer_urls = [str(u or "").strip() for u in (r_images or []) if str(u or "").strip()]
-    if len(retailer_urls) <= 1:
-        return retailer_urls
-
-    best_idx = None
-    best_score = -1
-    for idx, r_url in enumerate(retailer_urls):
-        try:
-            score = int(compare_images_visually(s_first_url, r_url) or 0)
-        except Exception:
-            score = 0
-        if score > best_score:
-            best_score = score
-            best_idx = idx
-
-    # Keep captured order unless a materially better CVS hero match exists.
-    if best_idx is None or best_idx == 0:
-        return retailer_urls
-    if best_score < 35:
-        return retailer_urls
-
-    best_url = retailer_urls[best_idx]
-    reordered = [best_url] + [u for i, u in enumerate(retailer_urls) if i != best_idx]
-    return reordered
-
-
-def shift_cvs_missing_top3_slots(
-    s_images,
-    r_images,
-    top_slots=3,
-    keep_threshold=55,
-    shift_threshold=80,
-    shift_margin=25,
-    max_total_blanks=1,
-    packaging_guard_threshold=45,
-):
-    """
-    CVS-only missing-top-slots alignment with packaging guard.
-
-    Goal:
-    allow a limited blank in the first 3 CVS slots when a packaging image truly has
-    not gone live yet, but DO NOT push real CVS packaging images down too far.
-
-    Packaging guard:
-    if the current CVS image already looks like a reasonable match for ANY of the top 3
-    Salsify packaging slots, keep it in the earliest available slot instead of blanking.
-
-    Shift rule:
-    only insert one blank when the next slot is a dramatically better match and the
-    current slot is a weak match. This keeps missing-slot recovery possible without
-    over-shifting packaging images.
-    """
-    s_seq = list(s_images or [])
-    r_seq = [str(u or "").strip() for u in (r_images or []) if str(u or "").strip()]
-    if not s_seq or not r_seq:
-        return r_seq
-
-    top_slots = max(0, min(int(top_slots or 0), 3, len(s_seq)))
-    if top_slots <= 0:
-        return r_seq
-
-    aligned = []
-    r_idx = 0
-    blanks_used = 0
-
-    for s_idx in range(top_slots):
-        s_url = get_image_slot_url(s_seq[s_idx]) if s_idx < len(s_seq) else ""
-        if not s_url:
-            aligned.append("")
-            continue
-        if r_idx >= len(r_seq):
-            aligned.append("")
-            continue
-
-        current_r_url = r_seq[r_idx]
-
-        top_scores = []
-        for probe_idx in range(top_slots):
-            probe_url = get_image_slot_url(s_seq[probe_idx]) if probe_idx < len(s_seq) else ""
-            if not probe_url:
-                top_scores.append(0)
-                continue
-            try:
-                top_scores.append(int(compare_images_visually(probe_url, current_r_url) or 0))
-            except Exception:
-                top_scores.append(0)
-
-        current_score = top_scores[s_idx] if s_idx < len(top_scores) else 0
-        next_score = top_scores[s_idx + 1] if (s_idx + 1) < len(top_scores) else -1
-        best_top_score = max(top_scores) if top_scores else 0
-
-        packaging_guard_hit = best_top_score >= packaging_guard_threshold
-        should_shift_one_slot = (
-            blanks_used < max_total_blanks
-            and not packaging_guard_hit
-            and next_score >= shift_threshold
-            and next_score >= current_score + shift_margin
-            and current_score < keep_threshold
-        )
-
-        if should_shift_one_slot:
-            aligned.append("")
-            blanks_used += 1
-            continue
-
-        aligned.append(current_r_url)
-        r_idx += 1
-
-    aligned.extend(r_seq[r_idx:])
-    return aligned
 
 def apply_retailer_salsify_image_limits(retailer_name, images):
     retailer = str(retailer_name or "").strip().lower()
@@ -3786,131 +3651,27 @@ def extract_vendor_copy_from_nextjs(html_text, target_rpc="", retail_url=""):
     }
 
 
-def _clean_cvs_image_url(url):
-    url = html.unescape(str(url or "").strip())
-    if not url:
-        return ""
-    url = url.strip().strip('"').strip("'")
-    url = url.replace('\/', '/')
-    if url.startswith('//'):
-        url = 'https:' + url
-    elif url.startswith('/'):
-        url = 'https://www.cvs.com' + url
-    if not re.match(r'^https?://', url, flags=re.IGNORECASE):
-        return ""
-    lowered = url.lower()
-    if '/bizcontent/merchandising/productimages/' not in lowered:
-        return ""
-    if not re.search(r'\.(?:jpg|jpeg|png|webp)(?:\?|$)', lowered, flags=re.IGNORECASE):
-        return ""
-    return url
-
-
-def _cvs_image_display_url(url):
-    clean = _clean_cvs_image_url(url)
-    if not clean:
-        return ""
-    return clean.split('#', 1)[0].strip()
-
-
-def _cvs_image_family_key(url):
-    display = _cvs_image_display_url(url)
-    if not display:
-        return ""
-    lower = display.lower()
-    base = lower.split('?', 1)[0]
-    name = base.rsplit('/', 1)[-1]
-    name = re.sub(r'\.(jpg|jpeg|png|webp)$', '', name, flags=re.IGNORECASE)
-    name = re.sub(r'_(?:\d{2,4})$', '', name)
-    return name or base
-
-
-def _cvs_image_size_score(url):
-    clean = _clean_cvs_image_url(url)
-    if not clean:
-        return 0
-    score = 0
-    for match in re.finditer(r'(?:Resize|width|w)=\(?([0-9]{2,4})', clean, flags=re.IGNORECASE):
-        try:
-            score = max(score, int(match.group(1)))
-        except Exception:
-            pass
-    if score <= 0:
-        score = 1
-    return score
-
-
-def _extract_possible_cvs_image_urls_from_text_blob(text):
-    working = str(text or '')
-    if not working:
-        return []
-    pattern = r'(?:https?:)?//[^\s"<>]+/bizcontent/merchandising/productimages/[^\s"<>]+\.(?:jpg|jpeg|png|webp)(?:\?[^\s"<>]*)?|/bizcontent/merchandising/productimages/[^\s"<>]+\.(?:jpg|jpeg|png|webp)(?:\?[^\s"<>]*)?'
-    return [m.group(0) for m in re.finditer(pattern, working, flags=re.IGNORECASE)]
-
-
 def extract_cvs_images_from_html(html_text):
-    """
-    CVS-only image extraction.
+    matches = re.findall(r'/bizcontent/merchandising/productimages/high_res/[^\s\"]+\.jpg\?[^\"]*', html_text or "")
 
-    Goal:
-    - capture all CVS gallery images that appear in the rendered HTML/TXT,
-    - preserve the onsite gallery order as closely as possible,
-    - dedupe repeated sizes/duplicates while keeping the best-quality URL for each
-      image family,
-    - avoid CVS-specific slot forcing or OOI promotion here.
-    """
-    working = html.unescape(str(html_text or ''))
-    if not working.strip():
-        return []
+    best_images = {}
+    order = []
 
-    raw_urls = []
-    raw_urls.extend(_extract_possible_cvs_image_urls_from_text_blob(working))
+    for m in matches:
+        full = "https://www.cvs.com" + m
+        base = full.split("?")[0]
+        name = base.split("/")[-1]
+        size_match = re.search(r"Resize=\((\d+)", m)
+        size = int(size_match.group(1)) if size_match else 0
 
-    try:
-        soup = BeautifulSoup(working, 'html.parser')
-        attr_names = (
-            'src', 'data-src', 'data-image-src', 'data-lazy-src', 'data-original',
-            'data-zoom-image', 'content', 'href', 'poster'
-        )
-        for tag in soup.find_all(True):
-            for attr in attr_names:
-                value = str(tag.get(attr, '') or '')
-                if '/bizcontent/merchandising/productimages/' in value.lower():
-                    raw_urls.append(value)
-            for set_attr in ('srcset', 'data-srcset'):
-                srcset = str(tag.get(set_attr, '') or '')
-                if '/bizcontent/merchandising/productimages/' in srcset.lower():
-                    raw_urls.extend(_extract_possible_cvs_image_urls_from_text_blob(srcset))
-            style_value = str(tag.get('style', '') or '')
-            if '/bizcontent/merchandising/productimages/' in style_value.lower():
-                raw_urls.extend(_extract_possible_cvs_image_urls_from_text_blob(style_value))
-        for script_tag in soup.find_all('script'):
-            script_text = str(script_tag.string or script_tag.get_text(' ', strip=False) or '')
-            if '/bizcontent/merchandising/productimages/' in script_text.lower():
-                raw_urls.extend(_extract_possible_cvs_image_urls_from_text_blob(script_text))
-    except Exception:
-        pass
+        if name not in best_images:
+            order.append(name)
+            best_images[name] = {"url": base, "size": size}
+        elif size > best_images[name]["size"]:
+            best_images[name] = {"url": base, "size": size}
 
-    best_by_family = {}
-    family_order = []
-    for raw_url in raw_urls:
-        clean = _clean_cvs_image_url(raw_url)
-        if not clean:
-            continue
-        family_key = _cvs_image_family_key(clean)
-        if not family_key:
-            continue
-        display_url = _cvs_image_display_url(clean)
-        score = _cvs_image_size_score(clean)
-        if family_key not in best_by_family:
-            family_order.append(family_key)
-            best_by_family[family_key] = {'url': display_url, 'score': score}
-        elif score > best_by_family[family_key].get('score', 0):
-            best_by_family[family_key] = {'url': display_url, 'score': score}
-
-    ordered_urls = [best_by_family[key]['url'] for key in family_order if key in best_by_family]
-    ordered_urls = dedupe_preserve_order(ordered_urls)
-    return ordered_urls[:MAX_IMAGE_SLOTS_TO_COMPARE]
+    ordered_urls = [best_images[name]["url"] for name in order]
+    return reorder_cvs_retailer_images_for_visual(ordered_urls, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE)
 
 
 def _extract_cvs_text_from_html(html_text, retail_url="", target_rpc=""):
@@ -3954,21 +3715,13 @@ def _extract_cvs_text_from_html(html_text, retail_url="", target_rpc=""):
 @st.cache_data(show_spinner=False)
 def get_cvs_bundle(retail_url, target_rpc=""):
     html_text = get_html(retail_url)
-    images = extract_cvs_images_from_html(html_text)
-    text_bundle = _extract_cvs_text_from_html(
-        html_text,
-        retail_url=retail_url,
-        target_rpc=target_rpc,
-    )
-    text_bundle.setdefault("debug", {})["Image Path"] = "cvs_live_html_image_lookup"
-    text_bundle.setdefault("debug", {})["CVS Image Count"] = int(len(images or []))
-    text_bundle.setdefault("debug", {})["CVS Isolated Parser"] = "cvs_only_live_bundle"
-    text_bundle.setdefault("debug", {})["CVS Live HTML Caveat"] = "If CVS Image Count is 0 here, use extension + TXT capture; raw live HTML may not include rendered gallery image paths."
-    text_bundle.setdefault("debug", {})["CVS Image Order Rule"] = "Renderer/site order preserved from CVS HTML/TXT capture; no CVS OOI promotion or slot forcing."
-    text_bundle.setdefault("debug", {})["CVS Top 3 Shift Rule"] = "CVS protects real packaging images from shifting down; one top-3 blank is allowed only when the next slot is dramatically better."
     return {
-        "text": text_bundle,
-        "images": images,
+        "text": _extract_cvs_text_from_html(
+            html_text,
+            retail_url=retail_url,
+            target_rpc=target_rpc,
+        ),
+        "images": extract_cvs_images_from_html(html_text),
     }
 
 # =========================================
@@ -6439,46 +6192,6 @@ def get_sams_bundle(retail_url, target_rpc="", sku=""):
         "images": [] if is_sams_robot_page(html_text) else extract_sams_images_from_html(html_text),
     }
     
-def _build_uploaded_bundle_cvs(uploaded_html, retail_url="", target_rpc="", sku=""):
-    """
-    CVS-only uploaded bundle path.
-    Keeps CVS TXT + image behavior isolated so CVS changes do not affect Kroger,
-    Walgreens, Sam's Club, or other retailers.
-    """
-    uploaded_images = extract_cvs_images_from_html(uploaded_html)
-    live_images = []
-    image_path = "cvs_uploaded_txt_image_lookup"
-
-    # CVS-only recovery: if uploaded TXT copy is present but TXT image URLs are
-    # missing or incomplete, recover images from the live CVS PDP.
-    if retail_url and (not uploaded_images or len(uploaded_images) < 2):
-        try:
-            live_html = get_html(retail_url)
-        except Exception:
-            live_html = ""
-        if live_html:
-            live_images = extract_cvs_images_from_html(live_html)
-
-    images = uploaded_images
-    if live_images and len(live_images) > len(uploaded_images):
-        images = live_images
-        image_path = "cvs_live_html_image_recovery"
-
-    bundle = {
-        "text": _extract_cvs_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc),
-        "images": images,
-    }
-    bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
-    bundle.setdefault("text", {}).setdefault("debug", {})["Image Path"] = image_path
-    bundle.setdefault("text", {}).setdefault("debug", {})["CVS Uploaded Image Count"] = int(len(uploaded_images or []))
-    bundle.setdefault("text", {}).setdefault("debug", {})["CVS Live Image Count"] = int(len(live_images or []))
-    bundle.setdefault("text", {}).setdefault("debug", {})["CVS Image Count"] = int(len(images or []))
-    bundle.setdefault("text", {}).setdefault("debug", {})["CVS Isolated Parser"] = "cvs_only_uploaded_bundle"
-    bundle.setdefault("text", {}).setdefault("debug", {})["CVS Image Order Rule"] = "Renderer/site order preserved from CVS HTML/TXT capture; no CVS OOI promotion or slot forcing."
-    bundle.setdefault("text", {}).setdefault("debug", {})["CVS Top 3 Shift Rule"] = "CVS protects real packaging images from shifting down; one top-3 blank is allowed only when the next slot is dramatically better."
-    return bundle
-
-
 def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_source_code=""):
     retailer = normalize_retailer_name(retailer_name).strip().lower()
     uploaded_html = str(row_source_code or "")
@@ -6496,7 +6209,9 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
 
     if uploaded_html.strip():
         if retailer == "cvs":
-            return _build_uploaded_bundle_cvs(uploaded_html, retail_url=retail_url, target_rpc=target_rpc, sku=sku)
+            bundle = {"text": _extract_cvs_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_cvs_images_from_html(uploaded_html)}
+            bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
+            return bundle
         if retailer == "walgreens":
             bundle = {"text": extract_walgreens_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_walgreens_images_from_html(uploaded_html)}
             bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
@@ -7717,15 +7432,7 @@ def get_visual_row_payload(
     row_source_code = str(row_source_code or "")
     uploaded_html_map = st.session_state.uploaded_raw_html_map or {}
 
-    # Visual QA must reuse retailer-specific TXT HTML without cross-retailer side effects.
-    if retailer_norm == "cvs":
-        if not row_source_code:
-            row_source_code = lookup_uploaded_raw_html(
-                uploaded_html_map,
-                retail_url,
-                target_rpc=current_target_sku,
-            )
-
+    # Visual QA must reuse the same Kroger TXT-matched HTML used in batch processing.
     if retailer_norm == "kroger":
         if not retail_url and current_target_sku:
             retail_url = find_kroger_url_in_uploaded_map(uploaded_html_map, target_rpc=current_target_sku)
@@ -7774,8 +7481,7 @@ def get_visual_row_payload(
 
     if str(retailer_name or "").strip().lower() == "cvs":
         cvs_max_slots = int(get_retailer_salsify_requirements(retailer_name).get("max_images", MAX_IMAGE_SLOTS_TO_COMPARE) or MAX_IMAGE_SLOTS_TO_COMPARE)
-        r_images = [str(u or "").strip() for u in (r_images or []) if str(u or "").strip()][:cvs_max_slots]
-        r_images = shift_cvs_missing_top3_slots(s_images, r_images, top_slots=3, keep_threshold=55, shift_threshold=80, shift_margin=25, max_total_blanks=1, packaging_guard_threshold=45)
+        r_images = reorder_cvs_retailer_images_for_visual(r_images, max_slots=cvs_max_slots)
     elif str(retailer_name or "").strip().lower() == "walgreens":
         r_images = r_images[:6]
 
@@ -7784,9 +7490,6 @@ def get_visual_row_payload(
         r_images,
         max_slots=visual_max_slots,
     )
-
-    if str(retailer_name or "").strip().lower() == "cvs":
-        r_text.setdefault("debug", {})["CVS Top 3 Shift Rule"] = "CVS keeps real packaging images in the top 3 when they reasonably match any packaging slot, and only inserts one blank when the next slot is dramatically better."
 
     return {
         "s_text": s_text,
@@ -7811,13 +7514,6 @@ def process_row(row):
 
         if str(retailer_name).strip().lower() == "kroger" and not retail_url and cvs_rpc:
             retail_url = find_kroger_url_in_uploaded_map(st.session_state.uploaded_raw_html_map or {}, target_rpc=cvs_rpc)
-
-        if str(retailer_name).strip().lower() == "cvs" and not str(row_source_code or "").strip():
-            row_source_code = lookup_uploaded_raw_html(
-                st.session_state.uploaded_raw_html_map or {},
-                retail_url,
-                target_rpc=cvs_rpc,
-            )
 
         title_score = 0
         desc_score = 0
@@ -7919,17 +7615,7 @@ def process_row(row):
             retailer_name,
             r_bundle["text"] or {},
         )
-        retailer_norm = str(retailer_name or "").strip().lower()
-        if retailer_norm == "walgreens":
-            r_images = (r_bundle["images"] or [])[:6]
-        else:
-            r_images = (r_bundle["images"] or [])
-
-        if retailer_norm == "cvs":
-            cvs_max_slots = int(get_retailer_salsify_requirements(retailer_name).get("max_images", MAX_IMAGE_SLOTS_TO_COMPARE) or MAX_IMAGE_SLOTS_TO_COMPARE)
-            r_images = [str(u or "").strip() for u in (r_images or []) if str(u or "").strip()][:cvs_max_slots]
-            r_images = shift_cvs_missing_top3_slots(s_images, r_images, top_slots=3, keep_threshold=55, shift_threshold=80, shift_margin=25, max_total_blanks=1, packaging_guard_threshold=45)
-
+        r_images = (r_bundle["images"] or [])[:6] if str(retailer_name or "").strip().lower() == "walgreens" else (r_bundle["images"] or [])
         s_images, r_images = align_image_slots_for_comparison(
             s_images,
             r_images,
@@ -8361,8 +8047,6 @@ if uploaded_file:
             txt_ready_for_batch = bool(matched_uploaded_html_count > 0)
             isolated_unique_url_count = int(retailer_df["retail_url"].fillna("").astype(str).str.strip().replace("", pd.NA).dropna().nunique()) if retailer_df is not None and not retailer_df.empty and "retail_url" in retailer_df.columns else 0
             st.caption(f"Strict retailer isolation active: {selected_retailer} only. Rows queued: {len(retailer_df)}. Unique retailer URLs queued: {isolated_unique_url_count}.")
-            if str(selected_retailer or "").strip().lower() == "cvs":
-                st.caption("CVS isolation note: CVS image handling now runs through CVS-only helpers so CVS updates stay isolated from Walgreens, Kroger, Albertsons, and Sam's Club.")
             if selected_capture_mode == CAPTURE_MODE_USE_EXTENSION:
                 extension_payload = build_extension_batch_payload(
                     retailer_df=retailer_df,
