@@ -1261,6 +1261,90 @@ def merge_albertsons_image_lists(primary_images, fallback_images, capture_label_
     return ordered[:MAX_IMAGE_SLOTS_TO_COMPARE]
 
 
+
+
+def _albertsons_desktop_variant_url(asset_name):
+    asset_name = str(asset_name or '').strip().strip('/').rstrip(chr(92))
+    if not asset_name:
+        return ''
+    return f"https://images.albertsons-media.com/is/image/ABS/{asset_name}?$ng-ecom-pdp-desktop$"
+
+
+def _build_albertsons_constructed_asset_names(product_id, desired_count=8):
+    product_id = clean_item_number(product_id)
+    if not product_id:
+        return []
+    desired_count = max(int(desired_count or 0), 1)
+    names = [product_id]
+    # Albertsons/Safeway gallery assets are commonly bare product id plus C/H/A/U/L/R suffix groups.
+    # The order keeps the main image first, then common carousel/detail shots.
+    for prefix in ['C', 'H', 'A', 'U', 'L', 'R']:
+        for idx in range(1, max(desired_count, 8) + 1):
+            names.append(f"{product_id}-{prefix}{idx}")
+    return dedupe_preserve_order(names)
+
+
+@st.cache_data(show_spinner=False, ttl=86400)
+def _is_reachable_albertsons_image_url(url):
+    url = _clean_albertsons_image_url(url)
+    if not url:
+        return False
+    try:
+        session = get_session()
+        response = session.get(url, timeout=6, stream=True, allow_redirects=True)
+        status_ok = int(getattr(response, 'status_code', 0) or 0) == 200
+        content_type = str(response.headers.get('content-type', '') or '').lower()
+        first_chunk = b''
+        try:
+            first_chunk = next(response.iter_content(chunk_size=64), b'') or b''
+        except Exception:
+            first_chunk = b''
+        try:
+            response.close()
+        except Exception:
+            pass
+        if not status_ok:
+            return False
+        if content_type.startswith('image/'):
+            return True
+        return bool(
+            first_chunk[:2] == bytes([0xFF, 0xD8])
+            or first_chunk[:4] == bytes([0x89, 0x50, 0x4E, 0x47])
+            or first_chunk[:4] == b'GIF8'
+            or first_chunk[:4] == b'RIFF'
+        )
+    except Exception:
+        return False
+
+
+@st.cache_data(show_spinner=False, ttl=86400)
+def build_constructed_albertsons_images(product_id, desired_count=8):
+    product_id = clean_item_number(product_id)
+    desired_count = max(int(desired_count or 0), 1)
+    if not product_id:
+        return []
+    out = []
+    for asset_name in _build_albertsons_constructed_asset_names(product_id, desired_count=desired_count):
+        url = _albertsons_desktop_variant_url(asset_name)
+        if not url:
+            continue
+        if _is_reachable_albertsons_image_url(url):
+            out.append(url)
+            if len(out) >= desired_count:
+                break
+    return sorted(dedupe_preserve_order(out), key=_albertsons_asset_sort_key)[:MAX_IMAGE_SLOTS_TO_COMPARE]
+
+
+def ensure_albertsons_images_with_constructed_fallback(images, retail_url='', target_rpc='', capture_label_count=0):
+    images = [str(x or '').strip() for x in (images or []) if str(x or '').strip()]
+    effective_rpc = derive_albertsons_target_rpc(retail_url=retail_url, target_rpc=target_rpc)
+    capture_label_count = int(capture_label_count or 0)
+    desired_count = capture_label_count if capture_label_count else MAX_IMAGE_SLOTS_TO_COMPARE
+    if effective_rpc and (not images or len(images) < min(desired_count, MAX_IMAGE_SLOTS_TO_COMPARE)):
+        constructed = build_constructed_albertsons_images(effective_rpc, desired_count=desired_count)
+        images = merge_albertsons_image_lists(images, constructed, capture_label_count=capture_label_count)
+    return images[:MAX_IMAGE_SLOTS_TO_COMPARE]
+
 def init_session_state_defaults():
     defaults = {
         "start_idx": 0,
@@ -4665,20 +4749,21 @@ def _is_valid_albertsons_asset_name(asset_name, target_rpc=''):
     if not m:
         return False
     product_id = str(m.group(1) or '')
-    suffix = str(m.group(2) or '').strip()
     if target_rpc and product_id != str(target_rpc or '').strip():
         return False
-    # Reject malformed bare product-id-only URLs such as 970751363\ or 970751363 with no asset suffix.
-    if not suffix:
-        return False
-    return True
-
+    # Albertsons commonly uses a bare ABS/{product_id} URL for the main PDP image.
+    # Previous builds rejected bare product-id URLs, which made Albertsons images show as Missing.
+    # Keep the bare product-id image and suffix assets such as -C1, -H1, -A1, etc.
+    return bool(product_id)
 
 def _albertsons_asset_sort_key(url):
     asset_name = _extract_albertsons_asset_name(url)
     if not asset_name:
         return (999, 999, url)
-    suffix = asset_name.split('-', 1)[-1] if '-' in asset_name else asset_name
+    if '-' not in asset_name:
+        # Bare ABS/{product_id} is the main PDP image.
+        return (-1, 0, asset_name)
+    suffix = asset_name.split('-', 1)[-1]
     suffix_upper = suffix.upper()
     prefix_match = re.match(r'^([A-Z]+)', suffix_upper)
     prefix = prefix_match.group(1) if prefix_match else suffix_upper[:1]
@@ -4694,7 +4779,6 @@ def _albertsons_asset_sort_key(url):
     }
     prefix_rank = prefix_rank_map.get(prefix[:1], 50)
     return (prefix_rank, number_value, suffix_upper)
-
 
 def extract_albertsons_images_from_html(html_text, target_rpc=''):
     """
@@ -4926,14 +5010,26 @@ def get_albertsons_bundle_from_uploaded(uploaded_html, retail_url='', target_rpc
             live_images = extract_albertsons_images_from_html(live_html, target_rpc=effective_rpc)
 
     images = merge_albertsons_image_lists(uploaded_images, live_images, capture_label_count=capture_label_count)
+    pre_constructed_count = len(images or [])
+    images = ensure_albertsons_images_with_constructed_fallback(
+        images,
+        retail_url=retail_url,
+        target_rpc=effective_rpc,
+        capture_label_count=capture_label_count,
+    )
+
     if live_images and len(images) > len(uploaded_images):
         text_bundle.setdefault('debug', {})['Image Path'] = 'albertsons_live_html_image_recovery'
         text_bundle.setdefault('debug', {})['Source Used'] = 'uploaded_txt_html_plus_live_image_recovery'
+    if images and len(images) > pre_constructed_count:
+        text_bundle.setdefault('debug', {})['Image Path'] = 'albertsons_constructed_abs_url_recovery'
+        text_bundle.setdefault('debug', {})['Source Used'] = 'uploaded_txt_html_plus_constructed_image_recovery'
 
     text_bundle.setdefault('debug', {})['Albertsons Derived RPC'] = str(effective_rpc or '')
     text_bundle.setdefault('debug', {})['Albertsons Capture Label Count'] = int(capture_label_count or 0)
     text_bundle.setdefault('debug', {})['Albertsons Uploaded Image Count'] = int(len(uploaded_images or []))
     text_bundle.setdefault('debug', {})['Albertsons Live Image Count'] = int(len(live_images or []))
+    text_bundle.setdefault('debug', {})['Albertsons Pre-Constructed Image Count'] = int(pre_constructed_count or 0)
     text_bundle.setdefault('debug', {})['Albertsons Image Count'] = int(len(images or []))
     text_bundle.setdefault('debug', {})['Albertsons Image Capture Note'] = 'Uploaded TXT copy retained. Albertsons images now search raw HTML, rendered DOM, script blobs, CSS background-image values, derive RPC from the retailer URL when needed, and merge/recover retailer images from the live PDP when the TXT is incomplete.'
     return {'text': text_bundle, 'images': images or []}
@@ -4943,12 +5039,21 @@ def get_albertsons_bundle_from_uploaded(uploaded_html, retail_url='', target_rpc
 def get_albertsons_bundle(retail_url, target_rpc=''):
     effective_rpc = derive_albertsons_target_rpc(retail_url=retail_url, target_rpc=target_rpc)
     html_text = get_html(retail_url)
+    live_images = extract_albertsons_images_from_html(html_text, target_rpc=effective_rpc)
+    pre_constructed_count = len(live_images or [])
+    final_images = ensure_albertsons_images_with_constructed_fallback(
+        live_images,
+        retail_url=retail_url,
+        target_rpc=effective_rpc,
+        capture_label_count=0,
+    )
     bundle = {
         'text': extract_albertsons_text_from_html(html_text, retail_url=retail_url, target_rpc=effective_rpc),
-        'images': extract_albertsons_images_from_html(html_text, target_rpc=effective_rpc),
+        'images': final_images,
     }
-    bundle.setdefault('text', {}).setdefault('debug', {})['Image Path'] = 'albertsons_abs_image_lookup'
+    bundle.setdefault('text', {}).setdefault('debug', {})['Image Path'] = 'albertsons_abs_image_lookup' if pre_constructed_count else 'albertsons_constructed_abs_url_recovery'
     bundle.setdefault('text', {}).setdefault('debug', {})['Albertsons Derived RPC'] = str(effective_rpc or '')
+    bundle.setdefault('text', {}).setdefault('debug', {})['Albertsons Live Image Count'] = int(pre_constructed_count or 0)
     bundle.setdefault('text', {}).setdefault('debug', {})['Albertsons Image Count'] = int(len(bundle.get('images', []) or []))
     bundle.setdefault('text', {}).setdefault('debug', {})['Albertsons Image Capture Note'] = 'Carousel / hidden thumbnail variants included when ABS asset URLs are present in raw HTML, script blobs, or CSS background-image values.'
     return bundle
