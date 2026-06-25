@@ -1336,6 +1336,7 @@ def build_constructed_albertsons_images(product_id, desired_count=8):
 
 
 def ensure_albertsons_images_with_constructed_fallback(images, retail_url='', target_rpc='', capture_label_count=0):
+    # Albertsons-only fallback. Do not call this from CVS, Walgreens, Kroger, or Sam's paths.
     images = [str(x or '').strip() for x in (images or []) if str(x or '').strip()]
     effective_rpc = derive_albertsons_target_rpc(retail_url=retail_url, target_rpc=target_rpc)
     capture_label_count = int(capture_label_count or 0)
@@ -4340,26 +4341,126 @@ def extract_vendor_copy_from_nextjs(html_text, target_rpc="", retail_url=""):
     }
 
 
+
+def _clean_cvs_image_url(url):
+    """CVS-only image URL cleanup. No other retailer uses this helper."""
+    url = html.unescape(str(url or '')).strip()
+    if not url:
+        return ''
+    url = url.replace('\\u0026', '&')
+    url = url.replace('\\/','/')
+    url = url.replace('\\\\/', '/')
+    url = url.replace('&amp;', '&')
+    url = url.strip().strip('"').strip("'").rstrip('),;')
+    if url.startswith('//'):
+        url = 'https:' + url
+    if url.startswith('/bizcontent/'):
+        url = 'https://www.cvs.com' + url
+    if url.startswith('bizcontent/'):
+        url = 'https://www.cvs.com/' + url
+    if not re.match(r'^https?://', url, flags=re.IGNORECASE):
+        return ''
+    lowered = url.lower()
+    if 'cvs.com' not in lowered:
+        return ''
+    if '/productimages/' not in lowered and '/bizcontent/merchandising/' not in lowered:
+        return ''
+    if not re.search(r'\.(?:jpg|jpeg|png|webp)(?:\?|$)', lowered, flags=re.IGNORECASE):
+        return ''
+    return re.sub(r'\s+', '', url)
+
+
+def _extract_possible_cvs_image_urls_from_text_blob(text_blob):
+    """CVS-only raw/escaped image URL extraction."""
+    text_blob = html.unescape(str(text_blob or ''))
+    if not text_blob:
+        return []
+    text_blob = text_blob.replace('\\/','/')
+    patterns = [
+        r'https?://(?:www\.)?cvs\.com/bizcontent/merchandising/productimages/[^\s\"\'<>),;]+',
+        r'/bizcontent/merchandising/productimages/[^\s\"\'<>),;]+',
+        r'bizcontent/merchandising/productimages/[^\s\"\'<>),;]+',
+    ]
+    urls = []
+    for pattern in patterns:
+        urls.extend(re.findall(pattern, text_blob, flags=re.IGNORECASE))
+    return urls
+
+
+def _cvs_image_dedupe_key(url):
+    clean = _clean_cvs_image_url(url)
+    if not clean:
+        return ''
+    base = clean.split('?', 1)[0]
+    return base.lower()
+
+
+def _cvs_image_size_score(url):
+    url = str(url or '')
+    nums = []
+    for pattern in [r'Resize=\((\d+)', r'[?&]wid=(\d+)', r'[?&]width=(\d+)', r'[?&]hei=(\d+)', r'[?&]height=(\d+)']:
+        for value in re.findall(pattern, url, flags=re.IGNORECASE):
+            try:
+                nums.append(int(value))
+            except Exception:
+                pass
+    return max(nums) if nums else 0
+
+
 def extract_cvs_images_from_html(html_text):
-    matches = re.findall(r'/bizcontent/merchandising/productimages/high_res/[^\s\"]+\.jpg\?[^\"]*', html_text or "")
+    """
+    CVS-only image extraction.
+    This intentionally does not call Albertsons, Walgreens, Kroger, or Sam's logic.
+    """
+    working = html.unescape(str(html_text or ''))
+    raw_urls = []
+    raw_urls.extend(_extract_possible_cvs_image_urls_from_text_blob(working))
 
-    best_images = {}
+    try:
+        soup = BeautifulSoup(working, 'html.parser')
+        attr_names = (
+            'src', 'data-src', 'data-image-src', 'data-lazy-src', 'data-original',
+            'data-zoom-image', 'content', 'href', 'poster', 'data-testid',
+        )
+        for tag in soup.find_all(True):
+            for attr in attr_names:
+                value = str(tag.get(attr, '') or '')
+                if 'productimages' in value.lower() or '/bizcontent/merchandising/' in value.lower():
+                    raw_urls.append(value)
+            for set_attr in ('srcset', 'data-srcset'):
+                srcset = str(tag.get(set_attr, '') or '')
+                if 'productimages' in srcset.lower() or '/bizcontent/merchandising/' in srcset.lower():
+                    for part in srcset.split(','):
+                        raw_urls.append(part.strip().split(' ')[0])
+            style_value = str(tag.get('style', '') or '')
+            if 'productimages' in style_value.lower() or '/bizcontent/merchandising/' in style_value.lower():
+                for match in re.finditer(r'url\(([^)]+)\)', style_value, flags=re.IGNORECASE):
+                    raw_urls.append(match.group(1).strip().strip('"').strip("'"))
+        for script_tag in soup.find_all('script'):
+            script_text = str(script_tag.string or script_tag.get_text(' ', strip=False) or '')
+            if 'productimages' in script_text.lower() or '/bizcontent/merchandising/' in script_text.lower():
+                raw_urls.extend(_extract_possible_cvs_image_urls_from_text_blob(script_text))
+    except Exception:
+        pass
+
+    best_by_key = {}
     order = []
+    for raw_url in raw_urls:
+        clean = _clean_cvs_image_url(raw_url)
+        if not clean:
+            continue
+        key = _cvs_image_dedupe_key(clean)
+        if not key:
+            continue
+        score = _cvs_image_size_score(clean)
+        if key not in best_by_key:
+            order.append(key)
+            best_by_key[key] = {'url': clean, 'score': score}
+        elif score >= best_by_key[key].get('score', 0):
+            best_by_key[key] = {'url': clean, 'score': score}
 
-    for m in matches:
-        full = "https://www.cvs.com" + m
-        base = full.split("?")[0]
-        name = base.split("/")[-1]
-        size_match = re.search(r"Resize=\((\d+)", m)
-        size = int(size_match.group(1)) if size_match else 0
-
-        if name not in best_images:
-            order.append(name)
-            best_images[name] = {"url": base, "size": size}
-        elif size > best_images[name]["size"]:
-            best_images[name] = {"url": base, "size": size}
-
-    ordered_urls = [best_images[name]["url"] for name in order]
+    ordered_urls = [best_by_key[key]['url'] for key in order if key in best_by_key]
+    ordered_urls = dedupe_preserve_order(ordered_urls)
     return reorder_cvs_retailer_images_for_visual(ordered_urls, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE)
 
 
@@ -4404,13 +4505,17 @@ def _extract_cvs_text_from_html(html_text, retail_url="", target_rpc=""):
 @st.cache_data(show_spinner=False)
 def get_cvs_bundle(retail_url, target_rpc=""):
     html_text = get_html(retail_url)
+    images = extract_cvs_images_from_html(html_text)
+    text_bundle = _extract_cvs_text_from_html(
+        html_text,
+        retail_url=retail_url,
+        target_rpc=target_rpc,
+    )
+    text_bundle.setdefault("debug", {})["Image Path"] = "cvs_live_html_image_lookup"
+    text_bundle.setdefault("debug", {})["CVS Image Count"] = int(len(images or []))
     return {
-        "text": _extract_cvs_text_from_html(
-            html_text,
-            retail_url=retail_url,
-            target_rpc=target_rpc,
-        ),
-        "images": extract_cvs_images_from_html(html_text),
+        "text": text_bundle,
+        "images": images,
     }
 
 # =========================================
@@ -7565,11 +7670,34 @@ def _normalize_retailer_bundle_contract(retailer_name, bundle, fallback_reason="
 
 
 def _build_uploaded_bundle_cvs(uploaded_html, retail_url="", target_rpc="", sku=""):
+    uploaded_images = extract_cvs_images_from_html(uploaded_html)
+    live_images = []
+    image_path = "cvs_uploaded_txt_image_lookup"
+
+    # CVS-only recovery: if TXT copy is present but TXT image URLs are missing/incomplete,
+    # recover CVS images from the live CVS PDP. This does not touch any other retailer.
+    if retail_url and (not uploaded_images or len(uploaded_images) < 2):
+        try:
+            live_html = get_html(retail_url)
+        except Exception:
+            live_html = ""
+        if live_html:
+            live_images = extract_cvs_images_from_html(live_html)
+
+    images = uploaded_images
+    if live_images and len(live_images) > len(uploaded_images):
+        images = live_images
+        image_path = "cvs_live_html_image_recovery"
+
     bundle = {
         "text": _extract_cvs_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc),
-        "images": extract_cvs_images_from_html(uploaded_html),
+        "images": images,
     }
     bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
+    bundle.setdefault("text", {}).setdefault("debug", {})["Image Path"] = image_path
+    bundle.setdefault("text", {}).setdefault("debug", {})["CVS Uploaded Image Count"] = int(len(uploaded_images or []))
+    bundle.setdefault("text", {}).setdefault("debug", {})["CVS Live Image Count"] = int(len(live_images or []))
+    bundle.setdefault("text", {}).setdefault("debug", {})["CVS Image Count"] = int(len(images or []))
     return _normalize_retailer_bundle_contract("CVS", bundle, fallback_reason="uploaded_txt_html")
 
 
