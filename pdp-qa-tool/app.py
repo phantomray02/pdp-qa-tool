@@ -62,8 +62,8 @@ HEADERS = {
     "Connection": "keep-alive",
 }
 
-REQUEST_TIMEOUT = 6
-IMAGE_TIMEOUT = 2.5
+REQUEST_TIMEOUT = 8
+IMAGE_TIMEOUT = 6
 MAX_CACHE = 400
 # Retailer-specific fetch tuning
 WALGREENS_REQUEST_TIMEOUT = 18
@@ -73,19 +73,19 @@ WALGREENS_API_TIMEOUT = 10
 # =========================================
 # PERFORMANCE SETTINGS
 # =========================================
-# Higher parallelism for faster batch processing without changing
-# copy/image extraction logic.
+# Balanced parallelism for image-heavy retailers.
+# Too many workers can cause Salsify/CVS image requests to timeout or show as broken.
 BATCH_SIZE = 32
-MAX_WORKERS = 12
+MAX_WORKERS = 8
 UI_UPDATE_EVERY = 5
 
 # Faster image compare via tiny difference hash.
 IMAGE_HASH_WIDTH = 9
 IMAGE_HASH_HEIGHT = 8
 
-# Larger caches to reduce repeat fetches during batch + visual QA.
+# Larger caches to reduce repeat image fetches during batch + visual QA.
 HTML_CACHE_MAX = 200
-IMAGE_HASH_CACHE_MAX = 300
+IMAGE_HASH_CACHE_MAX = 600
 
 # Hard image safety limits.
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
@@ -108,7 +108,7 @@ EXCLUSIVE_SALSIFY_IMAGE_RETAILERS = set()
 html_cache = {}
 image_hash_cache = {}
 image_compare_cache = {}
-IMAGE_COMPARE_CACHE_MAX = 600
+IMAGE_COMPARE_CACHE_MAX = 1200
 
 thread_local = threading.local()
 
@@ -414,7 +414,7 @@ def image_compare_cell_html(url):
     if not is_video_like_url(url):
         return (
             f"<div style='width:100%;margin:0;padding:0;display:flex;align-items:flex-start;justify-content:center;overflow:hidden;'>"
-            f"<img src='{safe_url}' style='display:block;width:100%;height:auto;object-fit:contain;' />"
+            f"<img src='{safe_url}' loading='lazy' decoding='async' referrerpolicy='no-referrer' style='display:block;width:100%;height:auto;object-fit:contain;' />"
             f"</div>"
         )
 
@@ -493,7 +493,7 @@ def image_tile_html(label, url, box_height=170):
         return f'''<div style="border:1px solid #E0E0E0;border-radius:8px;background:#FFFFFF;padding:8px;">
 <div style="font-size:45px;font-weight:600;margin-bottom:6px;">{safe_label}</div>
 <div style="height:{box_height}px;display:flex;align-items:center;justify-content:center;background:#FAFAFA;border-radius:6px;overflow:hidden;">
-<img src="{safe_url}" style="max-width:100%;max-height:{box_height}px;object-fit:contain;" />
+<img src="{safe_url}" loading="lazy" decoding="async" referrerpolicy="no-referrer" style="max-width:100%;max-height:{box_height}px;object-fit:contain;" />
 </div>
 </div>'''
     else:
