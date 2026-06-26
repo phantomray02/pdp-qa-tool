@@ -64,6 +64,10 @@ HEADERS = {
 
 REQUEST_TIMEOUT = 8
 IMAGE_TIMEOUT = 6
+IMAGE_RETRY_TIMEOUT = 10
+IMAGE_RETRY_COUNT = 1
+IMAGE_FETCH_WORKERS = 6
+IMAGE_FETCH_CHUNK_SIZE = 65536
 MAX_CACHE = 400
 # Retailer-specific fetch tuning
 WALGREENS_REQUEST_TIMEOUT = 18
@@ -109,6 +113,10 @@ html_cache = {}
 image_hash_cache = {}
 image_compare_cache = {}
 IMAGE_COMPARE_CACHE_MAX = 1200
+
+# Image downloads are throttled separately from row workers so image-heavy rows
+# do not overload Salsify/CVS/retailer image hosts and create false timeouts.
+image_fetch_semaphore = threading.BoundedSemaphore(IMAGE_FETCH_WORKERS)
 
 thread_local = threading.local()
 
@@ -7026,21 +7034,19 @@ def _compute_dhash_from_pil_image(img, crop_ratio=0.0):
     return h
 
 
-def get_image_dhash(url):
+def _cache_image_hash_result(url, value):
     global image_hash_cache
-
     if "image_hash_cache" not in globals() or not isinstance(globals().get("image_hash_cache"), dict):
         image_hash_cache = {}
+    image_hash_cache[url] = value
+    while len(image_hash_cache) > IMAGE_HASH_CACHE_MAX:
+        image_hash_cache.pop(next(iter(image_hash_cache)))
 
-    if not url:
-        return None
 
-    if url in image_hash_cache:
-        return image_hash_cache[url]
-
-    try:
-        session = get_session()
-        r = session.get(url, timeout=IMAGE_TIMEOUT, stream=True)
+def _download_image_bytes_once(url, timeout_seconds):
+    session = get_session()
+    with image_fetch_semaphore:
+        r = session.get(url, timeout=timeout_seconds, stream=True)
         if r.status_code != 200:
             return None
 
@@ -7053,14 +7059,50 @@ def get_image_dhash(url):
             return None
 
         image_bytes = bytearray()
-        for chunk in r.iter_content(chunk_size=65536):
+        for chunk in r.iter_content(chunk_size=IMAGE_FETCH_CHUNK_SIZE):
             if not chunk:
                 continue
             image_bytes.extend(chunk)
             if len(image_bytes) > MAX_IMAGE_BYTES:
                 return None
 
+    return bytes(image_bytes) if image_bytes else None
+
+
+def _download_image_bytes_with_retry(url):
+    timeout_plan = [IMAGE_TIMEOUT]
+    for _ in range(max(0, int(IMAGE_RETRY_COUNT or 0))):
+        timeout_plan.append(IMAGE_RETRY_TIMEOUT)
+
+    for timeout_seconds in timeout_plan:
+        try:
+            image_bytes = _download_image_bytes_once(url, timeout_seconds)
+            if image_bytes:
+                return image_bytes
+        except Exception:
+            continue
+    return None
+
+
+def get_image_dhash(url):
+    global image_hash_cache
+
+    if "image_hash_cache" not in globals() or not isinstance(globals().get("image_hash_cache"), dict):
+        image_hash_cache = {}
+
+    url = str(url or "").strip()
+    if not url:
+        return None
+
+    # Cache both successes and failures. A failed image should not be retried dozens
+    # of times in the same batch; use Clear caches to force a fresh retry.
+    if url in image_hash_cache:
+        return image_hash_cache[url]
+
+    try:
+        image_bytes = _download_image_bytes_with_retry(url)
         if not image_bytes:
+            _cache_image_hash_result(url, None)
             return None
 
         bio = BytesIO(image_bytes)
@@ -7069,6 +7111,7 @@ def get_image_dhash(url):
             img = Image.open(bio)
             width, height = img.size
             if width * height > MAX_SAFE_IMAGE_PIXELS:
+                _cache_image_hash_result(url, None)
                 return None
             img.load()
 
@@ -7078,15 +7121,14 @@ def get_image_dhash(url):
             "center_12": _compute_dhash_from_pil_image(img, crop_ratio=0.12),
         }
 
-        image_hash_cache[url] = variants
-        while len(image_hash_cache) > IMAGE_HASH_CACHE_MAX:
-            image_hash_cache.pop(next(iter(image_hash_cache)))
-
+        _cache_image_hash_result(url, variants)
         return variants
 
     except (Image.DecompressionBombWarning, UnidentifiedImageError, OSError, ValueError):
+        _cache_image_hash_result(url, None)
         return None
     except Exception:
+        _cache_image_hash_result(url, None)
         return None
 
 
@@ -7101,9 +7143,14 @@ def compare_images_visually(s_url, r_url):
         image_compare_cache = {}
     if not s_url or not r_url:
         return 0
+    s_url_clean = str(s_url or "").split("?", 1)[0].strip()
+    r_url_clean = str(r_url or "").split("?", 1)[0].strip()
     cache_key = (str(s_url), str(r_url))
     if cache_key in image_compare_cache:
         return image_compare_cache[cache_key]
+    if s_url_clean and r_url_clean and s_url_clean == r_url_clean:
+        image_compare_cache[cache_key] = 100
+        return 100
     s_is_video = is_video_like_url(s_url)
     r_is_video = is_video_like_url(r_url)
     if s_is_video or r_is_video:
