@@ -68,6 +68,14 @@ IMAGE_RETRY_TIMEOUT = 10
 IMAGE_RETRY_COUNT = 1
 IMAGE_FETCH_WORKERS = 6
 IMAGE_FETCH_CHUNK_SIZE = 65536
+
+# UI-only thumbnail compression. These values affect only what is rendered in the
+# Streamlit visual QA HTML. Scoring still uses the original full image URLs.
+DISPLAY_IMAGE_TIMEOUT = 5
+DISPLAY_IMAGE_MAX_WIDTH = 360
+DISPLAY_IMAGE_MAX_HEIGHT = 360
+DISPLAY_IMAGE_QUALITY = 68
+DISPLAY_IMAGE_CACHE_MAX = 1000
 MAX_CACHE = 400
 # Retailer-specific fetch tuning
 WALGREENS_REQUEST_TIMEOUT = 18
@@ -112,6 +120,7 @@ EXCLUSIVE_SALSIFY_IMAGE_RETAILERS = set()
 html_cache = {}
 image_hash_cache = {}
 image_compare_cache = {}
+display_image_cache = {}
 IMAGE_COMPARE_CACHE_MAX = 1200
 
 # Image downloads are throttled separately from row workers so image-heavy rows
@@ -413,11 +422,84 @@ def is_video_like_url(url):
 
 
 
+def _cache_display_image_src(url, value):
+    global display_image_cache
+    if "display_image_cache" not in globals() or not isinstance(globals().get("display_image_cache"), dict):
+        display_image_cache = {}
+    display_image_cache[url] = value
+    while len(display_image_cache) > DISPLAY_IMAGE_CACHE_MAX:
+        display_image_cache.pop(next(iter(display_image_cache)))
+
+
+def get_display_image_src(url):
+    """
+    UI-only thumbnail source builder.
+
+    This returns a compressed data URI for image rendering in Streamlit, while all
+    scoring still uses the original full image URL. CSS dimensions are unchanged;
+    only the downloaded/rendered payload is smaller.
+    """
+    url = str(url or "").strip()
+    if not url:
+        return ""
+    if is_video_like_url(url):
+        return url
+
+    global display_image_cache
+    if "display_image_cache" not in globals() or not isinstance(globals().get("display_image_cache"), dict):
+        display_image_cache = {}
+
+    if url in display_image_cache:
+        return display_image_cache[url]
+
+    try:
+        # Reuse the existing controlled image fetch path so display thumbnails do
+        # not create an unbounded second wave of browser/network requests.
+        image_bytes = _download_image_bytes_once(url, DISPLAY_IMAGE_TIMEOUT)
+        if not image_bytes:
+            _cache_display_image_src(url, url)
+            return url
+
+        bio = BytesIO(image_bytes)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            img = Image.open(bio)
+            width, height = img.size
+            if width * height > MAX_SAFE_IMAGE_PIXELS:
+                _cache_display_image_src(url, url)
+                return url
+            img.load()
+
+        # Preserve transparency against a white background so PNG/WebP assets look
+        # normal after JPEG compression.
+        if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+            rgba = img.convert("RGBA")
+            background = Image.new("RGB", rgba.size, (255, 255, 255))
+            background.paste(rgba, mask=rgba.split()[-1])
+            img = background
+        elif img.mode != "RGB":
+            img = img.convert("RGB")
+
+        img.thumbnail((DISPLAY_IMAGE_MAX_WIDTH, DISPLAY_IMAGE_MAX_HEIGHT), Image.LANCZOS)
+
+        out = BytesIO()
+        img.save(out, format="JPEG", quality=DISPLAY_IMAGE_QUALITY, optimize=True)
+        encoded = base64.b64encode(out.getvalue()).decode("ascii")
+        data_uri = f"data:image/jpeg;base64,{encoded}"
+        _cache_display_image_src(url, data_uri)
+        return data_uri
+
+    except Exception:
+        _cache_display_image_src(url, url)
+        return url
+
+
 def image_compare_cell_html(url):
     if not url:
         return '<div style="width:100%;min-height:80px;display:flex;align-items:center;justify-content:center;margin:0;padding:0;color:#C62828;font-size:16px;font-weight:700;">Missing</div>'
 
-    safe_url = html.escape(str(url), quote=True)
+    display_url = get_display_image_src(url)
+    safe_url = html.escape(str(display_url), quote=True)
 
     if not is_video_like_url(url):
         return (
@@ -497,7 +579,8 @@ def image_tile_html(label, url, box_height=170):
     safe_label = html.escape(label)
 
     if url:
-        safe_url = html.escape(url, quote=True)
+        display_url = get_display_image_src(url)
+        safe_url = html.escape(display_url, quote=True)
         return f'''<div style="border:1px solid #E0E0E0;border-radius:8px;background:#FFFFFF;padding:8px;">
 <div style="font-size:45px;font-weight:600;margin-bottom:6px;">{safe_label}</div>
 <div style="height:{box_height}px;display:flex;align-items:center;justify-content:center;background:#FAFAFA;border-radius:6px;overflow:hidden;">
@@ -1081,7 +1164,7 @@ def strict_filter_rows_for_selected_retailer(df, selected_retailer, dedupe_by_ur
 
     return out
 def clear_in_memory_caches():
-    global html_cache, image_hash_cache, image_compare_cache, walgreens_api_cache
+    global html_cache, image_hash_cache, image_compare_cache, display_image_cache, walgreens_api_cache
 
     if "html_cache" not in globals() or not isinstance(globals().get("html_cache"), dict):
         html_cache = {}
@@ -1089,10 +1172,13 @@ def clear_in_memory_caches():
         image_hash_cache = {}
     if "image_compare_cache" not in globals() or not isinstance(globals().get("image_compare_cache"), dict):
         image_compare_cache = {}
+    if "display_image_cache" not in globals() or not isinstance(globals().get("display_image_cache"), dict):
+        display_image_cache = {}
 
     html_cache.clear()
     image_hash_cache.clear()
     image_compare_cache.clear()
+    display_image_cache.clear()
     if "walgreens_api_cache" not in globals() or not isinstance(globals().get("walgreens_api_cache"), dict):
         walgreens_api_cache = {}
     walgreens_api_cache.clear()
