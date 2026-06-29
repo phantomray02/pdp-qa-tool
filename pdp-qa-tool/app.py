@@ -2358,7 +2358,11 @@ def _parse_salsify_page(html_text):
                 f"Kroger Bullet{i}",
             )
         )
-    kroger_feature_values = dedupe_preserve_order(kroger_feature_values)
+    kroger_feature_values = [
+    (lambda v: re.sub(r'^(kroger\s*feature\s*\d+\s*[:\-]?\s*|feature\s*\d+\s*[:\-]?\s*|\d+\s*[\.\-\)]\s*)', '', normalize_space(v), flags=re.IGNORECASE).strip())(v)
+    for v in dedupe_preserve_order(kroger_feature_values)
+    if v
+]
 
     sams_feature_values = []
     sams_feature_slots = {}
@@ -2601,7 +2605,25 @@ def _parse_salsify_page(html_text):
     except Exception:
         pass
 
-    images = []
+    def pick_kroger_priority_image(asset_lookup):
+    priority_order = [
+        "online optimized image kroger",
+        "online optimized image grocery",
+        "online optimized image",
+    ]
+    best=None
+    best_idx=999
+    for name,url in asset_lookup.items():
+        n=normalize_salsify_asset_name(name)
+        u=str(url or "").strip()
+        for i,p in enumerate(priority_order):
+            if p in n and u:
+                if i<best_idx:
+                    best_idx=i
+                    best={"name":name,"url":u.split("?",1)[0]}
+    return [best] if best else []
+
+images = pick_kroger_priority_image(asset_lookup)
     seen_urls = set()
     for asset_name, asset_url in asset_lookup.items():
         clean_url = str(asset_url or "").strip()
@@ -8826,4 +8848,5 @@ if (
         st.error("🔥 CRITICAL APP ERROR")
         st.text(str(e))
         st.text(traceback.format_exc())
-        
+
+                      
