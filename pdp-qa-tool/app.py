@@ -2129,25 +2129,23 @@ def extract_salsify_visible_property_map(html_text):
     return result
 
 
-def pick_kroger_priority_image(asset_lookup):
-    priority_order = [
-        "online optimized image kroger",
-        "online optimized image grocery",
-        "online optimized image",
-    ]
-    best=None
-    best_idx=999
-    for name,url in asset_lookup.items():
+def pick_kroger_grocery_image_only(asset_lookup):
+    target = "online optimized image grocery"
+
+    for name, url in asset_lookup.items():
         normalized_name = normalize_salsify_asset_name(name)
         clean_url = str(url or "").strip()
+
         if not clean_url:
             continue
-        for i,p in enumerate(priority_order):
-            if p in normalized_name:
-                if i<best_idx:
-                    best_idx=i
-                    best={"name":name,"url":clean_url.split("?",1)[0]}
-    return [best] if best else []
+
+        if target in normalized_name:
+            return [{
+                "name": name,
+                "url": clean_url.split("?", 1)[0]
+            }]
+
+    return []
 
 
 def _parse_salsify_page(html_text):
@@ -2623,7 +2621,7 @@ def _parse_salsify_page(html_text):
     except Exception:
         pass
 
-    images = []
+    images = pick_kroger_grocery_image_only(asset_lookup)
     seen_urls = set()
     for asset_name, asset_url in asset_lookup.items():
         clean_url = str(asset_url or "").strip()
