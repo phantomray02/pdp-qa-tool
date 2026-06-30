@@ -2129,43 +2129,71 @@ def extract_salsify_visible_property_map(html_text):
     return result
 
 
-def pick_kroger_single_best_image(asset_lookup):
-    """Return exactly one Kroger Salsify image using strict priority.
+def pick_kroger_images_with_atf_and_lifestyle(asset_lookup):
+    """Return Kroger Salsify images in the required order.
 
-    Priority:
-    1. Online Optimized Image - Kroger
-    2. Online Optimized Image - Grocery
-    3. Online Optimized Image
+    Required order:
+    1. Exactly one main Online Optimized Image using this priority:
+       - Online Optimized Image - Kroger
+       - Online Optimized Image - Grocery
+       - Online Optimized Image
+    2. Then all ATF images and lifestyle images, in Salsify/source order.
 
-    If none exist, return an empty list. This prevents generic/fallback images
-    from being appended after the selected Kroger image.
+    URLs are deduped so the selected main image is not repeated later.
     """
-    priority_order = [
+    main_priority_order = [
         "online optimized image kroger",
         "online optimized image grocery",
         "online optimized image",
     ]
 
-    best_match = None
-    best_priority_index = 999
+    best_main = None
+    best_main_priority_index = 999
 
+    normalized_assets = []
     for name, url in asset_lookup.items():
         normalized_name = normalize_salsify_asset_name(name)
         clean_url = str(url or "").strip()
-
         if not clean_url:
             continue
+        clean_url = clean_url.split("?", 1)[0]
+        normalized_assets.append((normalized_name, name, clean_url))
 
-        for idx, priority in enumerate(priority_order):
-            if priority in normalized_name:
-                if idx < best_priority_index:
-                    best_priority_index = idx
-                    best_match = {
-                        "name": name,
-                        "url": clean_url.split("?", 1)[0],
-                    }
+        for idx, priority in enumerate(main_priority_order):
+            if priority in normalized_name and idx < best_main_priority_index:
+                best_main_priority_index = idx
+                best_main = {
+                    "name": name,
+                    "url": clean_url,
+                }
 
-    return [best_match] if best_match else []
+    ordered_images = []
+    seen_urls = set()
+
+    if best_main:
+        ordered_images.append(best_main)
+        seen_urls.add(best_main["url"])
+
+    for normalized_name, name, clean_url in normalized_assets:
+        is_atf_image = "atf" in normalized_name
+        is_lifestyle_image = (
+            "lifestyle" in normalized_name
+            or "life style" in normalized_name
+            or "lifestyle image" in normalized_name
+        )
+
+        if not (is_atf_image or is_lifestyle_image):
+            continue
+        if clean_url in seen_urls:
+            continue
+
+        ordered_images.append({
+            "name": name,
+            "url": clean_url,
+        })
+        seen_urls.add(clean_url)
+
+    return ordered_images
 
 
 def _parse_salsify_page(html_text):
@@ -2641,11 +2669,11 @@ def _parse_salsify_page(html_text):
     except Exception:
         pass
 
-    images = pick_kroger_single_best_image(asset_lookup)
+    images = pick_kroger_images_with_atf_and_lifestyle(asset_lookup)
 
     return {
         "text": text_bundle,
-        "images": images,
+        "images": images[:MAX_IMAGE_SLOTS_TO_COMPARE],
     }
 
 @st.cache_data(show_spinner=False)
