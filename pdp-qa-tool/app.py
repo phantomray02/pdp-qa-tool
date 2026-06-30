@@ -4240,8 +4240,13 @@ def get_kroger_bundle(retail_url, target_rpc=""):
         ),
         "images": extract_kroger_images_from_html(html_text),
     }
-    bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "kroger_live_html"
-    bundle.setdefault("text", {}).setdefault("debug", {})["Image Path"] = "kroger_live_html_images"
+    debug = bundle.setdefault("text", {}).setdefault("debug", {})
+    debug["Source Used"] = "kroger_live_html"
+    debug["Image Path"] = "kroger_live_html_images"
+    debug["Availability Rule"] = "allowed_when_live_copy_or_images_exist"
+    availability_debug = extract_kroger_item_availability_debug(html_text)
+    if availability_debug:
+        debug["Item Availability"] = availability_debug
     return bundle
 
 def _safe_json_loads(text):
@@ -6407,6 +6412,31 @@ def is_valid_kroger_product_capture(html_text):
     # when no PDP-specific markers were captured.
     return bool(has_product_marker or not has_shell_marker)
 
+
+def extract_kroger_item_availability_debug(html_text):
+    """Extract Kroger availability labels for debug only.
+
+    Availability must never determine whether a Kroger PDP is processed. If a PDP
+    has live copy/images, it should be allowed even when Kroger Delivery or All
+    Delivery is unavailable. This helper only records what the page showed.
+    """
+    working = html.unescape(str(html_text or ""))
+    if not working.strip():
+        return {}
+
+    debug = {}
+    compact = re.sub(r"\s+", " ", working)
+    availability_pairs = [
+        ("Pickup", r"Pickup\s*(Available|Unavailable)"),
+        ("Kroger Delivery", r"Kroger\s+Delivery\s*(Available|Unavailable)"),
+        ("All Delivery", r"All\s+Delivery\s*(Available|Unavailable)"),
+    ]
+    for label, pattern in availability_pairs:
+        match = re.search(pattern, compact, flags=re.IGNORECASE)
+        if match:
+            debug[label] = normalize_space(match.group(1)).title()
+    return debug
+
 def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_source_code=""):
     retailer = normalize_retailer_name(retailer_name).strip().lower()
     uploaded_html = str(row_source_code or "")
@@ -6417,8 +6447,13 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
                 "text": extract_kroger_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc),
                 "images": extract_kroger_images_from_html(uploaded_html),
             }
-            bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
-            bundle.setdefault("text", {}).setdefault("debug", {})["Image Path"] = "kroger_main_image_perspective"
+            debug = bundle.setdefault("text", {}).setdefault("debug", {})
+            debug["Source Used"] = "uploaded_txt_html"
+            debug["Image Path"] = "kroger_main_image_perspective"
+            debug["Availability Rule"] = "allowed_when_live_copy_or_images_exist"
+            availability_debug = extract_kroger_item_availability_debug(uploaded_html)
+            if availability_debug:
+                debug["Item Availability"] = availability_debug
             return bundle
 
         if uploaded_html.strip():
