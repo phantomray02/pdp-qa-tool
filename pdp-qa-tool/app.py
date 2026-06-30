@@ -4220,7 +4220,29 @@ def extract_kroger_images_from_html(html_text):
 
 @st.cache_data(show_spinner=False)
 def get_kroger_bundle(retail_url, target_rpc=""):
-    return build_empty_retailer_bundle("Kroger", "kroger_txt_only_no_live_fetch")
+    """Fetch and parse live Kroger PDP HTML when no uploaded TXT capture is available."""
+    retail_url = normalize_kroger_url(retail_url)
+    if not retail_url:
+        return build_empty_retailer_bundle("Kroger", "kroger_live_url_missing")
+
+    html_text = get_html(retail_url)
+    if not html_text:
+        html_text = fetch_html_with_timeout(retail_url, 45)
+
+    if not html_text:
+        return build_empty_retailer_bundle("Kroger", "kroger_live_fetch_empty_or_blocked")
+
+    bundle = {
+        "text": extract_kroger_text_from_html(
+            html_text,
+            retail_url=retail_url,
+            target_rpc=target_rpc,
+        ),
+        "images": extract_kroger_images_from_html(html_text),
+    }
+    bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "kroger_live_html"
+    bundle.setdefault("text", {}).setdefault("debug", {})["Image Path"] = "kroger_live_html_images"
+    return bundle
 
 def _safe_json_loads(text):
     try:
@@ -6360,7 +6382,10 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
             bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
             bundle.setdefault("text", {}).setdefault("debug", {})["Image Path"] = "kroger_main_image_perspective"
             return bundle
-        return build_empty_retailer_bundle("Kroger", "kroger_txt_required_missing_or_rpc_not_matched")
+
+        # If no extension/TXT capture is available, fetch the live Kroger PDP directly.
+        # This lets live Kroger pages still populate copy and images instead of showing Missing.
+        return get_kroger_bundle(retail_url, target_rpc=target_rpc)
 
     if uploaded_html.strip():
         if retailer == "cvs":
