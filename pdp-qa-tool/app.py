@@ -6369,12 +6369,50 @@ def get_sams_bundle(retail_url, target_rpc="", sku=""):
         "images": [] if is_sams_robot_page(html_text) else extract_sams_images_from_html(html_text),
     }
     
+
+def is_valid_kroger_product_capture(html_text):
+    """Return True only when uploaded Kroger HTML contains actual PDP content.
+
+    Some Kroger extension captures land on the consent/privacy/loading shell. Those
+    captures contain HTML, but they do not contain live PDP copy/images. If we trust
+    those shell captures, the comparison renders Kroger as Missing. This guard lets
+    the app fall back to live fetch when the uploaded Kroger capture is not a usable
+    product page.
+    """
+    working = html.unescape(str(html_text or ""))
+    if not working.strip():
+        return False
+
+    lowered = working.lower()
+    product_markers = [
+        "product information",
+        "product details",
+        "data-testid=\"product-details-romance-description\"",
+        "data-testid='product-details-romance-description'",
+        " perspective: front",
+        " perspective: main",
+        "upc:",
+        "/product/images/",
+    ]
+    has_product_marker = any(marker in lowered for marker in product_markers)
+
+    shell_markers = [
+        "privacy request center",
+        "onetrust-consent-sdk",
+        "loading",
+    ]
+    has_shell_marker = any(marker in lowered for marker in shell_markers)
+
+    # A real PDP can still include OneTrust/footer text, so only reject shell pages
+    # when no PDP-specific markers were captured.
+    return bool(has_product_marker or not has_shell_marker)
+
 def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_source_code=""):
     retailer = normalize_retailer_name(retailer_name).strip().lower()
     uploaded_html = str(row_source_code or "")
 
     if retailer == "kroger":
-        if uploaded_html.strip():
+        if uploaded_html.strip() and is_valid_kroger_product_capture(uploaded_html):
             bundle = {
                 "text": extract_kroger_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc),
                 "images": extract_kroger_images_from_html(uploaded_html),
@@ -6382,6 +6420,13 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
             bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
             bundle.setdefault("text", {}).setdefault("debug", {})["Image Path"] = "kroger_main_image_perspective"
             return bundle
+
+        if uploaded_html.strip():
+            # Uploaded capture exists, but it is only the Kroger loading/privacy shell.
+            # Fall back to live fetching instead of displaying Missing for a live PDP.
+            live_bundle = get_kroger_bundle(retail_url, target_rpc=target_rpc)
+            live_bundle.setdefault("text", {}).setdefault("debug", {})["Uploaded Capture Ignored"] = "invalid_kroger_shell_capture"
+            return live_bundle
 
         # If no extension/TXT capture is available, fetch the live Kroger PDP directly.
         # This lets live Kroger pages still populate copy and images instead of showing Missing.
