@@ -4232,6 +4232,13 @@ def get_kroger_bundle(retail_url, target_rpc=""):
     if not html_text:
         return build_empty_retailer_bundle("Kroger", "kroger_live_fetch_empty_or_blocked")
 
+    if not is_valid_kroger_product_capture(html_text):
+        bundle = build_empty_retailer_bundle("Kroger", "kroger_live_fetch_non_product_shell")
+        debug = bundle.setdefault("text", {}).setdefault("debug", {})
+        debug["Source Used"] = "kroger_live_html_rejected_shell"
+        debug["Availability Rule"] = "availability_never_blocks_live_copy_or_images"
+        return bundle
+
     bundle = {
         "text": extract_kroger_text_from_html(
             html_text,
@@ -4243,7 +4250,7 @@ def get_kroger_bundle(retail_url, target_rpc=""):
     debug = bundle.setdefault("text", {}).setdefault("debug", {})
     debug["Source Used"] = "kroger_live_html"
     debug["Image Path"] = "kroger_live_html_images"
-    debug["Availability Rule"] = "allowed_when_live_copy_or_images_exist"
+    debug["Availability Rule"] = "availability_never_blocks_live_copy_or_images"
     availability_debug = extract_kroger_item_availability_debug(html_text)
     if availability_debug:
         debug["Item Availability"] = availability_debug
@@ -6376,13 +6383,11 @@ def get_sams_bundle(retail_url, target_rpc="", sku=""):
     
 
 def is_valid_kroger_product_capture(html_text):
-    """Return True only when uploaded Kroger HTML contains actual PDP content.
+    """True only when Kroger HTML contains real PDP content.
 
-    Some Kroger extension captures land on the consent/privacy/loading shell. Those
-    captures contain HTML, but they do not contain live PDP copy/images. If we trust
-    those shell captures, the comparison renders Kroger as Missing. This guard lets
-    the app fall back to live fetch when the uploaded Kroger capture is not a usable
-    product page.
+    Kroger sometimes returns or captures a privacy/loading shell. That shell is not
+    a product page, even though it contains lots of HTML. If the app trusts that
+    shell, Kroger title/description/features/images all render as Missing.
     """
     working = html.unescape(str(html_text or ""))
     if not working.strip():
@@ -6392,50 +6397,59 @@ def is_valid_kroger_product_capture(html_text):
     product_markers = [
         "product information",
         "product details",
-        "data-testid=\"product-details-romance-description\"",
-        "data-testid='product-details-romance-description'",
         " perspective: front",
         " perspective: main",
         "upc:",
         "/product/images/",
+        "data-testid=\"product-details-romance-description\"",
+        "data-testid='product-details-romance-description'",
     ]
-    has_product_marker = any(marker in lowered for marker in product_markers)
-
     shell_markers = [
         "privacy request center",
         "onetrust-consent-sdk",
         "loading",
     ]
+
+    has_product_marker = any(marker in lowered for marker in product_markers)
     has_shell_marker = any(marker in lowered for marker in shell_markers)
 
-    # A real PDP can still include OneTrust/footer text, so only reject shell pages
-    # when no PDP-specific markers were captured.
+    # A real PDP can include cookie/footer scripts, so only reject shell pages
+    # when no PDP-specific marker is present.
     return bool(has_product_marker or not has_shell_marker)
 
 
 def extract_kroger_item_availability_debug(html_text):
-    """Extract Kroger availability labels for debug only.
-
-    Availability must never determine whether a Kroger PDP is processed. If a PDP
-    has live copy/images, it should be allowed even when Kroger Delivery or All
-    Delivery is unavailable. This helper only records what the page showed.
-    """
+    """Extract Kroger availability for debug only; never gate parsing on it."""
     working = html.unescape(str(html_text or ""))
     if not working.strip():
         return {}
 
-    debug = {}
     compact = re.sub(r"\s+", " ", working)
-    availability_pairs = [
+    debug = {}
+    patterns = [
         ("Pickup", r"Pickup\s*(Available|Unavailable)"),
         ("Kroger Delivery", r"Kroger\s+Delivery\s*(Available|Unavailable)"),
         ("All Delivery", r"All\s+Delivery\s*(Available|Unavailable)"),
     ]
-    for label, pattern in availability_pairs:
+    for label, pattern in patterns:
         match = re.search(pattern, compact, flags=re.IGNORECASE)
         if match:
             debug[label] = normalize_space(match.group(1)).title()
     return debug
+
+
+def kroger_bundle_has_live_content(bundle):
+    """True when Kroger bundle has any useful copy or image content."""
+    if not isinstance(bundle, dict):
+        return False
+    text_bundle = bundle.get("text", {}) or {}
+    has_text = bool(
+        normalize_space(text_bundle.get("title", ""))
+        or normalize_space(text_bundle.get("description", ""))
+        or any(normalize_space(x) for x in (text_bundle.get("features", []) or []))
+    )
+    has_images = bool(bundle.get("images", []) or [])
+    return has_text or has_images
 
 def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_source_code=""):
     retailer = normalize_retailer_name(retailer_name).strip().lower()
@@ -6450,21 +6464,23 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
             debug = bundle.setdefault("text", {}).setdefault("debug", {})
             debug["Source Used"] = "uploaded_txt_html"
             debug["Image Path"] = "kroger_main_image_perspective"
-            debug["Availability Rule"] = "allowed_when_live_copy_or_images_exist"
+            debug["Availability Rule"] = "availability_never_blocks_live_copy_or_images"
             availability_debug = extract_kroger_item_availability_debug(uploaded_html)
             if availability_debug:
                 debug["Item Availability"] = availability_debug
             return bundle
 
         if uploaded_html.strip():
-            # Uploaded capture exists, but it is only the Kroger loading/privacy shell.
-            # Fall back to live fetching instead of displaying Missing for a live PDP.
+            # The uploaded capture exists, but it is only the Kroger loading/privacy shell.
+            # Do not allow that shell to mark a live PDP as Missing. Try live fetch next.
             live_bundle = get_kroger_bundle(retail_url, target_rpc=target_rpc)
-            live_bundle.setdefault("text", {}).setdefault("debug", {})["Uploaded Capture Ignored"] = "invalid_kroger_shell_capture"
+            debug = live_bundle.setdefault("text", {}).setdefault("debug", {})
+            debug["Uploaded Capture Ignored"] = "invalid_kroger_shell_capture"
+            debug["Availability Rule"] = "availability_never_blocks_live_copy_or_images"
             return live_bundle
 
         # If no extension/TXT capture is available, fetch the live Kroger PDP directly.
-        # This lets live Kroger pages still populate copy and images instead of showing Missing.
+        # Item availability never blocks PDP copy/images.
         return get_kroger_bundle(retail_url, target_rpc=target_rpc)
 
     if uploaded_html.strip():
