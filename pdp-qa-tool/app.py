@@ -2129,8 +2129,25 @@ def extract_salsify_visible_property_map(html_text):
     return result
 
 
-def pick_kroger_grocery_image_only(asset_lookup):
-    target = "online optimized image grocery"
+def pick_kroger_single_best_image(asset_lookup):
+    """Return exactly one Kroger Salsify image using strict priority.
+
+    Priority:
+    1. Online Optimized Image - Kroger
+    2. Online Optimized Image - Grocery
+    3. Online Optimized Image
+
+    If none exist, return an empty list. This prevents generic/fallback images
+    from being appended after the selected Kroger image.
+    """
+    priority_order = [
+        "online optimized image kroger",
+        "online optimized image grocery",
+        "online optimized image",
+    ]
+
+    best_match = None
+    best_priority_index = 999
 
     for name, url in asset_lookup.items():
         normalized_name = normalize_salsify_asset_name(name)
@@ -2139,13 +2156,16 @@ def pick_kroger_grocery_image_only(asset_lookup):
         if not clean_url:
             continue
 
-        if target in normalized_name:
-            return [{
-                "name": name,
-                "url": clean_url.split("?", 1)[0]
-            }]
+        for idx, priority in enumerate(priority_order):
+            if priority in normalized_name:
+                if idx < best_priority_index:
+                    best_priority_index = idx
+                    best_match = {
+                        "name": name,
+                        "url": clean_url.split("?", 1)[0],
+                    }
 
-    return []
+    return [best_match] if best_match else []
 
 
 def _parse_salsify_page(html_text):
@@ -2621,18 +2641,11 @@ def _parse_salsify_page(html_text):
     except Exception:
         pass
 
-    images = pick_kroger_grocery_image_only(asset_lookup)
-    seen_urls = set()
-    for asset_name, asset_url in asset_lookup.items():
-        clean_url = str(asset_url or "").strip()
-        if not clean_url or clean_url in seen_urls:
-            continue
-        images.append({"name": asset_name, "url": clean_url})
-        seen_urls.add(clean_url)
+    images = pick_kroger_single_best_image(asset_lookup)
 
     return {
         "text": text_bundle,
-        "images": images[:MAX_IMAGE_SLOTS_TO_COMPARE],
+        "images": images,
     }
 
 @st.cache_data(show_spinner=False)
