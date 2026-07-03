@@ -759,6 +759,30 @@ def make_blank_salsify_image_slot(name="missing"):
     return {"name": str(name or "missing"), "url": ""}
 
 
+# CVS-only Salsify packaging views.
+# These are allowed into the Salsify image bundle only so the CVS visual QA
+# can populate slots 2 and 3. Non-CVS retailers filter these back out before
+# image alignment, so Flat Back_2D / Flat Left_2D do not leak into Walgreens,
+# Kroger, Sam's Club, or other retailer comparisons.
+CVS_ONLY_SALSIFY_FLAT_IMAGE_TOKENS = (
+    "flat back 2d",
+    "flat left 2d",
+)
+
+
+def is_cvs_only_salsify_flat_image_name(value):
+    name = normalize_salsify_asset_name(value or "")
+    if not name:
+        return False
+    return any(token in name for token in CVS_ONLY_SALSIFY_FLAT_IMAGE_TOKENS)
+
+
+def is_cvs_only_salsify_image(img):
+    if not isinstance(img, dict):
+        return False
+    return bool(img.get("cvs_only")) or is_cvs_only_salsify_flat_image_name(img.get("name", ""))
+
+
 def build_locked_salsify_slots(s_images, lock_top_three=True, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
     """
     Salsify-only slot builder.
@@ -1058,6 +1082,7 @@ def apply_retailer_salsify_image_limits(retailer_name, images):
     max_images = max(0, min(max_images, MAX_IMAGE_SLOTS_TO_COMPARE))
     if retailer == "cvs":
         return reorder_cvs_salsify_images_for_visual(images, max_slots=max_images)
+    images = [img for img in list(images or []) if not is_cvs_only_salsify_image(img)]
     out = []
     seen_urls = set()
     for img in list(images or []):
@@ -2119,8 +2144,8 @@ def extract_salsify_visible_property_map(html_text):
 
     # Visible asset label -> href patterns.
     visible_asset_patterns = [
-        r'>\s*(Main Variant Image-Club|Online Optimized Image-|Shipping-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)\s*<.*?href="([^"]+)"',
-        r'"property"\s*:\s*"(Main Variant Image-Club|Online Optimized Image-|Shipping-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)"[^{}]{0,1200}?"value"\s*:\s*"([^"]+)"',
+        r'>\s*(Main Variant Image-Club|Online Optimized Image-|Shipping-|Flat Back_2D-|Flat Left_2D-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)\s*<.*?href="([^"]+)"',
+        r'"property"\s*:\s*"(Main Variant Image-Club|Online Optimized Image-|Shipping-|Flat Back_2D-|Flat Left_2D-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)"[^{}]{0,1200}?"value"\s*:\s*"([^"]+)"',
     ]
     for pattern in visible_asset_patterns:
         for matched_name, matched_url in re.findall(pattern, raw_html, flags=re.IGNORECASE | re.DOTALL):
@@ -2130,16 +2155,16 @@ def extract_salsify_visible_property_map(html_text):
 
 
 def pick_kroger_images_with_atf_and_lifestyle(asset_lookup):
-    """Return Kroger Salsify images in the required order.
+    """Return Salsify images in the existing safe order, with CVS-only flats preserved.
 
-    Required order:
-    1. Exactly one main Online Optimized Image using this priority:
-       - Online Optimized Image - Kroger
-       - Online Optimized Image - Grocery
-       - Online Optimized Image
-    2. Then all ATF images and lifestyle images, in Salsify/source order.
+    Existing non-CVS behavior is preserved by keeping the normal output focused on:
+    1. One main Online Optimized Image.
+    2. ATF and lifestyle images in source order.
 
-    URLs are deduped so the selected main image is not repeated later.
+    CVS-only change:
+    - Flat Back_2D and Flat Left_2D assets are appended with cvs_only=True so CVS
+      can use them for slots 2 and 3. The retailer alignment function filters
+      these cvs_only images back out for every non-CVS retailer.
     """
     main_priority_order = [
         "online optimized image kroger",
@@ -2156,7 +2181,7 @@ def pick_kroger_images_with_atf_and_lifestyle(asset_lookup):
         clean_url = str(url or "").strip()
         if not clean_url:
             continue
-        clean_url = clean_url.split("?", 1)[0]
+        clean_url = clean_url if is_video_like_url(clean_url) else clean_url.split("?", 1)[0]
         normalized_assets.append((normalized_name, name, clean_url))
 
         for idx, priority in enumerate(main_priority_order):
@@ -2170,9 +2195,19 @@ def pick_kroger_images_with_atf_and_lifestyle(asset_lookup):
     ordered_images = []
     seen_urls = set()
 
+    def add_image(name, url, cvs_only=False):
+        clean_url = str(url or "").strip()
+        if not clean_url or clean_url in seen_urls:
+            return False
+        img = {"name": name, "url": clean_url}
+        if cvs_only:
+            img["cvs_only"] = True
+        ordered_images.append(img)
+        seen_urls.add(clean_url)
+        return True
+
     if best_main:
-        ordered_images.append(best_main)
-        seen_urls.add(best_main["url"])
+        add_image(best_main["name"], best_main["url"])
 
     for normalized_name, name, clean_url in normalized_assets:
         is_atf_image = "atf" in normalized_name
@@ -2184,17 +2219,17 @@ def pick_kroger_images_with_atf_and_lifestyle(asset_lookup):
 
         if not (is_atf_image or is_lifestyle_image):
             continue
-        if clean_url in seen_urls:
-            continue
 
-        ordered_images.append({
-            "name": name,
-            "url": clean_url,
-        })
-        seen_urls.add(clean_url)
+        add_image(name, clean_url)
+
+    # CVS-only flats are intentionally appended after normal images. CVS slot
+    # ordering will find them by name for slots 2 and 3; non-CVS retailers
+    # filter them out in align_salsify_images_for_retailer().
+    for normalized_name, name, clean_url in normalized_assets:
+        if is_cvs_only_salsify_flat_image_name(name):
+            add_image(name, clean_url, cvs_only=True)
 
     return ordered_images
-
 
 def _parse_salsify_page(html_text):
     empty = {
@@ -2657,8 +2692,8 @@ def _parse_salsify_page(html_text):
     try:
         raw_html_text = html.unescape(str(html_text or ""))
         fallback_asset_patterns = [
-            r'>\s*(Main Variant Image-Club|Online Optimized Image-|Shipping-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)\s*<.*?href="([^"]+)"',
-            r'"property"\s*:\s*"(Main Variant Image-Club|Online Optimized Image-|Shipping-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)"[^{}]{0,800}?"value"\s*:\s*"([^"]+)"',
+            r'>\s*(Main Variant Image-Club|Online Optimized Image-|Shipping-|Flat Back_2D-|Flat Left_2D-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)\s*<.*?href="([^"]+)"',
+            r'"property"\s*:\s*"(Main Variant Image-Club|Online Optimized Image-|Shipping-|Flat Back_2D-|Flat Left_2D-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)"[^{}]{0,800}?"value"\s*:\s*"([^"]+)"',
         ]
         for pattern in fallback_asset_patterns:
             for matched_name, matched_url in re.findall(pattern, raw_html_text, flags=re.IGNORECASE | re.DOTALL):
@@ -7483,6 +7518,8 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
     retailer = str(retailer_name or "").strip().lower()
     brand_norm = normalize_salsify_asset_name(brand or "")
     source_images = list(s_images or [])
+    if retailer != "cvs":
+        source_images = [img for img in source_images if not is_cvs_only_salsify_image(img)]
 
     def dedupe_images_preserve_order(images):
         out = []
