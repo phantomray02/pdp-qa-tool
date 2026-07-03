@@ -2079,6 +2079,13 @@ def render_debugger_panel(
 # =========================================
 # SALSIFY PARSERS
 # =========================================
+# Architecture note:
+# The raw Salsify parser should collect broad Salsify content/assets.
+# Retailer-specific Salsify decisions are applied later through
+# finalize_salsify_copy_for_retailer(), align_salsify_images_for_retailer(),
+# and build_normalized_comparison_payload(). This keeps CVS, Walgreens, Kroger,
+# and Sam's Club Salsify rules separate from each retailer site parser without
+# changing the UI or Excel export.
 
 
 def _normalize_salsify_property_key(value):
@@ -6486,6 +6493,7 @@ def kroger_bundle_has_live_content(bundle):
     has_images = bool(bundle.get("images", []) or [])
     return has_text or has_images
 
+@st.cache_data(show_spinner=False, max_entries=1200)
 def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_source_code=""):
     retailer = normalize_retailer_name(retailer_name).strip().lower()
     uploaded_html = str(row_source_code or "")
@@ -7768,7 +7776,110 @@ def build_image_score_fields(s_images, r_images, max_slots=MAX_IMAGE_SLOTS_TO_SC
     avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
     return avg_img_score, image_position_scores
     
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=1400)
+def build_normalized_comparison_payload(
+    salsify_url,
+    retailer_name,
+    retail_url,
+    current_target_sku="",
+    sku="",
+    brand="",
+    row_source_code="",
+    mode="batch",
+    max_slots=MAX_IMAGE_SLOTS_TO_SCORE,
+):
+    """
+    Centralized comparison payload builder.
+
+    This keeps every retailer split into two separate concerns without changing
+    the UI or Excel export:
+      1. Retailer site parsing through get_retailer_bundle().
+      2. Salsify-for-that-retailer parsing/finalizing through
+         finalize_salsify_copy_for_retailer() and align_salsify_images_for_retailer().
+
+    Performance goal:
+      - Batch processing, visual QA, and filters can reuse the same normalized
+        Salsify/retailer bundles instead of reparsing/re-aligning the same row.
+
+    Behavior lock:
+      - The output shape stays the same as the old visual/batch code.
+      - The Streamlit UI and Excel export consume the same fields they did before.
+      - CVS visual-only feature rescue remains visual-only to avoid changing
+        batch/export scoring unexpectedly.
+    """
+    retailer_norm = normalize_retailer_name(retailer_name).strip().lower()
+    salsify_url = str(salsify_url or "").strip()
+    retail_url = str(retail_url or "").strip()
+    current_target_sku = str(current_target_sku or "").strip()
+    row_source_code = str(row_source_code or "")
+    mode = str(mode or "batch").strip().lower()
+    max_slots = int(max_slots or MAX_IMAGE_SLOTS_TO_SCORE)
+
+    s_bundle = get_salsify_bundle(salsify_url)
+    r_bundle = get_retailer_bundle(
+        retailer_name,
+        retail_url,
+        current_target_sku,
+        sku=sku,
+        row_source_code=row_source_code,
+    )
+
+    s_text = finalize_salsify_copy_for_retailer(retailer_name, s_bundle["text"] or {})
+
+    # Preserve the existing CVS visual QA rescue behavior exactly where it lived:
+    # visual QA only. This prevents batch/export scores from changing while still
+    # ensuring the visual screen shows all CVS Salsify feature candidates.
+    if mode == "visual" and retailer_norm == "cvs":
+        raw_text = dict(s_bundle.get("text", {}) or {})
+        raw_override = (raw_text.get("retailer_overrides", {}) or {}).get("cvs", {}) or {}
+        rescue_features = []
+        rescue_features.extend(raw_override.get("features", []) or [])
+        for i in range(1, 11):
+            rescue_features.append(raw_text.get(f"feature{i}", ""))
+        rescue_features.extend(raw_text.get("features", []) or [])
+        rescue_features = normalize_salsify_feature_values(rescue_features, max_features=10)
+        if rescue_features:
+            s_text["features"] = rescue_features
+            for i in range(1, 8):
+                s_text[f"feature{i}"] = rescue_features[i - 1] if i - 1 < len(rescue_features) else ""
+
+    s_images = align_salsify_images_for_retailer(
+        retailer_name,
+        s_bundle["images"],
+        max_slots=max_slots,
+        brand=brand,
+    )
+
+    r_text = finalize_retailer_copy(retailer_name, r_bundle["text"] or {})
+    r_images = r_bundle["images"] or []
+
+    if mode == "visual":
+        if retailer_norm == "cvs":
+            cvs_max_slots = int(get_retailer_salsify_requirements(retailer_name).get("max_images", MAX_IMAGE_SLOTS_TO_COMPARE) or MAX_IMAGE_SLOTS_TO_COMPARE)
+            r_images = reorder_cvs_retailer_images_for_visual(r_images, max_slots=cvs_max_slots)
+        elif retailer_norm == "walgreens":
+            r_images = r_images[:6]
+    else:
+        if retailer_norm == "walgreens":
+            r_images = r_images[:6]
+
+    s_images, r_images = align_image_slots_for_comparison(
+        s_images,
+        r_images,
+        max_slots=max_slots,
+    )
+
+    return {
+        "s_text": s_text,
+        "s_images": s_images,
+        "r_text": r_text,
+        "r_images": r_images,
+        "s_debug": (s_bundle.get("text", {}) or {}).get("debug", {}) if isinstance(s_bundle, dict) else {},
+        "r_debug": (r_bundle.get("text", {}) or {}).get("debug", {}) if isinstance(r_bundle, dict) else {},
+    }
+
+
+@st.cache_data(show_spinner=False, max_entries=1200)
 def get_visual_row_payload(
     salsify_url,
     retailer_name,
@@ -7777,8 +7888,6 @@ def get_visual_row_payload(
     sku="",
     row_source_code="",
 ):
-    s_bundle = get_salsify_bundle(salsify_url)
-
     retailer_norm = normalize_retailer_name(retailer_name).strip().lower()
     retail_url = str(retail_url or "").strip()
     row_source_code = str(row_source_code or "")
@@ -7795,59 +7904,27 @@ def get_visual_row_payload(
                 target_rpc=current_target_sku,
             )
 
-    r_bundle = get_retailer_bundle(
-        retailer_name,
-        retail_url,
-        current_target_sku,
-        sku=sku,
-        row_source_code=row_source_code,
-    )
-
     visual_max_slots = MAX_IMAGE_SLOTS_TO_COMPARE
-    if str(retailer_name or "").strip().lower() == "walgreens":
+    if retailer_norm == "walgreens":
         visual_max_slots = 6
 
-    s_text = finalize_salsify_copy_for_retailer(retailer_name, s_bundle["text"] or {})
-    if str(retailer_name or "").strip().lower() == "cvs":
-        raw_text = dict(s_bundle.get("text", {}) or {})
-        raw_override = (raw_text.get("retailer_overrides", {}) or {}).get("cvs", {}) or {}
-        rescue_features = []
-        rescue_features.extend(raw_override.get("features", []) or [])
-        for i in range(1, 11):
-            rescue_features.append(raw_text.get(f"feature{i}", ""))
-        rescue_features.extend(raw_text.get("features", []) or [])
-        rescue_features = normalize_salsify_feature_values(rescue_features, max_features=10)
-        if rescue_features:
-            s_text["features"] = rescue_features
-            for i in range(1, 8):
-                s_text[f"feature{i}"] = rescue_features[i - 1] if i - 1 < len(rescue_features) else ""
-    s_images = align_salsify_images_for_retailer(
-        retailer_name,
-        s_bundle["images"],
-        max_slots=visual_max_slots,
+    payload = build_normalized_comparison_payload(
+        salsify_url=salsify_url,
+        retailer_name=retailer_name,
+        retail_url=retail_url,
+        current_target_sku=current_target_sku,
+        sku=sku,
         brand="",
-    )
-
-    r_text = finalize_retailer_copy(retailer_name, r_bundle["text"] or {})
-    r_images = r_bundle["images"] or []
-
-    if str(retailer_name or "").strip().lower() == "cvs":
-        cvs_max_slots = int(get_retailer_salsify_requirements(retailer_name).get("max_images", MAX_IMAGE_SLOTS_TO_COMPARE) or MAX_IMAGE_SLOTS_TO_COMPARE)
-        r_images = reorder_cvs_retailer_images_for_visual(r_images, max_slots=cvs_max_slots)
-    elif str(retailer_name or "").strip().lower() == "walgreens":
-        r_images = r_images[:6]
-
-    s_images, r_images = align_image_slots_for_comparison(
-        s_images,
-        r_images,
+        row_source_code=row_source_code,
+        mode="visual",
         max_slots=visual_max_slots,
     )
 
     return {
-        "s_text": s_text,
-        "s_images": s_images,
-        "r_text": r_text,
-        "r_images": r_images,
+        "s_text": payload["s_text"],
+        "s_images": payload["s_images"],
+        "r_text": payload["r_text"],
+        "r_images": payload["r_images"],
     }
 
 def process_row(row):
@@ -7941,38 +8018,22 @@ def process_row(row):
         # IMPORTANT:
         # Do NOT create a nested thread pool here.
         # The outer batch executor already parallelizes rows.
-        s_bundle = get_salsify_bundle(salsify_url)
-        r_bundle = get_retailer_bundle(
-            retailer_name,
-            retail_url,
-            target_sku,
+        comparison_payload = build_normalized_comparison_payload(
+            salsify_url=salsify_url,
+            retailer_name=retailer_name,
+            retail_url=retail_url,
+            current_target_sku=target_sku,
             sku=row.get("sku", ""),
-            row_source_code=row_source_code,
-        )
-        if str(retailer_name).strip().lower() == "walgreens":
-            print("WAGS SOURCE:", (r_bundle.get("text", {}) or {}).get("debug", {}).get("Source Used", ""))
-
-        s_text = finalize_salsify_copy_for_retailer(
-            retailer_name,
-            s_bundle["text"] or {},
-        )
-        s_images = align_salsify_images_for_retailer(
-            retailer_name,
-            s_bundle["images"],
-            max_slots=MAX_IMAGE_SLOTS_TO_SCORE,
             brand=row.get("brand", ""),
-        )
-
-        r_text = finalize_retailer_copy(
-            retailer_name,
-            r_bundle["text"] or {},
-        )
-        r_images = (r_bundle["images"] or [])[:6] if str(retailer_name or "").strip().lower() == "walgreens" else (r_bundle["images"] or [])
-        s_images, r_images = align_image_slots_for_comparison(
-            s_images,
-            r_images,
+            row_source_code=row_source_code,
+            mode="batch",
             max_slots=MAX_IMAGE_SLOTS_TO_SCORE,
         )
+
+        s_text = comparison_payload["s_text"]
+        s_images = comparison_payload["s_images"]
+        r_text = comparison_payload["r_text"]
+        r_images = comparison_payload["r_images"]
 
         debug_data = r_text.get("debug", {})
 
