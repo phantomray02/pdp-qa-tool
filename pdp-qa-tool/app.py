@@ -504,7 +504,26 @@ def get_display_image_src(url):
 
 def image_compare_cell_html(url):
     if not url:
-        return '<div style="width:100%;min-height:80px;display:flex;align-items:center;justify-content:center;margin:0;padding:0;color:#C62828;font-size:16px;font-weight:700;">Missing</div>'
+        # Keep Missing cells the same vertical footprint as an image cell so
+        # locked CVS flat-slot gaps do not collapse the image comparison rows.
+        # This changes spacing only. It does not change image extraction,
+        # matching, scoring, caching, or export behavior.
+        return (
+            f'<div style="'
+            f'width:100%;'
+            f'height:{IMG_BOX_HEIGHT}px;'
+            f'min-height:{IMG_BOX_HEIGHT}px;'
+            f'display:flex;'
+            f'align-items:center;'
+            f'justify-content:center;'
+            f'margin:0;'
+            f'padding:0;'
+            f'color:#C62828;'
+            f'font-size:16px;'
+            f'font-weight:700;'
+            f'overflow:hidden;'
+            f'">Missing</div>'
+        )
 
     display_url = get_display_image_src(url)
     safe_url = html.escape(str(display_url), quote=True)
