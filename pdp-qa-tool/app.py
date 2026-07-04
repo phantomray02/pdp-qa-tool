@@ -1089,19 +1089,17 @@ def reorder_cvs_retailer_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_
     return ordered[:max_slots]
 
 def align_cvs_atf_images_by_visual_match(s_images, r_images, locked_slots=3, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
-    """Align CVS images to Salsify's locked CVS structure using visual matching.
+    """CVS-specific image pairing with locked Salsify packaging slots.
 
-    Desired CVS behavior:
-    - Salsify slot 1 stays the main/online image.
-    - Salsify slots 2 and 3 stay locked to Flat Back_2D and Flat Left_2D.
-    - If a locked Salsify flat slot is missing, Salsify still shows Missing and
-      a CVS image is NOT consumed for that missing Salsify slot.
-    - For every Salsify slot that has an image after slot 1, choose the best
-      unused CVS image by visual similarity from the remaining CVS image pool.
+    What this fixes:
+    - Salsify slot 2 and slot 3 are required flat packaging audits.
+    - If Salsify is missing Flat Back_2D / Flat Left_2D, Salsify must still show Missing.
+    - CVS should only fill those flat rows when a CVS image is visually close enough.
+    - Weak CVS lifestyle/ATF images should not be pulled upward into flat packaging rows.
+    - After the locked flat rows, remaining CVS images are visually matched to Salsify ATF/lifestyle rows when the match is strong enough.
 
-    This is intentionally different from locking the first three CVS images.
-    CVS often places ATF/lifestyle images before/around packaging images, so
-    locking three CVS positions can prevent the best ATF image from being used.
+    This function reorders only the CVS side. It never moves Salsify images and never
+    hides missing Salsify flat assets.
     """
     s_images = list(s_images or [])
     r_images = [str(u or "").strip() for u in list(r_images or []) if str(u or "").strip()]
@@ -1116,49 +1114,76 @@ def align_cvs_atf_images_by_visual_match(s_images, r_images, locked_slots=3, max
     def _s_url(img):
         return str(img.get("url", "") or "").strip() if isinstance(img, dict) else ""
 
-    # Slot 1 stays in ordinary site order because it is almost always the main PDP image.
-    ordered = [r_images[0]]
-    pool = r_images[1:]
-    used_pool_indexes = set()
+    def _best_unused_match(s_url, pool, used_indexes):
+        best_idx = None
+        best_score = -1
+        if not s_url:
+            return None, -1
+        for idx, r_url in enumerate(pool):
+            if idx in used_indexes or not r_url:
+                continue
+            score = compare_images_visually(s_url, r_url)
+            if score > best_score:
+                best_idx = idx
+                best_score = score
+        return best_idx, best_score
 
-    def _next_unused_pool_url():
+    def _next_unused(pool, used_indexes):
         for idx, url in enumerate(pool):
-            if idx not in used_pool_indexes:
-                used_pool_indexes.add(idx)
+            if idx not in used_indexes:
+                used_indexes.add(idx)
                 return url
         return ""
 
-    # Align every remaining Salsify slot independently. Missing Salsify slots do
-    # not consume a CVS image, so required missing flats stay visible as Missing.
-    for s_img in s_images[1:max_slots]:
+    # Main image: keep the site's first CVS image as the main image. In almost all
+    # CVS PDPs this is the correct hero/main image and should not be stolen by ATF matching.
+    ordered = [r_images[0]]
+    pool = r_images[1:]
+    used = set()
+
+    # Slots 2 and 3 are the locked Salsify flat packaging audit rows.
+    # They should only get a CVS image when the visual match is convincingly close.
+    # Otherwise CVS stays blank in that row so ATF/lifestyle images do not appear
+    # to be missing/incorrect flat packaging.
+    for s_idx in (1, 2):
+        if len(ordered) >= max_slots:
+            break
+        s_url = _s_url(s_images[s_idx]) if s_idx < len(s_images) else ""
+        if not s_url:
+            ordered.append("")
+            continue
+        best_idx, best_score = _best_unused_match(s_url, pool, used)
+        if best_idx is not None and best_score >= 80:
+            ordered.append(pool[best_idx])
+            used.add(best_idx)
+        else:
+            ordered.append("")
+
+    # Slots 4+ are ATF/lifestyle rows. Match the best available CVS image when
+    # there is reasonable visual similarity. When similarity is weak, preserve
+    # source order with the next unused CVS image so the review still shows all assets.
+    for s_img in s_images[3:max_slots]:
+        if len(ordered) >= max_slots:
+            break
         s_url = _s_url(s_img)
         if not s_url:
             ordered.append("")
             continue
-
-        best_idx = None
-        best_score = -1
-        for idx, r_url in enumerate(pool):
-            if idx in used_pool_indexes or not r_url:
-                continue
-            score = compare_images_visually(s_url, r_url)
-            if score > best_score:
-                best_score = score
-                best_idx = idx
-
-        # 55 catches many same-asset ATF/CVS semantic matches while still avoiding
-        # very weak random pairings. If nothing reaches that threshold, preserve
-        # CVS source order by using the next unused image.
+        best_idx, best_score = _best_unused_match(s_url, pool, used)
         if best_idx is not None and best_score >= 55:
             ordered.append(pool[best_idx])
-            used_pool_indexes.add(best_idx)
+            used.add(best_idx)
         else:
-            ordered.append(_next_unused_pool_url())
+            ordered.append(_next_unused(pool, used))
 
-    # Append leftover CVS images in original order so nothing disappears from the visual review.
+    # Append any unused CVS images at the end in original order so the visual QA
+    # does not hide retailer images that still need review.
     for idx, url in enumerate(pool):
-        if idx not in used_pool_indexes:
+        if len(ordered) >= max_slots:
+            break
+        if idx not in used:
             ordered.append(url)
+            used.add(idx)
 
     return ordered[:max_slots]
 
