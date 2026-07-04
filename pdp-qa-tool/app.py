@@ -56,14 +56,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Streamlit 1.58+ supports fragments. Older Streamlit versions will run this as a normal function.
-def _identity_fragment(func=None, **_kwargs):
-    def decorator(f):
-        return f
-    return decorator(func) if callable(func) else decorator
-
-streamlit_fragment = getattr(st, "fragment", _identity_fragment)
-
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
     "Accept-Language": "en-US,en;q=0.9",
@@ -960,7 +952,8 @@ def reorder_cvs_salsify_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_C
     5+. Continue remaining ATF 2-5 Generic images in order.
     Last. ATF 6-Generic is always kept last and is never used as the ATF I/O fallback.
 
-    Missing slots 1-3 stay blank so later ATF images do not shift up.
+    Missing slot 1 stays blank. Missing flat slots 2-3 do not create blanks, so
+    later ATF/lifestyle images are allowed to move up when flat assets are absent.
     """
     imgs = [img for img in (images or []) if isinstance(img, dict)]
 
@@ -1007,17 +1000,17 @@ def reorder_cvs_salsify_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_C
     add(find_first(
         "online optimized image", "online image", "main variant image", "main image", "hero", "primary", "front", "product image 1", "image 1",
     ), "cvs_slot_1")
-    # CVS slots 2 and 3 are locked to explicit Salsify flat assets only.
-    # Do not let generic names like product image 2 / image 2 / side / back fill
-    # these slots because some CVS items use those assets as packaging/ATF images,
-    # which causes false slot drift against CVS lifestyle/ATF images. If a flat is
-    # missing, keep the blank slot and push the remaining images down.
+    # CVS slots 2 and 3 prefer flat/side packaging assets when present, but they
+    # no longer reserve blank slots when those flat assets are missing. This keeps
+    # the remaining Salsify ATF/lifestyle images from being pushed down and avoids
+    # creating artificial Missing rows for products that simply do not have flat
+    # back/left assets in Salsify.
     add(find_first(
-        "flat back 2d", "flat back_2d", "flat back",
-    ), "cvs_slot_2")
+        "flat back 2d", "flat back", "back 2d", "back", "rear", "product image 2", "image 2",
+    ))
     add(find_first(
-        "flat left 2d", "flat left_2d", "flat left",
-    ), "cvs_slot_3")
+        "flat left 2d", "flat left", "left 2d", "left", "flat right 2d", "flat right", "right 2d", "right", "side", "product image 3", "image 3",
+    ))
 
     io_queries = (("atf i/o generic", "atf i o generic", "atf io generic", "atf i/o-generic", "atf io-generic"),)
     atf2_queries = (("atf 2 generic", "atf 2-generic", "atf2 generic", "atf2-generic"),)
@@ -1087,58 +1080,6 @@ def reorder_cvs_retailer_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_
     for url in unslotted:
         add_url(url)
     return ordered[:max_slots]
-
-def cvs_salsify_slot_is_blank(img):
-    if not isinstance(img, dict):
-        return True
-    return not str(img.get("url", "") or "").strip()
-
-
-def align_cvs_retailer_images_to_salsify_locked_slots(s_images, r_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
-    """Align CVS retailer images to Salsify's locked CVS slot structure.
-
-    CVS Salsify locks slots 1-3 as:
-      1. Online/Main
-      2. Flat Back_2D
-      3. Flat Left_2D
-
-    If Salsify is missing slot 2 and/or slot 3, keep the same blank slots on the
-    CVS side and do not consume CVS images for those missing Salsify flat slots.
-    This bumps the CVS image sequence down so ATF/lifestyle images line up against
-    the Salsify ATF/lifestyle sequence instead of being compared too early.
-    """
-    s_images = list(s_images or [])
-    r_images = [str(u or "").strip() for u in list(r_images or [])]
-    r_images = [u for u in r_images if u]
-
-    if not r_images:
-        return []
-
-    missing_slot_2 = len(s_images) < 2 or cvs_salsify_slot_is_blank(s_images[1])
-    missing_slot_3 = len(s_images) < 3 or cvs_salsify_slot_is_blank(s_images[2])
-    if not (missing_slot_2 or missing_slot_3):
-        return r_images[:max_slots]
-
-    ordered = []
-    ordered.append(r_images[0] if len(r_images) > 0 else "")
-    r_cursor = 1
-
-    for s_idx in (1, 2):
-        s_blank = len(s_images) <= s_idx or cvs_salsify_slot_is_blank(s_images[s_idx])
-        if s_blank:
-            ordered.append("")
-        else:
-            if r_cursor < len(r_images):
-                ordered.append(r_images[r_cursor])
-                r_cursor += 1
-            else:
-                ordered.append("")
-
-    for url in r_images[r_cursor:]:
-        ordered.append(url)
-
-    return ordered[:max_slots]
-
 
 def apply_retailer_salsify_image_limits(retailer_name, images):
     retailer = str(retailer_name or "").strip().lower()
@@ -7925,22 +7866,8 @@ def build_normalized_comparison_payload(
         elif retailer_norm == "walgreens":
             r_images = r_images[:6]
     else:
-        if retailer_norm == "cvs":
-            cvs_max_slots = int(get_retailer_salsify_requirements(retailer_name).get("max_images", MAX_IMAGE_SLOTS_TO_COMPARE) or MAX_IMAGE_SLOTS_TO_COMPARE)
-            r_images = reorder_cvs_retailer_images_for_visual(r_images, max_slots=cvs_max_slots)
-        elif retailer_norm == "walgreens":
+        if retailer_norm == "walgreens":
             r_images = r_images[:6]
-
-    # CVS-only: if Salsify is missing locked flat image slots 2/3, mirror those
-    # blanks on the CVS side so CVS ATF/lifestyle images are bumped down and
-    # compared against the matching Salsify ATF/lifestyle sequence.
-    if retailer_norm == "cvs":
-        cvs_max_slots = int(get_retailer_salsify_requirements(retailer_name).get("max_images", MAX_IMAGE_SLOTS_TO_COMPARE) or MAX_IMAGE_SLOTS_TO_COMPARE)
-        r_images = align_cvs_retailer_images_to_salsify_locked_slots(
-            s_images,
-            r_images,
-            max_slots=min(max_slots, cvs_max_slots),
-        )
 
     s_images, r_images = align_image_slots_for_comparison(
         s_images,
@@ -8648,14 +8575,11 @@ if uploaded_file:
 # =========================================
 # VIEW + FILTER CONTROLS
 # =========================================
-# Visual QA filters now live inside the Full Visual QA fragment below. This keeps
-# brand/RPC/search interactions scoped to the visual section and avoids redoing
-# parsing for rows that are filtered out before rendering.
-show_only_issues = False
-hide_good = False
-show_below_90_only = False
-visual_rpc_search = ""
-visual_rpc_exact_only = False
+st.markdown("## 🔎 QA Viewer Controls")
+show_only_issues = st.checkbox("❌ Show ONLY Issues", key="show_issues")
+hide_good = st.checkbox("🎉 Hide Strong Matches (80%+)", key="hide_good")
+show_below_90_only = st.checkbox("🔎 Show Only Scores Below 90%", key="show_below_90_only")
+
 
 st.markdown("### 🧪 Debug Controls")
 
@@ -8690,21 +8614,20 @@ debug_timeout_override = st.number_input(
 
 debug_headers_text = st.text_area(
     "Custom headers (optional)",
+    placeholder="Either JSON, e.g. {'Accept-Language': 'en-US'} or one per line: Key: Value",
+    height=100,
     key="debug_headers_text",
-    height=90,
-    placeholder='{"Accept-Language":"en-US,en;q=0.9"} or Header: Value lines',
 )
 
-debug_use_mobile = st.checkbox(
-    "Use mobile user-agent",
-    key="debug_use_mobile",
-)
-
-debug_proxy_url = st.text_input(
-    "Proxy URL (optional)",
-    key="debug_proxy_url",
-    placeholder="http://user:pass@host:port",
-).strip()
+col_debug_1, col_debug_2 = st.columns(2)
+with col_debug_1:
+    debug_use_mobile = st.checkbox("Use mobile User-Agent", value=False, key="debug_use_mobile")
+with col_debug_2:
+    debug_proxy_url = st.text_input(
+        "Proxy URL (optional)",
+        key="debug_proxy_url",
+        placeholder="http://user:pass@host:port",
+    ).strip()
 
 st.caption(
     "Paste a URL and the debugger will fetch the raw HTML response so you can inspect the exact source before we build a retailer-specific parser."
@@ -8735,8 +8658,18 @@ if show_html_debugger and standalone_debug_url:
         )
 
 
-# Brand selection is rendered inside the Full Visual QA fragment after the batch is complete.
-
+if retailer_df is not None and st.session_state.processing_done and st.session_state.completed_batch_key == current_batch_key:
+    visual_brands = sorted(retailer_df["brand"].dropna().astype(str).unique().tolist()) if "brand" in retailer_df.columns else []
+    visual_brand_options = ["All"] + visual_brands
+    if st.session_state.selected_brand_visual not in visual_brand_options:
+        st.session_state.selected_brand_visual = "All"
+    st.markdown("### 🏷️ Select Brand")
+    st.selectbox(
+        "",
+        visual_brand_options,
+        key="selected_brand_visual",
+        label_visibility="collapsed",
+    )
 
 # =========================================
 # FILE + PROCESSING
@@ -8910,328 +8843,272 @@ if (
 # =========================================
 # FULL VISUAL MODE
 # =========================================
-@streamlit_fragment
-def render_full_visual_qa_review():
-    if (
-        retailer_df is not None
-        and st.session_state.processing_done
-        and st.session_state.completed_batch_key == current_batch_key
-    ):
-        st.markdown("## 🔎 QA Viewer Controls")
-        filter_cols = st.columns([1, 1, 1, 1.35, 0.9], gap="small")
-        with filter_cols[0]:
-            show_only_issues = st.checkbox("❌ Show ONLY Issues", key="show_issues")
-        with filter_cols[1]:
-            hide_good = st.checkbox("🎉 Hide Strong Matches (80%+)", key="hide_good")
-        with filter_cols[2]:
-            show_below_90_only = st.checkbox("🔎 Show Only Scores Below 90%", key="show_below_90_only")
-        with filter_cols[3]:
-            visual_rpc_search = st.text_input(
-                "Search SKU / RPC / URL",
-                key="visual_rpc_search",
-                placeholder="Example: 867564 or 48305-03",
-            ).strip()
-        with filter_cols[4]:
-            visual_rpc_exact_only = st.checkbox(
-                "Show match only",
-                key="visual_rpc_exact_only",
-                help="When checked, the Visual QA big view only renders rows that match the SKU/RPC search.",
-            )
+if (
+    retailer_df is not None
+    and st.session_state.processing_done
+    and st.session_state.completed_batch_key == current_batch_key
+):
+    try:
+        visual_df = retailer_df.copy()
 
-        visual_brands = sorted(retailer_df["brand"].dropna().astype(str).unique().tolist()) if "brand" in retailer_df.columns else []
-        visual_brand_options = ["All"] + visual_brands
-        if st.session_state.selected_brand_visual not in visual_brand_options:
-            st.session_state.selected_brand_visual = "All"
-        st.markdown("### 🏷️ Select Brand")
-        st.selectbox(
-            "",
-            visual_brand_options,
-            key="selected_brand_visual",
-            label_visibility="collapsed",
+        selected_visual_brand = st.session_state.selected_brand_visual
+        if selected_visual_brand != "All" and "brand" in visual_df.columns:
+            visual_df = visual_df[visual_df["brand"].astype(str) == selected_visual_brand].copy()
+
+        if visual_df.empty:
+            st.warning("No rows found for the selected retailer / brand.")
+            st.stop()
+
+        invalid_retail_values = {"", "n/a", "#n/a", "na", "nan", "none"}
+        visual_df["retail_url_clean"] = (
+            visual_df["retail_url"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .str.lower()
         )
+        hidden_count = int(visual_df["retail_url_clean"].isin(invalid_retail_values).sum())
+        visual_df = visual_df[
+            ~visual_df["retail_url_clean"].isin(invalid_retail_values)
+        ].copy()
+        visual_df.drop(columns=["retail_url_clean"], inplace=True, errors="ignore")
 
-        try:
-            visual_df = retailer_df.copy()
+        st.markdown(
+            "<style>.block-container{max-width:1700px;padding-top:1rem;padding-bottom:1rem;} img{max-width:100%;height:auto;}</style>",
+            unsafe_allow_html=True,
+        )
+        st.markdown("## 👁️ Full Visual QA Review")
+        st.caption("This full visual UI appears only after the top batch run finishes and the extract/report rows are ready.")
+        st.caption("This full visual UI appears only after the new top-section batch run finishes and the extract/report rows are ready. Kroger visual rows reuse the uploaded TXT-matched HTML instead of live fetch.")
 
-            selected_visual_brand = st.session_state.selected_brand_visual
-            if selected_visual_brand != "All" and "brand" in visual_df.columns:
-                visual_df = visual_df[visual_df["brand"].astype(str) == selected_visual_brand].copy()
-
-            # RPC/SKU search runs before expensive visual payload parsing. This keeps
-            # image downloads and visual rendering limited to filtered rows.
-            search_value = normalize_space(visual_rpc_search).lower()
-            if search_value:
-                def _row_matches_visual_search(row):
-                    values = [
-                        row.get("sku", ""),
-                        row.get("retailer_rpc", ""),
-                        row.get("retail_url", ""),
-                        row.get("salsify_url", ""),
-                    ]
-                    haystack_values = [normalize_space(v).lower() for v in values if normalize_space(v)]
-                    if visual_rpc_exact_only:
-                        return any(search_value == v for v in haystack_values)
-                    return any(search_value in v for v in haystack_values)
-
-                visual_df = visual_df[visual_df.apply(_row_matches_visual_search, axis=1)].copy()
-
-            if visual_df.empty:
-                st.warning("No rows found for the selected retailer / brand.")
-                st.stop()
-
-            invalid_retail_values = {"", "n/a", "#n/a", "na", "nan", "none"}
-            visual_df["retail_url_clean"] = (
-                visual_df["retail_url"]
-                .fillna("")
-                .astype(str)
-                .str.strip()
-                .str.lower()
+        if hidden_count > 0:
+            st.caption(
+                f"Excluded from Full Visual QA only: {hidden_count} item(s) with missing retailer URLs."
             )
-            hidden_count = int(visual_df["retail_url_clean"].isin(invalid_retail_values).sum())
-            visual_df = visual_df[
-                ~visual_df["retail_url_clean"].isin(invalid_retail_values)
-            ].copy()
-            visual_df.drop(columns=["retail_url_clean"], inplace=True, errors="ignore")
-
-            st.markdown(
-                "<style>.block-container{max-width:1700px;padding-top:1rem;padding-bottom:1rem;} img{max-width:100%;height:auto;}</style>",
-                unsafe_allow_html=True,
+        if visual_df.empty:
+            st.info(
+                "No visually reviewable items found. Products without retailer URLs are still included in the extract."
             )
-            st.markdown("## 👁️ Full Visual QA Review")
-            st.caption("This full visual UI appears only after the top batch run finishes and the extract/report rows are ready.")
-            st.caption("This full visual UI appears only after the new top-section batch run finishes and the extract/report rows are ready. Kroger visual rows reuse the uploaded TXT-matched HTML instead of live fetch.")
+            st.stop()
 
-            if hidden_count > 0:
-                st.caption(
-                    f"Excluded from Full Visual QA only: {hidden_count} item(s) with missing retailer URLs."
-                )
-            if visual_df.empty:
-                st.info(
-                    "No visually reviewable items found. Products without retailer URLs are still included in the extract."
-                )
-                st.stop()
+        for _, row in visual_df.iterrows():
+            sku = row.get("sku", "Missing SKU")
+            retail_url = row.get("retail_url", "")
+            salsify_url = row.get("salsify_url", "")
+            retailer_name = row.get("retailer", "") or infer_retailer_name_from_url(retail_url)
 
-            for _, row in visual_df.iterrows():
-                sku = row.get("sku", "Missing SKU")
-                retail_url = row.get("retail_url", "")
-                salsify_url = row.get("salsify_url", "")
-                retailer_name = row.get("retailer", "") or infer_retailer_name_from_url(retail_url)
-
-                current_rpc = row.get("retailer_rpc", "")
-                current_target_sku = get_target_sku_from_inputs(
-                    retail_url=retail_url,
-                    cvs_rpc=current_rpc,
-                )
+            current_rpc = row.get("retailer_rpc", "")
+            current_target_sku = get_target_sku_from_inputs(
+                retail_url=retail_url,
+                cvs_rpc=current_rpc,
+            )
             
-                visual_payload = get_visual_row_payload(
-                    salsify_url,
-                    retailer_name,
-                    retail_url,
-                    current_target_sku,
-                    sku=sku,
-                    row_source_code=row.get("copy_source_code", ""),
-                )
-                s_text = visual_payload["s_text"]
-                s_images = visual_payload["s_images"]
-                r_text = visual_payload["r_text"]
-                r_images = visual_payload["r_images"]
+            visual_payload = get_visual_row_payload(
+                salsify_url,
+                retailer_name,
+                retail_url,
+                current_target_sku,
+                sku=sku,
+                row_source_code=row.get("copy_source_code", ""),
+            )
+            s_text = visual_payload["s_text"]
+            s_images = visual_payload["s_images"]
+            r_text = visual_payload["r_text"]
+            r_images = visual_payload["r_images"]
 
-                s_title = s_text.get("title") or ""
-                r_title = r_text.get("title") or ""
-                s_desc = s_text.get("description") or ""
-                r_desc = r_text.get("description") or ""
-                retailer_features = r_text.get("features") or []
-                retailer_norm = str(retailer_name or "").strip().lower()
-                salsify_requirements = get_retailer_salsify_requirements(retailer_name)
-                feature_fields = get_retailer_salsify_feature_fields(retailer_name)
+            s_title = s_text.get("title") or ""
+            r_title = r_text.get("title") or ""
+            s_desc = s_text.get("description") or ""
+            r_desc = r_text.get("description") or ""
+            retailer_features = r_text.get("features") or []
+            retailer_norm = str(retailer_name or "").strip().lower()
+            salsify_requirements = get_retailer_salsify_requirements(retailer_name)
+            feature_fields = get_retailer_salsify_feature_fields(retailer_name)
 
-                title_score = keyword_score(s_title, r_title)
-                desc_score = description_similarity_score(s_desc, r_desc)
+            title_score = keyword_score(s_title, r_title)
+            desc_score = description_similarity_score(s_desc, r_desc)
 
-                max_features = min(
-                    max(len(feature_fields), len(retailer_features)),
-                    int(salsify_requirements.get("max_features", len(feature_fields)) or len(feature_fields)),
-                )
-                feature_scores = []
-                feature_rows = []
-                for i in range(max_features):
-                    s_val = s_text.get(feature_fields[i], "") if i < len(feature_fields) else ""
-                    r_val = retailer_features[i] if i < len(retailer_features) else ""
-                    row_score = keyword_score(s_val, r_val)
-                    feature_scores.append(row_score)
-                    feature_rows.append((s_val, r_val, row_score))
+            max_features = min(
+                max(len(feature_fields), len(retailer_features)),
+                int(salsify_requirements.get("max_features", len(feature_fields)) or len(feature_fields)),
+            )
+            feature_scores = []
+            feature_rows = []
+            for i in range(max_features):
+                s_val = s_text.get(feature_fields[i], "") if i < len(feature_fields) else ""
+                r_val = retailer_features[i] if i < len(retailer_features) else ""
+                row_score = keyword_score(s_val, r_val)
+                feature_scores.append(row_score)
+                feature_rows.append((s_val, r_val, row_score))
 
-                avg_feature_score = int(sum(feature_scores) / len(feature_scores)) if feature_scores else 0
-                copy_avg_score = int((title_score + desc_score + avg_feature_score) / 3)
+            avg_feature_score = int(sum(feature_scores) / len(feature_scores)) if feature_scores else 0
+            copy_avg_score = int((title_score + desc_score + avg_feature_score) / 3)
 
-                s_images, r_images = trim_trailing_empty_image_slots(s_images, r_images)
-                retailer_image_limit = int(salsify_requirements.get("max_images", MAX_IMAGE_SLOTS_TO_COMPARE) or MAX_IMAGE_SLOTS_TO_COMPARE)
-                max_images = min(max(len(s_images), len(r_images)), MAX_IMAGE_SLOTS_TO_COMPARE, retailer_image_limit)
+            s_images, r_images = trim_trailing_empty_image_slots(s_images, r_images)
+            retailer_image_limit = int(salsify_requirements.get("max_images", MAX_IMAGE_SLOTS_TO_COMPARE) or MAX_IMAGE_SLOTS_TO_COMPARE)
+            max_images = min(max(len(s_images), len(r_images)), MAX_IMAGE_SLOTS_TO_COMPARE, retailer_image_limit)
             
-                # Compute image score before applying row filters.
-                avg_img_score, _image_position_scores = build_image_score_fields(
-                    s_images,
-                    r_images,
-                    max_slots=min(MAX_IMAGE_SLOTS_TO_SCORE, retailer_image_limit),
-                )
+            # Compute image score before applying row filters.
+            avg_img_score, _image_position_scores = build_image_score_fields(
+                s_images,
+                r_images,
+                max_slots=min(MAX_IMAGE_SLOTS_TO_SCORE, retailer_image_limit),
+            )
             
-                overall_score = int((title_score + desc_score + avg_feature_score + avg_img_score) / 4)
+            overall_score = int((title_score + desc_score + avg_feature_score + avg_img_score) / 4)
             
-                if show_only_issues and overall_score >= 80:
-                    continue
-                if hide_good and overall_score >= 80:
-                    continue
-                if show_below_90_only and overall_score >= 90:
-                    continue
+            if show_only_issues and overall_score >= 80:
+                continue
+            if hide_good and overall_score >= 80:
+                continue
+            if show_below_90_only and overall_score >= 90:
+                continue
 
-                left, right = st.columns([2.72, 0.95], gap="small")
+            left, right = st.columns([2.72, 0.95], gap="small")
         
-                with left:
-                    raw_rpc = current_target_sku or current_rpc
-                    clean_rpc = clean_item_number(raw_rpc)
+            with left:
+                raw_rpc = current_target_sku or current_rpc
+                clean_rpc = clean_item_number(raw_rpc)
 
-                    salsify_header_html = column_header_link_html("Salsify", sku, salsify_url)
-                    retailer_header_html = column_header_link_html(
-                        retailer_name,
-                        clean_rpc,
-                        retail_url,
-                    )
+                salsify_header_html = column_header_link_html("Salsify", sku, salsify_url)
+                retailer_header_html = column_header_link_html(
+                    retailer_name,
+                    clean_rpc,
+                    retail_url,
+                )
 
-                    rating_html = ""
-                    if str(retailer_name or "").strip().lower() in {"walgreens", "kroger"}:
-                        retailer_name_norm = str(retailer_name or "").strip().lower()
-                        rating_value = (r_text.get("rating", "") if isinstance(r_text, dict) else "") or row.get("rating", "") or ""
-                        review_count_value = (r_text.get("review_count", "") if isinstance(r_text, dict) else "") or row.get("review_count", "") or ""
-                        if rating_value or review_count_value:
-                            kroger_star_size = 28 if retailer_name_norm == "kroger" else 18
-                            rating_html = rating_stars_html(rating_value, review_count_value, font_size_px=kroger_star_size)
+                rating_html = ""
+                if str(retailer_name or "").strip().lower() in {"walgreens", "kroger"}:
+                    retailer_name_norm = str(retailer_name or "").strip().lower()
+                    rating_value = (r_text.get("rating", "") if isinstance(r_text, dict) else "") or row.get("rating", "") or ""
+                    review_count_value = (r_text.get("review_count", "") if isinstance(r_text, dict) else "") or row.get("review_count", "") or ""
+                    if rating_value or review_count_value:
+                        kroger_star_size = 28 if retailer_name_norm == "kroger" else 18
+                        rating_html = rating_stars_html(rating_value, review_count_value, font_size_px=kroger_star_size)
 
+                st.markdown(
+                    locked_visual_header_row_html(
+                        salsify_header_html,
+                        retailer_header_html,
+                        rating_html=rating_html,
+                        retailer_name=retailer_name,
+                    ),
+                    unsafe_allow_html=True,
+                )
+
+                st.markdown(
+                    avg_score_bar_html("Copy — Avg", copy_avg_score),
+                    unsafe_allow_html=True,
+                )
+
+                st.markdown(section_header_html("Title", title_score), unsafe_allow_html=True)
+                t1, t2 = st.columns(2, gap="small")
+                with t1:
                     st.markdown(
-                        locked_visual_header_row_html(
-                            salsify_header_html,
-                            retailer_header_html,
-                            rating_html=rating_html,
-                            retailer_name=retailer_name,
-                        ),
+                        "<div style='margin-bottom:4px'>" + equal_height_block(s_title or "Missing", min_height=56) + "</div>",
                         unsafe_allow_html=True,
                     )
-
+                with t2:
                     st.markdown(
-                        avg_score_bar_html("Copy — Avg", copy_avg_score),
+                        "<div style='margin-bottom:4px'>" + equal_height_block(r_title or "Missing", min_height=56) + "</div>",
                         unsafe_allow_html=True,
                     )
 
-                    st.markdown(section_header_html("Title", title_score), unsafe_allow_html=True)
-                    t1, t2 = st.columns(2, gap="small")
-                    with t1:
-                        st.markdown(
-                            "<div style='margin-bottom:4px'>" + equal_height_block(s_title or "Missing", min_height=56) + "</div>",
-                            unsafe_allow_html=True,
-                        )
-                    with t2:
-                        st.markdown(
-                            "<div style='margin-bottom:4px'>" + equal_height_block(r_title or "Missing", min_height=56) + "</div>",
-                            unsafe_allow_html=True,
-                        )
+                st.markdown(f"<div style='height:{TITLE_TO_DESCRIPTION_GAP_PX}px'></div>", unsafe_allow_html=True)
 
-                    st.markdown(f"<div style='height:{TITLE_TO_DESCRIPTION_GAP_PX}px'></div>", unsafe_allow_html=True)
-
-                    st.markdown(section_header_html("Description", desc_score), unsafe_allow_html=True)
-                    d1, d2 = st.columns(2, gap="small")
-                    with d1:
-                        st.markdown(
-                            "<div style='margin-bottom:4px'>" + equal_height_block(s_desc or "Missing", min_height=150) + "</div>",
-                            unsafe_allow_html=True,
-                        )
-                    with d2:
-                        st.markdown(
-                            "<div style='margin-bottom:4px'>" + equal_height_block(r_desc or "Missing", min_height=150) + "</div>",
-                            unsafe_allow_html=True,
-                        )
-
-                    st.markdown(f"<div style='height:{DESCRIPTION_TO_FEATURES_GAP_PX}px'></div>", unsafe_allow_html=True)
-
-                    st.markdown(section_header_html("Features", avg_feature_score), unsafe_allow_html=True)
-                    for s_val, r_val, row_score in feature_rows:
-                        f1, f2 = st.columns(2, gap="small")
-                        with f1:
-                            st.markdown(
-                                "<div style='margin-bottom:4px'>" + equal_feature_block(s_val or "Missing", min_height=40) + "</div>",
-                                unsafe_allow_html=True,
-                            )
-                        with f2:
-                            st.markdown(
-                                "<div style='margin-bottom:4px'>" + equal_feature_block(r_val or "Missing", min_height=40) + "</div>",
-                                unsafe_allow_html=True,
-                            )
-                        st.markdown(
-                            f"<div style='margin:0 0 {SECTION_VERTICAL_GAP}px 0; font-size:14px; font-weight:700;'>{score_text_html(row_score)}</div>",
-                            unsafe_allow_html=True,
-                        )
-
-                with right:
-                    head_i1, head_i2 = st.columns(2, gap="small")
-                    head_i1.markdown(image_header_html("Salsify"), unsafe_allow_html=True)
-                    head_i2.markdown(
-                        f"<div style='margin-left:-42px;'>" + image_header_html(retailer_name) + "</div>",
-                        unsafe_allow_html=True,
-                    )
+                st.markdown(section_header_html("Description", desc_score), unsafe_allow_html=True)
+                d1, d2 = st.columns(2, gap="small")
+                with d1:
                     st.markdown(
-                        avg_score_bar_html("Images — Avg", avg_img_score),
+                        "<div style='margin-bottom:4px'>" + equal_height_block(s_desc or "Missing", min_height=150) + "</div>",
+                        unsafe_allow_html=True,
+                    )
+                with d2:
+                    st.markdown(
+                        "<div style='margin-bottom:4px'>" + equal_height_block(r_desc or "Missing", min_height=150) + "</div>",
                         unsafe_allow_html=True,
                     )
 
-                    img_scores = []
-                    max_images_to_score = min(max_images, MAX_IMAGE_SLOTS_TO_SCORE)
-                
-                    for i in range(max_images):
-                        s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else ""
-                        r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else ""
-                
-                        slot_score = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
-                
-                        if i < max_images_to_score:
-                            img_scores.append(slot_score)
-                
+                st.markdown(f"<div style='height:{DESCRIPTION_TO_FEATURES_GAP_PX}px'></div>", unsafe_allow_html=True)
+
+                st.markdown(section_header_html("Features", avg_feature_score), unsafe_allow_html=True)
+                for s_val, r_val, row_score in feature_rows:
+                    f1, f2 = st.columns(2, gap="small")
+                    with f1:
                         st.markdown(
-                            image_compare_row_html(s_url, r_url, slot_score),
+                            "<div style='margin-bottom:4px'>" + equal_feature_block(s_val or "Missing", min_height=40) + "</div>",
                             unsafe_allow_html=True,
                         )
-                
-                    avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
-                    overall_score = int((title_score + desc_score + avg_feature_score + avg_img_score) / 4)
+                    with f2:
+                        st.markdown(
+                            "<div style='margin-bottom:4px'>" + equal_feature_block(r_val or "Missing", min_height=40) + "</div>",
+                            unsafe_allow_html=True,
+                        )
+                    st.markdown(
+                        f"<div style='margin:0 0 {SECTION_VERTICAL_GAP}px 0; font-size:14px; font-weight:700;'>{score_text_html(row_score)}</div>",
+                        unsafe_allow_html=True,
+                    )
 
-                if show_html_debugger:
-                    should_render_debugger = (not debug_only_sku) or (
-                        str(sku).strip() == str(debug_only_sku).strip()
+            with right:
+                head_i1, head_i2 = st.columns(2, gap="small")
+                head_i1.markdown(image_header_html("Salsify"), unsafe_allow_html=True)
+                head_i2.markdown(
+                    f"<div style='margin-left:-42px;'>" + image_header_html(retailer_name) + "</div>",
+                    unsafe_allow_html=True,
+                )
+                st.markdown(
+                    avg_score_bar_html("Images — Avg", avg_img_score),
+                    unsafe_allow_html=True,
+                )
+
+                img_scores = []
+                max_images_to_score = min(max_images, MAX_IMAGE_SLOTS_TO_SCORE)
+                
+                for i in range(max_images):
+                    s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else ""
+                    r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else ""
+                
+                    slot_score = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
+                
+                    if i < max_images_to_score:
+                        img_scores.append(slot_score)
+                
+                    st.markdown(
+                        image_compare_row_html(s_url, r_url, slot_score),
+                        unsafe_allow_html=True,
+                    )
+                
+                avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
+                overall_score = int((title_score + desc_score + avg_feature_score + avg_img_score) / 4)
+
+            if show_html_debugger:
+                should_render_debugger = (not debug_only_sku) or (
+                    str(sku).strip() == str(debug_only_sku).strip()
+                )
+            
+                if should_render_debugger:
+                    debug_url = retail_url if debugger_source == "Retailer page" else salsify_url
+                    debug_retailer_name = retailer_name if debugger_source == "Retailer page" else "salsify"
+            
+                    debug_views = resolve_debug_views(
+                        debug_url,
+                        retailer_name=debug_retailer_name,
+                        use_manual_html_override=use_manual_html_override,
+                        manual_html_text=manual_html_text,
+                        manual_html_file=manual_html_file,
                     )
             
-                    if should_render_debugger:
-                        debug_url = retail_url if debugger_source == "Retailer page" else salsify_url
-                        debug_retailer_name = retailer_name if debugger_source == "Retailer page" else "salsify"
-            
-                        debug_views = resolve_debug_views(
-                            debug_url,
-                            retailer_name=debug_retailer_name,
+                    with st.expander(f"🔎 HTML / DOM Debugger — {sku}", expanded=True):
+                        render_debugger_panel(
+                            debug_views,
+                            sku=sku,
+                            marker_start=debug_marker_start,
+                            marker_end=debug_marker_end,
+                            marker_target=debug_marker_target,
                             use_manual_html_override=use_manual_html_override,
-                            manual_html_text=manual_html_text,
-                            manual_html_file=manual_html_file,
                         )
-            
-                        with st.expander(f"🔎 HTML / DOM Debugger — {sku}", expanded=True):
-                            render_debugger_panel(
-                                debug_views,
-                                sku=sku,
-                                marker_start=debug_marker_start,
-                                marker_end=debug_marker_end,
-                                marker_target=debug_marker_target,
-                                use_manual_html_override=use_manual_html_override,
-                            )
-                st.divider()
-        except Exception as e:
-            st.error("🔥 CRITICAL APP ERROR")
-            st.text(str(e))
-            st.text(traceback.format_exc())
-
-
-render_full_visual_qa_review()
+            st.divider()
+    except Exception as e:
+        st.error("🔥 CRITICAL APP ERROR")
+        st.text(str(e))
+        st.text(traceback.format_exc())
