@@ -1089,18 +1089,19 @@ def reorder_cvs_retailer_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_
     return ordered[:max_slots]
 
 def align_cvs_atf_images_by_visual_match(s_images, r_images, locked_slots=3, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
-    """Reorder CVS ATF/lifestyle images after locked Salsify CVS slots.
+    """Align CVS images to Salsify's locked CVS structure using visual matching.
 
-    CVS image rules are intentionally split into two parts:
-    1. Salsify slots 1-3 stay locked. Slots 2 and 3 should show Missing when
-       Flat Back_2D / Flat Left_2D are absent from Salsify.
-    2. After those locked slots, reorder the remaining CVS images to best match
-       the remaining Salsify ATF/lifestyle images using the existing visual hash
-       scorer. This improves ATF alignment without hiding missing flat packaging
-       issues.
+    Desired CVS behavior:
+    - Salsify slot 1 stays the main/online image.
+    - Salsify slots 2 and 3 stay locked to Flat Back_2D and Flat Left_2D.
+    - If a locked Salsify flat slot is missing, Salsify still shows Missing and
+      a CVS image is NOT consumed for that missing Salsify slot.
+    - For every Salsify slot that has an image after slot 1, choose the best
+      unused CVS image by visual similarity from the remaining CVS image pool.
 
-    This function does not move Salsify images and does not fill Salsify missing
-    flat slots. It only reorders CVS images after the locked top section.
+    This is intentionally different from locking the first three CVS images.
+    CVS often places ATF/lifestyle images before/around packaging images, so
+    locking three CVS positions can prevent the best ATF image from being used.
     """
     s_images = list(s_images or [])
     r_images = [str(u or "").strip() for u in list(r_images or []) if str(u or "").strip()]
@@ -1108,41 +1109,36 @@ def align_cvs_atf_images_by_visual_match(s_images, r_images, locked_slots=3, max
     if not r_images:
         return []
 
-    locked_slots = max(0, int(locked_slots or 0))
     max_slots = max(0, int(max_slots or MAX_IMAGE_SLOTS_TO_COMPARE))
-
-    # Keep the CVS images in the top locked positions unchanged. This preserves
-    # the visible comparison for main image and any CVS flat/packaging images.
-    locked_head = r_images[:locked_slots]
-    r_pool = r_images[locked_slots:]
-
-    if not r_pool:
-        return r_images[:max_slots]
-
-    aligned_tail = []
-    used_pool_indexes = set()
-    s_tail = s_images[locked_slots:max_slots]
+    if max_slots <= 0:
+        return []
 
     def _s_url(img):
         return str(img.get("url", "") or "").strip() if isinstance(img, dict) else ""
 
+    # Slot 1 stays in ordinary site order because it is almost always the main PDP image.
+    ordered = [r_images[0]]
+    pool = r_images[1:]
+    used_pool_indexes = set()
+
     def _next_unused_pool_url():
-        for idx, url in enumerate(r_pool):
+        for idx, url in enumerate(pool):
             if idx not in used_pool_indexes:
                 used_pool_indexes.add(idx)
                 return url
         return ""
 
-    for s_img in s_tail:
+    # Align every remaining Salsify slot independently. Missing Salsify slots do
+    # not consume a CVS image, so required missing flats stay visible as Missing.
+    for s_img in s_images[1:max_slots]:
         s_url = _s_url(s_img)
         if not s_url:
-            # Keep later blank Salsify slots from stealing a CVS image.
-            aligned_tail.append("")
+            ordered.append("")
             continue
 
         best_idx = None
         best_score = -1
-        for idx, r_url in enumerate(r_pool):
+        for idx, r_url in enumerate(pool):
             if idx in used_pool_indexes or not r_url:
                 continue
             score = compare_images_visually(s_url, r_url)
@@ -1150,20 +1146,21 @@ def align_cvs_atf_images_by_visual_match(s_images, r_images, locked_slots=3, max
                 best_score = score
                 best_idx = idx
 
-        # Use a moderate threshold so exact/near ATF matches move into place,
-        # but weak visual guesses do not destroy source order.
-        if best_idx is not None and best_score >= 80:
-            aligned_tail.append(r_pool[best_idx])
+        # 55 catches many same-asset ATF/CVS semantic matches while still avoiding
+        # very weak random pairings. If nothing reaches that threshold, preserve
+        # CVS source order by using the next unused image.
+        if best_idx is not None and best_score >= 55:
+            ordered.append(pool[best_idx])
             used_pool_indexes.add(best_idx)
         else:
-            aligned_tail.append(_next_unused_pool_url())
+            ordered.append(_next_unused_pool_url())
 
-    # Append any remaining CVS images in their original order.
-    for idx, url in enumerate(r_pool):
+    # Append leftover CVS images in original order so nothing disappears from the visual review.
+    for idx, url in enumerate(pool):
         if idx not in used_pool_indexes:
-            aligned_tail.append(url)
+            ordered.append(url)
 
-    return (locked_head + aligned_tail)[:max_slots]
+    return ordered[:max_slots]
 
 
 def apply_retailer_salsify_image_limits(retailer_name, images):
