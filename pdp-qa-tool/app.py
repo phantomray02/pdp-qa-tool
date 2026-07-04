@@ -952,8 +952,7 @@ def reorder_cvs_salsify_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_C
     5+. Continue remaining ATF 2-5 Generic images in order.
     Last. ATF 6-Generic is always kept last and is never used as the ATF I/O fallback.
 
-    Missing slot 1 stays blank. Missing flat slots 2-3 do not create blanks, so
-    later ATF/lifestyle images are allowed to move up when flat assets are absent.
+    Missing slots 1-3 stay blank so later ATF/lifestyle images do not hide missing required flat-packaging assets.
     """
     imgs = [img for img in (images or []) if isinstance(img, dict)]
 
@@ -1000,17 +999,17 @@ def reorder_cvs_salsify_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_C
     add(find_first(
         "online optimized image", "online image", "main variant image", "main image", "hero", "primary", "front", "product image 1", "image 1",
     ), "cvs_slot_1")
-    # CVS slots 2 and 3 prefer flat/side packaging assets when present, but they
-    # no longer reserve blank slots when those flat assets are missing. This keeps
-    # the remaining Salsify ATF/lifestyle images from being pushed down and avoids
-    # creating artificial Missing rows for products that simply do not have flat
-    # back/left assets in Salsify.
+    # CVS requires explicit flat packaging slots from Salsify.
+    # Slot 2 should show Missing unless Salsify has an actual Flat Back_2D / Flat Back asset.
+    # Slot 3 should show Missing unless Salsify has an actual Flat Left_2D / Flat Left asset.
+    # Do NOT use loose fallback names like image 2, product image 2, side, back, or right here.
+    # Those can be ATF/lifestyle/package images and would hide the real missing-flat issue.
     add(find_first(
-        "flat back 2d", "flat back", "back 2d", "back", "rear", "product image 2", "image 2",
-    ))
+        "flat back 2d", "flat back_2d", "flat back",
+    ), "cvs_slot_2")
     add(find_first(
-        "flat left 2d", "flat left", "left 2d", "left", "flat right 2d", "flat right", "right 2d", "right", "side", "product image 3", "image 3",
-    ))
+        "flat left 2d", "flat left_2d", "flat left",
+    ), "cvs_slot_3")
 
     io_queries = (("atf i/o generic", "atf i o generic", "atf io generic", "atf i/o-generic", "atf io-generic"),)
     atf2_queries = (("atf 2 generic", "atf 2-generic", "atf2 generic", "atf2-generic"),)
