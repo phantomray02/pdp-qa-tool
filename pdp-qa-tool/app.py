@@ -56,6 +56,14 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# Streamlit 1.58+ supports fragments. Older Streamlit versions will run this as a normal function.
+def _identity_fragment(func=None, **_kwargs):
+    def decorator(f):
+        return f
+    return decorator(func) if callable(func) else decorator
+
+streamlit_fragment = getattr(st, "fragment", _identity_fragment)
+
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
     "Accept-Language": "en-US,en;q=0.9",
@@ -1079,6 +1087,84 @@ def reorder_cvs_retailer_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_
     for url in unslotted:
         add_url(url)
     return ordered[:max_slots]
+
+def align_cvs_atf_images_by_visual_match(s_images, r_images, locked_slots=3, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
+    """Reorder CVS ATF/lifestyle images after locked Salsify CVS slots.
+
+    CVS image rules are intentionally split into two parts:
+    1. Salsify slots 1-3 stay locked. Slots 2 and 3 should show Missing when
+       Flat Back_2D / Flat Left_2D are absent from Salsify.
+    2. After those locked slots, reorder the remaining CVS images to best match
+       the remaining Salsify ATF/lifestyle images using the existing visual hash
+       scorer. This improves ATF alignment without hiding missing flat packaging
+       issues.
+
+    This function does not move Salsify images and does not fill Salsify missing
+    flat slots. It only reorders CVS images after the locked top section.
+    """
+    s_images = list(s_images or [])
+    r_images = [str(u or "").strip() for u in list(r_images or []) if str(u or "").strip()]
+
+    if not r_images:
+        return []
+
+    locked_slots = max(0, int(locked_slots or 0))
+    max_slots = max(0, int(max_slots or MAX_IMAGE_SLOTS_TO_COMPARE))
+
+    # Keep the CVS images in the top locked positions unchanged. This preserves
+    # the visible comparison for main image and any CVS flat/packaging images.
+    locked_head = r_images[:locked_slots]
+    r_pool = r_images[locked_slots:]
+
+    if not r_pool:
+        return r_images[:max_slots]
+
+    aligned_tail = []
+    used_pool_indexes = set()
+    s_tail = s_images[locked_slots:max_slots]
+
+    def _s_url(img):
+        return str(img.get("url", "") or "").strip() if isinstance(img, dict) else ""
+
+    def _next_unused_pool_url():
+        for idx, url in enumerate(r_pool):
+            if idx not in used_pool_indexes:
+                used_pool_indexes.add(idx)
+                return url
+        return ""
+
+    for s_img in s_tail:
+        s_url = _s_url(s_img)
+        if not s_url:
+            # Keep later blank Salsify slots from stealing a CVS image.
+            aligned_tail.append("")
+            continue
+
+        best_idx = None
+        best_score = -1
+        for idx, r_url in enumerate(r_pool):
+            if idx in used_pool_indexes or not r_url:
+                continue
+            score = compare_images_visually(s_url, r_url)
+            if score > best_score:
+                best_score = score
+                best_idx = idx
+
+        # Use a moderate threshold so exact/near ATF matches move into place,
+        # but weak visual guesses do not destroy source order.
+        if best_idx is not None and best_score >= 80:
+            aligned_tail.append(r_pool[best_idx])
+            used_pool_indexes.add(best_idx)
+        else:
+            aligned_tail.append(_next_unused_pool_url())
+
+    # Append any remaining CVS images in their original order.
+    for idx, url in enumerate(r_pool):
+        if idx not in used_pool_indexes:
+            aligned_tail.append(url)
+
+    return (locked_head + aligned_tail)[:max_slots]
+
 
 def apply_retailer_salsify_image_limits(retailer_name, images):
     retailer = str(retailer_name or "").strip().lower()
@@ -7865,8 +7951,22 @@ def build_normalized_comparison_payload(
         elif retailer_norm == "walgreens":
             r_images = r_images[:6]
     else:
-        if retailer_norm == "walgreens":
+        if retailer_norm == "cvs":
+            cvs_max_slots = int(get_retailer_salsify_requirements(retailer_name).get("max_images", MAX_IMAGE_SLOTS_TO_COMPARE) or MAX_IMAGE_SLOTS_TO_COMPARE)
+            r_images = reorder_cvs_retailer_images_for_visual(r_images, max_slots=cvs_max_slots)
+        elif retailer_norm == "walgreens":
             r_images = r_images[:6]
+
+    # CVS-only: keep locked Salsify flat slots visible as Missing when absent,
+    # but visually align the remaining CVS ATF/lifestyle images after slots 1-3.
+    if retailer_norm == "cvs":
+        cvs_max_slots = int(get_retailer_salsify_requirements(retailer_name).get("max_images", MAX_IMAGE_SLOTS_TO_COMPARE) or MAX_IMAGE_SLOTS_TO_COMPARE)
+        r_images = align_cvs_atf_images_by_visual_match(
+            s_images,
+            r_images,
+            locked_slots=3,
+            max_slots=min(max_slots, cvs_max_slots),
+        )
 
     s_images, r_images = align_image_slots_for_comparison(
         s_images,
