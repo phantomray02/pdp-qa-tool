@@ -504,14 +504,13 @@ def get_display_image_src(url):
 
 def image_compare_cell_html(url):
     if not url:
-        # Keep Missing cells the same vertical footprint as an image cell so
-        # locked CVS flat-slot gaps do not collapse the image comparison rows.
-        # This changes spacing only. It does not change image extraction,
-        # matching, scoring, caching, or export behavior.
+        # Spacing-only fix: Missing cells must occupy the same vertical footprint
+        # as an image slot. This keeps locked CVS flat-slot gaps from collapsing
+        # and keeps later ATF/lifestyle images visually in place.
         return (
             f'<div style="'
             f'width:100%;'
-            f'height:{IMG_BOX_HEIGHT}px;'
+            f'height:100%;'
             f'min-height:{IMG_BOX_HEIGHT}px;'
             f'display:flex;'
             f'align-items:center;'
@@ -530,9 +529,9 @@ def image_compare_cell_html(url):
 
     if not is_video_like_url(url):
         return (
-            f"<div style='width:100%;margin:0;padding:0;display:flex;align-items:flex-start;justify-content:center;overflow:hidden;'>"
-            f"<img src='{safe_url}' loading='lazy' decoding='async' referrerpolicy='no-referrer' style='display:block;width:100%;height:auto;object-fit:contain;' />"
-            f"</div>"
+            f'<div style="width:100%;height:100%;min-height:{IMG_BOX_HEIGHT}px;margin:0;padding:0;display:flex;align-items:center;justify-content:center;overflow:hidden;">'
+            f'<img src="{safe_url}" loading="lazy" decoding="async" referrerpolicy="no-referrer" style="display:block;width:100%;height:auto;object-fit:contain;" />'
+            f'</div>'
         )
 
     media_id = hashlib.md5(str(url).encode("utf-8")).hexdigest()[:12]
@@ -559,7 +558,7 @@ def image_compare_cell_html(url):
     )
 
     return (
-        f'<div style="position:relative;width:100%;margin:0;padding:0;display:flex;align-items:flex-start;justify-content:center;overflow:hidden;">'
+        f'<div style="position:relative;width:100%;height:100%;min-height:{IMG_BOX_HEIGHT}px;margin:0;padding:0;display:flex;align-items:center;justify-content:center;overflow:hidden;">'
         f'<video id="thumb_media_{media_id}" controls playsinline preload="metadata" onplay="{open_js}" style="display:block;width:100%;height:auto;max-height:320px;object-fit:contain;background:#000;">'
         f'<source src="{safe_url}" />'
         f'</video>'
@@ -572,36 +571,36 @@ def image_compare_cell_html(url):
         f'</video>'
         f'</div></div>'
     )
-
 def image_compare_row_html(s_url, r_url, score):
     return (
-        f"<div style=\""
-        f"display:grid;"
-        f"grid-template-columns:minmax(0,1fr) minmax(0,1fr) {IMG_SCORE_WIDTH_PX}px;"
-        f"column-gap:8px;"
-        f"align-items:start;"
-        f"margin:0 0 {IMG_SPACE_PX}px 0;"
-        f"padding:0;"
-        f"\">"
-        f"<div style=\"margin:0; padding:0;\">"
-        f"{image_compare_cell_html(s_url)}"
-        f"</div>"
-        f"<div style=\"margin:0; padding:0;\">"
-        f"{image_compare_cell_html(r_url)}"
-        f"</div>"
-        f"<div style=\""
-        f"display:flex;"
-        f"align-items:flex-start;"
-        f"justify-content:flex-start;"
-        f"text-align:left;"
-        f"margin:0;"
-        f"padding-top:4px;"
-        f"\">"
-        f"{score_text_html(score)}"
-        f"</div>"
-        f"</div>"
+        f'<div style="'
+        f'display:grid;'
+        f'grid-template-columns:minmax(0,1fr) minmax(0,1fr) {IMG_SCORE_WIDTH_PX}px;'
+        f'column-gap:8px;'
+        f'align-items:stretch;'
+        f'min-height:{IMG_BOX_HEIGHT}px;'
+        f'margin:0 0 {IMG_SPACE_PX}px 0;'
+        f'padding:0;'
+        f'">'
+        f'<div style="margin:0; padding:0; min-height:{IMG_BOX_HEIGHT}px; display:flex; align-items:stretch;">'
+        f'{image_compare_cell_html(s_url)}'
+        f'</div>'
+        f'<div style="margin:0; padding:0; min-height:{IMG_BOX_HEIGHT}px; display:flex; align-items:stretch;">'
+        f'{image_compare_cell_html(r_url)}'
+        f'</div>'
+        f'<div style="'
+        f'display:flex;'
+        f'align-items:flex-start;'
+        f'justify-content:flex-start;'
+        f'text-align:left;'
+        f'margin:0;'
+        f'min-height:{IMG_BOX_HEIGHT}px;'
+        f'padding-top:4px;'
+        f'">'
+        f'{score_text_html(score)}'
+        f'</div>'
+        f'</div>'
     )
-
 def image_tile_html(label, url, box_height=170):
     safe_label = html.escape(label)
 
