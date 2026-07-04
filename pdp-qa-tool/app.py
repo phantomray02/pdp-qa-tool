@@ -504,7 +504,26 @@ def get_display_image_src(url):
 
 def image_compare_cell_html(url):
     if not url:
-        return '<div style="width:100%;min-height:80px;display:flex;align-items:center;justify-content:center;margin:0;padding:0;color:#C62828;font-size:16px;font-weight:700;">Missing</div>'
+        # Layout-only fix: Missing should act like an empty image placeholder.
+        # It reserves a normal image-slot footprint, but it does not force real
+        # images into a fixed-size box.
+        return (
+            f'<div style="'
+            f'width:100%;'
+            f'height:100%;'
+            f'min-height:{IMG_BOX_HEIGHT}px;'
+            f'display:flex;'
+            f'align-items:center;'
+            f'justify-content:center;'
+            f'margin:0;'
+            f'padding:0;'
+            f'box-sizing:border-box;'
+            f'color:#C62828;'
+            f'font-size:16px;'
+            f'font-weight:700;'
+            f'overflow:hidden;'
+            f'">Missing</div>'
+        )
 
     display_url = get_display_image_src(url)
     safe_url = html.escape(str(display_url), quote=True)
@@ -560,14 +579,14 @@ def image_compare_row_html(s_url, r_url, score):
         f"display:grid;"
         f"grid-template-columns:minmax(0,1fr) minmax(0,1fr) {IMG_SCORE_WIDTH_PX}px;"
         f"column-gap:8px;"
-        f"align-items:start;"
+        f"align-items:stretch;"
         f"margin:0 0 {IMG_SPACE_PX}px 0;"
         f"padding:0;"
         f"\">"
-        f"<div style=\"margin:0; padding:0;\">"
+        f"<div style=\"margin:0; padding:0; display:flex; align-items:stretch;\">"
         f"{image_compare_cell_html(s_url)}"
         f"</div>"
-        f"<div style=\"margin:0; padding:0;\">"
+        f"<div style=\"margin:0; padding:0; display:flex; align-items:stretch;\">"
         f"{image_compare_cell_html(r_url)}"
         f"</div>"
         f"<div style=\""
