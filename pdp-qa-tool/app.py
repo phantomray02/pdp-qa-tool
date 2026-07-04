@@ -504,19 +504,21 @@ def get_display_image_src(url):
 
 def image_compare_cell_html(url):
     if not url:
-        # Spacing-only fix: Missing cells must occupy the same vertical footprint
-        # as an image slot. This keeps locked CVS flat-slot gaps from collapsing
-        # and keeps later ATF/lifestyle images visually in place.
+        # Spacing-only fix: Missing cells use the exact same thumbnail box height
+        # as real image cells. This keeps locked CVS flat-slot gaps from
+        # collapsing and keeps later ATF/lifestyle rows in place.
         return (
             f'<div style="'
             f'width:100%;'
-            f'height:100%;'
+            f'height:{IMG_BOX_HEIGHT}px;'
             f'min-height:{IMG_BOX_HEIGHT}px;'
+            f'max-height:{IMG_BOX_HEIGHT}px;'
             f'display:flex;'
             f'align-items:center;'
             f'justify-content:center;'
             f'margin:0;'
             f'padding:0;'
+            f'box-sizing:border-box;'
             f'color:#C62828;'
             f'font-size:16px;'
             f'font-weight:700;'
@@ -529,8 +531,8 @@ def image_compare_cell_html(url):
 
     if not is_video_like_url(url):
         return (
-            f'<div style="width:100%;height:100%;min-height:{IMG_BOX_HEIGHT}px;margin:0;padding:0;display:flex;align-items:center;justify-content:center;overflow:hidden;">'
-            f'<img src="{safe_url}" loading="lazy" decoding="async" referrerpolicy="no-referrer" style="display:block;width:100%;height:auto;object-fit:contain;" />'
+            f'<div style="width:100%;height:{IMG_BOX_HEIGHT}px;min-height:{IMG_BOX_HEIGHT}px;max-height:{IMG_BOX_HEIGHT}px;margin:0;padding:0;box-sizing:border-box;display:flex;align-items:center;justify-content:center;overflow:hidden;">'
+            f'<img src="{safe_url}" loading="lazy" decoding="async" referrerpolicy="no-referrer" style="display:block;width:100%;height:100%;object-fit:contain;" />'
             f'</div>'
         )
 
@@ -558,8 +560,8 @@ def image_compare_cell_html(url):
     )
 
     return (
-        f'<div style="position:relative;width:100%;height:100%;min-height:{IMG_BOX_HEIGHT}px;margin:0;padding:0;display:flex;align-items:center;justify-content:center;overflow:hidden;">'
-        f'<video id="thumb_media_{media_id}" controls playsinline preload="metadata" onplay="{open_js}" style="display:block;width:100%;height:auto;max-height:320px;object-fit:contain;background:#000;">'
+        f'<div style="position:relative;width:100%;height:{IMG_BOX_HEIGHT}px;min-height:{IMG_BOX_HEIGHT}px;max-height:{IMG_BOX_HEIGHT}px;margin:0;padding:0;box-sizing:border-box;display:flex;align-items:center;justify-content:center;overflow:hidden;">'
+        f'<video id="thumb_media_{media_id}" controls playsinline preload="metadata" onplay="{open_js}" style="display:block;width:100%;height:100%;object-fit:contain;background:#000;">'
         f'<source src="{safe_url}" />'
         f'</video>'
         f'</div>'
@@ -578,14 +580,18 @@ def image_compare_row_html(s_url, r_url, score):
         f'grid-template-columns:minmax(0,1fr) minmax(0,1fr) {IMG_SCORE_WIDTH_PX}px;'
         f'column-gap:8px;'
         f'align-items:stretch;'
+        f'height:{IMG_BOX_HEIGHT}px;'
         f'min-height:{IMG_BOX_HEIGHT}px;'
+        f'max-height:{IMG_BOX_HEIGHT}px;'
         f'margin:0 0 {IMG_SPACE_PX}px 0;'
         f'padding:0;'
+        f'box-sizing:border-box;'
+        f'overflow:hidden;'
         f'">'
-        f'<div style="margin:0; padding:0; min-height:{IMG_BOX_HEIGHT}px; display:flex; align-items:stretch;">'
+        f'<div style="margin:0; padding:0; height:{IMG_BOX_HEIGHT}px; min-height:{IMG_BOX_HEIGHT}px; max-height:{IMG_BOX_HEIGHT}px; display:flex; align-items:stretch; box-sizing:border-box; overflow:hidden;">'
         f'{image_compare_cell_html(s_url)}'
         f'</div>'
-        f'<div style="margin:0; padding:0; min-height:{IMG_BOX_HEIGHT}px; display:flex; align-items:stretch;">'
+        f'<div style="margin:0; padding:0; height:{IMG_BOX_HEIGHT}px; min-height:{IMG_BOX_HEIGHT}px; max-height:{IMG_BOX_HEIGHT}px; display:flex; align-items:stretch; box-sizing:border-box; overflow:hidden;">'
         f'{image_compare_cell_html(r_url)}'
         f'</div>'
         f'<div style="'
@@ -594,8 +600,12 @@ def image_compare_row_html(s_url, r_url, score):
         f'justify-content:flex-start;'
         f'text-align:left;'
         f'margin:0;'
+        f'height:{IMG_BOX_HEIGHT}px;'
         f'min-height:{IMG_BOX_HEIGHT}px;'
+        f'max-height:{IMG_BOX_HEIGHT}px;'
         f'padding-top:4px;'
+        f'box-sizing:border-box;'
+        f'overflow:hidden;'
         f'">'
         f'{score_text_html(score)}'
         f'</div>'
