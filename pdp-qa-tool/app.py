@@ -809,6 +809,26 @@ def is_cvs_only_salsify_image(img):
         return False
     return bool(img.get("cvs_only")) or is_cvs_only_salsify_flat_image_name(img.get("name", ""))
 
+# Walgreens-only Salsify image slots.
+# Walgreens visual QA requires Ingredient Label Image locked in slot 2.
+# Keep this flagged as Walgreens-only so it does not shift image order for other retailers.
+def is_walgreens_ingredient_label_image_name(value):
+    name = normalize_salsify_asset_name(value or "")
+    if not name:
+        return False
+    return any(token in name for token in [
+        "ingredient label image",
+        "ingredient label",
+        "ingredients label image",
+        "ingredients label",
+    ])
+
+
+def is_walgreens_only_salsify_image(img):
+    if not isinstance(img, dict):
+        return False
+    return bool(img.get("walgreens_only")) or is_walgreens_ingredient_label_image_name(img.get("name", ""))
+
 
 def build_locked_salsify_slots(s_images, lock_top_three=True, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
     """
@@ -1061,6 +1081,93 @@ def reorder_cvs_salsify_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_C
         add(img)
 
     return ordered[:max_slots]
+def reorder_walgreens_salsify_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
+    """
+    Walgreens Salsify order for visual QA:
+    1. Online Optimized Image.
+    2. Ingredient Label Image.
+    3+. ATF / lifestyle images.
+
+    Slots 1 and 2 are locked. Missing required slots stay blank so ATF images
+    never move up and hide missing Online Optimized or Ingredient Label assets.
+    """
+    imgs = [
+        img for img in (images or [])
+        if isinstance(img, dict) and not is_cvs_only_salsify_image(img)
+    ]
+
+    def norm_name(img):
+        return normalize_salsify_asset_name((img or {}).get("name", "")) if isinstance(img, dict) else ""
+
+    def find_first(*queries):
+        query_tokens = [normalize_salsify_asset_name(q) for q in queries if normalize_salsify_asset_name(q)]
+        for q in query_tokens:
+            for img in imgs:
+                name = norm_name(img)
+                if name and (q == name or q in name):
+                    return img
+        return None
+
+    def image_key(img):
+        return str(img.get("url", "") or "").strip() if isinstance(img, dict) else ""
+
+    ordered = []
+    used = set()
+
+    def add(img, blank_name=""):
+        if not isinstance(img, dict):
+            if blank_name:
+                ordered.append(make_blank_salsify_image_slot(blank_name))
+            return False
+        key = image_key(img)
+        if not key or key in used:
+            if blank_name:
+                ordered.append(make_blank_salsify_image_slot(blank_name))
+            return False
+        ordered.append(img)
+        used.add(key)
+        return True
+
+    # Locked slot 1: Online Optimized Image only.
+    add(
+        find_first(
+            "online optimized image",
+            "online image",
+        ),
+        "walgreens_slot_1_online_optimized_image",
+    )
+
+    # Locked slot 2: Ingredient Label Image only.
+    add(
+        find_first(
+            "ingredient label image",
+            "ingredient label",
+            "ingredients label image",
+            "ingredients label",
+        ),
+        "walgreens_slot_2_ingredient_label_image",
+    )
+
+    atf_query_groups = [
+        ("atf i/o generic", "atf i o generic", "atf io generic", "atf i/o-generic", "atf io-generic", "atf i/o"),
+        ("atf 2 generic", "atf 2-generic", "atf2 generic", "atf2-generic", "atf 2"),
+        ("atf 3 generic", "atf 3-generic", "atf3 generic", "atf3-generic", "atf 3"),
+        ("atf 4 generic", "atf 4-generic", "atf4 generic", "atf4-generic", "atf 4"),
+        ("atf 5 generic", "atf 5-generic", "atf5 generic", "atf5-generic", "atf 5"),
+        ("atf 6 generic", "atf 6-generic", "atf6 generic", "atf6-generic", "atf 6"),
+    ]
+
+    # ATF images start only after the two locked Walgreens rows.
+    for query_group in atf_query_groups:
+        add(find_first(*query_group))
+
+    # Include any remaining non-locked assets in source order, without duplicates.
+    for img in imgs:
+        add(img)
+
+    return ordered[:max_slots]
+
+
 def reorder_cvs_retailer_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
     urls = [str(u or "").strip() for u in (images or []) if str(u or "").strip()]
     if not urls:
@@ -1213,8 +1320,14 @@ def apply_retailer_salsify_image_limits(retailer_name, images):
     max_images = int(limits.get("max_images", MAX_IMAGE_SLOTS_TO_COMPARE) or MAX_IMAGE_SLOTS_TO_COMPARE)
     max_images = max(0, min(max_images, MAX_IMAGE_SLOTS_TO_COMPARE))
     if retailer == "cvs":
-        return reorder_cvs_salsify_images_for_visual(images, max_slots=max_images)
-    images = [img for img in list(images or []) if not is_cvs_only_salsify_image(img)]
+        cvs_images = [img for img in list(images or []) if not is_walgreens_only_salsify_image(img)]
+        return reorder_cvs_salsify_images_for_visual(cvs_images, max_slots=max_images)
+    if retailer == "walgreens":
+        return reorder_walgreens_salsify_images_for_visual(images, max_slots=max_images)
+    images = [
+        img for img in list(images or [])
+        if not is_cvs_only_salsify_image(img) and not is_walgreens_only_salsify_image(img)
+    ]
     out = []
     seen_urls = set()
     for img in list(images or []):
@@ -2283,8 +2396,8 @@ def extract_salsify_visible_property_map(html_text):
 
     # Visible asset label -> href patterns.
     visible_asset_patterns = [
-        r'>\s*(Main Variant Image-Club|Online Optimized Image-|Shipping-|Flat Back_2D-|Flat Left_2D-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)\s*<.*?href="([^"]+)"',
-        r'"property"\s*:\s*"(Main Variant Image-Club|Online Optimized Image-|Shipping-|Flat Back_2D-|Flat Left_2D-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)"[^{}]{0,1200}?"value"\s*:\s*"([^"]+)"',
+        r'>\s*(Main Variant Image-Club|Online Optimized Image-|Ingredient Label Image-|Ingredient Label Image|Shipping-|Flat Back_2D-|Flat Left_2D-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)\s*<.*?href="([^"]+)"',
+        r'"property"\s*:\s*"(Main Variant Image-Club|Online Optimized Image-|Ingredient Label Image-|Ingredient Label Image|Shipping-|Flat Back_2D-|Flat Left_2D-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)"[^{}]{0,1200}?"value"\s*:\s*"([^"]+)"',
     ]
     for pattern in visible_asset_patterns:
         for matched_name, matched_url in re.findall(pattern, raw_html, flags=re.IGNORECASE | re.DOTALL):
@@ -2306,6 +2419,7 @@ def pick_kroger_images_with_atf_and_lifestyle(asset_lookup):
       these cvs_only images back out for every non-CVS retailer.
     """
     main_priority_order = [
+        "online optimized image walgreens",
         "online optimized image kroger",
         "online optimized image grocery",
         "online optimized image",
@@ -2334,19 +2448,28 @@ def pick_kroger_images_with_atf_and_lifestyle(asset_lookup):
     ordered_images = []
     seen_urls = set()
 
-    def add_image(name, url, cvs_only=False):
+    def add_image(name, url, cvs_only=False, walgreens_only=False):
         clean_url = str(url or "").strip()
         if not clean_url or clean_url in seen_urls:
             return False
         img = {"name": name, "url": clean_url}
         if cvs_only:
             img["cvs_only"] = True
+        if walgreens_only:
+            img["walgreens_only"] = True
         ordered_images.append(img)
         seen_urls.add(clean_url)
         return True
 
     if best_main:
         add_image(best_main["name"], best_main["url"])
+
+    # Walgreens requires Ingredient Label Image as locked slot 2. Keep it in
+    # the parsed image bundle, but mark it Walgreens-only so other retailers
+    # do not inherit this extra slot.
+    for normalized_name, name, clean_url in normalized_assets:
+        if is_walgreens_ingredient_label_image_name(name):
+            add_image(name, clean_url, walgreens_only=True)
 
     for normalized_name, name, clean_url in normalized_assets:
         is_atf_image = "atf" in normalized_name
@@ -2831,8 +2954,8 @@ def _parse_salsify_page(html_text):
     try:
         raw_html_text = html.unescape(str(html_text or ""))
         fallback_asset_patterns = [
-            r'>\s*(Main Variant Image-Club|Online Optimized Image-|Shipping-|Flat Back_2D-|Flat Left_2D-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)\s*<.*?href="([^"]+)"',
-            r'"property"\s*:\s*"(Main Variant Image-Club|Online Optimized Image-|Shipping-|Flat Back_2D-|Flat Left_2D-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)"[^{}]{0,800}?"value"\s*:\s*"([^"]+)"',
+            r'>\s*(Main Variant Image-Club|Online Optimized Image-|Ingredient Label Image-|Ingredient Label Image|Shipping-|Flat Back_2D-|Flat Left_2D-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)\s*<.*?href="([^"]+)"',
+            r'"property"\s*:\s*"(Main Variant Image-Club|Online Optimized Image-|Ingredient Label Image-|Ingredient Label Image|Shipping-|Flat Back_2D-|Flat Left_2D-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)"[^{}]{0,800}?"value"\s*:\s*"([^"]+)"',
         ]
         for pattern in fallback_asset_patterns:
             for matched_name, matched_url in re.findall(pattern, raw_html_text, flags=re.IGNORECASE | re.DOTALL):
