@@ -1376,11 +1376,11 @@ def clean_uploaded_url_value(value):
 
 
 def normalize_uploaded_salsify_url(value):
-    """Normalize Salsify PDP URLs while preserving the stable product id path.
+    """Build a fallback Salsify product URL.
 
-    Some formula-generated slugs differ from Salsify's stored display slug even
-    when the product id is valid. Salsify PDPs are reliably keyed by the
-    /product/{sku}/ path, so normalize to that stable path for fetch/cache use.
+    IMPORTANT: do not use this as the primary uploaded Salsify URL. Some
+    Salsify PDP decks expose images/assets only on the full slug URL. This
+    shortened URL is only a fallback for fetch attempts when the full URL fails.
     """
     value = clean_uploaded_url_value(value)
     if not value:
@@ -1491,7 +1491,10 @@ def prepare_input_df(df):
     for col in ["sku", "salsify_url", "retail_url", "brand", "retailer_rpc", "rating", "review_count"]:
         df[col] = df[col].replace("#N/A", "").fillna("").astype(str).str.strip()
 
-    df["salsify_url"] = df["salsify_url"].apply(normalize_uploaded_salsify_url)
+    # Keep the original full Salsify URL, including the product slug.
+    # The full URL is needed for Walgreens image/asset extraction. A shortened
+    # /product/{sku}/ fallback is still attempted in get_html() if the full URL fails.
+    df["salsify_url"] = df["salsify_url"].apply(clean_uploaded_url_value)
     df["retail_url"] = df["retail_url"].apply(normalize_uploaded_retail_url)
 
     if "retailer" not in df.columns:
