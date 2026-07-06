@@ -1342,6 +1342,86 @@ def apply_retailer_salsify_image_limits(retailer_name, images):
             break
     return out
 
+
+def clean_uploaded_url_value(value):
+    """Clean URL values coming from Excel/CSV uploads.
+
+    Handles hidden whitespace, zero-width characters, formula text, and
+    HYPERLINK-style values. This keeps formula-generated Salsify/Walgreens
+    links from being treated differently than manually copied URLs.
+    """
+    try:
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
+
+    value = html.unescape(str(value or "").strip())
+    if not value or value in {"#N/A", "nan", "None"}:
+        return ""
+
+    value = value.replace("\u00a0", " ")
+    value = re.sub(r"[\u200b-\u200f\u202a-\u202e\u2060\ufeff]", "", value)
+    value = value.replace("\r", "").replace("\n", "")
+
+    # If Excel formula text is read instead of the cached result, extract the
+    # first URL from formulas like =HYPERLINK("https://...", "link").
+    if value.startswith("="):
+        match = re.search(r"https?://[^\"') ,]+", value)
+        if match:
+            value = match.group(0)
+
+    value = re.sub(r"\s+", "", value)
+    return value.strip()
+
+
+def normalize_uploaded_salsify_url(value):
+    """Normalize Salsify PDP URLs while preserving the stable product id path.
+
+    Some formula-generated slugs differ from Salsify's stored display slug even
+    when the product id is valid. Salsify PDPs are reliably keyed by the
+    /product/{sku}/ path, so normalize to that stable path for fetch/cache use.
+    """
+    value = clean_uploaded_url_value(value)
+    if not value:
+        return ""
+
+    if "sites.salsify.com" not in value.lower():
+        return value
+
+    value = value.split("#", 1)[0].strip()
+    match = re.search(r"^(https?://sites\.salsify\.com/[^\s?#]+?/product/([^/\s?#]+))(?:/[^?#]*)?(?:[?#].*)?$", value, flags=re.IGNORECASE)
+    if match:
+        return match.group(1).rstrip("/") + "/"
+
+    return value
+
+
+def normalize_uploaded_retail_url(value):
+    value = clean_uploaded_url_value(value)
+    if not value:
+        return ""
+    if "kroger.com" in value.lower():
+        try:
+            return normalize_kroger_url(value)
+        except Exception:
+            return value
+    return value.split("#", 1)[0].strip()
+
+
+def uploaded_retailer_value_is_generic(value):
+    value = normalize_space(value).strip().lower()
+    return (not value) or value in {
+        "sheet1",
+        "sheet 1",
+        "input",
+        "export",
+        "data",
+        "retailer",
+        "retailers",
+        "pdp qa",
+    }
+
 def prepare_input_df(df):
     df = df.copy()
     df.columns = [str(c).strip().lower() for c in df.columns]
@@ -1349,13 +1429,33 @@ def prepare_input_df(df):
     df.rename(
         columns={
             "salsify url": "salsify_url",
+            "salsify_url": "salsify_url",
+            "salsify link": "salsify_url",
+            "salsify pdp deck link": "salsify_url",
+            "pdp deck link": "salsify_url",
+            "walgreens pdp deck link": "salsify_url",
+            "cvs pdp deck link": "salsify_url",
+            "kroger pdp deck link": "salsify_url",
+            "sams club pdp deck link": "salsify_url",
+            "sam's club pdp deck link": "salsify_url",
             "retail url": "retail_url",
-            "sku id": "sku",
-            "product sku": "sku",
-            "retailer name": "retailer",
-            "retailer_name": "retailer",
+            "retail_url": "retail_url",
+            "retailer url": "retail_url",
+            "walgreens url": "retail_url",
+            "cvs url": "retail_url",
             "kroger url": "retail_url",
             "kroger_url": "retail_url",
+            "sams club url": "retail_url",
+            "sam's club url": "retail_url",
+            "sku id": "sku",
+            "product sku": "sku",
+            "7 digit sku": "sku",
+            "salsify sku": "sku",
+            "item sku": "sku",
+            "brand_char": "brand",
+            "brand characteristic": "brand",
+            "retailer name": "retailer",
+            "retailer_name": "retailer",
             "kroger rpc": "kroger_rpc",
         },
         inplace=True,
@@ -1391,10 +1491,21 @@ def prepare_input_df(df):
     for col in ["sku", "salsify_url", "retail_url", "brand", "retailer_rpc", "rating", "review_count"]:
         df[col] = df[col].replace("#N/A", "").fillna("").astype(str).str.strip()
 
+    df["salsify_url"] = df["salsify_url"].apply(normalize_uploaded_salsify_url)
+    df["retail_url"] = df["retail_url"].apply(normalize_uploaded_retail_url)
+
     if "retailer" not in df.columns:
         df["retailer"] = df["retail_url"].apply(infer_retailer_name_from_url)
     else:
         df["retailer"] = df["retailer"].replace("#N/A", "").fillna("").astype(str).str.strip()
+        # Excel files are often read sheet-by-sheet and the sheet name may be
+        # "Sheet1". If the sheet name is generic, infer retailer from URL so
+        # Walgreens rows are not filtered out during strict retailer selection.
+        inferred_retailer = df["retail_url"].apply(infer_retailer_name_from_url)
+        df["retailer"] = df["retailer"].where(
+            ~df["retailer"].apply(uploaded_retailer_value_is_generic),
+            inferred_retailer,
+        )
     df["retailer"] = df["retailer"].apply(normalize_retailer_name)
 
     required = ["sku", "salsify_url", "retail_url"]
@@ -1465,20 +1576,31 @@ def get_html(url):
     if not url:
         return ""
 
-    cached = html_cache.get(url)
-    if cached:
-        return cached
+    url = clean_uploaded_url_value(url)
+    primary_url = url
+    fallback_url = normalize_uploaded_salsify_url(url) if "sites.salsify.com" in str(url).lower() else ""
 
-    try:
-        session = get_session()
-        r = session.get(url, timeout=REQUEST_TIMEOUT)
-        if r.status_code == 200 and r.text:
-            html_cache[url] = r.text
-            while len(html_cache) > HTML_CACHE_MAX:
-                html_cache.pop(next(iter(html_cache)))
-            return r.text
-    except Exception:
-        pass
+    for candidate_url in [primary_url, fallback_url]:
+        candidate_url = str(candidate_url or "").strip()
+        if not candidate_url:
+            continue
+
+        cached = html_cache.get(candidate_url)
+        if cached:
+            return cached
+
+        try:
+            session = get_session()
+            r = session.get(candidate_url, timeout=REQUEST_TIMEOUT)
+            if r.status_code == 200 and r.text:
+                html_cache[candidate_url] = r.text
+                if primary_url and primary_url != candidate_url:
+                    html_cache[primary_url] = r.text
+                while len(html_cache) > HTML_CACHE_MAX:
+                    html_cache.pop(next(iter(html_cache)))
+                return r.text
+        except Exception:
+            pass
 
     return ""
 
