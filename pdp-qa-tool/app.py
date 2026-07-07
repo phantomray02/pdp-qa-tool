@@ -2604,6 +2604,24 @@ def pick_kroger_images_with_atf_and_lifestyle(asset_lookup):
         if any(token in normalized_name for token in sams_required_tokens):
             add_image(name, clean_url)
 
+    # Sam's Club also needs the generic Online Optimized Image- asset available for
+    # visual alignment. The original best_main logic can keep only the Sam's Club-
+    # specific Online Optimized Image-Sams Club asset, which accidentally drops the
+    # generic Online Optimized Image- before the Sam's Club ordering function can
+    # place it after ATF Video-Sams Club.
+    sams_generic_ooi_excluded_tokens = (
+        "sams club", "sam s club", "samsclub", "sams",
+        "walgreens", "kroger", "grocery", "cvs", "target", "walmart",
+    )
+    for normalized_name, name, clean_url in normalized_assets:
+        is_generic_online_optimized = (
+            "online optimized image" in normalized_name
+            or "online image" in normalized_name
+        )
+        is_retailer_specific = any(token in normalized_name for token in sams_generic_ooi_excluded_tokens)
+        if is_generic_online_optimized and not is_retailer_specific:
+            add_image(name, clean_url)
+
     # Walgreens requires Ingredient Label Image as locked slot 2. Keep it in
     # the parsed image bundle, but mark it Walgreens-only so other retailers
     # do not inherit this extra slot.
