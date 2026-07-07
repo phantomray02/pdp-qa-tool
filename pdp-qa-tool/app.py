@@ -1397,6 +1397,68 @@ def normalize_uploaded_salsify_url(value):
     return value
 
 
+
+def salsify_url_candidates(value):
+    """Return robust Salsify URL candidates for server-side fetch/parsing.
+
+    The Salsify link clicked in the UI opens in the user's browser, but the app
+    parses Salsify with requests. Browser navigation can tolerate/normalize
+    malformed slug text such as "andamp" and encoded symbols differently than
+    the server-side request. Try the original URL, a normalized/encoded slug URL,
+    and the SKU-level fallback URL.
+    """
+    raw_url = clean_uploaded_url_value(value)
+    if not raw_url:
+        return []
+    if "sites.salsify.com" not in raw_url.lower():
+        return [raw_url]
+
+    from urllib.parse import quote, unquote, urlsplit, urlunsplit
+
+    candidates = []
+
+    def add(candidate):
+        candidate = str(candidate or "").strip()
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+
+    add(raw_url)
+
+    try:
+        parts = urlsplit(raw_url)
+        decoded_path = unquote(parts.path or "")
+        fixed_path = re.sub(r"andamp;?", "&", decoded_path, flags=re.IGNORECASE)
+        fixed_path = html.unescape(fixed_path)
+        encoded_path = quote(fixed_path, safe="/-._~")
+        add(urlunsplit((parts.scheme, parts.netloc, encoded_path, parts.query, "")))
+    except Exception:
+        pass
+
+    fallback_url = normalize_uploaded_salsify_url(raw_url)
+    if fallback_url and fallback_url != raw_url:
+        add(fallback_url)
+
+    return candidates
+
+
+def is_probably_salsify_pdp_html(html_text):
+    """True when returned Salsify HTML looks like the actual PDP deck payload."""
+    text = str(html_text or "")
+    if not text.strip():
+        return False
+    markers = [
+        "__NEXT_DATA__",
+        "digitalAssets",
+        "Online Optimized Image",
+        "Main Variant Image",
+        "Sams Club Description",
+        "Sam's Club Description",
+        "Retailer URL",
+        "Sam Club URL",
+        "Sam's Club URL",
+    ]
+    return any(marker.lower() in text.lower() for marker in markers)
+
 def normalize_uploaded_retail_url(value):
     value = clean_uploaded_url_value(value)
     if not value:
@@ -1581,16 +1643,21 @@ def get_html(url):
 
     url = clean_uploaded_url_value(url)
     primary_url = url
-    fallback_url = normalize_uploaded_salsify_url(url) if "sites.salsify.com" in str(url).lower() else ""
+    is_salsify_url = "sites.salsify.com" in str(url).lower()
+    candidate_urls = salsify_url_candidates(url) if is_salsify_url else [primary_url]
+    last_successful_html = ""
 
-    for candidate_url in [primary_url, fallback_url]:
+    for candidate_url in candidate_urls:
         candidate_url = str(candidate_url or "").strip()
         if not candidate_url:
             continue
 
         cached = html_cache.get(candidate_url)
         if cached:
-            return cached
+            if not is_salsify_url or is_probably_salsify_pdp_html(cached):
+                return cached
+            last_successful_html = cached
+            continue
 
         try:
             session = get_session()
@@ -1601,11 +1668,17 @@ def get_html(url):
                     html_cache[primary_url] = r.text
                 while len(html_cache) > HTML_CACHE_MAX:
                     html_cache.pop(next(iter(html_cache)))
-                return r.text
+
+                if not is_salsify_url or is_probably_salsify_pdp_html(r.text):
+                    return r.text
+
+                # This can happen when Salsify returns a generic shell/error app page.
+                # Keep it only as a last resort and continue trying safer candidates.
+                last_successful_html = r.text
         except Exception:
             pass
 
-    return ""
+    return last_successful_html
 
 def fetch_html_with_timeout(url, timeout_seconds):
     if not url:
