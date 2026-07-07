@@ -7907,8 +7907,8 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
     Build the retailer-specific Salsify comparison image list.
 
     Sam's Club image rules:
-    - Main Variant Image-Sams Club wins slot 1 when present.
-    - Otherwise Online Optimized Image-Sams Club wins slot 1 when present.
+    - Online Optimized Image-Sams Club wins slot 1 when present.
+    - Otherwise Main Variant Image-Sams Club wins slot 1 when present.
     - Otherwise Main Variant Image-Club wins slot 1; if missing, generic Online Optimized Image- shifts into slot 1.
     - ATF Video-Sams Club is next when present.
     - Generic Online Optimized Image- follows when present and not already used.
@@ -8031,23 +8031,23 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
             )
 
         # Requested Sam's Club order:
-        # 1. Main Variant Image-Sams Club when present; otherwise Online Optimized Image-Sams Club;
+        # 1. Online Optimized Image-Sams Club when present; otherwise Main Variant Image-Sams Club;
         #    otherwise Main Variant Image-Club; otherwise generic Online Optimized Image-.
         # 2. ATF Video-Sams Club when present.
         # 3. Generic Online Optimized Image- when present and not already used in slot 1.
         # 4+. Shipping- before ATF I/O / numbered ATF images. Missing assets collapse upward.
         append_unique(
             find_first_unused(
-                "main variant image sams club",
-                "main variant image-sams club",
-                "main variant image sam s club",
-                "main variant image-sam s club",
-            )
-            or find_first_unused(
                 "online optimized image sams club",
                 "online optimized image-sams club",
                 "online optimized image sam s club",
                 "online optimized image-sam s club",
+            )
+            or find_first_unused(
+                "main variant image sams club",
+                "main variant image-sams club",
+                "main variant image sam s club",
+                "main variant image-sam s club",
             )
             or find_first_unused("main variant image club", "main variant image-club")
             or find_online_optimized_generic()
