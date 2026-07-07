@@ -7907,12 +7907,12 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
     Build the retailer-specific Salsify comparison image list.
 
     Sam's Club image rules:
-    - Online Optimized Image-Sams Club wins slot 1 when present.
-    - Otherwise Main Variant Image-Sams Club wins slot 1 when present.
-    - Otherwise Main Variant Image-Club wins slot 1; if missing, generic Online Optimized Image- shifts into slot 1.
-    - ATF Video-Sams Club is next when present.
+    - When Online Optimized Image-Sams Club exists, it is always slot 1.
+    - ATF Video-Sams Club is always the next Sam's Club slot when present.
     - Generic Online Optimized Image- follows when present and not already used.
-    - Shipping- comes before ATF I/O / numbered ATF images. Missing assets collapse upward.
+    - If Online Optimized Image-Sams Club is missing, fallback to Main Variant Image-Sams Club,
+      then Main Variant Image-Club, then generic Online Optimized Image-.
+    - Shipping- comes after the required first three slots and before ATF I/O / numbered ATF images.
 
     CVS rules:
     - Lock only the top 3 Salsify slots.
@@ -8030,28 +8030,30 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
                 exclude_tokens=excluded,
             )
 
-        # Requested Sam's Club order:
-        # 1. Online Optimized Image-Sams Club when present; otherwise Main Variant Image-Sams Club;
-        #    otherwise Main Variant Image-Club; otherwise generic Online Optimized Image-.
-        # 2. ATF Video-Sams Club when present.
-        # 3. Generic Online Optimized Image- when present and not already used in slot 1.
-        # 4+. Shipping- before ATF I/O / numbered ATF images. Missing assets collapse upward.
-        append_unique(
-            find_first_unused(
-                "online optimized image sams club",
-                "online optimized image-sams club",
-                "online optimized image sam s club",
-                "online optimized image-sam s club",
-            )
-            or find_first_unused(
-                "main variant image sams club",
-                "main variant image-sams club",
-                "main variant image sam s club",
-                "main variant image-sam s club",
-            )
-            or find_first_unused("main variant image club", "main variant image-club")
-            or find_online_optimized_generic()
+        # Requested Sam's Club order when Online Optimized Image-Sams Club exists:
+        # 1. Online Optimized Image-Sams Club.
+        # 2. ATF Video-Sams Club.
+        # 3. Generic Online Optimized Image-.
+        # Fallback only applies when Online Optimized Image-Sams Club is missing.
+        online_optimized_sams_club_img = find_first_unused(
+            "online optimized image sams club",
+            "online optimized image-sams club",
+            "online optimized image sam s club",
+            "online optimized image-sam s club",
         )
+        if online_optimized_sams_club_img:
+            append_unique(online_optimized_sams_club_img)
+        else:
+            append_unique(
+                find_first_unused(
+                    "main variant image sams club",
+                    "main variant image-sams club",
+                    "main variant image sam s club",
+                    "main variant image-sam s club",
+                )
+                or find_first_unused("main variant image club", "main variant image-club")
+                or find_online_optimized_generic()
+            )
 
         append_unique(
             find_first_unused(
