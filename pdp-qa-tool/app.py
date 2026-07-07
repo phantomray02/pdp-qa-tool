@@ -2521,8 +2521,8 @@ def extract_salsify_visible_property_map(html_text):
 
     # Visible asset label -> href patterns.
     visible_asset_patterns = [
-        r'>\s*(Main Variant Image-Club|Online Optimized Image-|Ingredient Label Image-|Ingredient Label Image|Shipping-|Flat Back_2D-|Flat Left_2D-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)\s*<.*?href="([^"]+)"',
-        r'"property"\s*:\s*"(Main Variant Image-Club|Online Optimized Image-|Ingredient Label Image-|Ingredient Label Image|Shipping-|Flat Back_2D-|Flat Left_2D-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)"[^{}]{0,1200}?"value"\s*:\s*"([^"]+)"',
+        r'>\s*(Main Variant Image-Club|Online Optimized Image-Sams Club|Online Optimized Image-|Ingredient Label Image-|Ingredient Label Image|Shipping-|Flat Back_2D-|Flat Left_2D-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)\s*<.*?href="([^"]+)"',
+        r'"property"\s*:\s*"(Main Variant Image-Club|Online Optimized Image-Sams Club|Online Optimized Image-|Ingredient Label Image-|Ingredient Label Image|Shipping-|Flat Back_2D-|Flat Left_2D-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)"[^{}]{0,1200}?"value"\s*:\s*"([^"]+)"',
     ]
     for pattern in visible_asset_patterns:
         for matched_name, matched_url in re.findall(pattern, raw_html, flags=re.IGNORECASE | re.DOTALL):
@@ -2588,6 +2588,20 @@ def pick_kroger_images_with_atf_and_lifestyle(asset_lookup):
 
     if best_main:
         add_image(best_main["name"], best_main["url"])
+
+    # Sam's Club-specific assets must stay in the parsed Salsify image bundle
+    # so the Sam's Club alignment step can place them in the proper slots.
+    # Without this, properties such as Main Variant Image-Club and Shipping-
+    # could be found in asset_lookup but discarded before alignment.
+    sams_required_tokens = (
+        "online optimized image sams club",
+        "main variant image club",
+        "shipping",
+        "atf video sams club",
+    )
+    for normalized_name, name, clean_url in normalized_assets:
+        if any(token in normalized_name for token in sams_required_tokens):
+            add_image(name, clean_url)
 
     # Walgreens requires Ingredient Label Image as locked slot 2. Keep it in
     # the parsed image bundle, but mark it Walgreens-only so other retailers
@@ -3079,8 +3093,8 @@ def _parse_salsify_page(html_text):
     try:
         raw_html_text = html.unescape(str(html_text or ""))
         fallback_asset_patterns = [
-            r'>\s*(Main Variant Image-Club|Online Optimized Image-|Ingredient Label Image-|Ingredient Label Image|Shipping-|Flat Back_2D-|Flat Left_2D-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)\s*<.*?href="([^"]+)"',
-            r'"property"\s*:\s*"(Main Variant Image-Club|Online Optimized Image-|Ingredient Label Image-|Ingredient Label Image|Shipping-|Flat Back_2D-|Flat Left_2D-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)"[^{}]{0,800}?"value"\s*:\s*"([^"]+)"',
+            r'>\s*(Main Variant Image-Club|Online Optimized Image-Sams Club|Online Optimized Image-|Ingredient Label Image-|Ingredient Label Image|Shipping-|Flat Back_2D-|Flat Left_2D-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)\s*<.*?href="([^"]+)"',
+            r'"property"\s*:\s*"(Main Variant Image-Club|Online Optimized Image-Sams Club|Online Optimized Image-|Ingredient Label Image-|Ingredient Label Image|Shipping-|Flat Back_2D-|Flat Left_2D-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)"[^{}]{0,800}?"value"\s*:\s*"([^"]+)"',
         ]
         for pattern in fallback_asset_patterns:
             for matched_name, matched_url in re.findall(pattern, raw_html_text, flags=re.IGNORECASE | re.DOTALL):
@@ -7891,12 +7905,12 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
     """
     Build the retailer-specific Salsify comparison image list.
 
-    Sam's Club rules for Depend, Kotex, U by Kotex, Poise, and Thinx/Thix:
-    - Keep ATF Video-Sams Club in spot 2 whenever that asset exists.
-    - If Main Variant Image-Club exists, use it in spot 1.
-    - If Main Variant Image-Club does not exist, shift up and use Online Optimized Image- in spot 1.
-    - Only keep Online Optimized Image- in spot 3 when it is a distinct asset not already used in spot 1.
-    - After those slots, continue with Shipping-, ATF I/O, ATF 2-10, then remaining assets.
+    Sam's Club image rules:
+    - Online Optimized Image-Sams Club wins slot 1 when present.
+    - Otherwise Main Variant Image-Club wins slot 1; if missing, generic Online Optimized Image- shifts into slot 1.
+    - ATF Video-Sams Club is next when present.
+    - Generic Online Optimized Image- follows when present and not already used.
+    - Shipping- comes before ATF I/O / numbered ATF images. Missing assets collapse upward.
 
     CVS rules:
     - Lock only the top 3 Salsify slots.
@@ -7964,69 +7978,136 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
         return find_first_image(preferred, *queries) or find_first_image(generic_only, *queries)
 
     if retailer in {"sam's club", "sams club", "samsclub"}:
-        sams_brands = {"depend", "kotex", "u by kotex", "poise", "thinx", "thix"}
-        if brand_norm in sams_brands:
-            aligned = []
-            used_urls = set()
+        aligned = []
+        used_urls = set()
 
-            def append_unique(img):
-                if not isinstance(img, dict):
-                    return False
-                url = str(img.get("url", "") or "").strip()
-                if not url or url in used_urls:
-                    return False
-                aligned.append(img)
-                used_urls.add(url)
-                return True
+        def image_url(img):
+            return str((img or {}).get("url", "") or "").strip() if isinstance(img, dict) else ""
 
-            def image_name(img):
-                return normalize_salsify_asset_name((img or {}).get("name", "")) if isinstance(img, dict) else ""
+        def image_name(img):
+            return normalize_salsify_asset_name((img or {}).get("name", "")) if isinstance(img, dict) else ""
 
-            mvi_img = find_first_image(source_images, "main variant image club", "main variant image-club")
-            video_img = find_first_image(source_images, "atf video sams club", "atf video sam's club", "video sams club")
-            ooi_img = find_first_image(source_images, "online optimized image", "online optimized image-", "online image", "online", "front")
+        def append_unique(img):
+            if not isinstance(img, dict):
+                return False
+            url = image_url(img)
+            if not url or url in used_urls:
+                return False
+            aligned.append(img)
+            used_urls.add(url)
+            return True
 
-            used_ooi_in_slot1 = False
-            if not append_unique(mvi_img):
-                used_ooi_in_slot1 = append_unique(ooi_img)
-                if not used_ooi_in_slot1:
-                    aligned.append(make_blank_salsify_image_slot("main variant image club"))
+        def find_first_unused(*queries, exclude_tokens=None):
+            query_tokens = [normalize_salsify_asset_name(q) for q in queries if normalize_salsify_asset_name(q)]
+            exclude_tokens = [normalize_salsify_asset_name(q) for q in (exclude_tokens or []) if normalize_salsify_asset_name(q)]
+            for query in query_tokens:
+                for img in source_images:
+                    if not isinstance(img, dict):
+                        continue
+                    url = image_url(img)
+                    if not url or url in used_urls:
+                        continue
+                    name = image_name(img)
+                    if exclude_tokens and any(token in name for token in exclude_tokens):
+                        continue
+                    if name and (query == name or query in name):
+                        return img
+            return None
 
-            if video_img:
-                append_unique(video_img)
+        def find_online_optimized_generic():
+            # Match the generic "Online Optimized Image-" property, but do not
+            # let retailer-specific versions such as Online Optimized Image-Sams Club
+            # satisfy this slot.
+            excluded = [
+                "sam's club", "sams club", "samsclub", "sams",
+                "walgreens", "kroger", "grocery", "cvs", "target", "walmart",
+            ]
+            return find_first_unused(
+                "online optimized image",
+                "online image",
+                exclude_tokens=excluded,
+            )
 
-            if ooi_img and not used_ooi_in_slot1:
-                append_unique(ooi_img)
+        # Requested Sam's Club order:
+        # 1. Online Optimized Image-Sams Club when present; otherwise Main Variant Image-Club;
+        #    otherwise generic Online Optimized Image-.
+        # 2. ATF Video-Sams Club when present.
+        # 3. Generic Online Optimized Image- when present and not already used in slot 1.
+        # 4+. Shipping- before ATF I/O / numbered ATF images. Missing assets collapse upward.
+        append_unique(
+            find_first_unused(
+                "online optimized image sams club",
+                "online optimized image-sams club",
+                "online optimized image sam s club",
+                "online optimized image-sam s club",
+            )
+            or find_first_unused("main variant image club", "main variant image-club")
+            or find_online_optimized_generic()
+        )
 
-            append_unique(find_first_image(source_images, "shipping", "shipping-"))
-            append_unique(find_first_image(
-                source_images,
-                "atf i/o generic", "atf i o generic", "atf io generic", "atf i/o-generic",
-                "atf io sams club", "atf i/o sams club", "atf i o sams club", "atf i/o-sams club", "atf io-sams club", "atf io",
-            ))
-            for slot_num in range(2, 11):
-                append_unique(find_first_image(source_images, f"atf {slot_num} sam's club", f"atf {slot_num} sams club"))
+        append_unique(
+            find_first_unused(
+                "atf video sams club",
+                "atf video-sams club",
+                "atf video sam s club",
+                "atf video-sam s club",
+                "video sams club",
+            )
+        )
 
-            reserved_tokens = [
-                "main variant image club", "main variant image-club",
-                "atf video sams club", "atf video sam's club", "video sams club",
-                "online optimized image", "online optimized image-", "online image",
-                "shipping", "shipping-",
-                "atf i/o generic", "atf i o generic", "atf io generic", "atf i/o-generic",
-                "atf io sams club", "atf i/o sams club", "atf i o sams club", "atf i/o-sams club", "atf io-sams club", "atf io",
-            ] + [f"atf {i} sam's club" for i in range(2, 11)] + [f"atf {i} sams club" for i in range(2, 11)]
+        append_unique(find_online_optimized_generic())
+        append_unique(find_first_unused("shipping", "shipping-"))
+        append_unique(
+            find_first_unused(
+                "atf i/o sams club", "atf i/o-sams club",
+                "atf i o sams club", "atf io sams club", "atf io-sams club",
+                "atf i/o generic", "atf i/o-generic",
+                "atf i o generic", "atf io generic", "atf io-generic",
+                "atf i/o", "atf io",
+            )
+        )
+        for slot_num in range(2, 11):
+            append_unique(
+                find_first_unused(
+                    f"atf {slot_num} sams club",
+                    f"atf {slot_num}-sams club",
+                    f"atf {slot_num} sam s club",
+                    f"atf {slot_num}-sam s club",
+                    f"atf {slot_num} generic",
+                    f"atf {slot_num}-generic",
+                )
+            )
 
-            for img in source_images:
-                if not isinstance(img, dict):
-                    continue
-                name = image_name(img)
-                if any(token in name for token in reserved_tokens):
-                    continue
-                append_unique(img)
+        reserved_tokens = [
+            "online optimized image sams club", "online optimized image-sams club",
+            "online optimized image sam s club", "online optimized image-sam s club",
+            "main variant image club", "main variant image-club",
+            "online optimized image", "online image",
+            "atf video sams club", "atf video-sams club",
+            "atf video sam s club", "atf video-sam s club", "video sams club",
+            "shipping", "shipping-",
+            "atf i/o sams club", "atf i/o-sams club",
+            "atf i o sams club", "atf io sams club", "atf io-sams club",
+            "atf i/o generic", "atf i/o-generic",
+            "atf i o generic", "atf io generic", "atf io-generic",
+            "atf i/o", "atf io",
+        ]
+        for i in range(2, 11):
+            reserved_tokens.extend([
+                f"atf {i} sams club", f"atf {i}-sams club",
+                f"atf {i} sam s club", f"atf {i}-sam s club",
+                f"atf {i} generic", f"atf {i}-generic",
+            ])
 
-            return aligned[:max_slots]
+        for img in source_images:
+            if not isinstance(img, dict):
+                continue
+            name = image_name(img)
+            if any(token in name for token in reserved_tokens):
+                continue
+            append_unique(img)
 
-        return dedupe_images_preserve_order(source_images)[:max_slots]
+        return aligned[:max_slots]
 
     if retailer == "cvs":
         return reorder_cvs_salsify_images_for_visual(source_images, max_slots=max_slots)
