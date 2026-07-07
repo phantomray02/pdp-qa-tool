@@ -2521,8 +2521,8 @@ def extract_salsify_visible_property_map(html_text):
 
     # Visible asset label -> href patterns.
     visible_asset_patterns = [
-        r'>\s*(Main Variant Image-Club|Online Optimized Image-Sams Club|Online Optimized Image-|Ingredient Label Image-|Ingredient Label Image|Shipping-|Flat Back_2D-|Flat Left_2D-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)\s*<.*?href="([^"]+)"',
-        r'"property"\s*:\s*"(Main Variant Image-Club|Online Optimized Image-Sams Club|Online Optimized Image-|Ingredient Label Image-|Ingredient Label Image|Shipping-|Flat Back_2D-|Flat Left_2D-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)"[^{}]{0,1200}?"value"\s*:\s*"([^"]+)"',
+        r'>\s*(Main Variant Image-Sams Club|Main Variant Image-Club|Online Optimized Image-Sams Club|Online Optimized Image-|Ingredient Label Image-|Ingredient Label Image|Shipping-|Flat Back_2D-|Flat Left_2D-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)\s*<.*?href="([^"]+)"',
+        r'"property"\s*:\s*"(Main Variant Image-Sams Club|Main Variant Image-Club|Online Optimized Image-Sams Club|Online Optimized Image-|Ingredient Label Image-|Ingredient Label Image|Shipping-|Flat Back_2D-|Flat Left_2D-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)"[^{}]{0,1200}?"value"\s*:\s*"([^"]+)"',
     ]
     for pattern in visible_asset_patterns:
         for matched_name, matched_url in re.findall(pattern, raw_html, flags=re.IGNORECASE | re.DOTALL):
@@ -2595,6 +2595,7 @@ def pick_kroger_images_with_atf_and_lifestyle(asset_lookup):
     # could be found in asset_lookup but discarded before alignment.
     sams_required_tokens = (
         "online optimized image sams club",
+        "main variant image sams club",
         "main variant image club",
         "shipping",
         "atf video sams club",
@@ -3093,8 +3094,8 @@ def _parse_salsify_page(html_text):
     try:
         raw_html_text = html.unescape(str(html_text or ""))
         fallback_asset_patterns = [
-            r'>\s*(Main Variant Image-Club|Online Optimized Image-Sams Club|Online Optimized Image-|Ingredient Label Image-|Ingredient Label Image|Shipping-|Flat Back_2D-|Flat Left_2D-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)\s*<.*?href="([^"]+)"',
-            r'"property"\s*:\s*"(Main Variant Image-Club|Online Optimized Image-Sams Club|Online Optimized Image-|Ingredient Label Image-|Ingredient Label Image|Shipping-|Flat Back_2D-|Flat Left_2D-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)"[^{}]{0,800}?"value"\s*:\s*"([^"]+)"',
+            r'>\s*(Main Variant Image-Sams Club|Main Variant Image-Club|Online Optimized Image-Sams Club|Online Optimized Image-|Ingredient Label Image-|Ingredient Label Image|Shipping-|Flat Back_2D-|Flat Left_2D-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)\s*<.*?href="([^"]+)"',
+            r'"property"\s*:\s*"(Main Variant Image-Sams Club|Main Variant Image-Club|Online Optimized Image-Sams Club|Online Optimized Image-|Ingredient Label Image-|Ingredient Label Image|Shipping-|Flat Back_2D-|Flat Left_2D-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)"[^{}]{0,800}?"value"\s*:\s*"([^"]+)"',
         ]
         for pattern in fallback_asset_patterns:
             for matched_name, matched_url in re.findall(pattern, raw_html_text, flags=re.IGNORECASE | re.DOTALL):
@@ -7906,7 +7907,8 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
     Build the retailer-specific Salsify comparison image list.
 
     Sam's Club image rules:
-    - Online Optimized Image-Sams Club wins slot 1 when present.
+    - Main Variant Image-Sams Club wins slot 1 when present.
+    - Otherwise Online Optimized Image-Sams Club wins slot 1 when present.
     - Otherwise Main Variant Image-Club wins slot 1; if missing, generic Online Optimized Image- shifts into slot 1.
     - ATF Video-Sams Club is next when present.
     - Generic Online Optimized Image- follows when present and not already used.
@@ -8029,13 +8031,19 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
             )
 
         # Requested Sam's Club order:
-        # 1. Online Optimized Image-Sams Club when present; otherwise Main Variant Image-Club;
-        #    otherwise generic Online Optimized Image-.
+        # 1. Main Variant Image-Sams Club when present; otherwise Online Optimized Image-Sams Club;
+        #    otherwise Main Variant Image-Club; otherwise generic Online Optimized Image-.
         # 2. ATF Video-Sams Club when present.
         # 3. Generic Online Optimized Image- when present and not already used in slot 1.
         # 4+. Shipping- before ATF I/O / numbered ATF images. Missing assets collapse upward.
         append_unique(
             find_first_unused(
+                "main variant image sams club",
+                "main variant image-sams club",
+                "main variant image sam s club",
+                "main variant image-sam s club",
+            )
+            or find_first_unused(
                 "online optimized image sams club",
                 "online optimized image-sams club",
                 "online optimized image sam s club",
@@ -8079,6 +8087,8 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
             )
 
         reserved_tokens = [
+            "main variant image sams club", "main variant image-sams club",
+            "main variant image sam s club", "main variant image-sam s club",
             "online optimized image sams club", "online optimized image-sams club",
             "online optimized image sam s club", "online optimized image-sam s club",
             "main variant image club", "main variant image-club",
