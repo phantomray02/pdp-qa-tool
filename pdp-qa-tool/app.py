@@ -2776,8 +2776,8 @@ def extract_salsify_visible_property_map(html_text):
 
     # Visible asset label -> href patterns.
     visible_asset_patterns = [
-        r'>\s*(Main Variant Image-Sams Club|Main Variant Image-Club|Online Optimized Image-Sams Club|Online Optimized Image-|Ingredient Label Image-|Ingredient Label Image|Shipping-|Flat Back_2D-|Flat Left_2D-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)\s*<.*?href="([^"]+)"',
-        r'"property"\s*:\s*"(Main Variant Image-Sams Club|Main Variant Image-Club|Online Optimized Image-Sams Club|Online Optimized Image-|Ingredient Label Image-|Ingredient Label Image|Shipping-|Flat Back_2D-|Flat Left_2D-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)"[^{}]{0,1200}?"value"\s*:\s*"([^"]+)"',
+        r'>\s*(Main Variant Image-Sams Club|Main Variant Image-Club|Online Optimized Image-Sams Club|Online Optimized Image-Kroger|Online Optimized Image-Grocery|Online Optimized Image-|Ingredient Label Image-|Ingredient Label Image|Shipping-|Flat Back_2D-|Flat Left_2D-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)\s*<.*?href="([^"]+)"',
+        r'"property"\s*:\s*"(Main Variant Image-Sams Club|Main Variant Image-Club|Online Optimized Image-Sams Club|Online Optimized Image-Kroger|Online Optimized Image-Grocery|Online Optimized Image-|Ingredient Label Image-|Ingredient Label Image|Shipping-|Flat Back_2D-|Flat Left_2D-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)"[^{}]{0,1200}?"value"\s*:\s*"([^"]+)"',
     ]
     for pattern in visible_asset_patterns:
         for matched_name, matched_url in re.findall(pattern, raw_html, flags=re.IGNORECASE | re.DOTALL):
@@ -3382,8 +3382,8 @@ def _parse_salsify_page(html_text):
     try:
         raw_html_text = html.unescape(str(html_text or ""))
         fallback_asset_patterns = [
-            r'>\s*(Main Variant Image-Sams Club|Main Variant Image-Club|Online Optimized Image-Sams Club|Online Optimized Image-|Ingredient Label Image-|Ingredient Label Image|Shipping-|Flat Back_2D-|Flat Left_2D-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)\s*<.*?href="([^"]+)"',
-            r'"property"\s*:\s*"(Main Variant Image-Sams Club|Main Variant Image-Club|Online Optimized Image-Sams Club|Online Optimized Image-|Ingredient Label Image-|Ingredient Label Image|Shipping-|Flat Back_2D-|Flat Left_2D-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)"[^{}]{0,800}?"value"\s*:\s*"([^"]+)"',
+            r'>\s*(Main Variant Image-Sams Club|Main Variant Image-Club|Online Optimized Image-Sams Club|Online Optimized Image-Kroger|Online Optimized Image-Grocery|Online Optimized Image-|Ingredient Label Image-|Ingredient Label Image|Shipping-|Flat Back_2D-|Flat Left_2D-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)\s*<.*?href="([^"]+)"',
+            r'"property"\s*:\s*"(Main Variant Image-Sams Club|Main Variant Image-Club|Online Optimized Image-Sams Club|Online Optimized Image-Kroger|Online Optimized Image-Grocery|Online Optimized Image-|Ingredient Label Image-|Ingredient Label Image|Shipping-|Flat Back_2D-|Flat Left_2D-|ATF I/O-Sams Club|ATF I/O-Generic|ATF Video-Sams Club|ATF [0-9]+-Sams Club)"[^{}]{0,800}?"value"\s*:\s*"([^"]+)"',
         ]
         for pattern in fallback_asset_patterns:
             for matched_name, matched_url in re.findall(pattern, raw_html_text, flags=re.IGNORECASE | re.DOTALL):
@@ -4896,9 +4896,8 @@ def _absolutize_kroger_image_url(url):
 def build_kroger_main_image_fallback_url(retail_url="", target_rpc=""):
     """Build Kroger's predictable main/front product image URL as a fallback.
 
-    This is only used when the uploaded TXT/live HTML did not expose a product
-    image, usually because Kroger captured a loading/privacy shell. The image URL
-    pattern is visible in valid Kroger captures: /product/images/medium/front/{UPC}.
+    Kroger product image URLs use the zero-padded UPC/image key in paths like:
+    /product/images/medium/front/0003600056657.
     """
     rpc = clean_kroger_rpc(target_rpc)
     if not rpc:
@@ -4908,6 +4907,8 @@ def build_kroger_main_image_fallback_url(retail_url="", target_rpc=""):
             rpc = clean_kroger_rpc(m.group(1))
     if not rpc:
         return ""
+    if rpc.isdigit() and len(rpc) < 13:
+        rpc = rpc.zfill(13)
     return f"https://www.kroger.com/product/images/medium/front/{rpc}"
 
 
@@ -4934,7 +4935,7 @@ def _extract_kroger_perspective_from_text(text):
 
 def _extract_kroger_perspective_from_url(url):
     url = str(url or "")
-    m = re.search(r'/product/images/(?:large|medium|small)/([^/]+)/', url, flags=re.IGNORECASE)
+    m = re.search(r'/product/images/(?:xlarge|large|medium|small|thumbnail)/([^/]+)/', url, flags=re.IGNORECASE)
     if m:
         return str(m.group(1) or "").strip().lower()
     return ""
@@ -8611,8 +8612,11 @@ def select_kroger_salsify_main_image(s_images):
 
     chosen = (
         find("online optimized image kroger")
+        or find("online image kroger")
         or find("online optimized image grocery")
+        or find("online image grocery")
         or find("online optimized image", excluded_tokens=("kroger", "grocery", "walgreens", "cvs", "sams club", "sam s club", "samsclub", "target", "walmart"))
+        or find("online image", excluded_tokens=("kroger", "grocery", "walgreens", "cvs", "sams club", "sam s club", "samsclub", "target", "walmart"))
     )
     return [chosen] if chosen and img_url(chosen) else []
 
@@ -8827,6 +8831,10 @@ def build_normalized_comparison_payload(
     if retailer_norm == "kroger":
         s_images = select_kroger_salsify_main_image(s_images)[:1]
         r_images = force_single_kroger_main_image(r_images, retail_url=retail_url, target_rpc=current_target_sku)
+        # Last-resort image fallback from Kroger RPC/UPC so the Kroger side does not
+        # show Missing when the capture had product copy but no <img> tags.
+        if not r_images:
+            r_images = force_single_kroger_main_image([], retail_url=retail_url, target_rpc=current_target_sku)
 
     if mode == "visual":
         if retailer_norm == "cvs":
