@@ -8308,6 +8308,61 @@ def trim_trailing_empty_image_slots(s_images, r_images):
     return s_images[:keep_len], r_images[:keep_len]
 
 
+
+def align_sams_club_retailer_images_to_salsify_video_slot(s_images, r_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
+    """Reserve Sam's Club retailer slot 2 when Salsify has ATF Video in slot 2.
+
+    Sam's Club sometimes has no live retailer video in the same position even when
+    Salsify has ATF Video-Sams Club. Without this spacer, every retailer image
+    after slot 1 shifts up one row and compares against the wrong Salsify asset.
+
+    Rules:
+    - Only applies when Salsify slot 2 is video-like or named ATF Video.
+    - Keep retailer image 1 in slot 1.
+    - If a retailer video exists later, move the first retailer video into slot 2.
+    - Otherwise insert a blank slot 2 and shift retailer images down.
+    """
+    s_images = list(s_images or [])
+    r_images = [str(u or "").strip() for u in list(r_images or []) if str(u or "").strip()]
+    max_slots = max(0, int(max_slots or MAX_IMAGE_SLOTS_TO_COMPARE))
+    if max_slots <= 0 or len(s_images) < 2:
+        return r_images[:max_slots]
+
+    s_slot_2 = s_images[1] if isinstance(s_images[1], dict) else {}
+    s_slot_2_url = str(s_slot_2.get("url", "") or "").strip()
+    s_slot_2_name = normalize_salsify_asset_name(s_slot_2.get("name", ""))
+    s_slot_2_is_video = bool(
+        is_video_like_url(s_slot_2_url)
+        or "atf video" in s_slot_2_name
+        or "video sams club" in s_slot_2_name
+    )
+    if not s_slot_2_is_video:
+        return r_images[:max_slots]
+
+    if len(r_images) >= 2 and is_video_like_url(r_images[1]):
+        return r_images[:max_slots]
+
+    first_retailer_video_index = None
+    for idx, url in enumerate(r_images[1:], start=1):
+        if is_video_like_url(url):
+            first_retailer_video_index = idx
+            break
+
+    ordered = []
+    if r_images:
+        ordered.append(r_images[0])
+
+    if first_retailer_video_index is not None:
+        ordered.append(r_images[first_retailer_video_index])
+        for idx, url in enumerate(r_images[1:], start=1):
+            if idx != first_retailer_video_index:
+                ordered.append(url)
+    else:
+        ordered.append("")
+        ordered.extend(r_images[1:])
+
+    return ordered[:max_slots]
+
 def build_image_score_fields(s_images, r_images, max_slots=MAX_IMAGE_SLOTS_TO_SCORE):
     """
     Build per-slot image scores and an average image score.
@@ -8439,6 +8494,16 @@ def build_normalized_comparison_payload(
             r_images,
             locked_slots=3,
             max_slots=min(max_slots, cvs_max_slots),
+        )
+
+    # Sam's Club-only: if Salsify slot 2 is ATF Video-Sams Club, reserve retailer
+    # slot 2 for a retailer video or blank spacer so the remaining retailer images
+    # do not shift up and compare against the wrong Salsify rows.
+    if retailer_norm in {"sam's club", "sams club", "samsclub"}:
+        r_images = align_sams_club_retailer_images_to_salsify_video_slot(
+            s_images,
+            r_images,
+            max_slots=max_slots,
         )
 
     s_images, r_images = align_image_slots_for_comparison(
@@ -8630,18 +8695,29 @@ def process_row(row):
 
         retailer_features = r_text.get("features", []) if isinstance(r_text, dict) else []
         retailer_norm = str(retailer_name or "").strip().lower()
-        feature_fields = ["feature1", "feature2", "feature3", "feature4", "feature5", "feature6", "feature7"] if retailer_norm == "kroger" else ["feature1", "feature2", "feature3", "feature4", "feature5"]
+        if retailer_norm in {"sam's club", "sams club", "samsclub"}:
+            feature_fields = get_retailer_salsify_feature_fields(retailer_name)
+        else:
+            feature_fields = ["feature1", "feature2", "feature3", "feature4", "feature5", "feature6", "feature7"] if retailer_norm == "kroger" else ["feature1", "feature2", "feature3", "feature4", "feature5"]
 
         feature_scores = []
         feature_score_fields = {}
+        feature_position = 1
 
         for i, f_key in enumerate(feature_fields, start=1):
             s_val = s_text.get(f_key, "")
             r_val = retailer_features[i - 1] if i - 1 < len(retailer_features) else ""
 
-            score = keyword_score(s_val, r_val) if r_val else 0
+            # Sam's Club should score only feature rows that exist on either the
+            # Salsify deck or the live Sam's Club PDP. Do not turn unavailable
+            # slots into extra 0% rows.
+            if retailer_norm in {"sam's club", "sams club", "samsclub"} and not (normalize_space(s_val) or normalize_space(r_val)):
+                continue
+
+            score = keyword_score(s_val, r_val) if (s_val or r_val) else 0
             feature_scores.append(score)
-            feature_score_fields[f"Feature {i} %"] = score
+            feature_score_fields[f"Feature {feature_position} %"] = score
+            feature_position += 1
 
         avg_feature_score = int(sum(feature_scores) / len(feature_scores)) if feature_scores else 0
 
@@ -9509,7 +9585,14 @@ if (
             for i in range(max_features):
                 s_val = s_text.get(feature_fields[i], "") if i < len(feature_fields) else ""
                 r_val = retailer_features[i] if i < len(retailer_features) else ""
-                row_score = keyword_score(s_val, r_val)
+
+                # Sam's Club visual QA should show only feature rows that are
+                # actually available from Salsify or the live Sam's Club PDP.
+                # This removes extra Missing/Missing rows from the visual score.
+                if retailer_norm in {"sam's club", "sams club", "samsclub"} and not (normalize_space(s_val) or normalize_space(r_val)):
+                    continue
+
+                row_score = keyword_score(s_val, r_val) if (s_val or r_val) else 0
                 feature_scores.append(row_score)
                 feature_rows.append((s_val, r_val, row_score))
 
