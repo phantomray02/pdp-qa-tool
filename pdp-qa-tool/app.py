@@ -907,7 +907,7 @@ RETAILER_SALSIFY_REQUIREMENTS = {
     "default": {"max_features": 5, "max_images": 6},
     "cvs": {"max_features": 5, "max_images": 8},
     "walgreens": {"max_features": 5, "max_images": 6},
-    "kroger": {"max_features": 7, "max_images": 7},
+    "kroger": {"max_features": 7, "max_images": 1},
     "sam's club": {"max_features": 10, "max_images": 10},
     "sams club": {"max_features": 10, "max_images": 10},
     "samsclub": {"max_features": 10, "max_images": 10},
@@ -1320,13 +1320,13 @@ def apply_retailer_salsify_image_limits(retailer_name, images):
     max_images = int(limits.get("max_images", MAX_IMAGE_SLOTS_TO_COMPARE) or MAX_IMAGE_SLOTS_TO_COMPARE)
     max_images = max(0, min(max_images, MAX_IMAGE_SLOTS_TO_COMPARE))
     if retailer == "cvs":
-        cvs_images = [img for img in list(images or []) if not is_walgreens_only_salsify_image(img)]
+        cvs_images = [img for img in list(images or []) if not is_walgreens_only_salsify_image(img) and not bool((img or {}).get("kroger_only"))]
         return reorder_cvs_salsify_images_for_visual(cvs_images, max_slots=max_images)
     if retailer == "walgreens":
-        return reorder_walgreens_salsify_images_for_visual(images, max_slots=max_images)
+        return reorder_walgreens_salsify_images_for_visual([img for img in list(images or []) if not bool((img or {}).get("kroger_only"))], max_slots=max_images)
     images = [
         img for img in list(images or [])
-        if not is_cvs_only_salsify_image(img) and not is_walgreens_only_salsify_image(img)
+        if not is_cvs_only_salsify_image(img) and not is_walgreens_only_salsify_image(img) and not bool((img or {}).get("kroger_only"))
     ]
     out = []
     seen_urls = set()
@@ -2105,39 +2105,67 @@ def uploaded_capture_url_candidates(url):
 
 
 def split_kroger_parsed_description(description):
-    """Split the extension's compact Kroger description into intro + bullets.
+    """Split Kroger flattened PDP description into intro + feature bullets.
 
-    The Kroger TXT includes a PARSED JSON block. In that block, the browser
-    extension often stores the PDP description and bullets together in one long
-    string. This helper keeps the intro paragraph separate when clear bullet
-    headings are present and leaves the original text intact if no safe split is
-    found.
+    Kroger extension captures often flatten Product Details + bullets into one
+    description string. This keeps the real intro as description and rebuilds
+    feature rows from known Kroger/K-C bullet starts.
     """
     description = clean_kroger_text(description)
     if not description:
         return "", []
 
-    # Common Kroger/K-C bullet labels are uppercase and followed by an em dash.
-    # Keep this conservative so normal sentence punctuation is not split apart.
-    heading_pattern = re.compile(
-        r'(?=(?:^|\s)([A-Z0-9][A-Z0-9\'’&™®%*/(),.+\s-]{2,90})\s+[—-]\s+)',
-        flags=re.UNICODE,
+    def split_by_marker(pattern):
+        matches = list(re.finditer(pattern, description, flags=re.IGNORECASE | re.UNICODE))
+        if not matches:
+            return "", []
+        intro = normalize_space(description[:matches[0].start()])
+        items = []
+        for idx, match in enumerate(matches):
+            start = match.start()
+            end = matches[idx + 1].start() if idx + 1 < len(matches) else len(description)
+            item = normalize_space(description[start:end])
+            if item:
+                items.append(item)
+        return intro, dedupe_preserve_order(items)[:10]
+
+    # Kroger copy commonly has upper-case bullet labels with an em dash.
+    labeled_terms = [
+        r"WHAT'S\s+INCLUDED", r"GENTLE'S\s+IN\s+THE\s+NAME", r"A\s+REFRESHING\s+CLEAN",
+        r"BREAKS\s+DOWN\s+LIKE\s+TOILET\s+PAPER", r"GENTLE\s+FOR\s+SKIN", r"IT\s+TAKES\s+TWO",
+        r"NO\s+FRAGRANCE(?:,\s+NO\s+PROBLEM)?", r"SAFE\s+FOR\s+SENSITIVE\s+SKIN",
+        r"HYPOALLERGENIC", r"PERFECT\s+FOR\s+THE\s+WHOLE\s+FAMILY",
+        r"STRONG\s+CLEANINGRIPPLES", r"BATH\s+TISSUE",
+    ]
+    labeled_pattern = r'(?=\b(?:' + '|'.join(labeled_terms) + r')\b\s*[—-])'
+    intro, features = split_by_marker(labeled_pattern)
+    if len(features) >= 2:
+        return intro or description, features
+
+    # Other Kroger products flatten sentence-style bullets without dash labels.
+    marker_terms = [
+        r"\d+\s+Depend", r"\d+\s+Mega", r"\d+\s+flip-top",
+        r"DryShield", r"Dryshield", r"Drysheild", r"Super\s+absorbent",
+        r"OdorBLOCK", r"Made\s+with", r"Thin,\s+discreet",
+        r"All-Day\s+Protection", r"Superior\s+Comfort", r"Find\s+your\s+size", r"New\s+look",
+        r"LeakGuard", r"Up\s+to", r"Dermatologist", r"Hypoallergenic",
+        r"Contains", r"Fragrance[-\s]?free", r"Breathable",
+        r"Strong\s+CleaningRipples", r"\d+x\s+thicker", r"Bath\s+tissue",
+        r"Each\s+wet\s+wipe",
+    ]
+    marker_pattern = r'(?=\b(?:' + '|'.join(marker_terms) + r')\b)'
+    intro, features = split_by_marker(marker_pattern)
+    if len(features) >= 2:
+        return intro or description, features
+
+    # Final fallback: multi-word uppercase heading followed by a dash.
+    intro, features = split_by_marker(
+        r'(?=(?:^|\s)(?:[A-Z0-9][A-Z0-9&™®%*/(),.+-]+(?:\s+[A-Z0-9][A-Z0-9&™®%*/(),.+-]+){1,7})\s+[—-]\s+)'
     )
-    matches = list(heading_pattern.finditer(description))
-    if not matches:
-        return description, []
+    if features:
+        return intro or description, features
 
-    first_start = matches[0].start()
-    intro = normalize_space(description[:first_start])
-    features = []
-    for idx, match in enumerate(matches):
-        start = match.start()
-        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(description)
-        item = normalize_space(description[start:end])
-        if item:
-            features.append(item)
-
-    return intro or description, dedupe_preserve_order(features)[:10]
+    return description, []
 
 
 def build_kroger_compact_capture_from_parsed_json(payload):
@@ -2174,7 +2202,7 @@ def build_kroger_compact_capture_from_parsed_json(payload):
         "@type": "Product",
         "name": title,
         "description": intro or description,
-        "image": images[:10],
+        "image": images[:1],
     }
 
     parts = [
@@ -2198,7 +2226,7 @@ def build_kroger_compact_capture_from_parsed_json(payload):
         parts.append("</ul>")
     parts.append("</section>")
 
-    for idx, image_url in enumerate(images[:10]):
+    for idx, image_url in enumerate(images[:1]):
         perspective = _extract_kroger_perspective_from_url(image_url) or "front"
         parts.append(
             f'<div data-testid="main-image-perspective" aria-label="{html_escape_text(title)} Perspective: {html_escape_text(perspective)}">'
@@ -2800,7 +2828,7 @@ def pick_kroger_images_with_atf_and_lifestyle(asset_lookup):
     ordered_images = []
     seen_urls = set()
 
-    def add_image(name, url, cvs_only=False, walgreens_only=False):
+    def add_image(name, url, cvs_only=False, walgreens_only=False, kroger_only=False):
         clean_url = str(url or "").strip()
         if not clean_url or clean_url in seen_urls:
             return False
@@ -2809,12 +2837,27 @@ def pick_kroger_images_with_atf_and_lifestyle(asset_lookup):
             img["cvs_only"] = True
         if walgreens_only:
             img["walgreens_only"] = True
+        if kroger_only:
+            img["kroger_only"] = True
         ordered_images.append(img)
         seen_urls.add(clean_url)
         return True
 
     if best_main:
         add_image(best_main["name"], best_main["url"])
+
+    # Kroger-only final selector needs these candidates even when another
+    # retailer-specific Online Optimized image was the general best_main.
+    for normalized_name, name, clean_url in normalized_assets:
+        if (
+            "online optimized image kroger" in normalized_name
+            or "online optimized image grocery" in normalized_name
+            or (
+                "online optimized image" in normalized_name
+                and not any(token in normalized_name for token in ["walgreens", "cvs", "sams club", "sam s club", "samsclub", "target", "walmart"])
+            )
+        ):
+            add_image(name, clean_url, kroger_only=True)
 
     # Sam's Club-specific assets must stay in the parsed Salsify image bundle
     # so the Sam's Club alignment step can place them in the proper slots.
@@ -4591,11 +4634,8 @@ def normalize_kroger_features(items, max_features=10):
     if not items:
         return []
 
-    # Defensive fix: if Kroger features arrive as one flattened string, do not
-    # iterate character-by-character. Split it using the same Kroger parsed-JSON
-    # feature splitter used for TXT uploads.
     if isinstance(items, str):
-        _intro, split_features = split_kroger_parsed_description(items)
+        intro, split_features = split_kroger_parsed_description(items)
         if split_features:
             items = split_features
         elif " | " in items:
@@ -4608,10 +4648,41 @@ def normalize_kroger_features(items, max_features=10):
     out = []
     for item in items:
         val = clean_kroger_text(item)
-        if val:
+        if val and val.lower() not in {"missing", "nan", "none"}:
             out.append(val)
     return dedupe_preserve_order(out[:max_features])
 
+
+
+def extract_kroger_markdown_product_info(raw_text):
+    """Parse Kroger markdown/text captures when no real DOM list exists."""
+    text = html.unescape(str(raw_text or ""))
+    if not text.strip():
+        return "", []
+
+    # Look for Product Details area and stop before ratings/footer blocks.
+    m = re.search(r'Product\s+Details\s*<br>\s*(.*?)(?:\n\s*Ratings\s*&\s*Reviews|\n\s*####\s+ABOUT US|\n\s*Improving Your Experience|$)', text, flags=re.IGNORECASE | re.DOTALL)
+    block = m.group(1) if m else ""
+    if not block:
+        return "", []
+
+    block = block.replace('<br>', '\n').replace('<br/>', '\n').replace('<br />', '\n')
+    lines = [normalize_space(x) for x in re.split(r'\n+|\r+', block) if normalize_space(x)]
+    lines = [re.sub(r'^[-•]\s*', '', x).strip() for x in lines]
+    lines = [x for x in lines if x and not re.match(r'^(Ratings|Reviews|View More Reviews)$', x, flags=re.IGNORECASE)]
+    if not lines:
+        return "", []
+
+    # First line often includes "Product name Perspective: Main" before the intro.
+    first = lines[0]
+    first = re.sub(r'^.*?Perspective:\s*Main\s*', '', first, flags=re.IGNORECASE).strip()
+    description = first
+    features = lines[1:]
+
+    if not features and description:
+        description, features = split_kroger_parsed_description(description)
+
+    return clean_kroger_text(description), normalize_kroger_features(features, max_features=10)
 
 def extract_kroger_description_and_features_from_html(html_text):
     debug = {
@@ -4660,6 +4731,17 @@ def extract_kroger_description_and_features_from_html(html_text):
         debug["parser_path"] = "kroger_data_testid_romance_div"
         if description or features:
             return description, features, debug
+
+    markdown_description, markdown_features = extract_kroger_markdown_product_info(working)
+    if markdown_description or markdown_features:
+        debug["description_marker_found"] = bool(markdown_description)
+        debug["description_end_marker_found"] = bool(markdown_description)
+        debug["feature_block_found"] = bool(markdown_features)
+        debug["feature_count"] = len(markdown_features)
+        debug["description_excerpt"] = markdown_description[:500]
+        debug["features_excerpt"] = " | ".join(markdown_features[:5])[:1000]
+        debug["parser_path"] = "kroger_markdown_product_information"
+        return markdown_description, markdown_features, debug
 
     for script in soup.find_all('script', attrs={'type': 'application/ld+json'}):
         raw = (script.string or script.get_text(' ', strip=True) or '').strip()
@@ -4944,7 +5026,11 @@ def extract_kroger_images_from_html(html_text):
 
     candidates.sort(key=lambda item: (item[0], item[1], item[2]))
     ordered_urls = [url for _, _, url in candidates]
-    return ordered_urls[:MAX_IMAGE_SLOTS_TO_COMPARE]
+    for url in ordered_urls:
+        perspective = _extract_kroger_perspective_from_url(url)
+        if perspective in {"front", "main"}:
+            return [url]
+    return ordered_urls[:1]
 
 @st.cache_data(show_spinner=False)
 def get_kroger_bundle(retail_url, target_rpc=""):
@@ -7916,13 +8002,8 @@ def finalize_retailer_copy(retailer_name, r_text):
         description = clean_kroger_text(out.get("description", ""))
         features = normalize_kroger_features(out.get("features", []), max_features=10)
 
-        # Kroger TXT PARSED JSON can flatten PDP bullets into the description.
-        # If the feature list is empty, suspiciously tiny, or looks like split
-        # fragments, rebuild features from the description and keep the intro as
-        # the description.
         suspicious_features = bool(
-            features
-            and (
+            features and (
                 len(features) <= 2
                 or all(len(str(x or "").strip()) <= 8 for x in features[:3])
             )
@@ -8498,7 +8579,48 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
 
 _original_align_salsify_images_for_retailer = align_salsify_images_for_retailer
 
+
+def select_kroger_salsify_main_image(s_images):
+    """Kroger-only Salsify image rule.
+
+    Use exactly one Salsify image with this priority:
+    1. Online Optimized Image-Kroger
+    2. Online Optimized Image-Grocery
+    3. generic Online Optimized Image-
+    """
+    images = [img for img in list(s_images or []) if isinstance(img, dict)]
+
+    def img_url(img):
+        return str(img.get("url", "") or "").strip()
+
+    def img_name(img):
+        return normalize_salsify_asset_name(img.get("name", ""))
+
+    def find(token, excluded_tokens=()):
+        token = normalize_salsify_asset_name(token)
+        excluded_tokens = [normalize_salsify_asset_name(x) for x in excluded_tokens]
+        for img in images:
+            name = img_name(img)
+            if not name or not img_url(img):
+                continue
+            if any(excluded and excluded in name for excluded in excluded_tokens):
+                continue
+            if name == token or token in name:
+                return img
+        return None
+
+    chosen = (
+        find("online optimized image kroger")
+        or find("online optimized image grocery")
+        or find("online optimized image", excluded_tokens=("kroger", "grocery", "walgreens", "cvs", "sams club", "sam s club", "samsclub", "target", "walmart"))
+    )
+    return [chosen] if chosen and img_url(chosen) else []
+
+
 def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE, brand=""):
+    retailer = str(retailer_name or "").strip().lower()
+    if retailer == "kroger":
+        return select_kroger_salsify_main_image(s_images)[:1]
     aligned = _original_align_salsify_images_for_retailer(retailer_name, s_images, max_slots=max_slots, brand=brand)
     return apply_retailer_salsify_image_limits(retailer_name, aligned)
 
@@ -8701,6 +8823,10 @@ def build_normalized_comparison_payload(
 
     r_text = finalize_retailer_copy(retailer_name, r_bundle["text"] or {})
     r_images = r_bundle["images"] or []
+
+    if retailer_norm == "kroger":
+        s_images = select_kroger_salsify_main_image(s_images)[:1]
+        r_images = force_single_kroger_main_image(r_images, retail_url=retail_url, target_rpc=current_target_sku)
 
     if mode == "visual":
         if retailer_norm == "cvs":
