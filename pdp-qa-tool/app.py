@@ -2104,24 +2104,178 @@ def uploaded_capture_url_candidates(url):
     return candidates
 
 
+def split_kroger_parsed_description(description):
+    """Split the extension's compact Kroger description into intro + bullets.
+
+    The Kroger TXT includes a PARSED JSON block. In that block, the browser
+    extension often stores the PDP description and bullets together in one long
+    string. This helper keeps the intro paragraph separate when clear bullet
+    headings are present and leaves the original text intact if no safe split is
+    found.
+    """
+    description = clean_kroger_text(description)
+    if not description:
+        return "", []
+
+    # Common Kroger/K-C bullet labels are uppercase and followed by an em dash.
+    # Keep this conservative so normal sentence punctuation is not split apart.
+    heading_pattern = re.compile(
+        r'(?=(?:^|\s)([A-Z0-9][A-Z0-9\'’&™®%*/(),.+\s-]{2,90})\s+[—-]\s+)',
+        flags=re.UNICODE,
+    )
+    matches = list(heading_pattern.finditer(description))
+    if not matches:
+        return description, []
+
+    first_start = matches[0].start()
+    intro = normalize_space(description[:first_start])
+    features = []
+    for idx, match in enumerate(matches):
+        start = match.start()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(description)
+        item = normalize_space(description[start:end])
+        if item:
+            features.append(item)
+
+    return intro or description, dedupe_preserve_order(features)[:10]
+
+
+def build_kroger_compact_capture_from_parsed_json(payload):
+    """Build small parse-friendly HTML from Kroger extension PARSED JSON.
+
+    This prevents the app from storing huge Kroger footer/privacy HTML in
+    session_state and uses the reliable extension-extracted product values
+    instead. Invalid shell captures are rejected by returning an empty string.
+    """
+    if not isinstance(payload, dict):
+        return ""
+
+    title = clean_kroger_text(payload.get("title", ""))
+    description = clean_kroger_text(payload.get("description", ""))
+    images = [
+        html.unescape(str(url or "").strip())
+        for url in (payload.get("images", []) or [])
+        if "/product/images/" in str(url or "").lower()
+    ]
+
+    # Reject Kroger loading/privacy shells. These can still say capture status ok,
+    # but they do not carry product content.
+    if not title or title.strip().lower() == "kroger":
+        return ""
+    if not description and not images:
+        return ""
+
+    intro, feature_items = split_kroger_parsed_description(description)
+    final_url = clean_uploaded_url_value(payload.get("finalUrl", ""))
+    requested_url = clean_uploaded_url_value(payload.get("requestedUrl", ""))
+
+    product_json_ld = {
+        "@context": "https://schema.org",
+        "@type": "Product",
+        "name": title,
+        "description": intro or description,
+        "image": images[:10],
+    }
+
+    parts = [
+        "<html><head>",
+        f"<title>{html_escape_text(title)} - Kroger</title>",
+        '<script type="application/ld+json">',
+        json.dumps(product_json_ld, ensure_ascii=False),
+        "</script>",
+        "</head><body>",
+        f"<h1>{html_escape_text(title)}</h1>",
+        f"<!-- Requested URL: {html_escape_text(requested_url)} -->",
+        f"<!-- Final URL: {html_escape_text(final_url)} -->",
+        '<section data-testid="product-details-romance-description">',
+        f"<p>{html_escape_text(intro or description)}</p>",
+    ]
+
+    if feature_items:
+        parts.append("<ul>")
+        for feature in feature_items:
+            parts.append(f"<li>{html_escape_text(feature)}</li>")
+        parts.append("</ul>")
+    parts.append("</section>")
+
+    for idx, image_url in enumerate(images[:10]):
+        perspective = _extract_kroger_perspective_from_url(image_url) or "front"
+        parts.append(
+            f'<div data-testid="main-image-perspective" aria-label="{html_escape_text(title)} Perspective: {html_escape_text(perspective)}">'
+            f'<img class="ProductImages-image" src="{html.escape(image_url, quote=True)}" alt="{html_escape_text(title)} Perspective: {html_escape_text(perspective)}" />'
+            '</div>'
+        )
+
+    parts.append("</body></html>")
+    return "\n".join(parts)
+
+
 def parse_uploaded_raw_html_map(raw_text):
     raw_text = str(raw_text or "")
     if not raw_text.strip():
         return {}
 
     html_map = {}
-    block_pattern = re.compile(
-        r'(?is)Requested\s+URL\s*:\s*(https?://\S+).*?-----BEGIN HTML-----(.*?)-----END HTML-----'
-    )
 
-    for match in block_pattern.finditer(raw_text):
-        requested_url = str(match.group(1) or "").strip()
-        html_text = html.unescape(str(match.group(2) or "").strip())
-        if not requested_url or len(html_text) < 30:
+    # Split by capture so PARSED JSON and HTML stay paired. This is safer and
+    # lighter than one giant regex over a very large Kroger TXT export.
+    capture_blocks = re.split(r'(?=^=+\s*PDP CAPTURE\s+\d+\s*=+)', raw_text, flags=re.MULTILINE)
+    if len(capture_blocks) <= 1:
+        capture_blocks = [raw_text]
+
+    for block in capture_blocks:
+        requested_match = re.search(r'(?im)^Requested\s+URL\s*:\s*(https?://\S+)', block)
+        if not requested_match:
             continue
-        key = normalize_uploaded_capture_url(requested_url)
-        if key:
+        requested_url = str(requested_match.group(1) or "").strip()
+        if not requested_url:
+            continue
+
+        compact_html = ""
+        parsed_match = re.search(
+            r'(?is)-----BEGIN PARSED JSON-----(.*?)-----END PARSED JSON-----',
+            block,
+        )
+        if parsed_match:
+            try:
+                payload = json.loads(str(parsed_match.group(1) or "").strip())
+                compact_html = build_kroger_compact_capture_from_parsed_json(payload)
+            except Exception:
+                compact_html = ""
+
+        if compact_html:
+            html_text = compact_html
+        else:
+            html_match = re.search(r'(?is)-----BEGIN HTML-----(.*?)-----END HTML-----', block)
+            html_text = html.unescape(str(html_match.group(1) or "").strip()) if html_match else ""
+
+            # Do not store obvious Kroger shell captures. Keeping these huge
+            # footer/privacy pages in session_state makes the app slow/fragile,
+            # and they are rejected later anyway.
+            if requested_url and "kroger.com" in requested_url.lower() and html_text and not is_valid_kroger_product_capture(html_text):
+                html_text = ""
+
+        if not html_text or len(html_text) < 30:
+            continue
+
+        keys = []
+        for candidate in [requested_url]:
+            key = normalize_uploaded_capture_url(candidate)
+            if key and key not in keys:
+                keys.append(key)
+        if parsed_match:
+            try:
+                payload = json.loads(str(parsed_match.group(1) or "").strip())
+                final_url = clean_uploaded_url_value(payload.get("finalUrl", "")) if isinstance(payload, dict) else ""
+                key = normalize_uploaded_capture_url(final_url)
+                if key and key not in keys:
+                    keys.append(key)
+            except Exception:
+                pass
+
+        for key in keys:
             html_map[key] = html_text
+
     return html_map
 
 def lookup_uploaded_raw_html(uploaded_html_map, retail_url, target_rpc=""):
