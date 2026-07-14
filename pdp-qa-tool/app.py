@@ -90,8 +90,8 @@ WALGREENS_REQUEST_TIMEOUT = 18
 WALGREENS_DEBUG_TIMEOUT = 25
 WALGREENS_API_TIMEOUT = 10
 # HEB is intentionally separate and TXT-only. Do not live-fetch HEB PDPs from Streamlit.
-HEB_BATCH_SIZE = 8
-HEB_MAX_WORKERS = 2
+HEB_BATCH_SIZE = 1
+HEB_MAX_WORKERS = 1
 HEB_TXT_ONLY = True
 
 # =========================================
@@ -7516,9 +7516,20 @@ def get_heb_retailer_bundle_from_uploaded_txt(uploaded_html, retail_url="", targ
 
 
 def get_heb_salsify_bundle(salsify_url):
-    # Separate HEB Salsify entrypoint. It reuses the generic Salsify deck parser,
-    # then HEB-only overrides are chosen in finalize_salsify_copy_for_retailer().
-    return get_salsify_bundle(salsify_url)
+    # Separate HEB Salsify entrypoint. HEB batch uses an uncached fetch so full
+    # Salsify page HTML is not retained across hundreds of rows in Streamlit Cloud.
+    salsify_url = clean_uploaded_url_value(salsify_url)
+    if not salsify_url:
+        return _parse_salsify_page("")
+    candidates = salsify_url_candidates(salsify_url) if "sites.salsify.com" in str(salsify_url).lower() else [salsify_url]
+    last_html = ""
+    for candidate_url in candidates:
+        html_text = fetch_html_with_timeout(candidate_url, REQUEST_TIMEOUT)
+        if html_text:
+            last_html = html_text
+            if "sites.salsify.com" not in str(candidate_url).lower() or is_probably_salsify_pdp_html(html_text):
+                break
+    return _parse_salsify_page(last_html)
 
 def is_valid_kroger_product_capture(html_text):
     """True only when Kroger HTML contains real PDP content.
@@ -9891,7 +9902,18 @@ if uploaded_file:
             if "copy_source_code" not in retailer_df.columns:
                 retailer_df["copy_source_code"] = ""
             if uploaded_raw_html_map:
-                retailer_df["copy_source_code"] = retailer_df.apply(lambda row: lookup_uploaded_raw_html(uploaded_raw_html_map, row.get("retail_url", ""), target_rpc=row.get("retailer_rpc", "")), axis=1)
+                selected_retailer_norm_for_lookup = normalize_retailer_name(selected_retailer).strip().lower()
+                if selected_retailer_norm_for_lookup == "heb":
+                    retailer_df["copy_source_code"] = retailer_df.apply(
+                        lambda row: lookup_uploaded_heb_capture(
+                            uploaded_raw_html_map,
+                            row.get("retail_url", ""),
+                            target_rpc=row.get("retailer_rpc", ""),
+                        ),
+                        axis=1,
+                    )
+                else:
+                    retailer_df["copy_source_code"] = retailer_df.apply(lambda row: lookup_uploaded_raw_html(uploaded_raw_html_map, row.get("retail_url", ""), target_rpc=row.get("retailer_rpc", "")), axis=1)
                 matched_uploaded_html_count = int((retailer_df["copy_source_code"].astype(str).str.len() > 0).sum())
                 missing_uploaded_html_count = max(len(retailer_df) - matched_uploaded_html_count, 0)
             current_batch_key = f"{file_hash}::{selected_retailer}::{capture_batch_key_part}"
@@ -9921,15 +9943,18 @@ if uploaded_file:
             isolated_unique_url_count = int(retailer_df["retail_url"].fillna("").astype(str).str.strip().replace("", pd.NA).dropna().nunique()) if retailer_df is not None and not retailer_df.empty and "retail_url" in retailer_df.columns else 0
             st.caption(f"Strict retailer isolation active: {selected_retailer} only. Rows queued: {len(retailer_df)}. Unique retailer URLs queued: {isolated_unique_url_count}.")
             if selected_capture_mode == CAPTURE_MODE_USE_EXTENSION:
-                extension_payload = build_extension_batch_payload(
-                    retailer_df=retailer_df,
-                    retailer_name=selected_retailer,
-                    current_batch_key=current_batch_key,
-                    capture_mode=selected_capture_mode,
-                    txt_ready=txt_ready_for_batch,
-                )
-                render_extension_batch_bridge(extension_payload)
-                st.caption(f"Extension bridge ready for {selected_retailer}. For Kroger, the app can now connect Kroger RPC to the matching Requested URL in the TXT file, fill retail_url from that match, and use that matched retail_url for lookup and display.")
+                if not txt_ready_for_batch:
+                    extension_payload = build_extension_batch_payload(
+                        retailer_df=retailer_df,
+                        retailer_name=selected_retailer,
+                        current_batch_key=current_batch_key,
+                        capture_mode=selected_capture_mode,
+                        txt_ready=txt_ready_for_batch,
+                    )
+                    render_extension_batch_bridge(extension_payload)
+                    st.caption(f"Extension bridge ready for {selected_retailer}. Capture the PDPs, download the TXT, then upload the TXT here.")
+                else:
+                    st.caption(f"TXT capture is loaded for {selected_retailer}. Extension bridge is paused while batch runs to avoid repeated Streamlit component rerenders.")
             elif selected_retailer in AUTO_SKIP_EXTENSION_RETAILERS:
                 st.caption(f"{selected_retailer} is in skip-extension mode, so the app can auto-run straight to batch with live retailer fetches.")
 
@@ -10190,12 +10215,24 @@ if retailer_df is not None and file_ready_for_batch and st.session_state.batch_s
 
             if start + current_batch_size < len(retailer_df):
                 st.session_state.start_idx += current_batch_size
+                if selected_retailer_norm_for_batch == "heb":
+                    clear_in_memory_caches()
+                    try:
+                        st.cache_data.clear()
+                    except Exception:
+                        pass
                 time.sleep(0.05)
                 st.rerun()
             else:
                 st.session_state.processing_done = True
                 st.session_state.completed_batch_key = current_batch_key
                 st.session_state.batch_status_message = f"Batch finished for {selected_retailer}. Extract/report generated successfully."
+                if selected_retailer_norm_for_batch == "heb":
+                    clear_in_memory_caches()
+                    try:
+                        st.cache_data.clear()
+                    except Exception:
+                        pass
                 st.session_state.batch_run_requested = False
                 st.session_state.auto_batch_upload_key = current_batch_key
                 st.rerun()
