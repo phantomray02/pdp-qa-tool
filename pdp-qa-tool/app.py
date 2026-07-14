@@ -751,6 +751,80 @@ def normalize_retailer_name(value):
     return mapping.get(lowered, value)
 
 
+# =========================================
+# RETAILER ISOLATION HELPERS
+# =========================================
+def normalize_retailer_key(value):
+    return normalize_retailer_name(value).strip().lower()
+
+
+RETAILER_DOMAIN_RULES = {
+    "cvs": ("cvs.com", "www.cvs.com"),
+    "walgreens": ("walgreens.com", "www.walgreens.com"),
+    "kroger": ("kroger.com", "www.kroger.com"),
+    "sam's club": ("samsclub.com", "www.samsclub.com"),
+    "sams club": ("samsclub.com", "www.samsclub.com"),
+    "samsclub": ("samsclub.com", "www.samsclub.com"),
+}
+
+
+RETAILER_HTML_MARKERS = {
+    "cvs": ("cvs.com", "www.cvs.com", "/bizcontent/merchandising/productimages/", "cvs pharmacy"),
+    "walgreens": ("walgreens.com", "www.walgreens.com", "/prodimg/", "window.__app_initial_state__", "walgreens"),
+    "kroger": ("kroger.com", "www.kroger.com", "/product/images/", "data-testid=\"product-details-romance-description\"", "kroger"),
+    "sam's club": ("samsclub.com", "www.samsclub.com", "samsclubimages.com", "sam's club", "sams club"),
+    "sams club": ("samsclub.com", "www.samsclub.com", "samsclubimages.com", "sam's club", "sams club"),
+    "samsclub": ("samsclub.com", "www.samsclub.com", "samsclubimages.com", "sam's club", "sams club"),
+}
+
+
+def get_url_host(url):
+    url = clean_uploaded_url_value(url)
+    if not url:
+        return ""
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(url if re.match(r"^https?://", url, flags=re.IGNORECASE) else "https://" + url)
+        return str(parsed.netloc or "").lower().split(":", 1)[0]
+    except Exception:
+        lowered = str(url or "").lower()
+        m = re.search(r"https?://([^/\s?#]+)", lowered)
+        return m.group(1).split(":", 1)[0] if m else ""
+
+
+def retail_url_matches_retailer(retail_url, retailer_name):
+    retailer = normalize_retailer_key(retailer_name)
+    allowed_hosts = RETAILER_DOMAIN_RULES.get(retailer)
+    if not allowed_hosts:
+        return True
+    host = get_url_host(retail_url)
+    if not host:
+        return False
+    return any(host == allowed or host.endswith("." + allowed) for allowed in allowed_hosts)
+
+
+def uploaded_html_matches_retailer(html_text, retailer_name, retail_url=""):
+    """Return True only when captured TXT/HTML is safe to use for this retailer."""
+    if not str(html_text or "").strip():
+        return False
+    retailer = normalize_retailer_key(retailer_name)
+    if not retail_url_matches_retailer(retail_url, retailer):
+        return False
+    markers = RETAILER_HTML_MARKERS.get(retailer)
+    if not markers:
+        return True
+    sample = html.unescape(str(html_text or "")).lower()
+    return any(str(marker).lower() in sample for marker in markers)
+
+
+def mark_uploaded_html_ignored(bundle, reason):
+    if not isinstance(bundle, dict):
+        bundle = build_empty_retailer_bundle("Retailer", reason)
+    debug = bundle.setdefault("text", {}).setdefault("debug", {})
+    debug["Uploaded Capture Ignored"] = reason
+    return bundle
+
+
 def build_empty_retailer_bundle(retailer_name="Retailer", reason=""):
     retailer_name = normalize_retailer_name(retailer_name)
     reason = normalize_space(reason) or "retailer_not_supported"
@@ -1585,8 +1659,12 @@ def strict_filter_rows_for_selected_retailer(df, selected_retailer, dedupe_by_ur
     """
     Hard retailer isolation guard.
 
-    This prevents any CVS, Walgreens, Kroger, or Sam's Club rows from leaking into a
-    different retailer batch, even if the uploaded file contains multiple retailers.
+    A row is eligible only when both conditions are true:
+    1. The normalized retailer column equals the selected retailer.
+    2. retail_url belongs to the selected retailer's domain.
+
+    This prevents CVS, Walgreens, Kroger, Sam's Club, or mixed-upload rows from
+    leaking into a different retailer batch or extension payload.
     """
     selected_retailer_norm = normalize_retailer_name(selected_retailer)
     if df is None:
@@ -1604,11 +1682,14 @@ def strict_filter_rows_for_selected_retailer(df, selected_retailer, dedupe_by_ur
 
     out["retail_url"] = out["retail_url"].fillna("").astype(str).str.strip()
     out = out[out["retail_url"] != ""].copy()
+    if not out.empty:
+        out = out[out["retail_url"].apply(lambda value: retail_url_matches_retailer(value, selected_retailer_norm))].copy()
 
     if dedupe_by_url and not out.empty:
         out = out.drop_duplicates(subset=["retail_url"], keep="first").copy()
 
     return out
+
 def clear_in_memory_caches():
     global html_cache, image_hash_cache, image_compare_cache, display_image_cache, walgreens_api_cache
 
@@ -2124,29 +2205,42 @@ def parse_uploaded_raw_html_map(raw_text):
             html_map[key] = html_text
     return html_map
 
-def lookup_uploaded_raw_html(uploaded_html_map, retail_url, target_rpc=""):
+def lookup_uploaded_raw_html(uploaded_html_map, retail_url, target_rpc="", retailer_name=""):
     uploaded_html_map = uploaded_html_map or {}
     retail_url = str(retail_url or "").strip()
     target_rpc = str(target_rpc or "").strip()
+    retailer_name = normalize_retailer_name(retailer_name) if retailer_name else ""
+    if retailer_name and retail_url and not retail_url_matches_retailer(retail_url, retailer_name):
+        return ""
 
     if retail_url and "kroger.com" in retail_url.lower():
         key = normalize_uploaded_capture_url(retail_url)
         html_text = str(uploaded_html_map.get(key, "") or "")
         if html_text:
+            if retailer_name and not uploaded_html_matches_retailer(html_text, retailer_name, retail_url):
+                return ""
             return html_text
         matched_key = find_kroger_url_in_uploaded_map(uploaded_html_map, target_rpc=target_rpc)
         if matched_key:
-            return str(uploaded_html_map.get(matched_key, "") or "")
+            html_text = str(uploaded_html_map.get(matched_key, "") or "")
+            if retailer_name and not uploaded_html_matches_retailer(html_text, retailer_name, matched_key):
+                return ""
+            return html_text
         return ""
 
     if not retail_url and target_rpc:
         matched_key = find_kroger_url_in_uploaded_map(uploaded_html_map, target_rpc=target_rpc)
         if matched_key:
-            return str(uploaded_html_map.get(matched_key, "") or "")
+            html_text = str(uploaded_html_map.get(matched_key, "") or "")
+            if retailer_name and not uploaded_html_matches_retailer(html_text, retailer_name, matched_key):
+                return ""
+            return html_text
 
     for key in uploaded_capture_url_candidates(retail_url):
         html_text = uploaded_html_map.get(key, "")
         if html_text:
+            if retailer_name and not uploaded_html_matches_retailer(html_text, retailer_name, retail_url):
+                continue
             return html_text
     return ""
 
@@ -4838,81 +4932,6 @@ def _normalize_walgreens_text(value):
 
     return normalize_space(value)
 
-
-def get_walgreens_product_id_from_url(retail_url):
-    """
-    Supports Walgreens product URLs like:
-    - /ID=300432791-product
-    - /ID=prod6153586-product
-    - ?productId=300432791
-    - ?productId=prod6153586
-    """
-    if not retail_url:
-        return ""
-
-    retail_url = str(retail_url or "").strip()
-
-    patterns = [
-        r"/ID=([A-Za-z0-9]+)-product",
-        r"[?&]productId=([A-Za-z0-9]+)",
-        r'"productId"\s*:\s*"([A-Za-z0-9]+)"',
-    ]
-
-    for pattern in patterns:
-        m = re.search(pattern, retail_url, flags=re.IGNORECASE)
-        if m:
-            return m.group(1)
-
-    return ""
-
-
-def fetch_json_with_timeout(url, timeout_seconds):
-    if not url:
-        return None
-
-    try:
-        session = get_session()
-        r = session.get(url, timeout=timeout_seconds, allow_redirects=True)
-        if r.status_code == 200:
-            return r.json()
-    except Exception:
-        pass
-
-    return None
-
-
-def get_walgreens_product_api_payload(product_id):
-    """
-    Walgreens source exposes a lighter product endpoint:
-    /productapi/v1/products?productId={prodId}
-    """
-    if not product_id:
-        return None
-
-    api_url = f"https://www.walgreens.com/productapi/v1/products?productId={product_id}"
-    return fetch_json_with_timeout(api_url, WALGREENS_API_TIMEOUT)
-
-
-def walk_json(obj):
-    if isinstance(obj, dict):
-        yield obj
-        for v in obj.values():
-            yield from walk_json(v)
-    elif isinstance(obj, list):
-        for item in obj:
-            yield from walk_json(item)
-
-
-def find_first_dict_with_keys(obj, required_keys):
-    required_keys = set(required_keys)
-
-    for node in walk_json(obj):
-        if isinstance(node, dict) and required_keys.issubset(set(node.keys())):
-            return node
-
-    return {}
-
-
 def extract_walgreens_reviews_from_app_state_payload(payload):
     """
     Pull live Walgreens review fields from app-state payload:
@@ -5072,44 +5091,7 @@ def _truncate_walgreens_copy_at_hard_stop(text):
             cut_index = min(cut_index, idx)
 
     return working[:cut_index].strip()
-    
-def _truncate_walgreens_copy_at_hard_stop(text):
-    """
-    Hard-stop Walgreens copy before utility / legal / disposal sections.
-    This keeps only the real description + bullets and drops anything after,
-    such as Made in USA, Do not flush, or Walgreens disclaimer text.
-    """
-    if not text:
-        return ""
 
-    working = str(text)
-    lower = working.lower()
-
-    stop_markers = [
-        "Made in USA",
-        "Made In USA",
-        "Do not flush",
-        "Do Not Flush",
-        "Directions for Use:",
-        "Direction for Use:",
-        "To Use:",
-        "To Dispose:",
-        "How to Use:",
-        "How To Use:",
-        "Walgreens does not represent or warrant",
-        "We recommend that you not rely solely on the information presented",
-        "On occasion, manufacturers may improve or change their product formulas",
-        "The food and drug administration has not intended to diagnose, treat, cure, or prevent any disease",
-    ]
-
-    cut_index = len(working)
-    for marker in stop_markers:
-        idx = lower.find(marker.lower())
-        if idx != -1:
-            cut_index = min(cut_index, idx)
-
-    return working[:cut_index].strip()
-    
 def _is_walgreens_450_image(url):
     url = str(url or '').lower().split('?', 1)[0]
     return url.endswith('/450.jpg') or url.endswith('_450.jpg')
@@ -5755,15 +5737,6 @@ def get_walgreens_prod_desc_html(product_id):
     """
     url = get_walgreens_prod_desc_url(product_id)
     return fetch_html_with_timeout(url, WALGREENS_REQUEST_TIMEOUT)
-    
-def get_walgreens_prod_desc_html(product_id):
-    """
-    Lightweight Walgreens copy endpoint.
-    Often more reliable than the full PDP HTML for prod... items.
-    """
-    url = get_walgreens_prod_desc_url(product_id)
-    return fetch_html_with_timeout(url, WALGREENS_REQUEST_TIMEOUT)
-
 
 def build_walgreens_title_from_url_slug(retail_url, description_html=""):
     """
@@ -6981,8 +6954,26 @@ def kroger_bundle_has_live_content(bundle):
 
 @st.cache_data(show_spinner=False, max_entries=1200)
 def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_source_code=""):
-    retailer = normalize_retailer_name(retailer_name).strip().lower()
-    uploaded_html = str(row_source_code or "")
+    retailer_display = normalize_retailer_name(retailer_name)
+    retailer = retailer_display.strip().lower()
+    retail_url = str(retail_url or "").strip()
+    raw_uploaded_html = str(row_source_code or "")
+
+    if not retail_url_matches_retailer(retail_url, retailer_display):
+        return build_empty_retailer_bundle(
+            retailer_display or "Retailer",
+            "strict_retailer_domain_mismatch",
+        )
+
+    uploaded_html = raw_uploaded_html if uploaded_html_matches_retailer(raw_uploaded_html, retailer_display, retail_url) else ""
+    uploaded_html_reject_reason = ""
+    if raw_uploaded_html.strip() and not uploaded_html:
+        uploaded_html_reject_reason = "uploaded_txt_html_retailer_mismatch_or_invalid_capture"
+
+    def with_uploaded_ignore_debug(bundle):
+        if uploaded_html_reject_reason:
+            return mark_uploaded_html_ignored(bundle, uploaded_html_reject_reason)
+        return bundle
 
     if retailer == "kroger":
         if uploaded_html.strip() and is_valid_kroger_product_capture(uploaded_html):
@@ -7000,29 +6991,34 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
             return bundle
 
         if uploaded_html.strip():
-            # The uploaded capture exists, but it is only the Kroger loading/privacy shell.
-            # Do not allow that shell to mark a live PDP as Missing. Try live fetch next.
             live_bundle = get_kroger_bundle(retail_url, target_rpc=target_rpc)
             debug = live_bundle.setdefault("text", {}).setdefault("debug", {})
             debug["Uploaded Capture Ignored"] = "invalid_kroger_shell_capture"
             debug["Availability Rule"] = "availability_never_blocks_live_copy_or_images"
             return live_bundle
 
-        # If no extension/TXT capture is available, fetch the live Kroger PDP directly.
-        # Item availability never blocks PDP copy/images.
-        return get_kroger_bundle(retail_url, target_rpc=target_rpc)
+        return with_uploaded_ignore_debug(get_kroger_bundle(retail_url, target_rpc=target_rpc))
 
     if uploaded_html.strip():
         if retailer == "cvs":
-            bundle = {"text": _extract_cvs_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_cvs_images_from_html(uploaded_html)}
+            bundle = {
+                "text": _extract_cvs_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc),
+                "images": extract_cvs_images_from_html(uploaded_html),
+            }
             bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
             return bundle
         if retailer == "walgreens":
-            bundle = {"text": extract_walgreens_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_walgreens_images_from_html(uploaded_html)}
+            bundle = {
+                "text": extract_walgreens_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc),
+                "images": extract_walgreens_images_from_html(uploaded_html),
+            }
             bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
             return bundle
         if retailer == "sam's club":
-            bundle = {"text": extract_sams_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_sams_images_from_html(uploaded_html)}
+            bundle = {
+                "text": extract_sams_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc),
+                "images": extract_sams_images_from_html(uploaded_html),
+            }
             bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
             return bundle
 
@@ -7034,8 +7030,11 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
     }
     fetcher = retailer_fetchers.get(retailer)
     if fetcher is None:
-        return build_empty_retailer_bundle(retailer_name or "Retailer", "retailer_not_supported_no_default_cvs_fallback")
-    return fetcher()
+        return build_empty_retailer_bundle(
+            retailer_name or "Retailer",
+            "retailer_not_supported_no_default_cvs_fallback",
+        )
+    return with_uploaded_ignore_debug(fetcher())
 
 def strip_walgreens_description_tail(text):
     """
@@ -7560,6 +7559,11 @@ def finalize_salsify_copy_for_retailer(retailer_name, s_text):
     retailer = str(retailer_name or "").strip().lower()
     out = dict(s_text or {})
 
+    def _finalize_salsify_copy_out(final_out):
+        final_out = apply_retailer_salsify_copy_limits(retailer_name, final_out)
+        final_out.pop("retailer_overrides", None)
+        return final_out
+
     def generic_feature_list():
         candidates = []
         for i in range(1, 11):
@@ -7587,7 +7591,7 @@ def finalize_salsify_copy_for_retailer(retailer_name, s_text):
         out["features"] = selected_features
         for i in range(1, 8):
             out[f"feature{i}"] = selected_features[i - 1] if i - 1 < len(selected_features) else ""
-        return out
+        return _finalize_salsify_copy_out(out)
 
     if retailer in {"sam's club", "sams club", "samsclub"}:
         sams_override = retailer_overrides.get("sam's club", {}) or {}
@@ -7611,7 +7615,7 @@ def finalize_salsify_copy_for_retailer(retailer_name, s_text):
         out["features"] = selected_features
         for i in range(1, 8):
             out[f"feature{i}"] = selected_features[i - 1] if i - 1 < len(selected_features) else ""
-        return out
+        return _finalize_salsify_copy_out(out)
 
     if retailer == "cvs":
         cvs_override = retailer_overrides.get("cvs", {}) or {}
@@ -7637,7 +7641,7 @@ def finalize_salsify_copy_for_retailer(retailer_name, s_text):
         out["features"] = selected_features
         for i in range(1, 8):
             out[f"feature{i}"] = selected_features[i - 1] if i - 1 < len(selected_features) else ""
-        return out
+        return _finalize_salsify_copy_out(out)
 
     if retailer == "walgreens":
         walgreens_override = retailer_overrides.get("walgreens", {}) or {}
@@ -7683,19 +7687,12 @@ def finalize_salsify_copy_for_retailer(retailer_name, s_text):
         out["features"] = selected_features
         for i in range(1, 8):
             out[f"feature{i}"] = selected_features[i - 1] if i - 1 < len(selected_features) else ""
-        return out
+        return _finalize_salsify_copy_out(out)
 
     out["title"] = first_non_placeholder_copy_value(out.get("title", ""))
     out["description"] = first_non_placeholder_copy_value(out.get("description", ""))
     out["features"] = normalize_salsify_feature_values(out.get("features", []) or generic_feature_list(), max_features=10)
-    return out
-
-
-_original_finalize_salsify_copy_for_retailer = finalize_salsify_copy_for_retailer
-
-def finalize_salsify_copy_for_retailer(retailer_name, s_text):
-    out = _original_finalize_salsify_copy_for_retailer(retailer_name, s_text)
-    return apply_retailer_salsify_copy_limits(retailer_name, out)
+    return _finalize_salsify_copy_out(out)
 
 def finalize_retailer_copy(retailer_name, r_text):
     retailer = str(retailer_name or "").strip().lower()
@@ -8015,6 +8012,13 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
     source_images = list(s_images or [])
     if retailer != "cvs":
         source_images = [img for img in source_images if not is_cvs_only_salsify_image(img)]
+    if retailer != "walgreens":
+        source_images = [img for img in source_images if not is_walgreens_only_salsify_image(img)]
+    if retailer == "cvs":
+        source_images = [img for img in source_images if not is_walgreens_only_salsify_image(img)]
+
+    def _finalize_salsify_images_out(final_images):
+        return apply_retailer_salsify_image_limits(retailer_name, final_images)
 
     def dedupe_images_preserve_order(images):
         out = []
@@ -8210,10 +8214,10 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
                 continue
             append_unique(img)
 
-        return aligned[:max_slots]
+        return _finalize_salsify_images_out(aligned[:max_slots])
 
     if retailer == "cvs":
-        return reorder_cvs_salsify_images_for_visual(source_images, max_slots=max_slots)
+        return _finalize_salsify_images_out(reorder_cvs_salsify_images_for_visual(source_images, max_slots=max_slots))
 
     if retailer == "walgreens":
         strict_image_mode = retailer in EXCLUSIVE_SALSIFY_IMAGE_RETAILERS
@@ -8261,16 +8265,9 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
             elif keep_blank:
                 aligned.append(make_blank_salsify_image_slot(blank_name))
 
-        return aligned[:min(max_slots, 6)]
+        return _finalize_salsify_images_out(aligned[:min(max_slots, 6)])
 
-    return dedupe_images_preserve_order(source_images)[:max_slots]
-
-
-_original_align_salsify_images_for_retailer = align_salsify_images_for_retailer
-
-def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE, brand=""):
-    aligned = _original_align_salsify_images_for_retailer(retailer_name, s_images, max_slots=max_slots, brand=brand)
-    return apply_retailer_salsify_image_limits(retailer_name, aligned)
+    return _finalize_salsify_images_out(dedupe_images_preserve_order(source_images)[:max_slots])
 
 def align_image_slots_for_comparison(s_images, r_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE, strong_threshold=80):
     """
@@ -8545,6 +8542,7 @@ def get_visual_row_payload(
                 uploaded_html_map,
                 retail_url,
                 target_rpc=current_target_sku,
+                retailer_name=retailer_name,
             )
 
     visual_max_slots = MAX_IMAGE_SLOTS_TO_COMPARE
@@ -9085,7 +9083,7 @@ if uploaded_file:
             if "copy_source_code" not in retailer_df.columns:
                 retailer_df["copy_source_code"] = ""
             if uploaded_raw_html_map:
-                retailer_df["copy_source_code"] = retailer_df.apply(lambda row: lookup_uploaded_raw_html(uploaded_raw_html_map, row.get("retail_url", ""), target_rpc=row.get("retailer_rpc", "")), axis=1)
+                retailer_df["copy_source_code"] = retailer_df.apply(lambda row: lookup_uploaded_raw_html(uploaded_raw_html_map, row.get("retail_url", ""), target_rpc=row.get("retailer_rpc", ""), retailer_name=selected_retailer), axis=1)
                 matched_uploaded_html_count = int((retailer_df["copy_source_code"].astype(str).str.len() > 0).sum())
                 missing_uploaded_html_count = max(len(retailer_df) - matched_uploaded_html_count, 0)
             current_batch_key = f"{file_hash}::{selected_retailer}::{capture_batch_key_part}"
