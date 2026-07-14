@@ -89,6 +89,9 @@ MAX_CACHE = 400
 WALGREENS_REQUEST_TIMEOUT = 18
 WALGREENS_DEBUG_TIMEOUT = 25
 WALGREENS_API_TIMEOUT = 10
+HEB_BATCH_SIZE = 8
+HEB_MAX_WORKERS = 2
+HEB_REQUEST_TIMEOUT = 12
 
 # =========================================
 # PERFORMANCE SETTINGS
@@ -2133,14 +2136,30 @@ def parse_uploaded_raw_html_map(raw_text):
         return {}
 
     html_map = {}
+    # HEB captures can be extremely large because each block includes the full hydrated PDP HTML.
+    # The extension also writes a parsed JSON block before the HTML. For HEB we only need that
+    # compact parsed JSON plus a tiny marker, so store the compact form instead of the full
+    # page. This keeps Streamlit Cloud from holding hundreds of full HEB pages in memory.
     block_pattern = re.compile(
-        r'(?is)Requested\s+URL\s*:\s*(https?://\S+).*?-----BEGIN HTML-----(.*?)-----END HTML-----'
+        r'(?is)Requested\s+URL\s*:\s*(https?://\S+).*?(?:-----BEGIN PARSED JSON-----(.*?)-----END PARSED JSON-----.*?)?-----BEGIN HTML-----(.*?)-----END HTML-----'
     )
 
     for match in block_pattern.finditer(raw_text):
         requested_url = str(match.group(1) or "").strip()
-        html_text = html.unescape(str(match.group(2) or "").strip())
-        if not requested_url or len(html_text) < 30:
+        parsed_json_text = str(match.group(2) or "").strip()
+        html_text = html.unescape(str(match.group(3) or "").strip())
+        if not requested_url:
+            continue
+
+        is_heb_capture = "heb.com" in requested_url.lower() or "h-e-b" in requested_url.lower()
+        if is_heb_capture and parsed_json_text:
+            html_text = (
+                "-----BEGIN PARSED JSON-----\n"
+                + html.unescape(parsed_json_text).strip()
+                + "\n-----END PARSED JSON-----\n"
+            )
+
+        if len(html_text) < 30:
             continue
         key = normalize_uploaded_capture_url(requested_url)
         if key:
@@ -2161,6 +2180,21 @@ def lookup_uploaded_raw_html(uploaded_html_map, retail_url, target_rpc=""):
         if matched_key:
             return str(uploaded_html_map.get(matched_key, "") or "")
         return ""
+
+    if retail_url and "heb.com" in retail_url.lower():
+        key = normalize_uploaded_capture_url(retail_url)
+        html_text = str(uploaded_html_map.get(key, "") or "")
+        if html_text:
+            return html_text
+        rpc = re.sub(r"[^0-9A-Za-z]", "", str(target_rpc or ""))
+        if not rpc:
+            m = re.search(r"/(\d+)(?:[/?#]|$)", retail_url)
+            rpc = m.group(1) if m else ""
+        if rpc:
+            for map_key, map_html in uploaded_html_map.items():
+                map_key_str = normalize_uploaded_capture_url(map_key)
+                if rpc in map_key_str:
+                    return str(map_html or "")
 
     if not retail_url and target_rpc:
         matched_key = find_kroger_url_in_uploaded_map(uploaded_html_map, target_rpc=target_rpc)
@@ -7221,9 +7255,10 @@ def extract_heb_images_from_html(html_text):
     return images[:MAX_IMAGE_SLOTS_TO_COMPARE]
 
 
-@st.cache_data(show_spinner=False)
 def get_heb_bundle(retail_url, target_rpc="", sku=""):
-    html_text = get_html(retail_url)
+    # Do not cache full HEB PDP HTML. HEB pages are large and batches can include hundreds
+    # of rows; caching those full responses can kill the Streamlit Cloud process.
+    html_text = fetch_html_with_timeout(retail_url, HEB_REQUEST_TIMEOUT)
     return {
         "text": extract_heb_text_from_html(html_text, retail_url=retail_url, target_rpc=target_rpc),
         "images": extract_heb_images_from_html(html_text),
@@ -9237,8 +9272,43 @@ def process_row(row):
             },
         }
 
-    except Exception:
-        return None
+    except Exception as e:
+        return {
+            "summary": {
+                "SKU": row.get("sku", ""),
+                "Retailer": row.get("retailer", ""),
+                "CVS RPC": row.get("retailer_rpc", ""),
+                "Brand": row.get("brand", ""),
+                "Salsify URL": row.get("salsify_url", ""),
+                "Retail URL": row.get("retail_url", ""),
+                "Rating": row.get("rating", ""),
+                "Review Count": row.get("review_count", ""),
+                "Title %": 0,
+                "Description %": 0,
+                "Feature %": 0,
+                "Image Match %": 0,
+                "Overall %": 0,
+                "Status": f"Row error: {repr(e)}",
+            },
+            "detail": {
+                "SKU": row.get("sku", ""),
+                "Retailer": row.get("retailer", ""),
+                "CVS RPC": row.get("retailer_rpc", ""),
+                "Brand": row.get("brand", ""),
+                "Salsify URL": row.get("salsify_url", ""),
+                "Retail URL": row.get("retail_url", ""),
+                "Status": f"Row error: {repr(e)}",
+            },
+            "debug": {
+                "SKU": row.get("sku", ""),
+                "Retailer": row.get("retailer", ""),
+                "Retailer RPC": row.get("retailer_rpc", ""),
+                "Retail URL": row.get("retail_url", ""),
+                "Salsify URL": row.get("salsify_url", ""),
+                "Status": f"Row error: {repr(e)}",
+                "Traceback": traceback.format_exc(),
+            },
+        }
 # =========================================
 # SESSION STATE
 # =========================================
@@ -9711,7 +9781,10 @@ if retailer_df is not None and file_ready_for_batch and st.session_state.batch_s
             st.stop()
 
         start = st.session_state.start_idx
-        end = start + BATCH_SIZE
+        selected_retailer_norm_for_batch = normalize_retailer_name(selected_retailer).strip().lower()
+        current_batch_size = HEB_BATCH_SIZE if selected_retailer_norm_for_batch == "heb" else BATCH_SIZE
+        current_max_workers = HEB_MAX_WORKERS if selected_retailer_norm_for_batch == "heb" else MAX_WORKERS
+        end = start + current_batch_size
 
         if start >= len(retailer_df):
             st.session_state.processing_done = True
@@ -9721,7 +9794,7 @@ if retailer_df is not None and file_ready_for_batch and st.session_state.batch_s
 
         if not st.session_state.processing_done:
             st.write(f"Processing SKUs {start + 1} to {min(end, len(retailer_df))} of {len(retailer_df)}")
-            st.caption(f"Batch Size: {BATCH_SIZE} | Workers: {MAX_WORKERS}")
+            st.caption(f"Batch Size: {current_batch_size} | Workers: {current_max_workers}")
 
             if st.session_state.progress_bar is None:
                 st.session_state.progress_bar = st.progress(0)
@@ -9734,7 +9807,7 @@ if retailer_df is not None and file_ready_for_batch and st.session_state.batch_s
             completed = 0
             batch_records = batch_df.to_dict("records")
 
-            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            with ThreadPoolExecutor(max_workers=current_max_workers) as executor:
                 futures = [executor.submit(process_row, row_dict) for row_dict in batch_records]
                 for future in as_completed(futures):
                     completed += 1
@@ -9761,8 +9834,8 @@ if retailer_df is not None and file_ready_for_batch and st.session_state.batch_s
                         )
                         overall_progress_bar.progress((start + completed) / max(len(retailer_df), 1))
 
-            if start + BATCH_SIZE < len(retailer_df):
-                st.session_state.start_idx += BATCH_SIZE
+            if start + current_batch_size < len(retailer_df):
+                st.session_state.start_idx += current_batch_size
                 time.sleep(0.05)
                 st.rerun()
             else:
