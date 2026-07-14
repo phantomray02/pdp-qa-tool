@@ -89,9 +89,10 @@ MAX_CACHE = 400
 WALGREENS_REQUEST_TIMEOUT = 18
 WALGREENS_DEBUG_TIMEOUT = 25
 WALGREENS_API_TIMEOUT = 10
+# HEB is intentionally TXT-only. Streamlit does not live-fetch HEB PDPs.
 HEB_BATCH_SIZE = 8
 HEB_MAX_WORKERS = 2
-HEB_REQUEST_TIMEOUT = 12
+HEB_TXT_ONLY = True
 
 # =========================================
 # PERFORMANCE SETTINGS
@@ -916,7 +917,7 @@ RETAILER_SALSIFY_REQUIREMENTS = {
     "cvs": {"max_features": 5, "max_images": 8},
     "walgreens": {"max_features": 5, "max_images": 6},
     "kroger": {"max_features": 7, "max_images": 7},
-    "heb": {"max_features": 7, "max_images": 6},
+    "heb": {"max_features": 7, "max_images": 10},
     "sam's club": {"max_features": 10, "max_images": 10},
     "sams club": {"max_features": 10, "max_images": 10},
     "samsclub": {"max_features": 10, "max_images": 10},
@@ -1507,6 +1508,8 @@ def prepare_input_df(df):
             "walgreens pdp deck link": "salsify_url",
             "cvs pdp deck link": "salsify_url",
             "kroger pdp deck link": "salsify_url",
+            "heb pdp deck link": "salsify_url",
+            "h-e-b pdp deck link": "salsify_url",
             "sams club pdp deck link": "salsify_url",
             "sam's club pdp deck link": "salsify_url",
             "retail url": "retail_url",
@@ -1533,6 +1536,7 @@ def prepare_input_df(df):
             "kroger rpc": "kroger_rpc",
             "heb rpc": "heb_rpc",
             "h-e-b rpc": "heb_rpc",
+            "heb_rpc": "heb_rpc",
         },
         inplace=True,
     )
@@ -1587,17 +1591,14 @@ def prepare_input_df(df):
         )
     df["retailer"] = df["retailer"].apply(normalize_retailer_name)
 
-    # HEB files often have the HEB item/Product ID in an RPC column instead of a full PDP URL.
-    # Keep HEB as its own retailer and build the HEB product-detail URL from that ID only for HEB rows.
+    # HEB: if retail_url is blank but HEB RPC/product ID exists, create the simple PDP URL.
+    # The uploaded TXT lookup will still match against slugged HEB URLs by product ID.
     heb_mask = df["retailer"].astype(str).str.lower().eq("heb")
-    missing_retail_url_mask = df["retail_url"].fillna("").astype(str).str.strip().eq("")
-    has_rpc_mask = df["retailer_rpc"].fillna("").astype(str).str.strip().ne("")
-    heb_fill_mask = heb_mask & missing_retail_url_mask & has_rpc_mask
-    if heb_fill_mask.any():
-        df.loc[heb_fill_mask, "retail_url"] = (
-            "https://www.heb.com/product-detail/"
-            + df.loc[heb_fill_mask, "retailer_rpc"].astype(str).str.strip()
-        )
+    missing_url = df["retail_url"].fillna("").astype(str).str.strip().eq("")
+    has_rpc = df["retailer_rpc"].fillna("").astype(str).str.strip().ne("")
+    heb_fill = heb_mask & missing_url & has_rpc
+    if heb_fill.any():
+        df.loc[heb_fill, "retail_url"] = "https://www.heb.com/product-detail/" + df.loc[heb_fill, "retailer_rpc"].astype(str).str.strip()
 
     required = ["sku", "salsify_url", "retail_url"]
     missing = [c for c in required if c not in df.columns]
@@ -2136,10 +2137,9 @@ def parse_uploaded_raw_html_map(raw_text):
         return {}
 
     html_map = {}
-    # HEB captures can be extremely large because each block includes the full hydrated PDP HTML.
-    # The extension also writes a parsed JSON block before the HTML. For HEB we only need that
-    # compact parsed JSON plus a tiny marker, so store the compact form instead of the full
-    # page. This keeps Streamlit Cloud from holding hundreds of full HEB pages in memory.
+    # Supports standard extension TXT blocks and HEB blocks that include a compact
+    # parsed JSON section before the full HTML. For HEB, store parsed JSON only so
+    # Streamlit does not keep hundreds of huge hydrated HEB pages in session state.
     block_pattern = re.compile(
         r'(?is)Requested\s+URL\s*:\s*(https?://\S+).*?(?:-----BEGIN PARSED JSON-----(.*?)-----END PARSED JSON-----.*?)?-----BEGIN HTML-----(.*?)-----END HTML-----'
     )
@@ -2150,21 +2150,48 @@ def parse_uploaded_raw_html_map(raw_text):
         html_text = html.unescape(str(match.group(3) or "").strip())
         if not requested_url:
             continue
-
-        is_heb_capture = "heb.com" in requested_url.lower() or "h-e-b" in requested_url.lower()
-        if is_heb_capture and parsed_json_text:
+        if ("heb.com" in requested_url.lower() or "h-e-b" in requested_url.lower()) and parsed_json_text:
             html_text = (
                 "-----BEGIN PARSED JSON-----\n"
                 + html.unescape(parsed_json_text).strip()
                 + "\n-----END PARSED JSON-----\n"
             )
-
         if len(html_text) < 30:
             continue
         key = normalize_uploaded_capture_url(requested_url)
         if key:
             html_map[key] = html_text
     return html_map
+
+def get_heb_product_id_from_url(url):
+    url = str(url or "").strip()
+    if not url:
+        return ""
+    m = re.search(r"/(\d+)(?:[/?#]|$)", url)
+    return str(m.group(1) or "").strip() if m else ""
+
+
+def lookup_uploaded_heb_capture(uploaded_html_map, retail_url, target_rpc=""):
+    """HEB-only TXT lookup. Exact URL first, then HEB product ID/RPC match."""
+    uploaded_html_map = uploaded_html_map or {}
+    retail_url = str(retail_url or "").strip()
+    target_rpc = str(target_rpc or "").strip()
+
+    for key in uploaded_capture_url_candidates(retail_url):
+        html_text = uploaded_html_map.get(key, "")
+        if html_text:
+            return str(html_text or "")
+
+    product_id = re.sub(r"[^0-9A-Za-z]", "", target_rpc) or get_heb_product_id_from_url(retail_url)
+    if product_id:
+        for map_key, map_html in uploaded_html_map.items():
+            map_key_norm = normalize_uploaded_capture_url(map_key)
+            if "heb.com" not in map_key_norm.lower():
+                continue
+            if product_id in map_key_norm:
+                return str(map_html or "")
+    return ""
+
 
 def lookup_uploaded_raw_html(uploaded_html_map, retail_url, target_rpc=""):
     uploaded_html_map = uploaded_html_map or {}
@@ -2180,21 +2207,6 @@ def lookup_uploaded_raw_html(uploaded_html_map, retail_url, target_rpc=""):
         if matched_key:
             return str(uploaded_html_map.get(matched_key, "") or "")
         return ""
-
-    if retail_url and "heb.com" in retail_url.lower():
-        key = normalize_uploaded_capture_url(retail_url)
-        html_text = str(uploaded_html_map.get(key, "") or "")
-        if html_text:
-            return html_text
-        rpc = re.sub(r"[^0-9A-Za-z]", "", str(target_rpc or ""))
-        if not rpc:
-            m = re.search(r"/(\d+)(?:[/?#]|$)", retail_url)
-            rpc = m.group(1) if m else ""
-        if rpc:
-            for map_key, map_html in uploaded_html_map.items():
-                map_key_str = normalize_uploaded_capture_url(map_key)
-                if rpc in map_key_str:
-                    return str(map_html or "")
 
     if not retail_url and target_rpc:
         matched_key = find_kroger_url_in_uploaded_map(uploaded_html_map, target_rpc=target_rpc)
@@ -2674,9 +2686,6 @@ def pick_kroger_images_with_atf_and_lifestyle(asset_lookup):
       these cvs_only images back out for every non-CVS retailer.
     """
     main_priority_order = [
-        "online optimized image heb",
-        "online optimized image h e b",
-        "online optimized image h-e-b",
         "online optimized image walgreens",
         "online optimized image kroger",
         "online optimized image grocery",
@@ -3016,6 +3025,32 @@ def _parse_salsify_page(html_text):
         )
     kroger_feature_values = dedupe_preserve_order(kroger_feature_values)
 
+    heb_feature_values = []
+    heb_feature_slots = {}
+    for i in range(1, 11):
+        exact_values = collect_property_values(
+            f"HEB Feature {i}",
+            f"HEB Feature{i}",
+            f"H-E-B Feature {i}",
+            f"H-E-B Feature{i}",
+            f"HEB Bullet {i}",
+            f"HEB Bullet{i}",
+            f"H-E-B Bullet {i}",
+            f"H-E-B Bullet{i}",
+        )
+        loose_values = collect_property_values_loose(
+            f"HEB Feature {i}",
+            f"H-E-B Feature {i}",
+            f"HEB Bullet {i}",
+            f"H-E-B Bullet {i}",
+        )
+        slot_values = dedupe_preserve_order((exact_values or []) + (loose_values or []))
+        slot_values = [v for v in slot_values if v and not is_placeholder_salsify_copy_value(v)]
+        if slot_values:
+            heb_feature_slots[i] = slot_values[0]
+            heb_feature_values.extend(slot_values)
+    heb_feature_values = normalize_salsify_feature_values(dedupe_preserve_order(heb_feature_values), max_features=10)
+
     sams_feature_values = []
     sams_feature_slots = {}
     for i in range(1, 11):
@@ -3145,62 +3180,24 @@ def _parse_salsify_page(html_text):
         max_features=10,
     )
 
-    heb_feature_values = []
-    heb_feature_slots = {}
-    for i in range(1, 11):
-        heb_exact_values = collect_property_values(
-            f"HEB Feature {i}",
-            f"HEB Feature{i}",
-            f"H-E-B Feature {i}",
-            f"H-E-B Feature{i}",
-            f"HEB Product Feature {i}",
-            f"H-E-B Product Feature {i}",
-            f"HEB Bullet {i}",
-            f"H-E-B Bullet {i}",
-            f"Retailer Feature {i} - HEB",
-            f"Retailer Bullet {i} - HEB",
-        )
-        heb_loose_values = collect_property_values_loose(
-            f"HEB Feature {i}",
-            f"H-E-B Feature {i}",
-            f"HEB Product Feature {i}",
-            f"H-E-B Product Feature {i}",
-            f"HEB Bullet {i}",
-            f"H-E-B Bullet {i}",
-            f"Retailer Feature {i} - HEB",
-            f"Retailer Bullet {i} - HEB",
-        )
-        heb_slot_values = dedupe_preserve_order((heb_exact_values or []) + (heb_loose_values or []))
-        heb_slot_values = [v for v in heb_slot_values if v and not is_placeholder_salsify_copy_value(v)]
-        if heb_slot_values:
-            heb_feature_slots[i] = heb_slot_values[0]
-            heb_feature_values.extend(heb_slot_values)
-
-    if not heb_feature_values:
-        broad_heb_feature_values = []
-        for prop_key, values in property_values.items():
-            pk = normalize_space(prop_key).lower().replace('_', ' ')
-            if 'heb' not in pk and 'h-e-b' not in pk and 'h e b' not in pk:
-                continue
-            if not any(token in pk for token in ['feature', 'bullet', 'selling point', 'benefit', 'highlight']):
-                continue
-            for value in values or []:
-                clean_value = normalize_space(value)
-                if clean_value and not is_placeholder_salsify_copy_value(clean_value):
-                    broad_heb_feature_values.append(clean_value)
-        heb_feature_values = dedupe_preserve_order(broad_heb_feature_values)
-
-    heb_feature_values = normalize_salsify_feature_values(
-        dedupe_preserve_order(heb_feature_values),
-        max_features=10,
-    )
-
 
     retailer_overrides = {
         "kroger": {
             "title": first_property("Kroger Product Title", "Kroger Title"),
             "description": first_property("Kroger Description", "Kroger Product Description"),
             "features": [re.sub(r'^(kroger\s*feature\s*\d+\s*[:\-]?\s*|feature\s*\d+\s*[:\-]?\s*|\d+\s*[\.\-\)]\s*)','',f,flags=re.IGNORECASE).strip() for f in kroger_feature_values],
+        },
+        "heb": {
+            "title": first_non_placeholder_copy_value(
+                first_property("HEB Product Title", "H-E-B Product Title", "HEB Title", "H-E-B Title"),
+                first_property("General Product Title", "General Title", "Product Title"),
+            ),
+            "description": first_non_placeholder_copy_value(
+                first_property("HEB Description", "H-E-B Description", "HEB Product Description", "H-E-B Product Description"),
+                first_property("General Description", "General Product Description", "Description"),
+            ),
+            "features": heb_feature_values,
+            "feature_slots": heb_feature_slots,
         },
         "sam's club": {
             "title": first_property(
@@ -3247,21 +3244,6 @@ def _parse_salsify_page(html_text):
                 max_features=10,
             ),
             "feature_slots": walgreens_feature_slots,
-        },
-        "heb": {
-            "title": first_non_placeholder_copy_value(
-                first_property("HEB Product Title", "H-E-B Product Title", "HEB Title", "H-E-B Title", "HEB Product Name", "H-E-B Product Name"),
-                first_property("General Product Title", "General Title", "Product Title"),
-            ),
-            "description": first_non_placeholder_copy_value(
-                first_property("HEB Description", "H-E-B Description", "HEB Product Description", "H-E-B Product Description", "HEB Long Description", "H-E-B Long Description"),
-                first_property("General Description", "General Product Description", "Description"),
-            ),
-            "features": normalize_salsify_feature_values(
-                heb_feature_values or general_feature_values,
-                max_features=10,
-            ),
-            "feature_slots": heb_feature_slots,
         },
     }
 
@@ -7037,40 +7019,76 @@ def get_sams_bundle(retail_url, target_rpc="", sku=""):
 
 
 # =========================================
-# HEB PARSERS
+# HEB TXT-ONLY RETAILER PARSERS
 # =========================================
-def clean_heb_text(text):
-    if not text:
+def clean_heb_text(value):
+    value = str(value or "")
+    if not value:
         return ""
-    text = str(text)
-    text = html.unescape(text)
-    text = text.replace("\\u0026", "&")
-    text = text.replace("\\u2022", "•")
-    text = text.replace("\\n", " ")
-    text = text.replace("\\/", "/")
-    text = text.replace('\\"', '"')
-    text = text.replace("H‑E‑B", "H-E-B")
-    if "<" in text and ">" in text:
-        text = BeautifulSoup(text, "html.parser").get_text(" ", strip=True)
-    return normalize_space(text).strip(" \t\r\n-|•")
+    value = value.replace("\\u0026", "&").replace("\\u2022", "•").replace("\\n", " ").replace("\\/", "/").replace('\\"', '"')
+    value = re.sub(r'(?i)&bull;', '•', value)
+    value = html.unescape(value)
+    if "<" in value and ">" in value:
+        value = BeautifulSoup(value, "html.parser").get_text(" ", strip=True)
+    return normalize_space(value).strip(" |•-")
 
 
-def normalize_heb_features(items, max_features=7):
-    if not items:
-        return []
-    if isinstance(items, str):
-        items = [items]
+def parse_heb_uploaded_parsed_json(capture_text):
+    capture_text = str(capture_text or "")
+    m = re.search(r"-----BEGIN PARSED JSON-----(.*?)-----END PARSED JSON-----", capture_text, flags=re.IGNORECASE | re.DOTALL)
+    if not m:
+        return {}
+    raw = html.unescape(str(m.group(1) or "").strip())
+    try:
+        payload = json.loads(raw)
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def iter_jsonld_product_nodes_from_html(html_text):
+    soup = BeautifulSoup(html.unescape(str(html_text or "")), "html.parser")
+    for script in soup.find_all("script", attrs={"type": re.compile(r"ld\+json", re.IGNORECASE)}):
+        raw = (script.string or script.get_text(" ", strip=False) or "").strip()
+        if not raw:
+            continue
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            continue
+        stack = payload if isinstance(payload, list) else [payload]
+        while stack:
+            node = stack.pop(0)
+            if isinstance(node, dict):
+                node_type = node.get("@type", "")
+                if isinstance(node_type, list):
+                    node_type = " ".join(str(x) for x in node_type)
+                if "product" in str(node_type).lower():
+                    yield node
+                for child in node.values():
+                    if isinstance(child, (dict, list)):
+                        stack.append(child)
+            elif isinstance(node, list):
+                stack.extend(node)
+
+
+def normalize_heb_features(values, max_features=7):
+    if isinstance(values, str):
+        values = [values]
     out = []
-    for item in items:
-        val = clean_heb_text(item)
-        if not val:
+    skip_fragments = [
+        "in-store at", "sign up", "log in", "saved recipes", "weekly ad", "help & faqs",
+        "all departments", "fruit & vegetables", "meat & seafood", "bakery & bread",
+        "dairy & eggs", "shop ", "pharmacy", "savings",
+    ]
+    for value in values or []:
+        clean = clean_heb_text(value)
+        if not clean:
             continue
-        lowered = val.lower()
-        if lowered in {"weekly ad", "help & faqs", "saved recipes", "sign up or log in"}:
+        low = clean.lower()
+        if any(fragment in low for fragment in skip_fragments):
             continue
-        if any(token in lowered for token in ["all departments", "in-store at ", "fruit & vegetables", "meat & seafood"]):
-            continue
-        out.append(val)
+        out.append(clean)
     return dedupe_preserve_order(out)[:max_features]
 
 
@@ -7078,191 +7096,121 @@ def split_heb_description_and_features(description):
     description = clean_heb_text(description)
     if not description:
         return "", []
-    working = html.unescape(description)
-    working = re.sub(r"(?i)&bull;", "•", working)
-    working = working.replace("\\u2022", "•")
-    if "•" not in working:
-        return clean_heb_text(working), []
-    parts = [clean_heb_text(part) for part in working.split("•")]
-    base_description = parts[0] if parts else ""
-    return base_description, normalize_heb_features(parts[1:], max_features=7)
+    parts = [clean_heb_text(x) for x in re.split(r"\s*•\s*", description) if clean_heb_text(x)]
+    if len(parts) <= 1:
+        return description, []
+    return parts[0], normalize_heb_features(parts[1:], max_features=7)
 
 
-def _heb_safe_json_loads(value):
-    try:
-        return json.loads(value)
-    except Exception:
-        return None
-
-
-def _heb_walk_json(obj):
-    if isinstance(obj, dict):
-        yield obj
-        for value in obj.values():
-            yield from _heb_walk_json(value)
-    elif isinstance(obj, list):
-        for item in obj:
-            yield from _heb_walk_json(item)
-
-
-def _extract_heb_parsed_json_block(html_text):
-    source = str(html_text or "")
-    match = re.search(
-        r"-----BEGIN PARSED JSON-----(.*?)-----END PARSED JSON-----",
-        source,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-    if not match:
-        return {}
-    parsed = _heb_safe_json_loads(html.unescape(match.group(1).strip()))
-    return parsed if isinstance(parsed, dict) else {}
-
-
-def _extract_heb_product_jsonld(html_text):
-    source = html.unescape(str(html_text or ""))
-    soup = BeautifulSoup(source, "html.parser")
-    for script in soup.find_all("script", attrs={"type": re.compile(r"ld\+json", re.I)}):
-        raw = script.string or script.get_text(" ", strip=False) or ""
-        parsed = _heb_safe_json_loads(raw.strip())
-        if parsed is None:
-            continue
-        for node in _heb_walk_json(parsed):
-            if not isinstance(node, dict):
-                continue
-            node_type = node.get("@type", "")
-            if isinstance(node_type, list):
-                node_type = " ".join(str(x) for x in node_type)
-            if "product" in str(node_type).lower():
-                return node
-    return {}
-
-
-def _heb_first_value(*values):
-    for value in values:
-        clean_value = clean_heb_text(value)
-        if clean_value:
-            return clean_value
-    return ""
-
-
-def extract_heb_text_from_html(html_text, retail_url="", target_rpc=""):
+def extract_heb_retailer_text_from_capture(capture_text, retail_url="", target_rpc=""):
     debug = {
-        "Title Path": "heb_title_missing",
-        "Description Path": "heb_description_missing",
-        "Features Path": "heb_features_missing",
-        "Rating Path": "heb_rating_reviews_missing",
-        "Source Used": "heb_html",
+        "Title Path": "heb_missing",
+        "Description Path": "heb_missing",
+        "Features Path": "heb_missing",
+        "Source Used": "uploaded_txt_html",
         "Retailer": "HEB",
+        "TXT Only": "true",
     }
-    if not html_text:
+    if not str(capture_text or "").strip():
+        debug["Status"] = "Not captured in uploaded HEB TXT"
         return {"title": "", "description": "", "features": [], "rating": "", "review_count": "", "debug": debug}
 
-    parsed_capture = _extract_heb_parsed_json_block(html_text)
-    product_json = _extract_heb_product_jsonld(html_text)
-    soup = BeautifulSoup(html.unescape(str(html_text or "")), "html.parser")
+    working = html.unescape(str(capture_text or ""))
+    parsed = parse_heb_uploaded_parsed_json(working)
+    product_nodes = list(iter_jsonld_product_nodes_from_html(working))
+    product = product_nodes[0] if product_nodes else {}
+    soup = BeautifulSoup(working, "html.parser")
 
-    og_title = soup.find("meta", attrs={"property": "og:title"})
-    meta_title = soup.find("meta", attrs={"name": "title"})
-    title = _heb_first_value(
-        parsed_capture.get("title", "") if isinstance(parsed_capture, dict) else "",
-        product_json.get("name", "") if isinstance(product_json, dict) else "",
-        og_title.get("content", "") if og_title else "",
-        meta_title.get("content", "") if meta_title else "",
-        soup.title.get_text(" ", strip=True) if soup.title else "",
-    )
-    title = clean_heb_text(re.sub(r"\s+-\s+Shop\s+.*$", "", title, flags=re.IGNORECASE))
+    title = clean_heb_text(parsed.get("title", "")) or clean_heb_text(product.get("name", ""))
+    if not title:
+        meta_title = soup.find("meta", attrs={"property": "og:title"}) or soup.find("meta", attrs={"name": "twitter:title"})
+        title = clean_heb_text(meta_title.get("content", "")) if meta_title else ""
+    if not title and soup.title:
+        title = clean_heb_text(soup.title.get_text(" ", strip=True))
+    title = re.sub(r"\s+-\s+Shop\s+.*$", "", title, flags=re.IGNORECASE).strip()
     if title:
-        debug["Title Path"] = "heb_parsed_json_or_jsonld_or_meta"
+        debug["Title Path"] = "heb_parsed_json_or_jsonld"
 
-    meta_desc = soup.find("meta", attrs={"name": "description"})
-    og_desc = soup.find("meta", attrs={"property": "og:description"})
-    raw_description = _heb_first_value(
-        parsed_capture.get("description", "") if isinstance(parsed_capture, dict) else "",
-        product_json.get("description", "") if isinstance(product_json, dict) else "",
-        meta_desc.get("content", "") if meta_desc else "",
-        og_desc.get("content", "") if og_desc else "",
-    )
-    description, bullet_features = split_heb_description_and_features(raw_description)
+    raw_description = clean_heb_text(parsed.get("description", "")) or clean_heb_text(product.get("description", ""))
+    if not raw_description:
+        meta_desc = soup.find("meta", attrs={"property": "og:description"}) or soup.find("meta", attrs={"name": "description"})
+        raw_description = clean_heb_text(meta_desc.get("content", "")) if meta_desc else ""
+    description, desc_features = split_heb_description_and_features(raw_description)
     if description:
-        debug["Description Path"] = "heb_parsed_json_or_jsonld_description"
+        debug["Description Path"] = "heb_parsed_json_or_jsonld"
 
-    parsed_features = parsed_capture.get("features", []) if isinstance(parsed_capture, dict) else []
-    features = normalize_heb_features(bullet_features or parsed_features, max_features=7)
+    features = normalize_heb_features(parsed.get("features", []) or desc_features, max_features=7)
+    if not features:
+        features = desc_features
     if features:
-        debug["Features Path"] = "heb_bullets"
+        debug["Features Path"] = "heb_parsed_json_features_or_description_bullets"
 
     rating = ""
     review_count = ""
-    if isinstance(product_json, dict):
-        aggregate_rating = product_json.get("aggregateRating") or {}
-        if isinstance(aggregate_rating, dict):
-            rating = normalize_space(aggregate_rating.get("ratingValue", ""))
-            review_count = normalize_space(aggregate_rating.get("reviewCount", "") or aggregate_rating.get("ratingCount", ""))
-    if rating or review_count:
-        debug["Rating Path"] = "heb_jsonld_aggregateRating"
+    agg = product.get("aggregateRating", {}) if isinstance(product, dict) else {}
+    if isinstance(agg, dict):
+        rating = normalize_space(agg.get("ratingValue", ""))
+        review_count = normalize_space(agg.get("reviewCount", "") or agg.get("ratingCount", ""))
+        if rating or review_count:
+            debug["Rating Path"] = "heb_jsonld_aggregateRating"
 
-    debug["Retail URL"] = str(retail_url or "")
-    debug["Retailer RPC"] = str(target_rpc or "")
-    return {
-        "title": title,
-        "description": description,
-        "features": features,
-        "rating": rating,
-        "review_count": review_count,
-        "debug": debug,
-    }
+    debug["Retail URL Lookup"] = retail_url
+    if target_rpc:
+        debug["Retailer RPC"] = str(target_rpc or "").strip()
+    return {"title": title, "description": description, "features": features[:7], "rating": rating, "review_count": review_count, "debug": debug}
 
 
-def _normalize_heb_image_url(url):
+def normalize_heb_image_url(url):
     url = html.unescape(str(url or "").strip())
     if not url:
         return ""
     if url.startswith("//"):
         url = "https:" + url
-    if url.startswith("/"):
+    elif url.startswith("/"):
         url = "https://www.heb.com" + url
     if "images.heb.com/is/image/HEBGrocery/" not in url:
         return ""
-    return url.split("?", 1)[0]
+    return url.split("?", 1)[0].strip()
 
 
-def extract_heb_images_from_html(html_text):
-    if not html_text:
-        return []
-    parsed_capture = _extract_heb_parsed_json_block(html_text)
-    product_json = _extract_heb_product_jsonld(html_text)
-    images = []
+def extract_heb_retailer_images_from_capture(capture_text):
+    working = html.unescape(str(capture_text or ""))
+    parsed = parse_heb_uploaded_parsed_json(working)
+    out = []
+    seen = set()
 
-    def add_image(url):
-        clean_url = _normalize_heb_image_url(url)
-        if clean_url and clean_url not in images:
-            images.append(clean_url)
+    def add(url):
+        clean = normalize_heb_image_url(url)
+        if clean and clean not in seen:
+            seen.add(clean)
+            out.append(clean)
 
-    if isinstance(parsed_capture, dict):
-        for url in parsed_capture.get("images", []) or []:
-            add_image(url)
-
-    if isinstance(product_json, dict):
-        product_images = product_json.get("image", []) or []
-        if isinstance(product_images, str):
-            product_images = [product_images]
-        for url in product_images:
-            add_image(url)
-
-    for url in re.findall(r"https?://images\.heb\.com/is/image/HEBGrocery/[^\s\"'<>\\)]+", html.unescape(str(html_text or "")), flags=re.IGNORECASE):
-        add_image(url)
-
-    return images[:MAX_IMAGE_SLOTS_TO_COMPARE]
+    for url in parsed.get("images", []) or []:
+        add(url)
+    for product in iter_jsonld_product_nodes_from_html(working):
+        images = product.get("image", []) or []
+        if isinstance(images, str):
+            images = [images]
+        for url in images:
+            add(url)
+    for url in re.findall(r"https?://images\.heb\.com/is/image/HEBGrocery/[^\s\"'<>\)]+", working, flags=re.IGNORECASE):
+        add(url)
+    return out[:MAX_IMAGE_SLOTS_TO_COMPARE]
 
 
-def get_heb_bundle(retail_url, target_rpc="", sku=""):
-    # Do not cache full HEB PDP HTML. HEB pages are large and batches can include hundreds
-    # of rows; caching those full responses can kill the Streamlit Cloud process.
-    html_text = fetch_html_with_timeout(retail_url, HEB_REQUEST_TIMEOUT)
+def get_heb_retailer_bundle_from_uploaded_txt(uploaded_html, retail_url="", target_rpc="", sku=""):
+    if not str(uploaded_html or "").strip():
+        return build_empty_retailer_bundle("HEB", "Not captured in uploaded HEB TXT")
     return {
-        "text": extract_heb_text_from_html(html_text, retail_url=retail_url, target_rpc=target_rpc),
-        "images": extract_heb_images_from_html(html_text),
+        "text": extract_heb_retailer_text_from_capture(uploaded_html, retail_url=retail_url, target_rpc=target_rpc),
+        "images": extract_heb_retailer_images_from_capture(uploaded_html),
     }
+
+
+def get_heb_salsify_bundle(salsify_url):
+    # Separate HEB Salsify entrypoint. It reuses the generic Salsify deck parser,
+    # then HEB-only overrides are chosen in finalize_salsify_copy_for_retailer().
+    return get_salsify_bundle(salsify_url)
 
 def is_valid_kroger_product_capture(html_text):
     """True only when Kroger HTML contains real PDP content.
@@ -7338,6 +7286,14 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
     retailer = normalize_retailer_name(retailer_name).strip().lower()
     uploaded_html = str(row_source_code or "")
 
+    if retailer == "heb":
+        # HEB is a separate TXT-only path. No live HEB fetch/search fallback.
+        if uploaded_html.strip():
+            bundle = get_heb_retailer_bundle_from_uploaded_txt(uploaded_html, retail_url=retail_url, target_rpc=target_rpc, sku=sku)
+            bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
+            return bundle
+        return build_empty_retailer_bundle("HEB", "Not captured in uploaded HEB TXT")
+
     if retailer == "kroger":
         if uploaded_html.strip() and is_valid_kroger_product_capture(uploaded_html):
             bundle = {
@@ -7379,17 +7335,12 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
             bundle = {"text": extract_sams_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_sams_images_from_html(uploaded_html)}
             bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
             return bundle
-        if retailer == "heb":
-            bundle = {"text": extract_heb_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_heb_images_from_html(uploaded_html)}
-            bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
-            return bundle
 
     retailer_fetchers = {
         "cvs": lambda: get_cvs_bundle(retail_url, target_rpc),
         "walgreens": lambda: get_walgreens_bundle(retail_url, target_rpc, sku=sku),
         "sam's club": lambda: get_sams_bundle(retail_url, target_rpc, sku=sku),
         "kroger": lambda: get_kroger_bundle(retail_url, target_rpc),
-        "heb": lambda: get_heb_bundle(retail_url, target_rpc, sku=sku),
     }
     fetcher = retailer_fetchers.get(retailer)
     if fetcher is None:
@@ -7998,37 +7949,6 @@ def finalize_salsify_copy_for_retailer(retailer_name, s_text):
             out[f"feature{i}"] = selected_features[i - 1] if i - 1 < len(selected_features) else ""
         return out
 
-    if retailer == "heb":
-        heb_override = retailer_overrides.get("heb", {}) or {}
-        selected_title = clean_heb_text(first_non_placeholder_copy_value(heb_override.get("title", ""), out.get("title", "")))
-        selected_description = first_non_placeholder_copy_value(heb_override.get("description", ""), out.get("description", ""))
-        selected_description, description_features = split_heb_description_and_features(selected_description)
-        override_features = heb_override.get("features", []) or []
-        override_feature_slots = heb_override.get("feature_slots", {}) or {}
-        generic_features = generic_feature_list()
-        selected_features = []
-        for i in range(1, 11):
-            slot_value = first_non_placeholder_copy_value(override_feature_slots.get(i, ""))
-            if slot_value:
-                selected_features.append(slot_value)
-        if not selected_features:
-            selected_features = normalize_heb_features(
-                normalize_salsify_feature_values(override_features or description_features or generic_features, max_features=10),
-                max_features=7,
-            )
-        else:
-            tail_features = normalize_heb_features(
-                normalize_salsify_feature_values(override_features or description_features, max_features=10),
-                max_features=7,
-            )
-            selected_features = dedupe_preserve_order(selected_features + tail_features)[:7]
-        out["title"] = selected_title
-        out["description"] = clean_heb_text(selected_description)
-        out["features"] = selected_features
-        for i in range(1, 8):
-            out[f"feature{i}"] = selected_features[i - 1] if i - 1 < len(selected_features) else ""
-        return out
-
     if retailer == "walgreens":
         walgreens_override = retailer_overrides.get("walgreens", {}) or {}
         exclusive_mode = retailer in EXCLUSIVE_SALSIFY_COPY_RETAILERS
@@ -8068,6 +7988,32 @@ def finalize_salsify_copy_for_retailer(retailer_name, s_text):
                 max_features=10,
             )
             selected_features = dedupe_preserve_order(selected_features + tail_features)[:10]
+        out["title"] = selected_title
+        out["description"] = selected_description
+        out["features"] = selected_features
+        for i in range(1, 8):
+            out[f"feature{i}"] = selected_features[i - 1] if i - 1 < len(selected_features) else ""
+        return out
+
+    if retailer == "heb":
+        heb_override = retailer_overrides.get("heb", {}) or {}
+        selected_title = first_non_placeholder_copy_value(
+            heb_override.get("title", ""),
+            out.get("title", ""),
+        )
+        selected_description = first_non_placeholder_copy_value(
+            heb_override.get("description", ""),
+            out.get("description", ""),
+        )
+        override_feature_slots = heb_override.get("feature_slots", {}) or {}
+        override_features = heb_override.get("features", []) or []
+        selected_features = []
+        for i in range(1, 8):
+            slot_value = first_non_placeholder_copy_value(override_feature_slots.get(i, ""))
+            if slot_value:
+                selected_features.append(slot_value)
+        if not selected_features:
+            selected_features = normalize_salsify_feature_values(override_features or generic_feature_list(), max_features=7)
         out["title"] = selected_title
         out["description"] = selected_description
         out["features"] = selected_features
@@ -8125,10 +8071,10 @@ def finalize_retailer_copy(retailer_name, r_text):
         return out
 
     if retailer == "heb":
-        clean_description, description_features = split_heb_description_and_features(out.get("description", ""))
         out["title"] = clean_heb_text(out.get("title", ""))
-        out["description"] = clean_description
-        out["features"] = normalize_heb_features(out.get("features", []) or description_features, max_features=7)
+        description, desc_features = split_heb_description_and_features(out.get("description", ""))
+        out["description"] = description
+        out["features"] = normalize_heb_features(out.get("features", []) or desc_features, max_features=7)
         return out
 
     out["title"] = normalize_space(out.get("title", ""))
@@ -8612,20 +8558,6 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
     if retailer == "cvs":
         return reorder_cvs_salsify_images_for_visual(source_images, max_slots=max_slots)
 
-    if retailer == "heb":
-        excluded_heb_tokens = {
-            "cvs", "walgreens", "kroger", "sam's club", "sams club", "samsclub", "walmart", "target", "amazon"
-        }
-        filtered = []
-        for img in source_images:
-            if not isinstance(img, dict):
-                continue
-            name = normalize_salsify_asset_name(img.get("name", ""))
-            if any(token in name for token in excluded_heb_tokens):
-                continue
-            filtered.append(img)
-        return dedupe_images_preserve_order(filtered)[:max_slots]
-
     if retailer == "walgreens":
         strict_image_mode = retailer in EXCLUSIVE_SALSIFY_IMAGE_RETAILERS
         used_urls = set()
@@ -8774,6 +8706,26 @@ def align_sams_club_retailer_images_to_salsify_video_slot(s_images, r_images, ma
 
     return ordered[:max_slots]
 
+def build_image_score_fields_url_only(s_images, r_images, max_slots=MAX_IMAGE_SLOTS_TO_SCORE):
+    s_images = s_images or []
+    r_images = r_images or []
+    slots_to_score = min(max(len(s_images), len(r_images)), max_slots)
+    if slots_to_score <= 0:
+        return 0, {}
+    scores = []
+    image_position_scores = {}
+    for i in range(slots_to_score):
+        s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else ""
+        r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else ""
+        s_clean = str(s_url or "").split("?", 1)[0].strip()
+        r_clean = str(r_url or "").split("?", 1)[0].strip()
+        score = 100 if s_clean and r_clean and s_clean == r_clean else 0
+        scores.append(score)
+        image_position_scores[f"Image {i + 1} %"] = score
+    avg_img_score = int(sum(scores) / len(scores)) if scores else 0
+    return avg_img_score, image_position_scores
+
+
 def build_image_score_fields(s_images, r_images, max_slots=MAX_IMAGE_SLOTS_TO_SCORE):
     """
     Build per-slot image scores and an average image score.
@@ -8845,7 +8797,10 @@ def build_normalized_comparison_payload(
     mode = str(mode or "batch").strip().lower()
     max_slots = int(max_slots or MAX_IMAGE_SLOTS_TO_SCORE)
 
-    s_bundle = get_salsify_bundle(salsify_url)
+    if retailer_norm == "heb":
+        s_bundle = get_heb_salsify_bundle(salsify_url)
+    else:
+        s_bundle = get_salsify_bundle(salsify_url)
     r_bundle = get_retailer_bundle(
         retailer_name,
         retail_url,
@@ -8889,15 +8844,11 @@ def build_normalized_comparison_payload(
             r_images = reorder_cvs_retailer_images_for_visual(r_images, max_slots=cvs_max_slots)
         elif retailer_norm == "walgreens":
             r_images = r_images[:6]
-        elif retailer_norm == "heb":
-            r_images = r_images[:6]
     else:
         if retailer_norm == "cvs":
             cvs_max_slots = int(get_retailer_salsify_requirements(retailer_name).get("max_images", MAX_IMAGE_SLOTS_TO_COMPARE) or MAX_IMAGE_SLOTS_TO_COMPARE)
             r_images = reorder_cvs_retailer_images_for_visual(r_images, max_slots=cvs_max_slots)
         elif retailer_norm == "walgreens":
-            r_images = r_images[:6]
-        elif retailer_norm == "heb":
             r_images = r_images[:6]
 
     # CVS-only: keep locked Salsify flat slots visible as Missing when absent,
@@ -8951,7 +8902,7 @@ def get_visual_row_payload(
     row_source_code = str(row_source_code or "")
     uploaded_html_map = st.session_state.uploaded_raw_html_map or {}
 
-    # Visual QA must reuse the same Kroger TXT-matched HTML used in batch processing.
+    # Visual QA must reuse the same TXT-matched HTML used in batch processing.
     if retailer_norm == "kroger":
         if not retail_url and current_target_sku:
             retail_url = find_kroger_url_in_uploaded_map(uploaded_html_map, target_rpc=current_target_sku)
@@ -8961,11 +8912,16 @@ def get_visual_row_payload(
                 retail_url,
                 target_rpc=current_target_sku,
             )
+    elif retailer_norm == "heb":
+        if not row_source_code:
+            row_source_code = lookup_uploaded_heb_capture(
+                uploaded_html_map,
+                retail_url,
+                target_rpc=current_target_sku,
+            )
 
     visual_max_slots = MAX_IMAGE_SLOTS_TO_COMPARE
     if retailer_norm == "walgreens":
-        visual_max_slots = 6
-    elif retailer_norm == "heb":
         visual_max_slots = 6
 
     payload = build_normalized_comparison_payload(
@@ -9001,8 +8957,18 @@ def process_row(row):
         retail_url = str(retail_url or "").strip()
         cvs_rpc = str(cvs_rpc or "").strip()
 
-        if str(retailer_name).strip().lower() == "kroger" and not retail_url and cvs_rpc:
+        retailer_norm_for_lookup = normalize_retailer_name(retailer_name).strip().lower()
+        if retailer_norm_for_lookup == "kroger" and not retail_url and cvs_rpc:
             retail_url = find_kroger_url_in_uploaded_map(st.session_state.uploaded_raw_html_map or {}, target_rpc=cvs_rpc)
+        if retailer_norm_for_lookup == "heb":
+            if not retail_url and cvs_rpc:
+                retail_url = f"https://www.heb.com/product-detail/{cvs_rpc}"
+            if not row_source_code:
+                row_source_code = lookup_uploaded_heb_capture(
+                    st.session_state.uploaded_raw_html_map or {},
+                    retail_url,
+                    target_rpc=cvs_rpc,
+                )
 
         title_score = 0
         desc_score = 0
@@ -9139,11 +9105,18 @@ def process_row(row):
         avg_feature_score = int(sum(feature_scores) / len(feature_scores)) if feature_scores else 0
 
         if max(len(s_images), len(r_images)) > 0:
-            avg_img_score, image_position_scores = build_image_score_fields(
-                s_images,
-                r_images,
-                max_slots=MAX_IMAGE_SLOTS_TO_SCORE,
-            )
+            if retailer_norm == "heb":
+                avg_img_score, image_position_scores = build_image_score_fields_url_only(
+                    s_images,
+                    r_images,
+                    max_slots=MAX_IMAGE_SLOTS_TO_SCORE,
+                )
+            else:
+                avg_img_score, image_position_scores = build_image_score_fields(
+                    s_images,
+                    r_images,
+                    max_slots=MAX_IMAGE_SLOTS_TO_SCORE,
+                )
         else:
             avg_img_score, image_position_scores = 0, {}
         
@@ -9277,7 +9250,7 @@ def process_row(row):
             "summary": {
                 "SKU": row.get("sku", ""),
                 "Retailer": row.get("retailer", ""),
-                "CVS RPC": row.get("retailer_rpc", ""),
+                "Retailer RPC": row.get("retailer_rpc", ""),
                 "Brand": row.get("brand", ""),
                 "Salsify URL": row.get("salsify_url", ""),
                 "Retail URL": row.get("retail_url", ""),
@@ -9293,7 +9266,7 @@ def process_row(row):
             "detail": {
                 "SKU": row.get("sku", ""),
                 "Retailer": row.get("retailer", ""),
-                "CVS RPC": row.get("retailer_rpc", ""),
+                "Retailer RPC": row.get("retailer_rpc", ""),
                 "Brand": row.get("brand", ""),
                 "Salsify URL": row.get("salsify_url", ""),
                 "Retail URL": row.get("retail_url", ""),
