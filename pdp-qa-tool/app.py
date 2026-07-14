@@ -89,9 +89,6 @@ MAX_CACHE = 400
 WALGREENS_REQUEST_TIMEOUT = 18
 WALGREENS_DEBUG_TIMEOUT = 25
 WALGREENS_API_TIMEOUT = 10
-HEB_REQUEST_TIMEOUT = 12
-HEB_BATCH_SIZE = 8
-HEB_MAX_WORKERS = 3
 
 # =========================================
 # PERFORMANCE SETTINGS
@@ -121,7 +118,7 @@ CVS_VARIANT_MIN_MATCH_SCORE = 35
 
 CAPTURE_MODE_USE_EXTENSION = "Use extension + TXT upload"
 CAPTURE_MODE_SKIP_EXTENSION = "Skip extension and go straight to batch"
-AUTO_SKIP_EXTENSION_RETAILERS = {"CVS", "Walgreens", "HEB"}
+AUTO_SKIP_EXTENSION_RETAILERS = {"CVS", "Walgreens"}
 # Retailer-specific Salsify isolation controls.
 # Copy can stay retailer-locked while images still fall back to generic locked Salsify slots if
 # retailer-labeled image assets do not exist yet.
@@ -757,82 +754,6 @@ def normalize_retailer_name(value):
         "retailer": "Retailer",
     }
     return mapping.get(lowered, value)
-
-
-# =========================================
-# RETAILER ISOLATION HELPERS
-# =========================================
-def normalize_retailer_key(value):
-    return normalize_retailer_name(value).strip().lower()
-
-
-RETAILER_DOMAIN_RULES = {
-    "cvs": ("cvs.com", "www.cvs.com"),
-    "walgreens": ("walgreens.com", "www.walgreens.com"),
-    "kroger": ("kroger.com", "www.kroger.com"),
-    "heb": ("heb.com", "www.heb.com"),
-    "sam's club": ("samsclub.com", "www.samsclub.com"),
-    "sams club": ("samsclub.com", "www.samsclub.com"),
-    "samsclub": ("samsclub.com", "www.samsclub.com"),
-}
-
-
-RETAILER_HTML_MARKERS = {
-    "cvs": ("cvs.com", "www.cvs.com", "/bizcontent/merchandising/productimages/", "cvs pharmacy"),
-    "walgreens": ("walgreens.com", "www.walgreens.com", "/prodimg/", "window.__app_initial_state__", "walgreens"),
-    "kroger": ("kroger.com", "www.kroger.com", "/product/images/", "data-testid=\"product-details-romance-description\"", "kroger"),
-    "heb": ("heb.com", "www.heb.com", "images.heb.com", "hebgrocery", "h-e-b"),
-    "sam's club": ("samsclub.com", "www.samsclub.com", "samsclubimages.com", "sam's club", "sams club"),
-    "sams club": ("samsclub.com", "www.samsclub.com", "samsclubimages.com", "sam's club", "sams club"),
-    "samsclub": ("samsclub.com", "www.samsclub.com", "samsclubimages.com", "sam's club", "sams club"),
-}
-
-
-def get_url_host(url):
-    url = clean_uploaded_url_value(url)
-    if not url:
-        return ""
-    try:
-        from urllib.parse import urlparse
-        parsed = urlparse(url if re.match(r"^https?://", url, flags=re.IGNORECASE) else "https://" + url)
-        return str(parsed.netloc or "").lower().split(":", 1)[0]
-    except Exception:
-        lowered = str(url or "").lower()
-        m = re.search(r"https?://([^/\s?#]+)", lowered)
-        return m.group(1).split(":", 1)[0] if m else ""
-
-
-def retail_url_matches_retailer(retail_url, retailer_name):
-    retailer = normalize_retailer_key(retailer_name)
-    allowed_hosts = RETAILER_DOMAIN_RULES.get(retailer)
-    if not allowed_hosts:
-        return True
-    host = get_url_host(retail_url)
-    if not host:
-        return False
-    return any(host == allowed or host.endswith("." + allowed) for allowed in allowed_hosts)
-
-
-def uploaded_html_matches_retailer(html_text, retailer_name, retail_url=""):
-    """Return True only when captured TXT/HTML is safe to use for this retailer."""
-    if not str(html_text or "").strip():
-        return False
-    retailer = normalize_retailer_key(retailer_name)
-    if not retail_url_matches_retailer(retail_url, retailer):
-        return False
-    markers = RETAILER_HTML_MARKERS.get(retailer)
-    if not markers:
-        return True
-    sample = html.unescape(str(html_text or "")).lower()
-    return any(str(marker).lower() in sample for marker in markers)
-
-
-def mark_uploaded_html_ignored(bundle, reason):
-    if not isinstance(bundle, dict):
-        bundle = build_empty_retailer_bundle("Retailer", reason)
-    debug = bundle.setdefault("text", {}).setdefault("debug", {})
-    debug["Uploaded Capture Ignored"] = reason
-    return bundle
 
 
 def build_empty_retailer_bundle(retailer_name="Retailer", reason=""):
@@ -1663,21 +1584,17 @@ def prepare_input_df(df):
         )
     df["retailer"] = df["retailer"].apply(normalize_retailer_name)
 
-    # HEB rows stay isolated. If an HEB row has an HEB RPC/product id but no
-    # retail_url, create HEB's product-detail id URL so strict retailer filtering
-    # can keep and process the row without borrowing another retailer's logic.
-    try:
-        heb_mask = df["retailer"].astype(str).str.lower().eq("heb")
-        missing_retail_url_mask = df["retail_url"].fillna("").astype(str).str.strip().eq("")
-        has_rpc_mask = df["retailer_rpc"].fillna("").astype(str).str.strip().ne("")
-        heb_fill_mask = heb_mask & missing_retail_url_mask & has_rpc_mask
-        if bool(heb_fill_mask.any()):
-            df.loc[heb_fill_mask, "retail_url"] = (
-                "https://www.heb.com/product-detail/"
-                + df.loc[heb_fill_mask, "retailer_rpc"].astype(str).str.strip()
-            )
-    except Exception:
-        pass
+    # HEB files often have the HEB item/Product ID in an RPC column instead of a full PDP URL.
+    # Keep HEB as its own retailer and build the HEB product-detail URL from that ID only for HEB rows.
+    heb_mask = df["retailer"].astype(str).str.lower().eq("heb")
+    missing_retail_url_mask = df["retail_url"].fillna("").astype(str).str.strip().eq("")
+    has_rpc_mask = df["retailer_rpc"].fillna("").astype(str).str.strip().ne("")
+    heb_fill_mask = heb_mask & missing_retail_url_mask & has_rpc_mask
+    if heb_fill_mask.any():
+        df.loc[heb_fill_mask, "retail_url"] = (
+            "https://www.heb.com/product-detail/"
+            + df.loc[heb_fill_mask, "retailer_rpc"].astype(str).str.strip()
+        )
 
     required = ["sku", "salsify_url", "retail_url"]
     missing = [c for c in required if c not in df.columns]
@@ -1691,12 +1608,8 @@ def strict_filter_rows_for_selected_retailer(df, selected_retailer, dedupe_by_ur
     """
     Hard retailer isolation guard.
 
-    A row is eligible only when both conditions are true:
-    1. The normalized retailer column equals the selected retailer.
-    2. retail_url belongs to the selected retailer's domain.
-
-    This prevents CVS, Walgreens, Kroger, Sam's Club, or mixed-upload rows from
-    leaking into a different retailer batch or extension payload.
+    This prevents any CVS, Walgreens, Kroger, or Sam's Club rows from leaking into a
+    different retailer batch, even if the uploaded file contains multiple retailers.
     """
     selected_retailer_norm = normalize_retailer_name(selected_retailer)
     if df is None:
@@ -1714,14 +1627,11 @@ def strict_filter_rows_for_selected_retailer(df, selected_retailer, dedupe_by_ur
 
     out["retail_url"] = out["retail_url"].fillna("").astype(str).str.strip()
     out = out[out["retail_url"] != ""].copy()
-    if not out.empty:
-        out = out[out["retail_url"].apply(lambda value: retail_url_matches_retailer(value, selected_retailer_norm))].copy()
 
     if dedupe_by_url and not out.empty:
         out = out.drop_duplicates(subset=["retail_url"], keep="first").copy()
 
     return out
-
 def clear_in_memory_caches():
     global html_cache, image_hash_cache, image_compare_cache, display_image_cache, walgreens_api_cache
 
@@ -2237,42 +2147,29 @@ def parse_uploaded_raw_html_map(raw_text):
             html_map[key] = html_text
     return html_map
 
-def lookup_uploaded_raw_html(uploaded_html_map, retail_url, target_rpc="", retailer_name=""):
+def lookup_uploaded_raw_html(uploaded_html_map, retail_url, target_rpc=""):
     uploaded_html_map = uploaded_html_map or {}
     retail_url = str(retail_url or "").strip()
     target_rpc = str(target_rpc or "").strip()
-    retailer_name = normalize_retailer_name(retailer_name) if retailer_name else ""
-    if retailer_name and retail_url and not retail_url_matches_retailer(retail_url, retailer_name):
-        return ""
 
     if retail_url and "kroger.com" in retail_url.lower():
         key = normalize_uploaded_capture_url(retail_url)
         html_text = str(uploaded_html_map.get(key, "") or "")
         if html_text:
-            if retailer_name and not uploaded_html_matches_retailer(html_text, retailer_name, retail_url):
-                return ""
             return html_text
         matched_key = find_kroger_url_in_uploaded_map(uploaded_html_map, target_rpc=target_rpc)
         if matched_key:
-            html_text = str(uploaded_html_map.get(matched_key, "") or "")
-            if retailer_name and not uploaded_html_matches_retailer(html_text, retailer_name, matched_key):
-                return ""
-            return html_text
+            return str(uploaded_html_map.get(matched_key, "") or "")
         return ""
 
     if not retail_url and target_rpc:
         matched_key = find_kroger_url_in_uploaded_map(uploaded_html_map, target_rpc=target_rpc)
         if matched_key:
-            html_text = str(uploaded_html_map.get(matched_key, "") or "")
-            if retailer_name and not uploaded_html_matches_retailer(html_text, retailer_name, matched_key):
-                return ""
-            return html_text
+            return str(uploaded_html_map.get(matched_key, "") or "")
 
     for key in uploaded_capture_url_candidates(retail_url):
         html_text = uploaded_html_map.get(key, "")
         if html_text:
-            if retailer_name and not uploaded_html_matches_retailer(html_text, retailer_name, retail_url):
-                continue
             return html_text
     return ""
 
@@ -2743,6 +2640,9 @@ def pick_kroger_images_with_atf_and_lifestyle(asset_lookup):
       these cvs_only images back out for every non-CVS retailer.
     """
     main_priority_order = [
+        "online optimized image heb",
+        "online optimized image h e b",
+        "online optimized image h-e-b",
         "online optimized image walgreens",
         "online optimized image kroger",
         "online optimized image grocery",
@@ -3211,6 +3111,56 @@ def _parse_salsify_page(html_text):
         max_features=10,
     )
 
+    heb_feature_values = []
+    heb_feature_slots = {}
+    for i in range(1, 11):
+        heb_exact_values = collect_property_values(
+            f"HEB Feature {i}",
+            f"HEB Feature{i}",
+            f"H-E-B Feature {i}",
+            f"H-E-B Feature{i}",
+            f"HEB Product Feature {i}",
+            f"H-E-B Product Feature {i}",
+            f"HEB Bullet {i}",
+            f"H-E-B Bullet {i}",
+            f"Retailer Feature {i} - HEB",
+            f"Retailer Bullet {i} - HEB",
+        )
+        heb_loose_values = collect_property_values_loose(
+            f"HEB Feature {i}",
+            f"H-E-B Feature {i}",
+            f"HEB Product Feature {i}",
+            f"H-E-B Product Feature {i}",
+            f"HEB Bullet {i}",
+            f"H-E-B Bullet {i}",
+            f"Retailer Feature {i} - HEB",
+            f"Retailer Bullet {i} - HEB",
+        )
+        heb_slot_values = dedupe_preserve_order((heb_exact_values or []) + (heb_loose_values or []))
+        heb_slot_values = [v for v in heb_slot_values if v and not is_placeholder_salsify_copy_value(v)]
+        if heb_slot_values:
+            heb_feature_slots[i] = heb_slot_values[0]
+            heb_feature_values.extend(heb_slot_values)
+
+    if not heb_feature_values:
+        broad_heb_feature_values = []
+        for prop_key, values in property_values.items():
+            pk = normalize_space(prop_key).lower().replace('_', ' ')
+            if 'heb' not in pk and 'h-e-b' not in pk and 'h e b' not in pk:
+                continue
+            if not any(token in pk for token in ['feature', 'bullet', 'selling point', 'benefit', 'highlight']):
+                continue
+            for value in values or []:
+                clean_value = normalize_space(value)
+                if clean_value and not is_placeholder_salsify_copy_value(clean_value):
+                    broad_heb_feature_values.append(clean_value)
+        heb_feature_values = dedupe_preserve_order(broad_heb_feature_values)
+
+    heb_feature_values = normalize_salsify_feature_values(
+        dedupe_preserve_order(heb_feature_values),
+        max_features=10,
+    )
+
 
     retailer_overrides = {
         "kroger": {
@@ -3263,6 +3213,21 @@ def _parse_salsify_page(html_text):
                 max_features=10,
             ),
             "feature_slots": walgreens_feature_slots,
+        },
+        "heb": {
+            "title": first_non_placeholder_copy_value(
+                first_property("HEB Product Title", "H-E-B Product Title", "HEB Title", "H-E-B Title", "HEB Product Name", "H-E-B Product Name"),
+                first_property("General Product Title", "General Title", "Product Title"),
+            ),
+            "description": first_non_placeholder_copy_value(
+                first_property("HEB Description", "H-E-B Description", "HEB Product Description", "H-E-B Product Description", "HEB Long Description", "H-E-B Long Description"),
+                first_property("General Description", "General Product Description", "Description"),
+            ),
+            "features": normalize_salsify_feature_values(
+                heb_feature_values or general_feature_values,
+                max_features=10,
+            ),
+            "feature_slots": heb_feature_slots,
         },
     }
 
@@ -4964,6 +4929,81 @@ def _normalize_walgreens_text(value):
 
     return normalize_space(value)
 
+
+def get_walgreens_product_id_from_url(retail_url):
+    """
+    Supports Walgreens product URLs like:
+    - /ID=300432791-product
+    - /ID=prod6153586-product
+    - ?productId=300432791
+    - ?productId=prod6153586
+    """
+    if not retail_url:
+        return ""
+
+    retail_url = str(retail_url or "").strip()
+
+    patterns = [
+        r"/ID=([A-Za-z0-9]+)-product",
+        r"[?&]productId=([A-Za-z0-9]+)",
+        r'"productId"\s*:\s*"([A-Za-z0-9]+)"',
+    ]
+
+    for pattern in patterns:
+        m = re.search(pattern, retail_url, flags=re.IGNORECASE)
+        if m:
+            return m.group(1)
+
+    return ""
+
+
+def fetch_json_with_timeout(url, timeout_seconds):
+    if not url:
+        return None
+
+    try:
+        session = get_session()
+        r = session.get(url, timeout=timeout_seconds, allow_redirects=True)
+        if r.status_code == 200:
+            return r.json()
+    except Exception:
+        pass
+
+    return None
+
+
+def get_walgreens_product_api_payload(product_id):
+    """
+    Walgreens source exposes a lighter product endpoint:
+    /productapi/v1/products?productId={prodId}
+    """
+    if not product_id:
+        return None
+
+    api_url = f"https://www.walgreens.com/productapi/v1/products?productId={product_id}"
+    return fetch_json_with_timeout(api_url, WALGREENS_API_TIMEOUT)
+
+
+def walk_json(obj):
+    if isinstance(obj, dict):
+        yield obj
+        for v in obj.values():
+            yield from walk_json(v)
+    elif isinstance(obj, list):
+        for item in obj:
+            yield from walk_json(item)
+
+
+def find_first_dict_with_keys(obj, required_keys):
+    required_keys = set(required_keys)
+
+    for node in walk_json(obj):
+        if isinstance(node, dict) and required_keys.issubset(set(node.keys())):
+            return node
+
+    return {}
+
+
 def extract_walgreens_reviews_from_app_state_payload(payload):
     """
     Pull live Walgreens review fields from app-state payload:
@@ -5123,7 +5163,44 @@ def _truncate_walgreens_copy_at_hard_stop(text):
             cut_index = min(cut_index, idx)
 
     return working[:cut_index].strip()
+    
+def _truncate_walgreens_copy_at_hard_stop(text):
+    """
+    Hard-stop Walgreens copy before utility / legal / disposal sections.
+    This keeps only the real description + bullets and drops anything after,
+    such as Made in USA, Do not flush, or Walgreens disclaimer text.
+    """
+    if not text:
+        return ""
 
+    working = str(text)
+    lower = working.lower()
+
+    stop_markers = [
+        "Made in USA",
+        "Made In USA",
+        "Do not flush",
+        "Do Not Flush",
+        "Directions for Use:",
+        "Direction for Use:",
+        "To Use:",
+        "To Dispose:",
+        "How to Use:",
+        "How To Use:",
+        "Walgreens does not represent or warrant",
+        "We recommend that you not rely solely on the information presented",
+        "On occasion, manufacturers may improve or change their product formulas",
+        "The food and drug administration has not intended to diagnose, treat, cure, or prevent any disease",
+    ]
+
+    cut_index = len(working)
+    for marker in stop_markers:
+        idx = lower.find(marker.lower())
+        if idx != -1:
+            cut_index = min(cut_index, idx)
+
+    return working[:cut_index].strip()
+    
 def _is_walgreens_450_image(url):
     url = str(url or '').lower().split('?', 1)[0]
     return url.endswith('/450.jpg') or url.endswith('_450.jpg')
@@ -5769,6 +5846,15 @@ def get_walgreens_prod_desc_html(product_id):
     """
     url = get_walgreens_prod_desc_url(product_id)
     return fetch_html_with_timeout(url, WALGREENS_REQUEST_TIMEOUT)
+    
+def get_walgreens_prod_desc_html(product_id):
+    """
+    Lightweight Walgreens copy endpoint.
+    Often more reliable than the full PDP HTML for prod... items.
+    """
+    url = get_walgreens_prod_desc_url(product_id)
+    return fetch_html_with_timeout(url, WALGREENS_REQUEST_TIMEOUT)
+
 
 def build_walgreens_title_from_url_slug(retail_url, description_html=""):
     """
@@ -6917,18 +7003,60 @@ def get_sams_bundle(retail_url, target_rpc="", sku=""):
 
 
 # =========================================
-# HEB HELPERS
+# HEB PARSERS
 # =========================================
 def clean_heb_text(text):
-    text = normalize_space(text)
+    if not text:
+        return ""
+    text = str(text)
+    text = html.unescape(text)
+    text = text.replace("\\u0026", "&")
+    text = text.replace("\\u2022", "•")
+    text = text.replace("\\n", " ")
+    text = text.replace("\\/", "/")
+    text = text.replace('\\"', '"')
     text = text.replace("H‑E‑B", "H-E-B")
-    return re.sub(r"\s+", " ", text).strip(" \t\r\n-|•")
+    if "<" in text and ">" in text:
+        text = BeautifulSoup(text, "html.parser").get_text(" ", strip=True)
+    return normalize_space(text).strip(" \t\r\n-|•")
 
 
-def _heb_json_loads(value):
+def normalize_heb_features(items, max_features=7):
+    if not items:
+        return []
+    if isinstance(items, str):
+        items = [items]
+    out = []
+    for item in items:
+        val = clean_heb_text(item)
+        if not val:
+            continue
+        lowered = val.lower()
+        if lowered in {"weekly ad", "help & faqs", "saved recipes", "sign up or log in"}:
+            continue
+        if any(token in lowered for token in ["all departments", "in-store at ", "fruit & vegetables", "meat & seafood"]):
+            continue
+        out.append(val)
+    return dedupe_preserve_order(out)[:max_features]
+
+
+def split_heb_description_and_features(description):
+    description = clean_heb_text(description)
+    if not description:
+        return "", []
+    working = html.unescape(description)
+    working = re.sub(r"(?i)&bull;", "•", working)
+    working = working.replace("\\u2022", "•")
+    if "•" not in working:
+        return clean_heb_text(working), []
+    parts = [clean_heb_text(part) for part in working.split("•")]
+    base_description = parts[0] if parts else ""
+    return base_description, normalize_heb_features(parts[1:], max_features=7)
+
+
+def _heb_safe_json_loads(value):
     try:
-        parsed = json.loads(value)
-        return parsed
+        return json.loads(value)
     except Exception:
         return None
 
@@ -6952,7 +7080,7 @@ def _extract_heb_parsed_json_block(html_text):
     )
     if not match:
         return {}
-    parsed = _heb_json_loads(html.unescape(match.group(1).strip()))
+    parsed = _heb_safe_json_loads(html.unescape(match.group(1).strip()))
     return parsed if isinstance(parsed, dict) else {}
 
 
@@ -6961,55 +7089,18 @@ def _extract_heb_product_jsonld(html_text):
     soup = BeautifulSoup(source, "html.parser")
     for script in soup.find_all("script", attrs={"type": re.compile(r"ld\+json", re.I)}):
         raw = script.string or script.get_text(" ", strip=False) or ""
-        parsed = _heb_json_loads(raw.strip())
+        parsed = _heb_safe_json_loads(raw.strip())
         if parsed is None:
             continue
         for node in _heb_walk_json(parsed):
-            node_type = node.get("@type", "") if isinstance(node, dict) else ""
+            if not isinstance(node, dict):
+                continue
+            node_type = node.get("@type", "")
             if isinstance(node_type, list):
                 node_type = " ".join(str(x) for x in node_type)
             if "product" in str(node_type).lower():
                 return node
     return {}
-
-
-def split_heb_description_and_features(description):
-    description = clean_heb_text(description)
-    if not description:
-        return "", []
-    source = html.unescape(description)
-    source = re.sub(r"(?i)&bull;", "•", source)
-    source = source.replace("\\u2022", "•")
-    if "•" not in source:
-        return clean_heb_text(source), []
-    parts = [clean_heb_text(x) for x in source.split("•")]
-    base_description = parts[0] if parts else ""
-    features = []
-    for part in parts[1:]:
-        if not part:
-            continue
-        lowered = part.lower()
-        if lowered in {"weekly ad", "help & faqs", "saved recipes", "sign up or log in"}:
-            continue
-        if any(skip in lowered for skip in ["all departments", "in-store at ", "fruit & vegetables", "meat & seafood"]):
-            continue
-        features.append(part)
-    return base_description, dedupe_preserve_order(features)[:10]
-
-
-def normalize_heb_features(features, max_features=7):
-    clean_features = []
-    for feature in features or []:
-        feature = clean_heb_text(feature)
-        if not feature:
-            continue
-        lowered = feature.lower()
-        if lowered in {"weekly ad", "help & faqs", "saved recipes", "sign up or log in"}:
-            continue
-        if any(skip in lowered for skip in ["all departments", "in-store at ", "fruit & vegetables", "meat & seafood"]):
-            continue
-        clean_features.append(feature)
-    return dedupe_preserve_order(clean_features)[:max_features]
 
 
 def _heb_first_value(*values):
@@ -7021,21 +7112,36 @@ def _heb_first_value(*values):
 
 
 def extract_heb_text_from_html(html_text, retail_url="", target_rpc=""):
+    debug = {
+        "Title Path": "heb_title_missing",
+        "Description Path": "heb_description_missing",
+        "Features Path": "heb_features_missing",
+        "Rating Path": "heb_rating_reviews_missing",
+        "Source Used": "heb_html",
+        "Retailer": "HEB",
+    }
+    if not html_text:
+        return {"title": "", "description": "", "features": [], "rating": "", "review_count": "", "debug": debug}
+
     parsed_capture = _extract_heb_parsed_json_block(html_text)
     product_json = _extract_heb_product_jsonld(html_text)
     soup = BeautifulSoup(html.unescape(str(html_text or "")), "html.parser")
-    og_title = soup.find("meta", attrs={"property": "og:title"})
-    meta_desc = soup.find("meta", attrs={"name": "description"})
-    og_desc = soup.find("meta", attrs={"property": "og:description"})
 
+    og_title = soup.find("meta", attrs={"property": "og:title"})
+    meta_title = soup.find("meta", attrs={"name": "title"})
     title = _heb_first_value(
         parsed_capture.get("title", "") if isinstance(parsed_capture, dict) else "",
         product_json.get("name", "") if isinstance(product_json, dict) else "",
         og_title.get("content", "") if og_title else "",
+        meta_title.get("content", "") if meta_title else "",
         soup.title.get_text(" ", strip=True) if soup.title else "",
     )
     title = clean_heb_text(re.sub(r"\s+-\s+Shop\s+.*$", "", title, flags=re.IGNORECASE))
+    if title:
+        debug["Title Path"] = "heb_parsed_json_or_jsonld_or_meta"
 
+    meta_desc = soup.find("meta", attrs={"name": "description"})
+    og_desc = soup.find("meta", attrs={"property": "og:description"})
     raw_description = _heb_first_value(
         parsed_capture.get("description", "") if isinstance(parsed_capture, dict) else "",
         product_json.get("description", "") if isinstance(product_json, dict) else "",
@@ -7043,9 +7149,13 @@ def extract_heb_text_from_html(html_text, retail_url="", target_rpc=""):
         og_desc.get("content", "") if og_desc else "",
     )
     description, bullet_features = split_heb_description_and_features(raw_description)
+    if description:
+        debug["Description Path"] = "heb_parsed_json_or_jsonld_description"
 
     parsed_features = parsed_capture.get("features", []) if isinstance(parsed_capture, dict) else []
     features = normalize_heb_features(bullet_features or parsed_features, max_features=7)
+    if features:
+        debug["Features Path"] = "heb_bullets"
 
     rating = ""
     review_count = ""
@@ -7054,22 +7164,18 @@ def extract_heb_text_from_html(html_text, retail_url="", target_rpc=""):
         if isinstance(aggregate_rating, dict):
             rating = normalize_space(aggregate_rating.get("ratingValue", ""))
             review_count = normalize_space(aggregate_rating.get("reviewCount", "") or aggregate_rating.get("ratingCount", ""))
+    if rating or review_count:
+        debug["Rating Path"] = "heb_jsonld_aggregateRating"
 
+    debug["Retail URL"] = str(retail_url or "")
+    debug["Retailer RPC"] = str(target_rpc or "")
     return {
         "title": title,
         "description": description,
         "features": features,
         "rating": rating,
         "review_count": review_count,
-        "debug": {
-            "Title Path": "heb_jsonld_or_meta",
-            "Description Path": "heb_jsonld_description",
-            "Features Path": "heb_description_bullets",
-            "Source Used": "heb_parser",
-            "Retailer": "HEB",
-            "Retail URL": str(retail_url or ""),
-            "Target RPC": str(target_rpc or ""),
-        },
+        "debug": debug,
     }
 
 
@@ -7079,12 +7185,16 @@ def _normalize_heb_image_url(url):
         return ""
     if url.startswith("//"):
         url = "https:" + url
+    if url.startswith("/"):
+        url = "https://www.heb.com" + url
     if "images.heb.com/is/image/HEBGrocery/" not in url:
         return ""
     return url.split("?", 1)[0]
 
 
 def extract_heb_images_from_html(html_text):
+    if not html_text:
+        return []
     parsed_capture = _extract_heb_parsed_json_block(html_text)
     product_json = _extract_heb_product_jsonld(html_text)
     images = []
@@ -7108,15 +7218,12 @@ def extract_heb_images_from_html(html_text):
     for url in re.findall(r"https?://images\.heb\.com/is/image/HEBGrocery/[^\s\"'<>\\)]+", html.unescape(str(html_text or "")), flags=re.IGNORECASE):
         add_image(url)
 
-    return images[:10]
+    return images[:MAX_IMAGE_SLOTS_TO_COMPARE]
 
 
+@st.cache_data(show_spinner=False)
 def get_heb_bundle(retail_url, target_rpc="", sku=""):
-    # HEB PDP HTML is large. Do not use the shared HTML cache for HEB live pages
-    # or a full HEB run can keep hundreds of very large pages in memory.
-    html_text = fetch_html_with_timeout(retail_url, HEB_REQUEST_TIMEOUT)
-    if not html_text:
-        return build_empty_retailer_bundle("HEB", "heb_fetch_empty")
+    html_text = get_html(retail_url)
     return {
         "text": extract_heb_text_from_html(html_text, retail_url=retail_url, target_rpc=target_rpc),
         "images": extract_heb_images_from_html(html_text),
@@ -7193,26 +7300,8 @@ def kroger_bundle_has_live_content(bundle):
 
 @st.cache_data(show_spinner=False, max_entries=1200)
 def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_source_code=""):
-    retailer_display = normalize_retailer_name(retailer_name)
-    retailer = retailer_display.strip().lower()
-    retail_url = str(retail_url or "").strip()
-    raw_uploaded_html = str(row_source_code or "")
-
-    if not retail_url_matches_retailer(retail_url, retailer_display):
-        return build_empty_retailer_bundle(
-            retailer_display or "Retailer",
-            "strict_retailer_domain_mismatch",
-        )
-
-    uploaded_html = raw_uploaded_html if uploaded_html_matches_retailer(raw_uploaded_html, retailer_display, retail_url) else ""
-    uploaded_html_reject_reason = ""
-    if raw_uploaded_html.strip() and not uploaded_html:
-        uploaded_html_reject_reason = "uploaded_txt_html_retailer_mismatch_or_invalid_capture"
-
-    def with_uploaded_ignore_debug(bundle):
-        if uploaded_html_reject_reason:
-            return mark_uploaded_html_ignored(bundle, uploaded_html_reject_reason)
-        return bundle
+    retailer = normalize_retailer_name(retailer_name).strip().lower()
+    uploaded_html = str(row_source_code or "")
 
     if retailer == "kroger":
         if uploaded_html.strip() and is_valid_kroger_product_capture(uploaded_html):
@@ -7230,41 +7319,33 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
             return bundle
 
         if uploaded_html.strip():
+            # The uploaded capture exists, but it is only the Kroger loading/privacy shell.
+            # Do not allow that shell to mark a live PDP as Missing. Try live fetch next.
             live_bundle = get_kroger_bundle(retail_url, target_rpc=target_rpc)
             debug = live_bundle.setdefault("text", {}).setdefault("debug", {})
             debug["Uploaded Capture Ignored"] = "invalid_kroger_shell_capture"
             debug["Availability Rule"] = "availability_never_blocks_live_copy_or_images"
             return live_bundle
 
-        return with_uploaded_ignore_debug(get_kroger_bundle(retail_url, target_rpc=target_rpc))
+        # If no extension/TXT capture is available, fetch the live Kroger PDP directly.
+        # Item availability never blocks PDP copy/images.
+        return get_kroger_bundle(retail_url, target_rpc=target_rpc)
 
     if uploaded_html.strip():
         if retailer == "cvs":
-            bundle = {
-                "text": _extract_cvs_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc),
-                "images": extract_cvs_images_from_html(uploaded_html),
-            }
+            bundle = {"text": _extract_cvs_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_cvs_images_from_html(uploaded_html)}
             bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
             return bundle
         if retailer == "walgreens":
-            bundle = {
-                "text": extract_walgreens_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc),
-                "images": extract_walgreens_images_from_html(uploaded_html),
-            }
+            bundle = {"text": extract_walgreens_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_walgreens_images_from_html(uploaded_html)}
             bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
             return bundle
         if retailer == "sam's club":
-            bundle = {
-                "text": extract_sams_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc),
-                "images": extract_sams_images_from_html(uploaded_html),
-            }
+            bundle = {"text": extract_sams_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_sams_images_from_html(uploaded_html)}
             bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
             return bundle
         if retailer == "heb":
-            bundle = {
-                "text": extract_heb_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc),
-                "images": extract_heb_images_from_html(uploaded_html),
-            }
+            bundle = {"text": extract_heb_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_heb_images_from_html(uploaded_html)}
             bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
             return bundle
 
@@ -7277,11 +7358,8 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
     }
     fetcher = retailer_fetchers.get(retailer)
     if fetcher is None:
-        return build_empty_retailer_bundle(
-            retailer_name or "Retailer",
-            "retailer_not_supported_no_default_cvs_fallback",
-        )
-    return with_uploaded_ignore_debug(fetcher())
+        return build_empty_retailer_bundle(retailer_name or "Retailer", "retailer_not_supported_no_default_cvs_fallback")
+    return fetcher()
 
 def strip_walgreens_description_tail(text):
     """
@@ -7806,11 +7884,6 @@ def finalize_salsify_copy_for_retailer(retailer_name, s_text):
     retailer = str(retailer_name or "").strip().lower()
     out = dict(s_text or {})
 
-    def _finalize_salsify_copy_out(final_out):
-        final_out = apply_retailer_salsify_copy_limits(retailer_name, final_out)
-        final_out.pop("retailer_overrides", None)
-        return final_out
-
     def generic_feature_list():
         candidates = []
         for i in range(1, 11):
@@ -7838,7 +7911,7 @@ def finalize_salsify_copy_for_retailer(retailer_name, s_text):
         out["features"] = selected_features
         for i in range(1, 8):
             out[f"feature{i}"] = selected_features[i - 1] if i - 1 < len(selected_features) else ""
-        return _finalize_salsify_copy_out(out)
+        return out
 
     if retailer in {"sam's club", "sams club", "samsclub"}:
         sams_override = retailer_overrides.get("sam's club", {}) or {}
@@ -7862,7 +7935,7 @@ def finalize_salsify_copy_for_retailer(retailer_name, s_text):
         out["features"] = selected_features
         for i in range(1, 8):
             out[f"feature{i}"] = selected_features[i - 1] if i - 1 < len(selected_features) else ""
-        return _finalize_salsify_copy_out(out)
+        return out
 
     if retailer == "cvs":
         cvs_override = retailer_overrides.get("cvs", {}) or {}
@@ -7888,7 +7961,38 @@ def finalize_salsify_copy_for_retailer(retailer_name, s_text):
         out["features"] = selected_features
         for i in range(1, 8):
             out[f"feature{i}"] = selected_features[i - 1] if i - 1 < len(selected_features) else ""
-        return _finalize_salsify_copy_out(out)
+        return out
+
+    if retailer == "heb":
+        heb_override = retailer_overrides.get("heb", {}) or {}
+        selected_title = clean_heb_text(first_non_placeholder_copy_value(heb_override.get("title", ""), out.get("title", "")))
+        selected_description = first_non_placeholder_copy_value(heb_override.get("description", ""), out.get("description", ""))
+        selected_description, description_features = split_heb_description_and_features(selected_description)
+        override_features = heb_override.get("features", []) or []
+        override_feature_slots = heb_override.get("feature_slots", {}) or {}
+        generic_features = generic_feature_list()
+        selected_features = []
+        for i in range(1, 11):
+            slot_value = first_non_placeholder_copy_value(override_feature_slots.get(i, ""))
+            if slot_value:
+                selected_features.append(slot_value)
+        if not selected_features:
+            selected_features = normalize_heb_features(
+                normalize_salsify_feature_values(override_features or description_features or generic_features, max_features=10),
+                max_features=7,
+            )
+        else:
+            tail_features = normalize_heb_features(
+                normalize_salsify_feature_values(override_features or description_features, max_features=10),
+                max_features=7,
+            )
+            selected_features = dedupe_preserve_order(selected_features + tail_features)[:7]
+        out["title"] = selected_title
+        out["description"] = clean_heb_text(selected_description)
+        out["features"] = selected_features
+        for i in range(1, 8):
+            out[f"feature{i}"] = selected_features[i - 1] if i - 1 < len(selected_features) else ""
+        return out
 
     if retailer == "walgreens":
         walgreens_override = retailer_overrides.get("walgreens", {}) or {}
@@ -7934,12 +8038,19 @@ def finalize_salsify_copy_for_retailer(retailer_name, s_text):
         out["features"] = selected_features
         for i in range(1, 8):
             out[f"feature{i}"] = selected_features[i - 1] if i - 1 < len(selected_features) else ""
-        return _finalize_salsify_copy_out(out)
+        return out
 
     out["title"] = first_non_placeholder_copy_value(out.get("title", ""))
     out["description"] = first_non_placeholder_copy_value(out.get("description", ""))
     out["features"] = normalize_salsify_feature_values(out.get("features", []) or generic_feature_list(), max_features=10)
-    return _finalize_salsify_copy_out(out)
+    return out
+
+
+_original_finalize_salsify_copy_for_retailer = finalize_salsify_copy_for_retailer
+
+def finalize_salsify_copy_for_retailer(retailer_name, s_text):
+    out = _original_finalize_salsify_copy_for_retailer(retailer_name, s_text)
+    return apply_retailer_salsify_copy_limits(retailer_name, out)
 
 def finalize_retailer_copy(retailer_name, r_text):
     retailer = str(retailer_name or "").strip().lower()
@@ -8266,13 +8377,6 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
     source_images = list(s_images or [])
     if retailer != "cvs":
         source_images = [img for img in source_images if not is_cvs_only_salsify_image(img)]
-    if retailer != "walgreens":
-        source_images = [img for img in source_images if not is_walgreens_only_salsify_image(img)]
-    if retailer == "cvs":
-        source_images = [img for img in source_images if not is_walgreens_only_salsify_image(img)]
-
-    def _finalize_salsify_images_out(final_images):
-        return apply_retailer_salsify_image_limits(retailer_name, final_images)
 
     def dedupe_images_preserve_order(images):
         out = []
@@ -8468,10 +8572,24 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
                 continue
             append_unique(img)
 
-        return _finalize_salsify_images_out(aligned[:max_slots])
+        return aligned[:max_slots]
 
     if retailer == "cvs":
-        return _finalize_salsify_images_out(reorder_cvs_salsify_images_for_visual(source_images, max_slots=max_slots))
+        return reorder_cvs_salsify_images_for_visual(source_images, max_slots=max_slots)
+
+    if retailer == "heb":
+        excluded_heb_tokens = {
+            "cvs", "walgreens", "kroger", "sam's club", "sams club", "samsclub", "walmart", "target", "amazon"
+        }
+        filtered = []
+        for img in source_images:
+            if not isinstance(img, dict):
+                continue
+            name = normalize_salsify_asset_name(img.get("name", ""))
+            if any(token in name for token in excluded_heb_tokens):
+                continue
+            filtered.append(img)
+        return dedupe_images_preserve_order(filtered)[:max_slots]
 
     if retailer == "walgreens":
         strict_image_mode = retailer in EXCLUSIVE_SALSIFY_IMAGE_RETAILERS
@@ -8519,9 +8637,16 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
             elif keep_blank:
                 aligned.append(make_blank_salsify_image_slot(blank_name))
 
-        return _finalize_salsify_images_out(aligned[:min(max_slots, 6)])
+        return aligned[:min(max_slots, 6)]
 
-    return _finalize_salsify_images_out(dedupe_images_preserve_order(source_images)[:max_slots])
+    return dedupe_images_preserve_order(source_images)[:max_slots]
+
+
+_original_align_salsify_images_for_retailer = align_salsify_images_for_retailer
+
+def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE, brand=""):
+    aligned = _original_align_salsify_images_for_retailer(retailer_name, s_images, max_slots=max_slots, brand=brand)
+    return apply_retailer_salsify_image_limits(retailer_name, aligned)
 
 def align_image_slots_for_comparison(s_images, r_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE, strong_threshold=80):
     """
@@ -8729,11 +8854,15 @@ def build_normalized_comparison_payload(
             r_images = reorder_cvs_retailer_images_for_visual(r_images, max_slots=cvs_max_slots)
         elif retailer_norm == "walgreens":
             r_images = r_images[:6]
+        elif retailer_norm == "heb":
+            r_images = r_images[:6]
     else:
         if retailer_norm == "cvs":
             cvs_max_slots = int(get_retailer_salsify_requirements(retailer_name).get("max_images", MAX_IMAGE_SLOTS_TO_COMPARE) or MAX_IMAGE_SLOTS_TO_COMPARE)
             r_images = reorder_cvs_retailer_images_for_visual(r_images, max_slots=cvs_max_slots)
         elif retailer_norm == "walgreens":
+            r_images = r_images[:6]
+        elif retailer_norm == "heb":
             r_images = r_images[:6]
 
     # CVS-only: keep locked Salsify flat slots visible as Missing when absent,
@@ -8796,7 +8925,6 @@ def get_visual_row_payload(
                 uploaded_html_map,
                 retail_url,
                 target_rpc=current_target_sku,
-                retailer_name=retailer_name,
             )
 
     visual_max_slots = MAX_IMAGE_SLOTS_TO_COMPARE
@@ -8965,7 +9093,7 @@ def process_row(row):
             # Sam's Club should score only feature rows that exist on either the
             # Salsify deck or the live Sam's Club PDP. Do not turn unavailable
             # slots into extra 0% rows.
-            if retailer_norm in {"sam's club", "sams club", "samsclub"} and not (normalize_space(s_val) or normalize_space(r_val)):
+            if retailer_norm in {"sam's club", "sams club", "samsclub", "heb"} and not (normalize_space(s_val) or normalize_space(r_val)):
                 continue
 
             score = keyword_score(s_val, r_val) if (s_val or r_val) else 0
@@ -9109,43 +9237,8 @@ def process_row(row):
             },
         }
 
-    except Exception as e:
-        return {
-            "summary": {
-                "SKU": row.get("sku", ""),
-                "Retailer": row.get("retailer", ""),
-                "CVS RPC": row.get("retailer_rpc", ""),
-                "Brand": row.get("brand", ""),
-                "Salsify URL": row.get("salsify_url", ""),
-                "Retail URL": row.get("retail_url", ""),
-                "Rating": row.get("rating", ""),
-                "Review Count": row.get("review_count", ""),
-                "Title %": 0,
-                "Description %": 0,
-                "Feature %": 0,
-                "Image Match %": 0,
-                "Overall %": 0,
-                "Status": f"Row error: {repr(e)}",
-            },
-            "detail": {
-                "SKU": row.get("sku", ""),
-                "Retailer": row.get("retailer", ""),
-                "CVS RPC": row.get("retailer_rpc", ""),
-                "Brand": row.get("brand", ""),
-                "Salsify URL": row.get("salsify_url", ""),
-                "Retail URL": row.get("retail_url", ""),
-                "Status": f"Row error: {repr(e)}",
-            },
-            "debug": {
-                "SKU": row.get("sku", ""),
-                "Retailer": row.get("retailer", ""),
-                "Retailer RPC": row.get("retailer_rpc", ""),
-                "Retail URL": row.get("retail_url", ""),
-                "Salsify URL": row.get("salsify_url", ""),
-                "Status": f"Row error: {repr(e)}",
-                "Traceback": traceback.format_exc(),
-            },
-        }
+    except Exception:
+        return None
 # =========================================
 # SESSION STATE
 # =========================================
@@ -9374,7 +9467,7 @@ if uploaded_file:
             if "copy_source_code" not in retailer_df.columns:
                 retailer_df["copy_source_code"] = ""
             if uploaded_raw_html_map:
-                retailer_df["copy_source_code"] = retailer_df.apply(lambda row: lookup_uploaded_raw_html(uploaded_raw_html_map, row.get("retail_url", ""), target_rpc=row.get("retailer_rpc", ""), retailer_name=selected_retailer), axis=1)
+                retailer_df["copy_source_code"] = retailer_df.apply(lambda row: lookup_uploaded_raw_html(uploaded_raw_html_map, row.get("retail_url", ""), target_rpc=row.get("retailer_rpc", "")), axis=1)
                 matched_uploaded_html_count = int((retailer_df["copy_source_code"].astype(str).str.len() > 0).sum())
                 missing_uploaded_html_count = max(len(retailer_df) - matched_uploaded_html_count, 0)
             current_batch_key = f"{file_hash}::{selected_retailer}::{capture_batch_key_part}"
@@ -9618,10 +9711,7 @@ if retailer_df is not None and file_ready_for_batch and st.session_state.batch_s
             st.stop()
 
         start = st.session_state.start_idx
-        selected_retailer_norm_for_batch = normalize_retailer_name(selected_retailer).strip().lower()
-        current_batch_size = HEB_BATCH_SIZE if selected_retailer_norm_for_batch == "heb" else BATCH_SIZE
-        current_max_workers = HEB_MAX_WORKERS if selected_retailer_norm_for_batch == "heb" else MAX_WORKERS
-        end = start + current_batch_size
+        end = start + BATCH_SIZE
 
         if start >= len(retailer_df):
             st.session_state.processing_done = True
@@ -9631,7 +9721,7 @@ if retailer_df is not None and file_ready_for_batch and st.session_state.batch_s
 
         if not st.session_state.processing_done:
             st.write(f"Processing SKUs {start + 1} to {min(end, len(retailer_df))} of {len(retailer_df)}")
-            st.caption(f"Batch Size: {current_batch_size} | Workers: {current_max_workers}")
+            st.caption(f"Batch Size: {BATCH_SIZE} | Workers: {MAX_WORKERS}")
 
             if st.session_state.progress_bar is None:
                 st.session_state.progress_bar = st.progress(0)
@@ -9644,7 +9734,7 @@ if retailer_df is not None and file_ready_for_batch and st.session_state.batch_s
             completed = 0
             batch_records = batch_df.to_dict("records")
 
-            with ThreadPoolExecutor(max_workers=current_max_workers) as executor:
+            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                 futures = [executor.submit(process_row, row_dict) for row_dict in batch_records]
                 for future in as_completed(futures):
                     completed += 1
@@ -9671,8 +9761,8 @@ if retailer_df is not None and file_ready_for_batch and st.session_state.batch_s
                         )
                         overall_progress_bar.progress((start + completed) / max(len(retailer_df), 1))
 
-            if start + current_batch_size < len(retailer_df):
-                st.session_state.start_idx += current_batch_size
+            if start + BATCH_SIZE < len(retailer_df):
+                st.session_state.start_idx += BATCH_SIZE
                 time.sleep(0.05)
                 st.rerun()
             else:
