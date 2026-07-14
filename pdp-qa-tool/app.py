@@ -89,6 +89,9 @@ MAX_CACHE = 400
 WALGREENS_REQUEST_TIMEOUT = 18
 WALGREENS_DEBUG_TIMEOUT = 25
 WALGREENS_API_TIMEOUT = 10
+HEB_REQUEST_TIMEOUT = 12
+HEB_BATCH_SIZE = 8
+HEB_MAX_WORKERS = 3
 
 # =========================================
 # PERFORMANCE SETTINGS
@@ -118,7 +121,7 @@ CVS_VARIANT_MIN_MATCH_SCORE = 35
 
 CAPTURE_MODE_USE_EXTENSION = "Use extension + TXT upload"
 CAPTURE_MODE_SKIP_EXTENSION = "Skip extension and go straight to batch"
-AUTO_SKIP_EXTENSION_RETAILERS = {"CVS", "Walgreens"}
+AUTO_SKIP_EXTENSION_RETAILERS = {"CVS", "Walgreens", "HEB"}
 # Retailer-specific Salsify isolation controls.
 # Copy can stay retailer-locked while images still fall back to generic locked Salsify slots if
 # retailer-labeled image assets do not exist yet.
@@ -7109,7 +7112,9 @@ def extract_heb_images_from_html(html_text):
 
 
 def get_heb_bundle(retail_url, target_rpc="", sku=""):
-    html_text = get_html(retail_url)
+    # HEB PDP HTML is large. Do not use the shared HTML cache for HEB live pages
+    # or a full HEB run can keep hundreds of very large pages in memory.
+    html_text = fetch_html_with_timeout(retail_url, HEB_REQUEST_TIMEOUT)
     if not html_text:
         return build_empty_retailer_bundle("HEB", "heb_fetch_empty")
     return {
@@ -8797,6 +8802,8 @@ def get_visual_row_payload(
     visual_max_slots = MAX_IMAGE_SLOTS_TO_COMPARE
     if retailer_norm == "walgreens":
         visual_max_slots = 6
+    elif retailer_norm == "heb":
+        visual_max_slots = 6
 
     payload = build_normalized_comparison_payload(
         salsify_url=salsify_url,
@@ -9611,7 +9618,10 @@ if retailer_df is not None and file_ready_for_batch and st.session_state.batch_s
             st.stop()
 
         start = st.session_state.start_idx
-        end = start + BATCH_SIZE
+        selected_retailer_norm_for_batch = normalize_retailer_name(selected_retailer).strip().lower()
+        current_batch_size = HEB_BATCH_SIZE if selected_retailer_norm_for_batch == "heb" else BATCH_SIZE
+        current_max_workers = HEB_MAX_WORKERS if selected_retailer_norm_for_batch == "heb" else MAX_WORKERS
+        end = start + current_batch_size
 
         if start >= len(retailer_df):
             st.session_state.processing_done = True
@@ -9621,7 +9631,7 @@ if retailer_df is not None and file_ready_for_batch and st.session_state.batch_s
 
         if not st.session_state.processing_done:
             st.write(f"Processing SKUs {start + 1} to {min(end, len(retailer_df))} of {len(retailer_df)}")
-            st.caption(f"Batch Size: {BATCH_SIZE} | Workers: {MAX_WORKERS}")
+            st.caption(f"Batch Size: {current_batch_size} | Workers: {current_max_workers}")
 
             if st.session_state.progress_bar is None:
                 st.session_state.progress_bar = st.progress(0)
@@ -9634,7 +9644,7 @@ if retailer_df is not None and file_ready_for_batch and st.session_state.batch_s
             completed = 0
             batch_records = batch_df.to_dict("records")
 
-            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            with ThreadPoolExecutor(max_workers=current_max_workers) as executor:
                 futures = [executor.submit(process_row, row_dict) for row_dict in batch_records]
                 for future in as_completed(futures):
                     completed += 1
@@ -9661,8 +9671,8 @@ if retailer_df is not None and file_ready_for_batch and st.session_state.batch_s
                         )
                         overall_progress_bar.progress((start + completed) / max(len(retailer_df), 1))
 
-            if start + BATCH_SIZE < len(retailer_df):
-                st.session_state.start_idx += BATCH_SIZE
+            if start + current_batch_size < len(retailer_df):
+                st.session_state.start_idx += current_batch_size
                 time.sleep(0.05)
                 st.rerun()
             else:
