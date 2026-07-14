@@ -1660,17 +1660,21 @@ def prepare_input_df(df):
         )
     df["retailer"] = df["retailer"].apply(normalize_retailer_name)
 
-    # HEB stays retailer-isolated. If the upload has an HEB RPC/product id but
-    # no HEB PDP URL, create the live HEB product-detail route from that id.
-    heb_mask = df["retailer"].astype(str).str.lower().eq("heb")
-    missing_retail_url_mask = df["retail_url"].fillna("").astype(str).str.strip().eq("")
-    has_rpc_mask = df["retailer_rpc"].fillna("").astype(str).str.strip().ne("")
-    heb_fill_mask = heb_mask & missing_retail_url_mask & has_rpc_mask
-    if heb_fill_mask.any():
-        df.loc[heb_fill_mask, "retail_url"] = (
-            "https://www.heb.com/product-detail/"
-            + df.loc[heb_fill_mask, "retailer_rpc"].astype(str).str.strip()
-        )
+    # HEB rows stay isolated. If an HEB row has an HEB RPC/product id but no
+    # retail_url, create HEB's product-detail id URL so strict retailer filtering
+    # can keep and process the row without borrowing another retailer's logic.
+    try:
+        heb_mask = df["retailer"].astype(str).str.lower().eq("heb")
+        missing_retail_url_mask = df["retail_url"].fillna("").astype(str).str.strip().eq("")
+        has_rpc_mask = df["retailer_rpc"].fillna("").astype(str).str.strip().ne("")
+        heb_fill_mask = heb_mask & missing_retail_url_mask & has_rpc_mask
+        if bool(heb_fill_mask.any()):
+            df.loc[heb_fill_mask, "retail_url"] = (
+                "https://www.heb.com/product-detail/"
+                + df.loc[heb_fill_mask, "retailer_rpc"].astype(str).str.strip()
+            )
+    except Exception:
+        pass
 
     required = ["sku", "salsify_url", "retail_url"]
     missing = [c for c in required if c not in df.columns]
@@ -6918,7 +6922,7 @@ def clean_heb_text(text):
     return re.sub(r"\s+", " ", text).strip(" \t\r\n-|•")
 
 
-def _heb_safe_json_loads(value):
+def _heb_json_loads(value):
     try:
         parsed = json.loads(value)
         return parsed
@@ -6945,7 +6949,7 @@ def _extract_heb_parsed_json_block(html_text):
     )
     if not match:
         return {}
-    parsed = _heb_safe_json_loads(html.unescape(match.group(1).strip()))
+    parsed = _heb_json_loads(html.unescape(match.group(1).strip()))
     return parsed if isinstance(parsed, dict) else {}
 
 
@@ -6954,7 +6958,7 @@ def _extract_heb_product_jsonld(html_text):
     soup = BeautifulSoup(source, "html.parser")
     for script in soup.find_all("script", attrs={"type": re.compile(r"ld\+json", re.I)}):
         raw = script.string or script.get_text(" ", strip=False) or ""
-        parsed = _heb_safe_json_loads(raw.strip())
+        parsed = _heb_json_loads(raw.strip())
         if parsed is None:
             continue
         for node in _heb_walk_json(parsed):
@@ -9098,8 +9102,43 @@ def process_row(row):
             },
         }
 
-    except Exception:
-        return None
+    except Exception as e:
+        return {
+            "summary": {
+                "SKU": row.get("sku", ""),
+                "Retailer": row.get("retailer", ""),
+                "CVS RPC": row.get("retailer_rpc", ""),
+                "Brand": row.get("brand", ""),
+                "Salsify URL": row.get("salsify_url", ""),
+                "Retail URL": row.get("retail_url", ""),
+                "Rating": row.get("rating", ""),
+                "Review Count": row.get("review_count", ""),
+                "Title %": 0,
+                "Description %": 0,
+                "Feature %": 0,
+                "Image Match %": 0,
+                "Overall %": 0,
+                "Status": f"Row error: {repr(e)}",
+            },
+            "detail": {
+                "SKU": row.get("sku", ""),
+                "Retailer": row.get("retailer", ""),
+                "CVS RPC": row.get("retailer_rpc", ""),
+                "Brand": row.get("brand", ""),
+                "Salsify URL": row.get("salsify_url", ""),
+                "Retail URL": row.get("retail_url", ""),
+                "Status": f"Row error: {repr(e)}",
+            },
+            "debug": {
+                "SKU": row.get("sku", ""),
+                "Retailer": row.get("retailer", ""),
+                "Retailer RPC": row.get("retailer_rpc", ""),
+                "Retail URL": row.get("retail_url", ""),
+                "Salsify URL": row.get("salsify_url", ""),
+                "Status": f"Row error: {repr(e)}",
+                "Traceback": traceback.format_exc(),
+            },
+        }
 # =========================================
 # SESSION STATE
 # =========================================
