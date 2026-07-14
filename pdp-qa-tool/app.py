@@ -1660,16 +1660,17 @@ def prepare_input_df(df):
         )
     df["retailer"] = df["retailer"].apply(normalize_retailer_name)
 
-    # HEB uploads often provide the numeric HEB RPC/product id even when the
-    # full retail URL is blank. Use the product-detail id route as a live HEB
-    # URL fallback so HEB rows remain separated and batchable.
+    # HEB stays retailer-isolated. If the upload has an HEB RPC/product id but
+    # no HEB PDP URL, create the live HEB product-detail route from that id.
     heb_mask = df["retailer"].astype(str).str.lower().eq("heb")
     missing_retail_url_mask = df["retail_url"].fillna("").astype(str).str.strip().eq("")
     has_rpc_mask = df["retailer_rpc"].fillna("").astype(str).str.strip().ne("")
-    df.loc[heb_mask & missing_retail_url_mask & has_rpc_mask, "retail_url"] = (
-        "https://www.heb.com/product-detail/"
-        + df.loc[heb_mask & missing_retail_url_mask & has_rpc_mask, "retailer_rpc"].astype(str).str.strip()
-    )
+    heb_fill_mask = heb_mask & missing_retail_url_mask & has_rpc_mask
+    if heb_fill_mask.any():
+        df.loc[heb_fill_mask, "retail_url"] = (
+            "https://www.heb.com/product-detail/"
+            + df.loc[heb_fill_mask, "retailer_rpc"].astype(str).str.strip()
+        )
 
     required = ["sku", "salsify_url", "retail_url"]
     missing = [c for c in required if c not in df.columns]
@@ -3203,56 +3204,6 @@ def _parse_salsify_page(html_text):
         max_features=10,
     )
 
-    heb_feature_values = []
-    heb_feature_slots = {}
-    for i in range(1, 11):
-        heb_exact_values = collect_property_values(
-            f"HEB Feature {i}",
-            f"HEB Feature{i}",
-            f"H-E-B Feature {i}",
-            f"H-E-B Feature{i}",
-            f"HEB Product Feature {i}",
-            f"H-E-B Product Feature {i}",
-            f"HEB Bullet {i}",
-            f"H-E-B Bullet {i}",
-            f"Retailer Feature {i} - HEB",
-            f"Retailer Bullet {i} - HEB",
-        )
-        heb_loose_values = collect_property_values_loose(
-            f"HEB Feature {i}",
-            f"H-E-B Feature {i}",
-            f"HEB Product Feature {i}",
-            f"H-E-B Product Feature {i}",
-            f"HEB Bullet {i}",
-            f"H-E-B Bullet {i}",
-            f"Retailer Feature {i} - HEB",
-            f"Retailer Bullet {i} - HEB",
-        )
-        heb_slot_values = dedupe_preserve_order((heb_exact_values or []) + (heb_loose_values or []))
-        heb_slot_values = [v for v in heb_slot_values if v and not is_placeholder_salsify_copy_value(v)]
-        if heb_slot_values:
-            heb_feature_slots[i] = heb_slot_values[0]
-            heb_feature_values.extend(heb_slot_values)
-
-    if not heb_feature_values:
-        broad_heb_feature_values = []
-        for prop_key, values in property_values.items():
-            pk = normalize_space(prop_key).lower().replace('_', ' ')
-            if 'heb' not in pk and 'h-e-b' not in pk and 'h e b' not in pk:
-                continue
-            if not any(token in pk for token in ['feature', 'bullet', 'selling point', 'benefit', 'highlight']):
-                continue
-            for value in values or []:
-                clean_value = normalize_space(value)
-                if clean_value and not is_placeholder_salsify_copy_value(clean_value):
-                    broad_heb_feature_values.append(clean_value)
-        heb_feature_values = dedupe_preserve_order(broad_heb_feature_values)
-
-    heb_feature_values = normalize_salsify_feature_values(
-        dedupe_preserve_order(heb_feature_values),
-        max_features=10,
-    )
-
 
     retailer_overrides = {
         "kroger": {
@@ -3305,21 +3256,6 @@ def _parse_salsify_page(html_text):
                 max_features=10,
             ),
             "feature_slots": walgreens_feature_slots,
-        },
-        "heb": {
-            "title": first_non_placeholder_copy_value(
-                first_property("HEB Product Title", "H-E-B Product Title", "HEB Title", "H-E-B Title", "HEB Product Name", "H-E-B Product Name"),
-                first_property("General Product Title", "General Title", "Product Title"),
-            ),
-            "description": first_non_placeholder_copy_value(
-                first_property("HEB Description", "H-E-B Description", "HEB Product Description", "H-E-B Product Description", "HEB Long Description", "H-E-B Long Description"),
-                first_property("General Description", "General Product Description", "Description"),
-            ),
-            "features": normalize_salsify_feature_values(
-                heb_feature_values or general_feature_values,
-                max_features=10,
-            ),
-            "feature_slots": heb_feature_slots,
         },
     }
 
@@ -6979,29 +6915,28 @@ def get_sams_bundle(retail_url, target_rpc="", sku=""):
 def clean_heb_text(text):
     text = normalize_space(text)
     text = text.replace("H‑E‑B", "H-E-B")
-    text = re.sub(r"\s+", " ", text)
-    return text.strip(" \t\r\n-|•")
+    return re.sub(r"\s+", " ", text).strip(" \t\r\n-|•")
 
 
-def _load_json_maybe(value):
+def _heb_safe_json_loads(value):
     try:
-        return json.loads(value)
+        parsed = json.loads(value)
+        return parsed
     except Exception:
         return None
 
 
-def _iter_json_nodes(obj):
+def _heb_walk_json(obj):
     if isinstance(obj, dict):
         yield obj
         for value in obj.values():
-            yield from _iter_json_nodes(value)
+            yield from _heb_walk_json(value)
     elif isinstance(obj, list):
         for item in obj:
-            yield from _iter_json_nodes(item)
+            yield from _heb_walk_json(item)
 
 
-def _extract_heb_parsed_json_from_capture(html_text):
-    """Support extension TXT captures that include a BEGIN PARSED JSON block."""
+def _extract_heb_parsed_json_block(html_text):
     source = str(html_text or "")
     match = re.search(
         r"-----BEGIN PARSED JSON-----(.*?)-----END PARSED JSON-----",
@@ -7010,9 +6945,8 @@ def _extract_heb_parsed_json_from_capture(html_text):
     )
     if not match:
         return {}
-    payload = html.unescape(match.group(1).strip())
-    data = _load_json_maybe(payload)
-    return data if isinstance(data, dict) else {}
+    parsed = _heb_safe_json_loads(html.unescape(match.group(1).strip()))
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _extract_heb_product_jsonld(html_text):
@@ -7020,16 +6954,14 @@ def _extract_heb_product_jsonld(html_text):
     soup = BeautifulSoup(source, "html.parser")
     for script in soup.find_all("script", attrs={"type": re.compile(r"ld\+json", re.I)}):
         raw = script.string or script.get_text(" ", strip=False) or ""
-        data = _load_json_maybe(raw.strip())
-        if data is None:
+        parsed = _heb_safe_json_loads(raw.strip())
+        if parsed is None:
             continue
-        for node in _iter_json_nodes(data):
-            node_type = node.get("@type") if isinstance(node, dict) else ""
+        for node in _heb_walk_json(parsed):
+            node_type = node.get("@type", "") if isinstance(node, dict) else ""
             if isinstance(node_type, list):
-                node_type_text = " ".join(str(x) for x in node_type)
-            else:
-                node_type_text = str(node_type or "")
-            if "product" in node_type_text.lower():
+                node_type = " ".join(str(x) for x in node_type)
+            if "product" in str(node_type).lower():
                 return node
     return {}
 
@@ -7038,75 +6970,75 @@ def split_heb_description_and_features(description):
     description = clean_heb_text(description)
     if not description:
         return "", []
-
-    # HEB places PDP bullets in the JSON-LD description after &bull;/bullet marks.
-    bullet_ready = html.unescape(description)
-    bullet_ready = re.sub(r"(?i)&bull;", "•", bullet_ready)
-    bullet_ready = bullet_ready.replace("\\u2022", "•")
-
-    if "•" not in bullet_ready:
-        return clean_heb_text(bullet_ready), []
-
-    pieces = [clean_heb_text(part) for part in bullet_ready.split("•")]
-    base_description = pieces[0] if pieces else ""
+    source = html.unescape(description)
+    source = re.sub(r"(?i)&bull;", "•", source)
+    source = source.replace("\\u2022", "•")
+    if "•" not in source:
+        return clean_heb_text(source), []
+    parts = [clean_heb_text(x) for x in source.split("•")]
+    base_description = parts[0] if parts else ""
     features = []
-    for part in pieces[1:]:
-        part = clean_heb_text(part)
+    for part in parts[1:]:
         if not part:
             continue
-        # Avoid navigation/store utility text if a browser capture accidentally
-        # passes visible-page menus into the feature area.
         lowered = part.lower()
         if lowered in {"weekly ad", "help & faqs", "saved recipes", "sign up or log in"}:
             continue
-        if any(skip in lowered for skip in ["all departments", "in-store at ", "fruit & vegetables"]):
+        if any(skip in lowered for skip in ["all departments", "in-store at ", "fruit & vegetables", "meat & seafood"]):
             continue
         features.append(part)
     return base_description, dedupe_preserve_order(features)[:10]
 
 
 def normalize_heb_features(features, max_features=7):
-    out = []
-    for value in features or []:
-        clean_value = clean_heb_text(value)
-        if not clean_value:
+    clean_features = []
+    for feature in features or []:
+        feature = clean_heb_text(feature)
+        if not feature:
             continue
-        lowered = clean_value.lower()
+        lowered = feature.lower()
         if lowered in {"weekly ad", "help & faqs", "saved recipes", "sign up or log in"}:
             continue
-        if any(skip in lowered for skip in ["all departments", "in-store at ", "fruit & vegetables"]):
+        if any(skip in lowered for skip in ["all departments", "in-store at ", "fruit & vegetables", "meat & seafood"]):
             continue
-        out.append(clean_value)
-    return dedupe_preserve_order(out)[:max_features]
+        clean_features.append(feature)
+    return dedupe_preserve_order(clean_features)[:max_features]
+
+
+def _heb_first_value(*values):
+    for value in values:
+        clean_value = clean_heb_text(value)
+        if clean_value:
+            return clean_value
+    return ""
 
 
 def extract_heb_text_from_html(html_text, retail_url="", target_rpc=""):
-    parsed_capture = _extract_heb_parsed_json_from_capture(html_text)
+    parsed_capture = _extract_heb_parsed_json_block(html_text)
     product_json = _extract_heb_product_jsonld(html_text)
     soup = BeautifulSoup(html.unescape(str(html_text or "")), "html.parser")
+    og_title = soup.find("meta", attrs={"property": "og:title"})
+    meta_desc = soup.find("meta", attrs={"name": "description"})
+    og_desc = soup.find("meta", attrs={"property": "og:description"})
 
-    title = first_non_placeholder_copy_value(
+    title = _heb_first_value(
         parsed_capture.get("title", "") if isinstance(parsed_capture, dict) else "",
         product_json.get("name", "") if isinstance(product_json, dict) else "",
-        (soup.find("meta", attrs={"property": "og:title"}) or {}).get("content", "") if soup else "",
+        og_title.get("content", "") if og_title else "",
         soup.title.get_text(" ", strip=True) if soup.title else "",
     )
     title = clean_heb_text(re.sub(r"\s+-\s+Shop\s+.*$", "", title, flags=re.IGNORECASE))
 
-    raw_description = first_non_placeholder_copy_value(
+    raw_description = _heb_first_value(
         parsed_capture.get("description", "") if isinstance(parsed_capture, dict) else "",
         product_json.get("description", "") if isinstance(product_json, dict) else "",
-        (soup.find("meta", attrs={"name": "description"}) or {}).get("content", "") if soup else "",
-        (soup.find("meta", attrs={"property": "og:description"}) or {}).get("content", "") if soup else "",
+        meta_desc.get("content", "") if meta_desc else "",
+        og_desc.get("content", "") if og_desc else "",
     )
-    description, description_features = split_heb_description_and_features(raw_description)
+    description, bullet_features = split_heb_description_and_features(raw_description)
 
-    parsed_features = []
-    if isinstance(parsed_capture, dict):
-        parsed_features = parsed_capture.get("features", []) or []
-    # The extension's generic visible-text feature fallback can include menus;
-    # prefer real bullets split from the product JSON-LD description.
-    features = normalize_heb_features(description_features or parsed_features, max_features=7)
+    parsed_features = parsed_capture.get("features", []) if isinstance(parsed_capture, dict) else []
+    features = normalize_heb_features(bullet_features or parsed_features, max_features=7)
 
     rating = ""
     review_count = ""
@@ -7126,9 +7058,10 @@ def extract_heb_text_from_html(html_text, retail_url="", target_rpc=""):
             "Title Path": "heb_jsonld_or_meta",
             "Description Path": "heb_jsonld_description",
             "Features Path": "heb_description_bullets",
+            "Source Used": "heb_parser",
             "Retailer": "HEB",
-            "Target RPC": str(target_rpc or ""),
             "Retail URL": str(retail_url or ""),
+            "Target RPC": str(target_rpc or ""),
         },
     }
 
@@ -7139,37 +7072,34 @@ def _normalize_heb_image_url(url):
         return ""
     if url.startswith("//"):
         url = "https:" + url
-    if url.startswith("/"):
-        url = "https://www.heb.com" + url
     if "images.heb.com/is/image/HEBGrocery/" not in url:
         return ""
     return url.split("?", 1)[0]
 
 
 def extract_heb_images_from_html(html_text):
-    parsed_capture = _extract_heb_parsed_json_from_capture(html_text)
+    parsed_capture = _extract_heb_parsed_json_block(html_text)
     product_json = _extract_heb_product_jsonld(html_text)
     images = []
 
-    def add(url):
+    def add_image(url):
         clean_url = _normalize_heb_image_url(url)
         if clean_url and clean_url not in images:
             images.append(clean_url)
 
     if isinstance(parsed_capture, dict):
         for url in parsed_capture.get("images", []) or []:
-            add(url)
+            add_image(url)
 
     if isinstance(product_json, dict):
         product_images = product_json.get("image", []) or []
         if isinstance(product_images, str):
             product_images = [product_images]
         for url in product_images:
-            add(url)
+            add_image(url)
 
-    source = html.unescape(str(html_text or ""))
-    for url in re.findall(r"https?://images\.heb\.com/is/image/HEBGrocery/[^\s\"'<>\\)]+", source, flags=re.IGNORECASE):
-        add(url)
+    for url in re.findall(r"https?://images\.heb\.com/is/image/HEBGrocery/[^\s\"'<>\\)]+", html.unescape(str(html_text or "")), flags=re.IGNORECASE):
+        add_image(url)
 
     return images[:10]
 
@@ -7951,37 +7881,6 @@ def finalize_salsify_copy_for_retailer(retailer_name, s_text):
             out[f"feature{i}"] = selected_features[i - 1] if i - 1 < len(selected_features) else ""
         return _finalize_salsify_copy_out(out)
 
-    if retailer == "heb":
-        heb_override = retailer_overrides.get("heb", {}) or {}
-        selected_title = first_non_placeholder_copy_value(heb_override.get("title", ""), out.get("title", ""))
-        selected_description = first_non_placeholder_copy_value(heb_override.get("description", ""), out.get("description", ""))
-        selected_description, description_features = split_heb_description_and_features(selected_description)
-        override_features = heb_override.get("features", []) or []
-        override_feature_slots = heb_override.get("feature_slots", {}) or {}
-        generic_features = generic_feature_list()
-        selected_features = []
-        for i in range(1, 11):
-            slot_value = first_non_placeholder_copy_value(override_feature_slots.get(i, ""))
-            if slot_value:
-                selected_features.append(slot_value)
-        if not selected_features:
-            selected_features = normalize_heb_features(
-                normalize_salsify_feature_values(override_features or description_features or generic_features, max_features=10),
-                max_features=7,
-            )
-        else:
-            tail_features = normalize_heb_features(
-                normalize_salsify_feature_values(override_features or description_features, max_features=10),
-                max_features=7,
-            )
-            selected_features = dedupe_preserve_order(selected_features + tail_features)[:7]
-        out["title"] = clean_heb_text(selected_title)
-        out["description"] = clean_heb_text(selected_description)
-        out["features"] = selected_features
-        for i in range(1, 8):
-            out[f"feature{i}"] = selected_features[i - 1] if i - 1 < len(selected_features) else ""
-        return _finalize_salsify_copy_out(out)
-
     if retailer == "walgreens":
         walgreens_override = retailer_overrides.get("walgreens", {}) or {}
         exclusive_mode = retailer in EXCLUSIVE_SALSIFY_COPY_RETAILERS
@@ -8564,15 +8463,6 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
 
     if retailer == "cvs":
         return _finalize_salsify_images_out(reorder_cvs_salsify_images_for_visual(source_images, max_slots=max_slots))
-
-    if retailer == "heb":
-        heb_images = [
-            img for img in source_images
-            if isinstance(img, dict)
-            and not is_cvs_only_salsify_image(img)
-            and not is_walgreens_only_salsify_image(img)
-        ]
-        return _finalize_salsify_images_out(dedupe_images_preserve_order(heb_images)[:max_slots])
 
     if retailer == "walgreens":
         strict_image_mode = retailer in EXCLUSIVE_SALSIFY_IMAGE_RETAILERS
