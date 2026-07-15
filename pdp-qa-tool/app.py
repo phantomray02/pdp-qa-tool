@@ -8698,85 +8698,91 @@ def select_kroger_salsify_main_image(s_images):
 
 
 def select_kroger_salsify_images(s_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
-    """Kroger Salsify image order rule.
+    """Kroger-only Salsify image order rule.
 
-    This rule applies only to the Salsify image side:
-    1. Online Optimized Image-Kroger first.
-    2. If Kroger image is missing, use Online Optimized Image-Grocery.
-    3. If neither Kroger nor Grocery exists, use generic Online Optimized Image-.
-    4. ATF images come next in Salsify/source order.
+    This function is called only when retailer == "kroger".
 
-    Important: when Online Optimized Image-Kroger has an image, generic
-    Online Optimized Image- is intentionally skipped so it does not duplicate or
-    shift the Kroger-specific front image slot.
+    Kroger must show only one OOI/front image, using this priority:
+    1. Online Optimized Image-Kroger
+    2. Online Optimized Image-Grocery
+    3. Online Optimized Image-
+    4. Then ATF / lifestyle images in source order.
+
+    If a higher-priority OOI exists, lower-priority OOI images are skipped.
     """
     images = [img for img in list(s_images or []) if isinstance(img, dict)]
 
     def img_url(img):
-        return str(img.get("url", "") or "").strip()
+        return str((img or {}).get("url", "") or "").strip()
 
-    def raw_lower(img):
-        return str(img.get("name", "") or "").strip().lower()
+    def norm_name(img):
+        return normalize_salsify_asset_name((img or {}).get("name", ""))
 
-    kroger_img = None
-    grocery_img = None
-    generic_img = None
-    atf_images = []
+    def is_valid_img(img):
+        return isinstance(img, dict) and bool(img_url(img))
 
-    generic_blocked_tokens = [
-        "kroger", "grocery", "walgreens", "cvs", "sams club", "sam's club",
-        "samsclub", "target", "walmart", "atf", "lifestyle", "shipping",
-        "ingredient", "flat back", "flat left", "video",
-    ]
+    def find_first_by_name(*queries, exclude_tokens=None):
+        query_tokens = [normalize_salsify_asset_name(q) for q in queries if normalize_salsify_asset_name(q)]
+        exclude_tokens = [normalize_salsify_asset_name(q) for q in (exclude_tokens or []) if normalize_salsify_asset_name(q)]
+        for query in query_tokens:
+            for img in images:
+                if not is_valid_img(img):
+                    continue
+                name = norm_name(img)
+                if exclude_tokens and any(token in name for token in exclude_tokens):
+                    continue
+                if name and (name == query or query in name):
+                    return img
+        return None
 
-    for img in images:
-        if not img_url(img):
-            continue
-        name = raw_lower(img)
-
-        if name.startswith("online optimized image-kroger") or name.startswith("online image-kroger"):
-            kroger_img = kroger_img or img
-            continue
-        if name.startswith("online optimized image-grocery") or name.startswith("online image-grocery"):
-            grocery_img = grocery_img or img
-            continue
-
-        is_generic_online = (
-            name in {"online optimized image", "online image"}
-            or name.startswith("online optimized image-")
-            or name.startswith("online image-")
-        )
-        if is_generic_online and not any(token in name for token in generic_blocked_tokens):
-            generic_img = generic_img or img
-            continue
-
-        if "atf" in name:
-            atf_images.append(img)
+    kroger_ooi = find_first_by_name(
+        "Online Optimized Image-Kroger",
+        "Online Image-Kroger",
+    )
+    grocery_ooi = find_first_by_name(
+        "Online Optimized Image-Grocery",
+        "Online Image-Grocery",
+    )
+    generic_ooi = find_first_by_name(
+        "Online Optimized Image-",
+        "Online Optimized Image",
+        "Online Image-",
+        "Online Image",
+        exclude_tokens=[
+            "kroger", "grocery", "walgreens", "cvs", "sams club", "sam s club",
+            "samsclub", "target", "walmart", "amazon", "atf", "lifestyle",
+            "life style", "shipping", "ingredient", "flat back", "flat left", "video",
+        ],
+    )
 
     ordered = []
-    seen = set()
+    seen_urls = set()
 
     def add(img):
-        if not isinstance(img, dict):
+        if not is_valid_img(img):
             return False
         url = img_url(img)
-        if not url or url in seen:
+        if not url or url in seen_urls:
             return False
         ordered.append(img)
-        seen.add(url)
+        seen_urls.add(url)
         return True
 
-    if kroger_img:
-        add(kroger_img)
-        # Per rule: skip Grocery and generic Online Optimized Image- when Kroger image exists.
-    elif grocery_img:
-        add(grocery_img)
-        # Per rule: skip generic Online Optimized Image- when Grocery image exists.
-    else:
-        add(generic_img)
+    # Add exactly one OOI image for Kroger, in priority order.
+    selected_ooi = kroger_ooi or grocery_ooi or generic_ooi
+    add(selected_ooi)
 
-    for img in atf_images:
-        add(img)
+    # Then add ATF / lifestyle images. Do not add any other OOI images.
+    for img in images:
+        if not is_valid_img(img):
+            continue
+        name = norm_name(img)
+        is_ooi = "online optimized image" in name or "online image" in name
+        is_atf_or_lifestyle = "atf" in name or "lifestyle" in name or "life style" in name
+        if is_ooi:
+            continue
+        if is_atf_or_lifestyle:
+            add(img)
 
     return ordered[:max_slots]
 
