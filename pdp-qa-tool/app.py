@@ -8698,111 +8698,60 @@ def select_kroger_salsify_main_image(s_images):
 
 
 def select_kroger_salsify_images(s_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
-    """Kroger-only Salsify image order rule.
+    """Kroger Salsify image order rule.
 
-    This rule applies only when retailer == "Kroger" via align_salsify_images_for_retailer().
+    This rule applies only to the Salsify image side:
+    1. Online Optimized Image-Kroger first.
+    2. If Kroger image is missing, use Online Optimized Image-Grocery.
+    3. If neither Kroger nor Grocery exists, use generic Online Optimized Image-.
+    4. ATF images come next in Salsify/source order.
 
-    Required Kroger priority:
-    1. Use Online Optimized Image-Grocery when it exists.
-       - If Grocery exists, skip the generic Online Optimized Image- slot.
-    2. If Grocery does not exist, use the generic Online Optimized Image-.
-    3. Then use ATF 1 / ATF I/O when present.
-    4. Then use ATF 2 when present.
-    5. Continue remaining ATF images in order without duplicates.
-
+    Important: when Online Optimized Image-Kroger has an image, generic
+    Online Optimized Image- is intentionally skipped so it does not duplicate or
+    shift the Kroger-specific front image slot.
     """
     images = [img for img in list(s_images or []) if isinstance(img, dict)]
 
     def img_url(img):
-        return str(img.get("url", "") or "").strip() if isinstance(img, dict) else ""
+        return str(img.get("url", "") or "").strip()
 
-    def norm_name(img):
-        return normalize_salsify_asset_name(img.get("name", "")) if isinstance(img, dict) else ""
+    def raw_lower(img):
+        return str(img.get("name", "") or "").strip().lower()
 
-    def find_first(*queries, exclude_tokens=None):
-        query_tokens = [normalize_salsify_asset_name(q) for q in queries if normalize_salsify_asset_name(q)]
-        exclude_tokens = [normalize_salsify_asset_name(q) for q in (exclude_tokens or []) if normalize_salsify_asset_name(q)]
-        for query in query_tokens:
-            for img in images:
-                url = img_url(img)
-                if not url:
-                    continue
-                name = norm_name(img)
-                if exclude_tokens and any(token in name for token in exclude_tokens):
-                    continue
-                if name and (query == name or query in name):
-                    return img
-        return None
+    kroger_img = None
+    grocery_img = None
+    generic_img = None
+    atf_images = []
 
-    grocery_img = find_first(
-        "online optimized image grocery",
-        "online optimized image-grocery",
-        "online image grocery",
-        "online image-grocery",
-    )
-    generic_img = find_first(
-        "online optimized image",
-        "online optimized image-",
-        "online image",
-        "online image-",
-        exclude_tokens=[
-            "grocery", "kroger", "walgreens", "cvs", "sams club", "sam's club",
-            "samsclub", "target", "walmart", "amazon", "ingredient", "shipping",
-            "flat back", "flat left", "video", "lifestyle", "atf",
-        ],
-    )
-
-    atf_slot_plan = [
-        (
-            "atf 1",
-            "atf 1 generic",
-            "atf 1-generic",
-            "atf1 generic",
-            "atf1-generic",
-            "atf i/o generic",
-            "atf i/o-generic",
-            "atf i o generic",
-            "atf io generic",
-            "atf io-generic",
-            "atf i/o",
-            "atf io",
-        ),
-        (
-            "atf 2",
-            "atf 2 generic",
-            "atf 2-generic",
-            "atf2 generic",
-            "atf2-generic",
-        ),
-        (
-            "atf 3",
-            "atf 3 generic",
-            "atf 3-generic",
-            "atf3 generic",
-            "atf3-generic",
-        ),
-        (
-            "atf 4",
-            "atf 4 generic",
-            "atf 4-generic",
-            "atf4 generic",
-            "atf4-generic",
-        ),
-        (
-            "atf 5",
-            "atf 5 generic",
-            "atf 5-generic",
-            "atf5 generic",
-            "atf5-generic",
-        ),
-        (
-            "atf 6",
-            "atf 6 generic",
-            "atf 6-generic",
-            "atf6 generic",
-            "atf6-generic",
-        ),
+    generic_blocked_tokens = [
+        "kroger", "grocery", "walgreens", "cvs", "sams club", "sam's club",
+        "samsclub", "target", "walmart", "atf", "lifestyle", "shipping",
+        "ingredient", "flat back", "flat left", "video",
     ]
+
+    for img in images:
+        if not img_url(img):
+            continue
+        name = raw_lower(img)
+
+        if name.startswith("online optimized image-kroger") or name.startswith("online image-kroger"):
+            kroger_img = kroger_img or img
+            continue
+        if name.startswith("online optimized image-grocery") or name.startswith("online image-grocery"):
+            grocery_img = grocery_img or img
+            continue
+
+        is_generic_online = (
+            name in {"online optimized image", "online image"}
+            or name.startswith("online optimized image-")
+            or name.startswith("online image-")
+        )
+        if is_generic_online and not any(token in name for token in generic_blocked_tokens):
+            generic_img = generic_img or img
+            continue
+
+        if "atf" in name:
+            atf_images.append(img)
 
     ordered = []
     seen = set()
@@ -8817,22 +8766,17 @@ def select_kroger_salsify_images(s_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE)
         seen.add(url)
         return True
 
-    # Kroger-only front image rule:
-    # - Grocery wins and blocks generic Online Optimized Image-.
-    # - Without Grocery, use generic Online Optimized Image-.
-    if grocery_img:
+    if kroger_img:
+        add(kroger_img)
+        # Per rule: skip Grocery and generic Online Optimized Image- when Kroger image exists.
+    elif grocery_img:
         add(grocery_img)
+        # Per rule: skip generic Online Optimized Image- when Grocery image exists.
     else:
         add(generic_img)
 
-    for query_group in atf_slot_plan:
-        add(find_first(*query_group))
-
-    # Keep any remaining ATF/lifestyle images after the locked Kroger order.
-    for img in images:
-        name = norm_name(img)
-        if "atf" in name or "lifestyle" in name or "life style" in name:
-            add(img)
+    for img in atf_images:
+        add(img)
 
     return ordered[:max_slots]
 
