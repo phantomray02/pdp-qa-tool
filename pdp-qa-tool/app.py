@@ -907,7 +907,7 @@ RETAILER_SALSIFY_REQUIREMENTS = {
     "default": {"max_features": 5, "max_images": 6},
     "cvs": {"max_features": 5, "max_images": 8},
     "walgreens": {"max_features": 5, "max_images": 6},
-    "kroger": {"max_features": 7, "max_images": 2},
+    "kroger": {"max_features": 7, "max_images": 6},
     "sam's club": {"max_features": 10, "max_images": 10},
     "sams club": {"max_features": 10, "max_images": 10},
     "samsclub": {"max_features": 10, "max_images": 10},
@@ -8702,16 +8702,15 @@ def select_kroger_salsify_main_image(s_images):
     return select_kroger_salsify_images(s_images, max_slots=1)[:1]
 
 
-def select_kroger_salsify_images(s_images, max_slots=2):
-    """Kroger Salsify image rule.
+def select_kroger_salsify_images(s_images, max_slots=6):
+    """Kroger Salsify image order rule.
 
-    Allowed only:
-    1. Online Optimized Image-Grocery.
-    2. Generic Online Optimized Image-.
+    This rule applies only to the Salsify image side:
+    1. Online Optimized Image-Grocery first.
+    2. Generic Online Optimized Image- second.
+    3. ATF images next, in the same order Salsify provides them.
 
-    This intentionally uses the raw Salsify property name prefix so properties
-    like "Online Optimized Image-Grocery-54496-04" and
-    "Online Optimized Image-54496-04" are not incorrectly dropped.
+    The Kroger retailer image side is not filtered by this Salsify naming rule.
     """
     images = [img for img in list(s_images or []) if isinstance(img, dict)]
 
@@ -8729,6 +8728,7 @@ def select_kroger_salsify_images(s_images, max_slots=2):
 
     grocery = None
     generic = None
+    atf_images = []
 
     for img in images:
         if not img_url(img):
@@ -8744,21 +8744,33 @@ def select_kroger_salsify_images(s_images, max_slots=2):
             generic = generic or img
             continue
 
+        # ATF images come after the two priority Online Optimized images.
+        # Keep the Salsify/source order so no slot shifting happens.
+        if "atf" in name:
+            atf_images.append(img)
+
     ordered = []
     seen = set()
-    for img in [grocery, generic]:
+
+    def add(img):
         if isinstance(img, dict):
             url = img_url(img)
             if url and url not in seen:
                 ordered.append(img)
                 seen.add(url)
+
+    add(grocery)
+    add(generic)
+    for img in atf_images:
+        add(img)
+
     return ordered[:max_slots]
 
 
 def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE, brand=""):
     retailer = str(retailer_name or "").strip().lower()
     if retailer == "kroger":
-        return select_kroger_salsify_images(s_images, max_slots=2)
+        return select_kroger_salsify_images(s_images, max_slots=max_slots)
     aligned = _original_align_salsify_images_for_retailer(retailer_name, s_images, max_slots=max_slots, brand=brand)
     return apply_retailer_salsify_image_limits(retailer_name, aligned)
 
@@ -8963,7 +8975,7 @@ def build_normalized_comparison_payload(
     r_images = r_bundle["images"] or []
 
     if retailer_norm == "kroger":
-        s_images = select_kroger_salsify_images(s_images, max_slots=2)
+        s_images = select_kroger_salsify_images(s_images, max_slots=max_slots)
         compare_slots = len(s_images) if s_images else 0
         r_images = select_kroger_image_urls_by_perspective(r_images, max_images=max(compare_slots, 1)) if compare_slots else []
         kroger_has_copy = bool(
