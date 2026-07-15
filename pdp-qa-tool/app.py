@@ -907,7 +907,7 @@ RETAILER_SALSIFY_REQUIREMENTS = {
     "default": {"max_features": 5, "max_images": 6},
     "cvs": {"max_features": 5, "max_images": 8},
     "walgreens": {"max_features": 5, "max_images": 6},
-    "kroger": {"max_features": 7, "max_images": 6},
+    "kroger": {"max_features": 7, "max_images": 2},
     "sam's club": {"max_features": 10, "max_images": 10},
     "sams club": {"max_features": 10, "max_images": 10},
     "samsclub": {"max_features": 10, "max_images": 10},
@@ -2285,17 +2285,12 @@ def parse_uploaded_raw_html_map(raw_text):
         else:
             html_match = re.search(r'(?is)-----BEGIN HTML-----(.*?)-----END HTML-----', block)
             html_text = html.unescape(str(html_match.group(1) or "").strip()) if html_match else ""
-
-            # Do not store huge Kroger shell captures. Store a tiny invalid marker
-            # instead so the row stays matched to its TXT capture and does not fall
-            # through to a predictable UPC image URL that creates a false image pass.
             if requested_url and "kroger.com" in requested_url.lower() and html_text and not is_valid_kroger_product_capture(html_text):
                 html_text = build_kroger_invalid_capture_stub(
                     requested_url=requested_url,
                     final_url=final_url_from_payload,
                     reason="invalid_kroger_shell_or_product_unavailable_capture",
                 )
-
             if requested_url and "kroger.com" in requested_url.lower() and not html_text and parsed_match:
                 html_text = build_kroger_invalid_capture_stub(
                     requested_url=requested_url,
@@ -4665,8 +4660,6 @@ def normalize_kroger_features(items, max_features=10):
         val = clean_kroger_text(item)
         if not val or val.lower() in {"missing", "nan", "none"}:
             continue
-        # Kroger sometimes merges two or more bullet rows into one text node.
-        # Split those rows using the same heading-marker logic used for flattened descriptions.
         for part in split_kroger_feature_text_if_stuck(val):
             part = clean_kroger_text(part)
             if part and part.lower() not in {"missing", "nan", "none"}:
@@ -4676,11 +4669,7 @@ def normalize_kroger_features(items, max_features=10):
 
 
 def split_kroger_feature_text_if_stuck(text):
-    """Split a Kroger feature row only when multiple labeled bullets merged together.
-
-    Do not use the generic description splitter here because normal feature text
-    often contains phrases like "4 flip-top packs" and should stay as one row.
-    """
+    """Split a Kroger feature row only when multiple labeled bullets merged together."""
     value = clean_kroger_text(text)
     if not value:
         return []
@@ -4699,8 +4688,6 @@ def split_kroger_feature_text_if_stuck(text):
         r"STRONG\s+CLEANINGRIPPLES",
         r"BATH\s+TISSUE",
     ]
-    # Match heading starts even when a previous bullet ended without punctuation
-    # or Kroger uses an asterisk before the dash, e.g. TOILET PAPER* —.
     pattern = r'(?=(?:^|\s)(?:' + '|'.join(heading_terms) + r'))'
     matches = list(re.finditer(pattern, value, flags=re.UNICODE))
     if len(matches) < 2:
@@ -4717,12 +4704,7 @@ def split_kroger_feature_text_if_stuck(text):
 
 
 def extract_kroger_description_features_from_html_fragment(fragment_html):
-    """Extract Kroger PDP description and feature <li> rows from the romance block.
-
-    Kroger frequently has the real feature bullets inside
-    data-testid="product-details-romance-description". This parser handles normal
-    DOM HTML, escaped extension fragments, and malformed nested <ul>/<li> snippets.
-    """
+    """Extract Kroger PDP description and feature <li> rows from the romance block."""
     raw = html.unescape(str(fragment_html or ""))
     if not raw.strip() or "<" not in raw or ">" not in raw:
         return "", []
@@ -4753,8 +4735,6 @@ def extract_kroger_description_features_from_html_fragment(fragment_html):
         li_copy = li_soup.find("li")
         if li_copy is None:
             continue
-        # Remove nested lists from the parent li so placeholder text such as
-        # "description above" does not swallow all nested feature bullets.
         for nested_list in li_copy.find_all(["ul", "ol"]):
             nested_list.extract()
         value = clean_kroger_text(li_copy.get_text(" ", strip=True))
@@ -4773,7 +4753,6 @@ def select_kroger_image_urls_by_perspective(images, max_images=6):
     perspective_order = ["front", "back", "left", "right", "top", "bottom"]
     size_rank = {"large": 0, "xlarge": 1, "medium": 2, "small": 3, "thumbnail": 4}
     chosen = {}
-
     for raw_url in images or []:
         url = html.unescape(str(raw_url or "").strip()).split("?", 1)[0].strip()
         if not url or "/product/images/" not in url.lower():
@@ -4787,12 +4766,10 @@ def select_kroger_image_urls_by_perspective(images, max_images=6):
         current = chosen.get(perspective)
         if current is None or rank < current[0]:
             chosen[perspective] = (rank, url)
-
     return [chosen[p][1] for p in perspective_order if p in chosen][:max_images]
 
 
 def build_kroger_invalid_capture_stub(requested_url="", final_url="", reason="invalid_kroger_capture_no_product_content"):
-    """Return a tiny marker for a Kroger TXT capture that did not contain real PDP content."""
     requested_url = clean_uploaded_url_value(requested_url)
     final_url = clean_uploaded_url_value(final_url)
     reason = normalize_space(reason) or "invalid_kroger_capture_no_product_content"
@@ -4857,7 +4834,6 @@ def extract_kroger_description_and_features_from_html(html_text):
 
     if romance is not None:
         description, features = extract_kroger_description_features_from_html_fragment(str(romance))
-
         debug["description_marker_found"] = bool(description)
         debug["description_end_marker_found"] = bool(description)
         debug["feature_block_found"] = bool(features)
@@ -7426,10 +7402,6 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
             return bundle
 
         if uploaded_html.strip():
-            # The uploaded TXT had a Kroger capture for this URL, but the capture was
-            # Product Unavailable / shell / no real PDP JSON. Do not create a fake
-            # UPC image fallback here because it makes image QA pass while copy is
-            # missing. Report this as a real missing Kroger capture instead.
             bundle = build_empty_retailer_bundle("Kroger", "invalid_uploaded_kroger_capture_no_product_content")
             debug = bundle.setdefault("text", {}).setdefault("debug", {})
             debug["Source Used"] = "uploaded_txt_invalid_kroger_capture"
@@ -8717,16 +8689,16 @@ _original_align_salsify_images_for_retailer = align_salsify_images_for_retailer
 
 def select_kroger_salsify_main_image(s_images):
     """Backward-compatible Kroger Salsify main image selector."""
-    images = select_kroger_salsify_images(s_images, max_slots=1)
-    return images[:1]
+    return select_kroger_salsify_images(s_images, max_slots=1)[:1]
 
 
-def select_kroger_salsify_images(s_images, max_slots=6):
+def select_kroger_salsify_images(s_images, max_slots=2):
     """Kroger Salsify image rule.
 
-    Slot 1 prefers Online Optimized Image-Kroger/Grocery/generic. Additional
-    slots keep Kroger/Grocery/ATF assets in source order so visual QA can show
-    more than only the front image when Kroger has back/side/top/bottom images.
+    New rule for Kroger visual QA:
+    - Slot 1: Online Optimized Image-Grocery.
+    - Slot 2: generic Online Optimized Image-.
+    - Do not include ATF/lifestyle/other Salsify images for Kroger.
     """
     images = [img for img in list(s_images or []) if isinstance(img, dict)]
 
@@ -8736,7 +8708,7 @@ def select_kroger_salsify_images(s_images, max_slots=6):
     def img_name(img):
         return normalize_salsify_asset_name(img.get("name", ""))
 
-    def find(token, excluded_tokens=()):
+    def find_exact_or_contains(token, excluded_tokens=()):
         token = normalize_salsify_asset_name(token)
         excluded_tokens = [normalize_salsify_asset_name(x) for x in excluded_tokens]
         for img in images:
@@ -8749,45 +8721,30 @@ def select_kroger_salsify_images(s_images, max_slots=6):
                 return img
         return None
 
-    first = (
-        find("online optimized image kroger")
-        or find("online image kroger")
-        or find("online optimized image grocery")
-        or find("online image grocery")
-        or find("online optimized image", excluded_tokens=("walgreens", "cvs", "sams club", "sam s club", "samsclub", "target", "walmart"))
-        or find("online image", excluded_tokens=("walgreens", "cvs", "sams club", "sam s club", "samsclub", "target", "walmart"))
+    grocery = (
+        find_exact_or_contains("online optimized image grocery")
+        or find_exact_or_contains("online image grocery")
+    )
+    generic = (
+        find_exact_or_contains("online optimized image", excluded_tokens=("grocery", "kroger", "walgreens", "cvs", "sams club", "sam s club", "samsclub", "target", "walmart"))
+        or find_exact_or_contains("online image", excluded_tokens=("grocery", "kroger", "walgreens", "cvs", "sams club", "sam s club", "samsclub", "target", "walmart"))
     )
 
     ordered = []
     seen = set()
-
-    def add(img):
-        if not isinstance(img, dict):
-            return
-        url = img_url(img)
-        if not url or url in seen:
-            return
-        ordered.append(img)
-        seen.add(url)
-
-    add(first)
-    for img in images:
-        name = img_name(img)
-        if not name:
-            continue
-        if any(blocked in name for blocked in ["walgreens", "cvs", "sams club", "sam s club", "samsclub", "target", "walmart"]):
-            continue
-        if any(token in name for token in ["kroger", "grocery", "online", "main", "front", "back", "left", "right", "top", "bottom", "atf", "lifestyle"]):
-            add(img)
-    for img in images:
-        add(img)
+    for img in [grocery, generic]:
+        if isinstance(img, dict):
+            url = img_url(img)
+            if url and url not in seen:
+                ordered.append(img)
+                seen.add(url)
     return ordered[:max_slots]
 
 
 def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE, brand=""):
     retailer = str(retailer_name or "").strip().lower()
     if retailer == "kroger":
-        return select_kroger_salsify_images(s_images, max_slots=max_slots)
+        return select_kroger_salsify_images(s_images, max_slots=2)
     aligned = _original_align_salsify_images_for_retailer(retailer_name, s_images, max_slots=max_slots, brand=brand)
     return apply_retailer_salsify_image_limits(retailer_name, aligned)
 
@@ -8992,15 +8949,14 @@ def build_normalized_comparison_payload(
     r_images = r_bundle["images"] or []
 
     if retailer_norm == "kroger":
-        s_images = select_kroger_salsify_images(s_images, max_slots=max_slots)
-        r_images = select_kroger_image_urls_by_perspective(r_images, max_images=max_slots)
+        s_images = select_kroger_salsify_images(s_images, max_slots=2)
+        compare_slots = max(1, len(s_images)) if s_images else 2
+        r_images = select_kroger_image_urls_by_perspective(r_images, max_images=compare_slots)
         kroger_has_copy = bool(
             normalize_space(r_text.get("title", ""))
             or normalize_space(r_text.get("description", ""))
             or any(normalize_space(x) for x in (r_text.get("features", []) or []))
         )
-        # Only use predictable UPC front-image fallback when there is real Kroger copy.
-        # Otherwise invalid captures can create a false 100% image pass.
         if not r_images and kroger_has_copy:
             r_images = force_single_kroger_main_image([], retail_url=retail_url, target_rpc=current_target_sku)
 
