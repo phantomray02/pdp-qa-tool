@@ -380,7 +380,8 @@ def locked_visual_header_row_html(
 def column_header_link_html(label, item_number, href):
     safe_label = html_escape_text(label or "")
     safe_item = html_escape_text(item_number or "")
-    safe_href = html.escape(str(href or ""), quote=True)
+    clean_href = clean_uploaded_url_value(href)
+    safe_href = html.escape(clean_href, quote=True)
 
     if safe_href and safe_item:
         item_html = (
@@ -5178,11 +5179,7 @@ def get_kroger_bundle(retail_url, target_rpc=""):
             retail_url=retail_url,
             target_rpc=target_rpc,
         ),
-        "images": force_single_kroger_main_image(
-            extract_kroger_images_from_html(html_text),
-            retail_url=retail_url,
-            target_rpc=target_rpc,
-        ),
+        "images": extract_kroger_images_from_html(html_text),
     }
     debug = bundle.setdefault("text", {}).setdefault("debug", {})
     debug["Source Used"] = "kroger_live_html"
@@ -8702,15 +8699,18 @@ def select_kroger_salsify_main_image(s_images):
     return select_kroger_salsify_images(s_images, max_slots=1)[:1]
 
 
-def select_kroger_salsify_images(s_images, max_slots=6):
+def select_kroger_salsify_images(s_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
     """Kroger Salsify image order rule.
 
     This rule applies only to the Salsify image side:
-    1. Online Optimized Image-Grocery first.
-    2. Generic Online Optimized Image- second.
-    3. ATF images next, in the same order Salsify provides them.
+    1. Online Optimized Image-Kroger first.
+    2. If Kroger image is missing, use Online Optimized Image-Grocery.
+    3. If neither Kroger nor Grocery exists, use generic Online Optimized Image-.
+    4. ATF images come next in Salsify/source order.
 
-    The Kroger retailer image side is not filtered by this Salsify naming rule.
+    Important: when Online Optimized Image-Kroger has an image, generic
+    Online Optimized Image- is intentionally skipped so it does not duplicate or
+    shift the Kroger-specific front image slot.
     """
     images = [img for img in list(s_images or []) if isinstance(img, dict)]
 
@@ -8720,32 +8720,38 @@ def select_kroger_salsify_images(s_images, max_slots=6):
     def raw_lower(img):
         return str(img.get("name", "") or "").strip().lower()
 
-    blocked_for_generic = [
-        "grocery", "kroger", "walgreens", "cvs", "sams club", "sam's club",
+    kroger_img = None
+    grocery_img = None
+    generic_img = None
+    atf_images = []
+
+    generic_blocked_tokens = [
+        "kroger", "grocery", "walgreens", "cvs", "sams club", "sam's club",
         "samsclub", "target", "walmart", "atf", "lifestyle", "shipping",
         "ingredient", "flat back", "flat left", "video",
     ]
-
-    grocery = None
-    generic = None
-    atf_images = []
 
     for img in images:
         if not img_url(img):
             continue
         name = raw_lower(img)
+
+        if name.startswith("online optimized image-kroger") or name.startswith("online image-kroger"):
+            kroger_img = kroger_img or img
+            continue
         if name.startswith("online optimized image-grocery") or name.startswith("online image-grocery"):
-            grocery = grocery or img
-            continue
-        if (name.startswith("online optimized image-") or name.startswith("online image-")) and not any(token in name for token in blocked_for_generic):
-            generic = generic or img
-            continue
-        if name in {"online optimized image", "online image"}:
-            generic = generic or img
+            grocery_img = grocery_img or img
             continue
 
-        # ATF images come after the two priority Online Optimized images.
-        # Keep the Salsify/source order so no slot shifting happens.
+        is_generic_online = (
+            name in {"online optimized image", "online image"}
+            or name.startswith("online optimized image-")
+            or name.startswith("online image-")
+        )
+        if is_generic_online and not any(token in name for token in generic_blocked_tokens):
+            generic_img = generic_img or img
+            continue
+
         if "atf" in name:
             atf_images.append(img)
 
@@ -8753,14 +8759,22 @@ def select_kroger_salsify_images(s_images, max_slots=6):
     seen = set()
 
     def add(img):
-        if isinstance(img, dict):
-            url = img_url(img)
-            if url and url not in seen:
-                ordered.append(img)
-                seen.add(url)
+        if not isinstance(img, dict):
+            return False
+        url = img_url(img)
+        if not url or url in seen:
+            return False
+        ordered.append(img)
+        seen.add(url)
+        return True
 
-    add(grocery)
-    add(generic)
+    if kroger_img:
+        add(kroger_img)
+        # Per rule: skip generic Online Optimized Image- when Kroger image exists.
+    else:
+        add(grocery_img)
+        add(generic_img)
+
     for img in atf_images:
         add(img)
 
