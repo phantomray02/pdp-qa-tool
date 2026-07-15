@@ -4669,11 +4669,10 @@ def normalize_kroger_features(items, max_features=10):
 
 
 def split_kroger_feature_text_if_stuck(text):
-    """Split a Kroger feature row only when multiple labeled bullets merged together."""
+    """Split a Kroger feature row only when multiple labeled bullet headings merged together."""
     value = clean_kroger_text(text)
     if not value:
         return []
-
     heading_terms = [
         r"WHAT'S\s+INCLUDED",
         r"NO\s+FRAGRANCE(?:,\s+NO\s+PROBLEM)?",
@@ -4692,7 +4691,6 @@ def split_kroger_feature_text_if_stuck(text):
     matches = list(re.finditer(pattern, value, flags=re.UNICODE))
     if len(matches) < 2:
         return [value]
-
     parts = []
     for idx, match in enumerate(matches):
         start = match.start()
@@ -4704,21 +4702,14 @@ def split_kroger_feature_text_if_stuck(text):
 
 
 def extract_kroger_description_features_from_html_fragment(fragment_html):
-    """Extract Kroger PDP description and feature <li> rows from the romance block."""
+    """Extract Kroger description and feature <li> rows from the Product Details romance block."""
     raw = html.unescape(str(fragment_html or ""))
     if not raw.strip() or "<" not in raw or ">" not in raw:
         return "", []
-
     soup = BeautifulSoup(raw, "html.parser")
-    holder = soup.select_one('[data-testid="product-details-romance-description"]')
-    if holder is None:
-        holder = soup
-
-    description = ""
+    holder = soup.select_one('[data-testid="product-details-romance-description"]') or soup
     p_tag = holder.find("p")
-    if p_tag is not None:
-        description = clean_kroger_text(p_tag.get_text(" ", strip=True))
-
+    description = clean_kroger_text(p_tag.get_text(" ", strip=True)) if p_tag is not None else ""
     if not description:
         text_parts = []
         for child in holder.find_all(recursive=False):
@@ -4744,12 +4735,11 @@ def extract_kroger_description_features_from_html_fragment(fragment_html):
         if description and normalize_text(value) == normalize_text(description):
             continue
         features.extend(split_kroger_feature_text_if_stuck(value))
-
     return description, normalize_kroger_features(features, max_features=10)
 
 
 def select_kroger_image_urls_by_perspective(images, max_images=6):
-    """Keep one Kroger image per perspective in front/back/left/right/top/bottom order."""
+    """Keep one Kroger retailer image per perspective in front/back/left/right/top/bottom order."""
     perspective_order = ["front", "back", "left", "right", "top", "bottom"]
     size_rank = {"large": 0, "xlarge": 1, "medium": 2, "small": 3, "thumbnail": 4}
     chosen = {}
@@ -4785,7 +4775,6 @@ def build_kroger_invalid_capture_stub(requested_url="", final_url="", reason="in
 
 
 def actual_salsify_feature_count(text_bundle):
-    """Return the count of non-empty Salsify feature slots currently present."""
     if not isinstance(text_bundle, dict):
         return 0
     count = 0
@@ -4796,14 +4785,11 @@ def actual_salsify_feature_count(text_bundle):
 
 
 def build_dynamic_feature_fields_for_pair(retailer_name, s_text, retailer_features):
-    """Only compare/show feature rows that exist on Salsify or retailer page."""
+    """Compare/show only feature rows that exist on Salsify or the retailer page."""
     retailer_features = [x for x in (retailer_features or []) if normalize_space(x)]
-    retailer_norm = str(retailer_name or "").strip().lower()
-    req = get_retailer_salsify_requirements(retailer_name)
-    max_allowed = int(req.get("max_features", 5) or 5)
-    s_count = actual_salsify_feature_count(s_text)
-    r_count = len(retailer_features)
-    actual_count = max(s_count, r_count)
+    requirements = get_retailer_salsify_requirements(retailer_name)
+    max_allowed = int(requirements.get("max_features", 5) or 5)
+    actual_count = max(actual_salsify_feature_count(s_text), len(retailer_features))
     actual_count = min(actual_count, max_allowed)
     return [f"feature{i}" for i in range(1, actual_count + 1)]
 
@@ -8719,26 +8705,27 @@ def select_kroger_salsify_main_image(s_images):
 def select_kroger_salsify_images(s_images, max_slots=2):
     """Kroger Salsify image rule.
 
-    Allowed Salsify image rows for Kroger only:
+    Allowed only:
     1. Online Optimized Image-Grocery.
     2. Generic Online Optimized Image-.
 
-    No ATF, lifestyle, Kroger-specific, CVS, Walgreens, Sam's, Target, or Walmart images.
+    This intentionally uses the raw Salsify property name prefix so properties
+    like "Online Optimized Image-Grocery-54496-04" and
+    "Online Optimized Image-54496-04" are not incorrectly dropped.
     """
     images = [img for img in list(s_images or []) if isinstance(img, dict)]
 
     def img_url(img):
         return str(img.get("url", "") or "").strip()
 
-    def raw_name(img):
-        return str(img.get("name", "") or "").strip()
+    def raw_lower(img):
+        return str(img.get("name", "") or "").strip().lower()
 
-    def norm_name(img):
-        return normalize_salsify_asset_name(raw_name(img))
-
-    def is_blocked(name):
-        blocked = ["kroger", "walgreens", "cvs", "sams club", "sam s club", "samsclub", "target", "walmart", "atf", "lifestyle", "shipping", "ingredient", "flat back", "flat left"]
-        return any(token in name for token in blocked)
+    blocked_for_generic = [
+        "grocery", "kroger", "walgreens", "cvs", "sams club", "sam's club",
+        "samsclub", "target", "walmart", "atf", "lifestyle", "shipping",
+        "ingredient", "flat back", "flat left", "video",
+    ]
 
     grocery = None
     generic = None
@@ -8746,17 +8733,14 @@ def select_kroger_salsify_images(s_images, max_slots=2):
     for img in images:
         if not img_url(img):
             continue
-        name = norm_name(img)
-        if not name:
-            continue
-        if "online optimized image grocery" in name or "online image grocery" in name:
+        name = raw_lower(img)
+        if name.startswith("online optimized image-grocery") or name.startswith("online image-grocery"):
             grocery = grocery or img
             continue
-
-        # Generic Online Optimized Image- usually normalizes to exactly
-        # "online optimized image". Be strict so brand/retailer-specific images
-        # do not leak into Kroger.
-        if name in {"online optimized image", "online image"} and not is_blocked(name):
+        if (name.startswith("online optimized image-") or name.startswith("online image-")) and not any(token in name for token in blocked_for_generic):
+            generic = generic or img
+            continue
+        if name in {"online optimized image", "online image"}:
             generic = generic or img
             continue
 
@@ -9223,8 +9207,7 @@ def process_row(row):
             s_val = s_text.get(f_key, "")
             r_val = retailer_features[i - 1] if i - 1 < len(retailer_features) else ""
 
-            # Score only feature rows that exist on Salsify or the retailer page.
-            # Do not turn unavailable slots into extra Missing/Missing 0% rows.
+            # Score only rows that exist on Salsify or the retailer page.
             if not (normalize_space(s_val) or normalize_space(r_val)):
                 continue
 
@@ -10096,7 +10079,7 @@ if (
                 s_val = s_text.get(feature_fields[i], "") if i < len(feature_fields) else ""
                 r_val = retailer_features[i] if i < len(retailer_features) else ""
 
-                # Show only feature rows that actually exist on Salsify or retailer page.
+                # Show only rows that exist on Salsify or the retailer page.
                 if not (normalize_space(s_val) or normalize_space(r_val)):
                     continue
 
