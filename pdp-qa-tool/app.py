@@ -724,6 +724,8 @@ def infer_retailer_name_from_url(url):
         return "Sam's Club"
     if "walgreens.com" in url:
         return "Walgreens"
+    if "heb.com" in url or "h-e-b" in url:
+        return "HEB"
     if "amazon.com" in url:
         return "Amazon"
 
@@ -746,6 +748,9 @@ def normalize_retailer_name(value):
         "walmart": "Walmart",
         "target": "Target",
         "kroger": "Kroger",
+        "heb": "HEB",
+        "h-e-b": "HEB",
+        "h e b": "HEB",
         "amazon": "Amazon",
         "retailer": "Retailer",
     }
@@ -909,6 +914,7 @@ RETAILER_SALSIFY_REQUIREMENTS = {
     "cvs": {"max_features": 5, "max_images": 8},
     "walgreens": {"max_features": 5, "max_images": 6},
     "kroger": {"max_features": 7, "max_images": 6},
+    "heb": {"max_features": 6, "max_images": 6},
     "sam's club": {"max_features": 10, "max_images": 10},
     "sams club": {"max_features": 10, "max_images": 10},
     "samsclub": {"max_features": 10, "max_images": 10},
@@ -1358,7 +1364,7 @@ def clean_uploaded_url_value(value):
         pass
 
     value = html.unescape(str(value or "").strip())
-    if not value or value in {"#N/A", "nan", "None"}:
+    if not value or value in {"#N/A", "nan", "None", "0", "0.0"}:
         return ""
 
     value = value.replace("\u00a0", " ")
@@ -1520,12 +1526,16 @@ def prepare_input_df(df):
             "retailer name": "retailer",
             "retailer_name": "retailer",
             "kroger rpc": "kroger_rpc",
+            "heb rpc": "heb_rpc",
+            "h-e-b rpc": "heb_rpc",
+            "heb item id": "heb_rpc",
+            "h-e-b item id": "heb_rpc",
         },
         inplace=True,
     )
 
     rpc_candidates = []
-    for rpc_col in ["retailer_rpc", "kroger_rpc", "cvs rpc", "walgreens rpc", "sams club rpc"]:
+    for rpc_col in ["retailer_rpc", "kroger_rpc", "heb_rpc", "cvs rpc", "walgreens rpc", "sams club rpc"]:
         if rpc_col in df.columns:
             rpc_candidates.append(
                 df[rpc_col]
@@ -1543,7 +1553,7 @@ def prepare_input_df(df):
     else:
         df["retailer_rpc"] = ""
 
-    for rpc_col in ["kroger_rpc", "cvs rpc", "walgreens rpc", "sams club rpc"]:
+    for rpc_col in ["kroger_rpc", "heb_rpc", "cvs rpc", "walgreens rpc", "sams club rpc"]:
         if rpc_col in df.columns:
             df.drop(columns=[rpc_col], inplace=True)
 
@@ -2357,7 +2367,10 @@ def parse_uploaded_raw_html_map(raw_text):
         if parsed_match:
             try:
                 parsed_payload = json.loads(str(parsed_match.group(1) or "").strip())
-                compact_html = build_kroger_compact_capture_from_parsed_json(parsed_payload)
+                if requested_url and "heb.com" in requested_url.lower():
+                    compact_html = build_heb_compact_capture_from_parsed_json(parsed_payload)
+                else:
+                    compact_html = build_kroger_compact_capture_from_parsed_json(parsed_payload)
             except Exception:
                 parsed_payload = {}
                 compact_html = ""
@@ -6805,6 +6818,318 @@ def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
 
     return build_empty_retailer_bundle("Walgreens", "walgreens_live_html_missing")
 
+
+# =========================================
+# HEB PARSERS
+# =========================================
+def decode_json_string_value(raw_value):
+    """Decode a JSON string fragment without requiring the full source to be valid JSON."""
+    if raw_value is None:
+        return ""
+    raw_value = str(raw_value)
+    try:
+        return json.loads(f'"{raw_value}"')
+    except Exception:
+        return raw_value
+
+
+def clean_heb_text(text):
+    if not text:
+        return ""
+    text = str(text)
+    for _ in range(4):
+        unescaped = html.unescape(text)
+        if unescaped == text:
+            break
+        text = unescaped
+    text = text.replace("\\u003c", "<")
+    text = text.replace("\\u003e", ">")
+    text = text.replace("\\u0026", "&")
+    text = text.replace("\\u00a0", " ")
+    text = text.replace("\\n", " ")
+    text = text.replace("\\/", "/")
+    text = text.replace('\\"', '"')
+    text = re.sub(r"<script\b[^>]*>.*?</script>", " ", text, flags=re.IGNORECASE | re.DOTALL)
+    if "<" in text and ">" in text:
+        text = BeautifulSoup(text, "html.parser").get_text(" ", strip=True)
+    text = text.replace("&bull;", "•")
+    text = text.replace("&#8226;", "•")
+    text = text.replace("\u2022", "•")
+    return normalize_space(text)
+
+
+def clean_heb_title(text):
+    text = clean_heb_text(text)
+    text = re.sub(r"\s+-\s+Shop\s+.*$", "", text, flags=re.IGNORECASE).strip()
+    text = re.sub(r"\s+at\s+H-?E-?B\s*$", "", text, flags=re.IGNORECASE).strip()
+    return normalize_space(text)
+
+
+def split_heb_description_and_features(description_text, max_features=6):
+    """Split HEB copy where &bull; / • separates feature bullets.
+
+    HEB embeds the feature list at the end of the description string. Everything
+    before the first bullet stays as description. Each bullet after that becomes
+    a feature row.
+    """
+    working = str(description_text or "")
+    for _ in range(5):
+        unescaped = html.unescape(working)
+        if unescaped == working:
+            break
+        working = unescaped
+    working = working.replace("&bull;", "•")
+    working = working.replace("&#8226;", "•")
+    working = working.replace("\u2022", "•")
+    working = re.sub(r"\\u2022", "•", working)
+    working = clean_heb_text(working)
+    if not working:
+        return "", []
+
+    parts = [clean_heb_text(x) for x in re.split(r"\s*•\s*", working) if clean_heb_text(x)]
+    if len(parts) <= 1:
+        return working, []
+
+    description = parts[0]
+    features = []
+    for item in parts[1:]:
+        item = re.sub(r"^[\-•\s]+", "", item).strip()
+        if item:
+            features.append(item)
+    return description, dedupe_preserve_order(features)[:max_features]
+
+
+def normalize_heb_features_final(items, max_features=6):
+    if not items:
+        return []
+    if isinstance(items, str):
+        _, split_features = split_heb_description_and_features(items, max_features=max_features)
+        if split_features:
+            items = split_features
+        else:
+            items = [items]
+    out = []
+    for item in items:
+        value = clean_heb_text(item)
+        if value:
+            out.append(value)
+    return dedupe_preserve_order(out)[:max_features]
+
+
+def _extract_heb_json_string_field(source_text, field_names):
+    source_text = str(source_text or "")
+    if isinstance(field_names, str):
+        field_names = [field_names]
+    for field_name in field_names:
+        pattern = r'"' + re.escape(field_name) + r'"\s*:\s*"((?:\\.|[^"\\])*)"'
+        match = re.search(pattern, source_text, flags=re.IGNORECASE | re.DOTALL)
+        if match:
+            value = decode_json_string_value(match.group(1))
+            value = clean_heb_text(value)
+            if value:
+                return value
+    return ""
+
+
+def _extract_heb_title_from_url_slug(retail_url):
+    retail_url = str(retail_url or "").strip()
+    match = re.search(r"/product-detail/([^/?#]+)/", retail_url, flags=re.IGNORECASE)
+    if not match:
+        return ""
+    slug = match.group(1).replace("-", " ")
+    slug = html.unescape(slug)
+    return clean_heb_title(slug)
+
+
+def extract_heb_text_from_html(html_text, retail_url="", target_rpc=""):
+    debug = {
+        "Title Path": "",
+        "Description Path": "",
+        "Features Path": "",
+        "Source Used": "heb_html_or_txt_capture",
+        "Retailer": "HEB",
+    }
+    if not html_text:
+        debug["Title Path"] = "heb_html_missing"
+        debug["Description Path"] = "heb_html_missing"
+        debug["Features Path"] = "heb_html_missing"
+        return {"title": "", "description": "", "features": [], "rating": "", "review_count": "", "debug": debug}
+
+    working = str(html_text or "")
+    title = _extract_heb_json_string_field(working, ["documentTitle", "title", "name", "productName"])
+    if title:
+        title = clean_heb_title(title)
+        debug["Title Path"] = "heb_json_documentTitle_or_name"
+
+    if not title:
+        soup = BeautifulSoup(html.unescape(working), "html.parser")
+        h1 = soup.find("h1")
+        if h1:
+            title = clean_heb_title(h1.get_text(" ", strip=True))
+            debug["Title Path"] = "h1"
+        elif soup.title:
+            title = clean_heb_title(soup.title.get_text(" ", strip=True))
+            debug["Title Path"] = "html_title"
+
+    if not title:
+        title = _extract_heb_title_from_url_slug(retail_url)
+        debug["Title Path"] = "retail_url_slug_fallback" if title else "heb_title_missing"
+
+    raw_description = _extract_heb_json_string_field(working, ["description", "longDescription", "productDescription"])
+    description, features = split_heb_description_and_features(raw_description, max_features=6)
+    if description:
+        debug["Description Path"] = "heb_json_description_pre_bullet"
+    else:
+        debug["Description Path"] = "heb_description_missing"
+    if features:
+        debug["Features Path"] = "heb_json_description_bullet_split"
+    else:
+        debug["Features Path"] = "heb_features_missing"
+
+    return {
+        "title": title,
+        "description": description,
+        "features": features[:6],
+        "rating": "",
+        "review_count": "",
+        "debug": debug,
+    }
+
+
+def _absolutize_heb_image_url(url):
+    url = html.unescape(str(url or "").strip())
+    if not url:
+        return ""
+    if url.startswith("//"):
+        url = "https:" + url
+    if url.startswith("/"):
+        url = "https://www.heb.com" + url
+    if not re.match(r"^https?://", url, flags=re.IGNORECASE):
+        return ""
+    lowered = url.lower()
+    if "images.heb.com" not in lowered and "heb.com/is/image" not in lowered:
+        return ""
+    if any(token in lowered for token in ["logo", "sprite", "placeholder", "favicon", ".svg"]):
+        return ""
+    return url.strip()
+
+
+def build_heb_main_image_fallback_url(target_rpc="", retail_url=""):
+    rpc = str(target_rpc or "").replace(".0", "").strip()
+    if not rpc:
+        match = re.search(r"/(\d{4,12})(?:[/?#]|$)", str(retail_url or ""))
+        if match:
+            rpc = match.group(1)
+    rpc = re.sub(r"[^0-9]", "", rpc)
+    if not rpc:
+        return ""
+    image_id = rpc.zfill(9)
+    return f"https://images.heb.com/is/image/HEBGrocery/{image_id}?fit=constrain,1&wid=800&hei=800&fmt=jpg&qlt=80"
+
+
+def extract_heb_images_from_html(html_text, retail_url="", target_rpc=""):
+    working = str(html_text or "")
+    urls = []
+    seen = set()
+
+    for pattern in [
+        r'https?:\\/\\/images\.heb\.com\\/is\\/image\\/HEBGrocery\\/[^"\\\s<>]+',
+        r'https?://images\.heb\.com/is/image/HEBGrocery/[^"\s<>]+',
+        r'//images\.heb\.com/is/image/HEBGrocery/[^"\s<>]+',
+    ]:
+        for raw_url in re.findall(pattern, working, flags=re.IGNORECASE):
+            raw_url = str(raw_url or "").replace("\\/", "/")
+            url = _absolutize_heb_image_url(raw_url)
+            if not url:
+                continue
+            key = url.split("?", 1)[0]
+            if key in seen:
+                continue
+            seen.add(key)
+            urls.append(url)
+
+    if not urls:
+        fallback = build_heb_main_image_fallback_url(target_rpc=target_rpc, retail_url=retail_url)
+        if fallback:
+            urls.append(fallback)
+
+    return urls[:MAX_IMAGE_SLOTS_TO_COMPARE]
+
+
+def build_heb_compact_capture_from_parsed_json(payload):
+    """Build parse-friendly HEB HTML from extension PARSED JSON.
+
+    HEB puts description and bullets together in a single description field
+    separated by &bull;. This compact HTML keeps that text and image list while
+    avoiding large page-shell/footer captures.
+    """
+    if not isinstance(payload, dict):
+        return ""
+
+    title = clean_heb_title(
+        payload.get("documentTitle", "")
+        or payload.get("title", "")
+        or payload.get("name", "")
+        or payload.get("productName", "")
+    )
+    raw_description = str(payload.get("description", "") or payload.get("longDescription", "") or "")
+    description, features = split_heb_description_and_features(raw_description, max_features=6)
+    images = []
+    for image_url in payload.get("images", []) or []:
+        clean_url = _absolutize_heb_image_url(image_url)
+        if clean_url:
+            images.append(clean_url)
+
+    if not (title or description or features or images):
+        return ""
+
+    requested_url = clean_uploaded_url_value(payload.get("requestedUrl", ""))
+    final_url = clean_uploaded_url_value(payload.get("finalUrl", ""))
+    product_json_ld = {
+        "@context": "https://schema.org",
+        "@type": "Product",
+        "name": title,
+        "description": raw_description,
+        "image": images[:1],
+    }
+    parts = [
+        "<html><head>",
+        f"<title>{html_escape_text(title)}</title>",
+        '<script type="application/ld+json">',
+        json.dumps(product_json_ld, ensure_ascii=False),
+        "</script>",
+        "</head><body>",
+        f"<h1>{html_escape_text(title)}</h1>",
+        f"<!-- Requested URL: {html_escape_text(requested_url)} -->",
+        f"<!-- Final URL: {html_escape_text(final_url)} -->",
+        '<section data-testid="heb-product-description">',
+        f'<script type="application/json" data-source="heb-parsed-json">{json.dumps({"documentTitle": title, "description": raw_description}, ensure_ascii=False)}</script>',
+        f"<p>{html_escape_text(description)}</p>",
+    ]
+    if features:
+        parts.append("<ul>")
+        for feature in features[:6]:
+            parts.append(f"<li>{html_escape_text(feature)}</li>")
+        parts.append("</ul>")
+    parts.append("</section>")
+    for image_url in images[:6]:
+        parts.append(f'<img src="{html.escape(image_url, quote=True)}" alt="{html_escape_text(title)}" />')
+    parts.append("</body></html>")
+    return "\n".join(parts)
+
+
+@st.cache_data(show_spinner=False)
+def get_heb_bundle(retail_url, target_rpc="", sku=""):
+    retail_url = str(retail_url or "").strip()
+    if not retail_url:
+        return build_empty_retailer_bundle("HEB", "heb_url_missing")
+    html_text = get_html(retail_url)
+    return {
+        "text": extract_heb_text_from_html(html_text, retail_url=retail_url, target_rpc=target_rpc),
+        "images": extract_heb_images_from_html(html_text, retail_url=retail_url, target_rpc=target_rpc),
+    }
+
+
 def is_sams_robot_page(html_text):
     """
     Detect Sam's Club anti-bot / challenge pages so we do not accidentally
@@ -7600,12 +7925,17 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
             bundle = {"text": extract_sams_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_sams_images_from_html(uploaded_html)}
             bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
             return bundle
+        if retailer == "heb":
+            bundle = {"text": extract_heb_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_heb_images_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc)}
+            bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
+            return bundle
 
     retailer_fetchers = {
         "cvs": lambda: get_cvs_bundle(retail_url, target_rpc),
         "walgreens": lambda: get_walgreens_bundle(retail_url, target_rpc, sku=sku),
         "sam's club": lambda: get_sams_bundle(retail_url, target_rpc, sku=sku),
         "kroger": lambda: get_kroger_bundle(retail_url, target_rpc),
+        "heb": lambda: get_heb_bundle(retail_url, target_rpc, sku=sku),
     }
     fetcher = retailer_fetchers.get(retailer)
     if fetcher is None:
@@ -8322,6 +8652,16 @@ def finalize_retailer_copy(retailer_name, r_text):
             out.get("features", []),
             max_features=5,
         )
+        return out
+
+    if retailer == "heb":
+        out["title"] = clean_heb_title(out.get("title", ""))
+        description = clean_heb_text(out.get("description", ""))
+        features = normalize_heb_features_final(out.get("features", []), max_features=6)
+        if description and not features:
+            description, features = split_heb_description_and_features(description, max_features=6)
+        out["description"] = description
+        out["features"] = features
         return out
 
     out["title"] = normalize_space(out.get("title", ""))
