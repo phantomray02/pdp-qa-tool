@@ -2168,6 +2168,27 @@ def split_kroger_parsed_description(description):
     return description, []
 
 
+def build_kroger_invalid_capture_stub(requested_url="", final_url="", reason="invalid_kroger_capture_no_product_content"):
+    """Return a tiny marker for a Kroger TXT capture that did not contain real PDP content.
+
+    This is intentionally stored instead of the huge Kroger privacy/footer shell so
+    the batch can report the row as genuinely missing instead of falling through
+    to a generated UPC image URL and showing a false 100% image match.
+    """
+    requested_url = clean_uploaded_url_value(requested_url)
+    final_url = clean_uploaded_url_value(final_url)
+    reason = normalize_space(reason) or "invalid_kroger_capture_no_product_content"
+    return (
+        '<html><body '
+        'data-pdp-invalid-kroger-capture="1" '
+        f'data-invalid-reason="{html.escape(reason, quote=True)}" '
+        f'data-requested-url="{html.escape(requested_url, quote=True)}" '
+        f'data-final-url="{html.escape(final_url, quote=True)}">'
+        f'Invalid Kroger capture: {html_escape_text(reason)}'
+        '</body></html>'
+    )
+
+
 def build_kroger_compact_capture_from_parsed_json(payload):
     """Build small parse-friendly HTML from Kroger extension PARSED JSON.
 
@@ -2260,16 +2281,20 @@ def parse_uploaded_raw_html_map(raw_text):
             continue
 
         compact_html = ""
+        parsed_payload = {}
         parsed_match = re.search(
             r'(?is)-----BEGIN PARSED JSON-----(.*?)-----END PARSED JSON-----',
             block,
         )
         if parsed_match:
             try:
-                payload = json.loads(str(parsed_match.group(1) or "").strip())
-                compact_html = build_kroger_compact_capture_from_parsed_json(payload)
+                parsed_payload = json.loads(str(parsed_match.group(1) or "").strip())
+                compact_html = build_kroger_compact_capture_from_parsed_json(parsed_payload)
             except Exception:
+                parsed_payload = {}
                 compact_html = ""
+
+        final_url_from_payload = clean_uploaded_url_value(parsed_payload.get("finalUrl", "")) if isinstance(parsed_payload, dict) else ""
 
         if compact_html:
             html_text = compact_html
@@ -2277,11 +2302,22 @@ def parse_uploaded_raw_html_map(raw_text):
             html_match = re.search(r'(?is)-----BEGIN HTML-----(.*?)-----END HTML-----', block)
             html_text = html.unescape(str(html_match.group(1) or "").strip()) if html_match else ""
 
-            # Do not store obvious Kroger shell captures. Keeping these huge
-            # footer/privacy pages in session_state makes the app slow/fragile,
-            # and they are rejected later anyway.
+            # Do not store huge Kroger shell captures. Store a tiny invalid marker
+            # instead so the row stays matched to its TXT capture and does not fall
+            # through to a predictable UPC image URL that creates a false image pass.
             if requested_url and "kroger.com" in requested_url.lower() and html_text and not is_valid_kroger_product_capture(html_text):
-                html_text = ""
+                html_text = build_kroger_invalid_capture_stub(
+                    requested_url=requested_url,
+                    final_url=final_url_from_payload,
+                    reason="invalid_kroger_shell_or_product_unavailable_capture",
+                )
+
+            if requested_url and "kroger.com" in requested_url.lower() and not html_text and parsed_match:
+                html_text = build_kroger_invalid_capture_stub(
+                    requested_url=requested_url,
+                    final_url=final_url_from_payload,
+                    reason="parsed_json_missing_kroger_product_copy_and_images",
+                )
 
         if not html_text or len(html_text) < 30:
             continue
@@ -2292,14 +2328,9 @@ def parse_uploaded_raw_html_map(raw_text):
             if key and key not in keys:
                 keys.append(key)
         if parsed_match:
-            try:
-                payload = json.loads(str(parsed_match.group(1) or "").strip())
-                final_url = clean_uploaded_url_value(payload.get("finalUrl", "")) if isinstance(payload, dict) else ""
-                key = normalize_uploaded_capture_url(final_url)
-                if key and key not in keys:
-                    keys.append(key)
-            except Exception:
-                pass
+            key = normalize_uploaded_capture_url(final_url_from_payload)
+            if key and key not in keys:
+                keys.append(key)
 
         for key in keys:
             html_map[key] = html_text
@@ -7213,6 +7244,9 @@ def is_valid_kroger_product_capture(html_text):
         return False
 
     lowered = working.lower()
+    if 'data-pdp-invalid-kroger-capture="1"' in lowered or "data-pdp-invalid-kroger-capture='1'" in lowered:
+        return False
+
     product_markers = [
         "product information",
         "product details",
@@ -7295,15 +7329,18 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
             return bundle
 
         if uploaded_html.strip():
-            # The uploaded capture exists, but it is only the Kroger loading/privacy shell.
-            # Do not allow that shell to mark a live PDP as Missing. Try live fetch next.
-            live_bundle = get_kroger_bundle(retail_url, target_rpc=target_rpc)
-            if not live_bundle.get("images"):
-                live_bundle["images"] = force_single_kroger_main_image([], retail_url=retail_url, target_rpc=target_rpc)
-            debug = live_bundle.setdefault("text", {}).setdefault("debug", {})
-            debug["Uploaded Capture Ignored"] = "invalid_kroger_shell_capture"
+            # The uploaded TXT had a Kroger capture for this URL, but the capture was
+            # Product Unavailable / shell / no real PDP JSON. Do not create a fake
+            # UPC image fallback here because it makes image QA pass while copy is
+            # missing. Report this as a real missing Kroger capture instead.
+            bundle = build_empty_retailer_bundle("Kroger", "invalid_uploaded_kroger_capture_no_product_content")
+            debug = bundle.setdefault("text", {}).setdefault("debug", {})
+            debug["Source Used"] = "uploaded_txt_invalid_kroger_capture"
+            debug["Uploaded Capture Ignored"] = "invalid_kroger_shell_or_product_unavailable_capture"
+            debug["Image Path"] = "no_kroger_image_from_invalid_txt_capture"
+            debug["Copy Path"] = "no_kroger_copy_from_invalid_txt_capture"
             debug["Availability Rule"] = "availability_never_blocks_live_copy_or_images"
-            return live_bundle
+            return bundle
 
         # If no extension/TXT capture is available, fetch the live Kroger PDP directly.
         # Item availability never blocks PDP copy/images.
@@ -8830,11 +8867,18 @@ def build_normalized_comparison_payload(
 
     if retailer_norm == "kroger":
         s_images = select_kroger_salsify_main_image(s_images)[:1]
-        r_images = force_single_kroger_main_image(r_images, retail_url=retail_url, target_rpc=current_target_sku)
-        # Last-resort image fallback from Kroger RPC/UPC so the Kroger side does not
-        # show Missing when the capture had product copy but no <img> tags.
-        if not r_images:
-            r_images = force_single_kroger_main_image([], retail_url=retail_url, target_rpc=current_target_sku)
+        kroger_has_copy = bool(
+            normalize_space(r_text.get("title", ""))
+            or normalize_space(r_text.get("description", ""))
+            or any(normalize_space(x) for x in (r_text.get("features", []) or []))
+        )
+        # Only use Kroger's predictable UPC image fallback when we actually have
+        # Kroger PDP copy. If the TXT capture was Product Unavailable/shell, a
+        # generated image URL creates a false image pass next to missing copy.
+        if r_images or kroger_has_copy:
+            r_images = force_single_kroger_main_image(r_images, retail_url=retail_url, target_rpc=current_target_sku)
+        else:
+            r_images = []
 
     if mode == "visual":
         if retailer_norm == "cvs":
