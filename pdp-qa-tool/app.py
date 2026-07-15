@@ -2169,12 +2169,7 @@ def split_kroger_parsed_description(description):
 
 
 def build_kroger_invalid_capture_stub(requested_url="", final_url="", reason="invalid_kroger_capture_no_product_content"):
-    """Return a tiny marker for a Kroger TXT capture that did not contain real PDP content.
-
-    This is intentionally stored instead of the huge Kroger privacy/footer shell so
-    the batch can report the row as genuinely missing instead of falling through
-    to a generated UPC image URL and showing a false 100% image match.
-    """
+    """Return a tiny marker for a Kroger TXT capture that did not contain real PDP content."""
     requested_url = clean_uploaded_url_value(requested_url)
     final_url = clean_uploaded_url_value(final_url)
     reason = normalize_space(reason) or "invalid_kroger_capture_no_product_content"
@@ -2200,7 +2195,9 @@ def build_kroger_compact_capture_from_parsed_json(payload):
         return ""
 
     title = clean_kroger_text(payload.get("title", ""))
-    description = clean_kroger_text(payload.get("description", ""))
+    raw_description = str(payload.get("description", "") or "")
+    html_description, html_feature_items = extract_kroger_description_features_from_html_fragment(raw_description)
+    description = html_description or clean_kroger_text(raw_description)
     images = [
         html.unescape(str(url or "").strip())
         for url in (payload.get("images", []) or [])
@@ -2214,7 +2211,11 @@ def build_kroger_compact_capture_from_parsed_json(payload):
     if not description and not images:
         return ""
 
-    intro, feature_items = split_kroger_parsed_description(description)
+    if html_feature_items:
+        intro = description
+        feature_items = html_feature_items
+    else:
+        intro, feature_items = split_kroger_parsed_description(description)
     final_url = clean_uploaded_url_value(payload.get("finalUrl", ""))
     requested_url = clean_uploaded_url_value(payload.get("requestedUrl", ""))
 
@@ -4685,6 +4686,60 @@ def normalize_kroger_features(items, max_features=10):
 
 
 
+def extract_kroger_description_features_from_html_fragment(fragment_html):
+    """Extract the Kroger Product Details paragraph and <li> feature bullets.
+
+    Handles normal DOM HTML and escaped fragments from the extension, including
+    malformed snippets where a placeholder like "description above." wraps a
+    nested <ul>. Parent <li> placeholder text is ignored while nested feature
+    <li> rows are kept.
+    """
+    raw = html.unescape(str(fragment_html or ""))
+    if not raw.strip() or "<" not in raw or ">" not in raw:
+        return "", []
+
+    soup = BeautifulSoup(raw, "html.parser")
+    holder = soup.select_one('[data-testid="product-details-romance-description"]')
+    if holder is None:
+        holder = soup
+
+    description = ""
+    p_tag = holder.find("p")
+    if p_tag is not None:
+        description = clean_kroger_text(p_tag.get_text(" ", strip=True))
+
+    if not description:
+        text_parts = []
+        for child in holder.find_all(recursive=False):
+            if getattr(child, "name", None) in {"ul", "ol"}:
+                continue
+            child_text = clean_kroger_text(getattr(child, "get_text", lambda *a, **k: "")(" ", strip=True))
+            if child_text:
+                text_parts.append(child_text)
+        description = normalize_space(" ".join(text_parts))
+
+    features = []
+    for li in holder.find_all("li"):
+        # Copy the li so removing nested lists does not mutate the original soup.
+        li_soup = BeautifulSoup(str(li), "html.parser")
+        li_copy = li_soup.find("li")
+        if li_copy is None:
+            continue
+        for nested_list in li_copy.find_all(["ul", "ol"]):
+            nested_list.extract()
+        value = clean_kroger_text(li_copy.get_text(" ", strip=True))
+        lower_value = value.lower().strip(" .:-")
+        if not value:
+            continue
+        if lower_value in {"description above", "product details"}:
+            continue
+        if description and normalize_text(value) == normalize_text(description):
+            continue
+        features.append(value)
+
+    return description, normalize_kroger_features(features, max_features=10)
+
+
 def extract_kroger_markdown_product_info(raw_text):
     """Parse Kroger markdown/text captures when no real DOM list exists."""
     text = html.unescape(str(raw_text or ""))
@@ -4734,24 +4789,7 @@ def extract_kroger_description_and_features_from_html(html_text):
     romance = soup.select_one('[data-testid="product-details-romance-description"]')
 
     if romance is not None:
-        description = ""
-        p_tag = romance.find('p')
-        if p_tag is not None:
-            description = clean_kroger_text(p_tag.get_text(' ', strip=True))
-        if not description:
-            text_parts = []
-            for child in romance.find_all(recursive=False):
-                if getattr(child, 'name', None) == 'ul':
-                    continue
-                child_text = clean_kroger_text(getattr(child, 'get_text', lambda *a, **k: '')(' ', strip=True))
-                if child_text:
-                    text_parts.append(child_text)
-            description = normalize_space(' '.join(text_parts))
-
-        ul_tag = romance.find('ul')
-        features = []
-        if ul_tag is not None:
-            features = normalize_kroger_features([li.get_text(' ', strip=True) for li in ul_tag.find_all('li')], max_features=10)
+        description, features = extract_kroger_description_features_from_html_fragment(str(romance))
 
         debug["description_marker_found"] = bool(description)
         debug["description_end_marker_found"] = bool(description)
@@ -4759,7 +4797,7 @@ def extract_kroger_description_and_features_from_html(html_text):
         debug["feature_count"] = len(features)
         debug["description_excerpt"] = description[:500]
         debug["features_excerpt"] = " | ".join(features[:5])[:1000]
-        debug["parser_path"] = "kroger_data_testid_romance_div"
+        debug["parser_path"] = "kroger_data_testid_romance_div_li_features"
         if description or features:
             return description, features, debug
 
