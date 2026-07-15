@@ -2024,8 +2024,11 @@ def fetch_url_debug(
         raw_html = r.text or ""
         result["raw_html"] = raw_html
         result["text_length"] = len(raw_html)
-        result["dom_text"] = html_to_debug_textblob(raw_html)
-        result["prettified_dom"] = html_to_prettified_dom(raw_html)
+        # Keep debugger fast. DOM text and prettified DOM are generated only
+        # when the user selects those views in render_debugger_panel().
+        result["dom_text"] = ""
+        result["prettified_dom"] = ""
+        result["lazy_debug_views"] = True
     except Exception as e:
         result["elapsed_seconds"] = round(time.monotonic() - start, 3)
         result["error"] = repr(e)
@@ -2033,23 +2036,29 @@ def fetch_url_debug(
     return result
 
 
-@st.cache_data(show_spinner=False)
-def get_debug_views_for_url(url):
-    html_text = get_html(url)
+DEBUG_TEXT_PREVIEW_CHARS = 200000
 
-    return {
-        "raw_html": html_text or "",
-        "dom_text": html_to_debug_textblob(html_text),
-        "prettified_dom": html_to_prettified_dom(html_text),
-    }
 
-def build_debug_views_from_html(html_text):
+def make_fast_debug_views(html_text, lazy=True):
+    """Build lightweight debug views without parsing/prettifying huge HTML upfront."""
     html_text = str(html_text or "")
     return {
         "raw_html": html_text,
-        "dom_text": html_to_debug_textblob(html_text),
-        "prettified_dom": html_to_prettified_dom(html_text),
+        "dom_text": "" if lazy else html_to_debug_textblob(html_text),
+        "prettified_dom": "" if lazy else html_to_prettified_dom(html_text),
+        "lazy_debug_views": bool(lazy),
+        "text_length": len(html_text),
     }
+
+
+@st.cache_data(show_spinner=False)
+def get_debug_views_for_url(url):
+    html_text = get_html(url)
+    return make_fast_debug_views(html_text, lazy=True)
+
+
+def build_debug_views_from_html(html_text):
+    return make_fast_debug_views(html_text, lazy=True)
 
 
 def get_uploaded_text_file_bytes(uploaded_text_file):
@@ -2146,12 +2155,78 @@ def _kroger_feature_heading_pattern():
     return r"(?=(?:^|\s)" + known_heading + r"\s*[—-]\s+)"
 
 
+
+def _kroger_unlabeled_feature_marker_pattern():
+    """Markers for Kroger Product Details bullets that do not have uppercase headings."""
+    terms = [
+        r"\d+\s+(?:Mega\s+XL\s+|Mega\s+)?(?:Rolls?|Count|Ct|Packs?|Flip[-\s]?Top|Flushable|Underwear|Pads?|Wipes?)\b",
+        r"\d+\s+Depend(?:®)?\b",
+        r"Soft\s+\d+\s*ply\s+bath\s+tissue\b",
+        r"Strong\s+CleaningRipples(?:™|®)?\s+designed\b",
+        r"\d+x\s+thicker\s+and\s+stronger\b",
+        r"Made\s+with\s+improved\s+softness\b",
+        r"(?<!that\s)Breaks\s+down\s+quickly\b",
+        r"Bath\s+tissue\s+that\s+breaks\s+down\b",
+        r"Pair\s+with\s+Cottonelle(?:®)?\b",
+        r"DryShield(?:™|®)?\s+core\s+absorbs\b",
+        r"Designed\s+for\s+up\s+to\b",
+        r"Feels\s+like\s+real\s+underwear\b",
+        r"Up\s+to\s+zero\s+odors\b",
+        r"Designed\s+with\s+ultra[-\s]?soft\s+material\b",
+        r"Made\s+with\s+cotton[-\s]?like\s+fabric\b",
+        r"Each\s+wet\s+wipe\b",
+        r"Remove(?:s)?\s+up\s+to\b",
+    ]
+    return r"(?=(?:^|\s)(?:" + "|".join(terms) + r"))"
+
+
+def _kroger_unlabeled_first_feature_pattern():
+    """First bullet must be count/package style so description text is not over-split."""
+    return (
+        r"(?=\b(?:"
+        r"\d+\s+(?:Mega\s+XL\s+|Mega\s+)?(?:Rolls?|Count|Ct|Packs?|Flip[-\s]?Top|Flushable|Underwear|Pads?|Wipes?)\b"
+        r"|\d+\s+Depend(?:®)?\b"
+        r"))"
+    )
+
+
+def split_kroger_unlabeled_feature_text(text, max_features=10):
+    """Split unlabeled Kroger bullet text while preserving the intro paragraph.
+
+    A first count/package marker is required. This prevents description sentences
+    like "3x thicker" or "breaks down quickly" from being treated as features.
+    """
+    value = clean_kroger_text(text)
+    if not value:
+        return "", []
+
+    first_match = re.search(_kroger_unlabeled_first_feature_pattern(), value, flags=re.IGNORECASE | re.UNICODE)
+    if not first_match:
+        return value, []
+
+    intro = normalize_space(value[:first_match.start()])
+    remainder = normalize_space(value[first_match.start():])
+    matches = list(re.finditer(_kroger_unlabeled_feature_marker_pattern(), remainder, flags=re.IGNORECASE | re.UNICODE))
+    if len(matches) < 2:
+        return value, []
+
+    items = []
+    for idx, match in enumerate(matches):
+        start = match.start()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(remainder)
+        item = normalize_space(remainder[start:end])
+        if item:
+            items.append(item)
+
+    return intro, dedupe_preserve_order(items)[:max_features]
+
+
 def split_kroger_parsed_description(description):
     """Split Kroger flattened PDP description into intro + feature bullets.
 
-    Kroger extension captures can flatten this structure into one string:
-    product-details-romance-description > p + ul > li. This keeps the <p>
-    paragraph as description and uses each <li> as a feature row.
+    Primary path uses known uppercase Kroger/K-C headings such as WHAT'S INCLUDED.
+    Secondary path handles plain <li> text that Kroger/browser-extension captures
+    flatten into one string with no headings.
     """
     description = clean_kroger_text(description)
     if not description:
@@ -2170,40 +2245,9 @@ def split_kroger_parsed_description(description):
         items = dedupe_preserve_order(items)[:10]
         return intro or description, items
 
-    # Some Kroger TXT captures flatten the <p> description and the <li> rows into
-    # one plain text value with no dash-style headings. Example:
-    # "... everyday use. 18 Mega Rolls ... Strong CleaningRipples ... 3x thicker ..."
-    # In that case, start features only at a count/pack/roll-style first bullet,
-    # then split the remainder on known Kroger/K-C sentence starts.
-    unlabeled_first_marker = re.search(
-        r'(?=\b\d+\s+(?:Mega\s+)?(?:Rolls?|Count|Ct|Packs?|Flip[-\s]?Top|Flushable|Sheets?)\b)',
-        description,
-        flags=re.IGNORECASE,
-    )
-    if unlabeled_first_marker:
-        intro = normalize_space(description[:unlabeled_first_marker.start()])
-        remainder = normalize_space(description[unlabeled_first_marker.start():])
-        unlabeled_terms = [
-            r"\d+\s+(?:Mega\s+)?(?:Rolls?|Count|Packs?|Flip[-\s]?Top|Flushable)",
-            r"Strong\s+CleaningRipples(?:™|®)?\s+designed",
-            r"\d+x\s+thicker\s+and\s+stronger\s+per\s+sheet",
-            r"Made\s+with\s+improved\s+softness",
-            r"Bath\s+tissue\s+that\s+breaks\s+down",
-            r"Each\s+wet\s+wipe",
-            r"Remove(?:s)?\s+up\s+to",
-        ]
-        unlabeled_pattern = r'(?=(?:^|\s)(?:' + '|'.join(unlabeled_terms) + r')\b)'
-        marker_matches = list(re.finditer(unlabeled_pattern, remainder, flags=re.IGNORECASE | re.UNICODE))
-        items = []
-        for idx, match in enumerate(marker_matches):
-            start = match.start()
-            end = marker_matches[idx + 1].start() if idx + 1 < len(marker_matches) else len(remainder)
-            item = normalize_space(remainder[start:end])
-            if item:
-                items.append(item)
-        items = dedupe_preserve_order(items)[:10]
-        if len(items) >= 2:
-            return intro or description, items
+    intro, unlabeled_items = split_kroger_unlabeled_feature_text(description, max_features=10)
+    if len(unlabeled_items) >= 2:
+        return intro or description, unlabeled_items
 
     return description, []
 
@@ -2735,20 +2779,44 @@ def render_debugger_panel(
         with st.expander("Response headers"):
             st.json(response_headers)
 
-    tab_raw, tab_dom, tab_pretty = st.tabs(["Raw HTML", "DOM Text", "Prettified DOM"])
-    with tab_raw:
-        st.download_button(
-            "Download raw HTML",
-            data=raw_html.encode("utf-8"),
-            file_name=f"raw_html_{sku or 'debug'}.html",
-            mime="text/html",
-            key=f"download_raw_html_{sku}",
+    st.download_button(
+        "Download full raw HTML",
+        data=raw_html.encode("utf-8"),
+        file_name=f"raw_html_{sku or 'debug'}.html",
+        mime="text/html",
+        key=f"download_raw_html_{sku}",
+    )
+
+    debug_view = st.radio(
+        "Debug view",
+        ["Raw HTML preview", "DOM text", "Prettified DOM"],
+        horizontal=True,
+        key=f"debug_view_selector_{sku}",
+    )
+
+    preview_limit = int(globals().get("DEBUG_TEXT_PREVIEW_CHARS", 200000))
+    if debug_view == "Raw HTML preview":
+        show_full_raw = st.checkbox(
+            "Load full raw HTML in the text box (slower for large TXT captures)",
+            value=False,
+            key=f"debug_show_full_raw_{sku}",
         )
-        st.text_area(f"raw_html_{sku or 'debug'}", value=raw_html, height=1200, key=f"debug_raw_html_{sku}")
-    with tab_dom:
-        st.text_area(f"dom_text_{sku or 'debug'}", value=dom_text, height=1000, key=f"debug_dom_text_{sku}")
-    with tab_pretty:
-        st.text_area(f"prettified_dom_{sku or 'debug'}", value=prettified_dom, height=1000, key=f"debug_prettified_dom_{sku}")
+        value = raw_html if show_full_raw else raw_html[:preview_limit]
+        if raw_html and not show_full_raw and len(raw_html) > preview_limit:
+            st.caption(f"Showing first {preview_limit:,} characters of {len(raw_html):,}. Use the download button for the full file, or check the box to load all text.")
+        st.text_area(f"raw_html_{sku or 'debug'}", value=value, height=900, key=f"debug_raw_html_{sku}")
+    elif debug_view == "DOM text":
+        if not dom_text:
+            dom_text = html_to_debug_textblob(raw_html)
+        st.text_area(f"dom_text_{sku or 'debug'}", value=dom_text, height=900, key=f"debug_dom_text_{sku}")
+    else:
+        if not prettified_dom:
+            with st.spinner("Generating prettified DOM. This can take a bit for large Kroger captures..."):
+                prettified_dom = html_to_prettified_dom(raw_html)
+        value = prettified_dom[:preview_limit]
+        if prettified_dom and len(prettified_dom) > preview_limit:
+            st.caption(f"Showing first {preview_limit:,} characters of {len(prettified_dom):,}. Download raw HTML if you need the full source.")
+        st.text_area(f"prettified_dom_{sku or 'debug'}", value=value, height=900, key=f"debug_prettified_dom_{sku}")
 
 
 # =========================================
@@ -4707,23 +4775,29 @@ def normalize_kroger_features(items, max_features=10):
 
 
 def split_kroger_feature_text_if_stuck(text):
-    """Split a Kroger feature row only when multiple labeled bullets merged together."""
+    """Split a Kroger feature row only when multiple bullets merged together."""
     value = clean_kroger_text(text)
     if not value:
         return []
 
     matches = list(re.finditer(_kroger_feature_heading_pattern(), value, flags=re.IGNORECASE | re.UNICODE))
-    if len(matches) < 2:
-        return [value]
+    if len(matches) >= 2:
+        parts = []
+        for idx, match in enumerate(matches):
+            start = match.start()
+            end = matches[idx + 1].start() if idx + 1 < len(matches) else len(value)
+            part = clean_kroger_text(value[start:end])
+            if part:
+                parts.append(part)
+        return parts or [value]
 
-    parts = []
-    for idx, match in enumerate(matches):
-        start = match.start()
-        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(value)
-        part = clean_kroger_text(value[start:end])
-        if part:
-            parts.append(part)
-    return parts or [value]
+    # Handles rows like: "24 Mega Rolls ... Soft 2 ply ... 3x thicker ..."
+    # without touching normal one-bullet rows.
+    intro, unlabeled_parts = split_kroger_unlabeled_feature_text(value, max_features=10)
+    if len(unlabeled_parts) >= 2 and not intro:
+        return unlabeled_parts
+
+    return [value]
 
 
 def extract_kroger_description_features_from_html_fragment(fragment_html):
