@@ -4784,6 +4784,30 @@ def build_kroger_invalid_capture_stub(requested_url="", final_url="", reason="in
     )
 
 
+def actual_salsify_feature_count(text_bundle):
+    """Return the count of non-empty Salsify feature slots currently present."""
+    if not isinstance(text_bundle, dict):
+        return 0
+    count = 0
+    for i in range(1, 11):
+        if normalize_space(text_bundle.get(f"feature{i}", "")):
+            count = i
+    return count
+
+
+def build_dynamic_feature_fields_for_pair(retailer_name, s_text, retailer_features):
+    """Only compare/show feature rows that exist on Salsify or retailer page."""
+    retailer_features = [x for x in (retailer_features or []) if normalize_space(x)]
+    retailer_norm = str(retailer_name or "").strip().lower()
+    req = get_retailer_salsify_requirements(retailer_name)
+    max_allowed = int(req.get("max_features", 5) or 5)
+    s_count = actual_salsify_feature_count(s_text)
+    r_count = len(retailer_features)
+    actual_count = max(s_count, r_count)
+    actual_count = min(actual_count, max_allowed)
+    return [f"feature{i}" for i in range(1, actual_count + 1)]
+
+
 def extract_kroger_markdown_product_info(raw_text):
     """Parse Kroger markdown/text captures when no real DOM list exists."""
     text = html.unescape(str(raw_text or ""))
@@ -8695,40 +8719,46 @@ def select_kroger_salsify_main_image(s_images):
 def select_kroger_salsify_images(s_images, max_slots=2):
     """Kroger Salsify image rule.
 
-    New rule for Kroger visual QA:
-    - Slot 1: Online Optimized Image-Grocery.
-    - Slot 2: generic Online Optimized Image-.
-    - Do not include ATF/lifestyle/other Salsify images for Kroger.
+    Allowed Salsify image rows for Kroger only:
+    1. Online Optimized Image-Grocery.
+    2. Generic Online Optimized Image-.
+
+    No ATF, lifestyle, Kroger-specific, CVS, Walgreens, Sam's, Target, or Walmart images.
     """
     images = [img for img in list(s_images or []) if isinstance(img, dict)]
 
     def img_url(img):
         return str(img.get("url", "") or "").strip()
 
-    def img_name(img):
-        return normalize_salsify_asset_name(img.get("name", ""))
+    def raw_name(img):
+        return str(img.get("name", "") or "").strip()
 
-    def find_exact_or_contains(token, excluded_tokens=()):
-        token = normalize_salsify_asset_name(token)
-        excluded_tokens = [normalize_salsify_asset_name(x) for x in excluded_tokens]
-        for img in images:
-            name = img_name(img)
-            if not name or not img_url(img):
-                continue
-            if any(excluded and excluded in name for excluded in excluded_tokens):
-                continue
-            if name == token or token in name:
-                return img
-        return None
+    def norm_name(img):
+        return normalize_salsify_asset_name(raw_name(img))
 
-    grocery = (
-        find_exact_or_contains("online optimized image grocery")
-        or find_exact_or_contains("online image grocery")
-    )
-    generic = (
-        find_exact_or_contains("online optimized image", excluded_tokens=("grocery", "kroger", "walgreens", "cvs", "sams club", "sam s club", "samsclub", "target", "walmart"))
-        or find_exact_or_contains("online image", excluded_tokens=("grocery", "kroger", "walgreens", "cvs", "sams club", "sam s club", "samsclub", "target", "walmart"))
-    )
+    def is_blocked(name):
+        blocked = ["kroger", "walgreens", "cvs", "sams club", "sam s club", "samsclub", "target", "walmart", "atf", "lifestyle", "shipping", "ingredient", "flat back", "flat left"]
+        return any(token in name for token in blocked)
+
+    grocery = None
+    generic = None
+
+    for img in images:
+        if not img_url(img):
+            continue
+        name = norm_name(img)
+        if not name:
+            continue
+        if "online optimized image grocery" in name or "online image grocery" in name:
+            grocery = grocery or img
+            continue
+
+        # Generic Online Optimized Image- usually normalizes to exactly
+        # "online optimized image". Be strict so brand/retailer-specific images
+        # do not leak into Kroger.
+        if name in {"online optimized image", "online image"} and not is_blocked(name):
+            generic = generic or img
+            continue
 
     ordered = []
     seen = set()
@@ -8950,14 +8980,14 @@ def build_normalized_comparison_payload(
 
     if retailer_norm == "kroger":
         s_images = select_kroger_salsify_images(s_images, max_slots=2)
-        compare_slots = max(1, len(s_images)) if s_images else 2
-        r_images = select_kroger_image_urls_by_perspective(r_images, max_images=compare_slots)
+        compare_slots = len(s_images) if s_images else 0
+        r_images = select_kroger_image_urls_by_perspective(r_images, max_images=max(compare_slots, 1)) if compare_slots else []
         kroger_has_copy = bool(
             normalize_space(r_text.get("title", ""))
             or normalize_space(r_text.get("description", ""))
             or any(normalize_space(x) for x in (r_text.get("features", []) or []))
         )
-        if not r_images and kroger_has_copy:
+        if not r_images and kroger_has_copy and compare_slots:
             r_images = force_single_kroger_main_image([], retail_url=retail_url, target_rpc=current_target_sku)
 
     if mode == "visual":
@@ -9183,10 +9213,7 @@ def process_row(row):
 
         retailer_features = r_text.get("features", []) if isinstance(r_text, dict) else []
         retailer_norm = str(retailer_name or "").strip().lower()
-        if retailer_norm in {"sam's club", "sams club", "samsclub"}:
-            feature_fields = get_retailer_salsify_feature_fields(retailer_name)
-        else:
-            feature_fields = ["feature1", "feature2", "feature3", "feature4", "feature5", "feature6", "feature7"] if retailer_norm == "kroger" else ["feature1", "feature2", "feature3", "feature4", "feature5"]
+        feature_fields = build_dynamic_feature_fields_for_pair(retailer_name, s_text, retailer_features)
 
         feature_scores = []
         feature_score_fields = {}
@@ -9196,10 +9223,9 @@ def process_row(row):
             s_val = s_text.get(f_key, "")
             r_val = retailer_features[i - 1] if i - 1 < len(retailer_features) else ""
 
-            # Sam's Club should score only feature rows that exist on either the
-            # Salsify deck or the live Sam's Club PDP. Do not turn unavailable
-            # slots into extra 0% rows.
-            if retailer_norm in {"sam's club", "sams club", "samsclub"} and not (normalize_space(s_val) or normalize_space(r_val)):
+            # Score only feature rows that exist on Salsify or the retailer page.
+            # Do not turn unavailable slots into extra Missing/Missing 0% rows.
+            if not (normalize_space(s_val) or normalize_space(r_val)):
                 continue
 
             score = keyword_score(s_val, r_val) if (s_val or r_val) else 0
@@ -10059,25 +10085,19 @@ if (
             retailer_features = r_text.get("features") or []
             retailer_norm = str(retailer_name or "").strip().lower()
             salsify_requirements = get_retailer_salsify_requirements(retailer_name)
-            feature_fields = get_retailer_salsify_feature_fields(retailer_name)
+            feature_fields = build_dynamic_feature_fields_for_pair(retailer_name, s_text, retailer_features)
 
             title_score = keyword_score(s_title, r_title)
             desc_score = description_similarity_score(s_desc, r_desc)
 
-            max_features = min(
-                max(len(feature_fields), len(retailer_features)),
-                int(salsify_requirements.get("max_features", len(feature_fields)) or len(feature_fields)),
-            )
             feature_scores = []
             feature_rows = []
-            for i in range(max_features):
+            for i in range(len(feature_fields)):
                 s_val = s_text.get(feature_fields[i], "") if i < len(feature_fields) else ""
                 r_val = retailer_features[i] if i < len(retailer_features) else ""
 
-                # Sam's Club visual QA should show only feature rows that are
-                # actually available from Salsify or the live Sam's Club PDP.
-                # This removes extra Missing/Missing rows from the visual score.
-                if retailer_norm in {"sam's club", "sams club", "samsclub"} and not (normalize_space(s_val) or normalize_space(r_val)):
+                # Show only feature rows that actually exist on Salsify or retailer page.
+                if not (normalize_space(s_val) or normalize_space(r_val)):
                     continue
 
                 row_score = keyword_score(s_val, r_val) if (s_val or r_val) else 0
