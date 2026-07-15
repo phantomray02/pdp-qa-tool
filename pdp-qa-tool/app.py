@@ -2158,20 +2158,54 @@ def split_kroger_parsed_description(description):
         return "", []
 
     matches = list(re.finditer(_kroger_feature_heading_pattern(), description, flags=re.IGNORECASE | re.UNICODE))
-    if not matches:
-        return description, []
+    if matches:
+        intro = normalize_space(description[:matches[0].start()])
+        items = []
+        for idx, match in enumerate(matches):
+            start = match.start()
+            end = matches[idx + 1].start() if idx + 1 < len(matches) else len(description)
+            item = normalize_space(description[start:end])
+            if item:
+                items.append(item)
+        items = dedupe_preserve_order(items)[:10]
+        return intro or description, items
 
-    intro = normalize_space(description[:matches[0].start()])
-    items = []
-    for idx, match in enumerate(matches):
-        start = match.start()
-        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(description)
-        item = normalize_space(description[start:end])
-        if item:
-            items.append(item)
+    # Some Kroger TXT captures flatten the <p> description and the <li> rows into
+    # one plain text value with no dash-style headings. Example:
+    # "... everyday use. 18 Mega Rolls ... Strong CleaningRipples ... 3x thicker ..."
+    # In that case, start features only at a count/pack/roll-style first bullet,
+    # then split the remainder on known Kroger/K-C sentence starts.
+    unlabeled_first_marker = re.search(
+        r'(?=\b\d+\s+(?:Mega\s+)?(?:Rolls?|Count|Ct|Packs?|Flip[-\s]?Top|Flushable|Sheets?)\b)',
+        description,
+        flags=re.IGNORECASE,
+    )
+    if unlabeled_first_marker:
+        intro = normalize_space(description[:unlabeled_first_marker.start()])
+        remainder = normalize_space(description[unlabeled_first_marker.start():])
+        unlabeled_terms = [
+            r"\d+\s+(?:Mega\s+)?(?:Rolls?|Count|Packs?|Flip[-\s]?Top|Flushable)",
+            r"Strong\s+CleaningRipples(?:™|®)?\s+designed",
+            r"\d+x\s+thicker\s+and\s+stronger\s+per\s+sheet",
+            r"Made\s+with\s+improved\s+softness",
+            r"Bath\s+tissue\s+that\s+breaks\s+down",
+            r"Each\s+wet\s+wipe",
+            r"Remove(?:s)?\s+up\s+to",
+        ]
+        unlabeled_pattern = r'(?=(?:^|\s)(?:' + '|'.join(unlabeled_terms) + r')\b)'
+        marker_matches = list(re.finditer(unlabeled_pattern, remainder, flags=re.IGNORECASE | re.UNICODE))
+        items = []
+        for idx, match in enumerate(marker_matches):
+            start = match.start()
+            end = marker_matches[idx + 1].start() if idx + 1 < len(marker_matches) else len(remainder)
+            item = normalize_space(remainder[start:end])
+            if item:
+                items.append(item)
+        items = dedupe_preserve_order(items)[:10]
+        if len(items) >= 2:
+            return intro or description, items
 
-    items = dedupe_preserve_order(items)[:10]
-    return intro or description, items
+    return description, []
 
 
 def build_kroger_compact_capture_from_parsed_json(payload):
