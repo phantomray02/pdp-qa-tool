@@ -2105,68 +2105,73 @@ def uploaded_capture_url_candidates(url):
     return candidates
 
 
+def _kroger_feature_heading_pattern():
+    """Shared Kroger feature-heading pattern.
+
+    Kroger Product Details often exposes one description paragraph followed by
+    <ul><li> feature rows. In TXT/extension captures, those rows can flatten into
+    one string, so we split only on strong uppercase headings followed by an
+    em dash or hyphen.
+    """
+    heading_terms = [
+        r"WHAT['’]?S\s+INCLUDED",
+        r"FRESHNESS\s+YOU\s+CAN\s+FEEL",
+        r"BREAKS\s+DOWN\s+LIKE\s+TOILET\s+PAPER\*?",
+        r"HELPS\s+IN\s+3\s+WAYS",
+        r"GENTLE\s+FOR\s+SKIN",
+        r"IT\s+TAKES\s+TWO",
+        r"NEVER\s+RUN\s+OUT",
+        r"GENTLE['’]?S\s+IN\s+THE\s+NAME",
+        r"A\s+REFRESHING\s+CLEAN",
+        r"NO\s+FRAGRANCE(?:,\s+NO\s+PROBLEM)?",
+        r"SAFE\s+FOR\s+SENSITIVE\s+SKIN",
+        r"HYPOALLERGENIC",
+        r"PERFECT\s+FOR\s+THE\s+WHOLE\s+FAMILY",
+        r"STRONG\s+CLEANINGRIPPLES",
+        r"BATH\s+TISSUE",
+        r"ALL\s+DAY\s+PROTECTION",
+        r"UP\s+TO\s+ZERO\s+ODOR",
+        r"ODOR\s+CONTROL",
+        r"DRYNESS",
+        r"ACTIVE\s+FIT",
+        r"LEAK\s*GUARD",
+        r"LEAKSHIELD",
+        r"DERMATOLOGIST\s+TESTED",
+    ]
+    # Use known Kroger/K-C headings only. A generic uppercase-heading regex can
+    # over-split a real feature like "FRESHNESS YOU CAN FEEL" into "FRESHNESS",
+    # "YOU", and "CAN FEEL" because each trailing phrase is also uppercase and
+    # followed by the same dash.
+    known_heading = r"(?:" + "|".join(heading_terms) + r")"
+    return r"(?=(?:^|\s)" + known_heading + r"\s*[—-]\s+)"
+
+
 def split_kroger_parsed_description(description):
     """Split Kroger flattened PDP description into intro + feature bullets.
 
-    Kroger extension captures often flatten Product Details + bullets into one
-    description string. This keeps the real intro as description and rebuilds
-    feature rows from known Kroger/K-C bullet starts.
+    Kroger extension captures can flatten this structure into one string:
+    product-details-romance-description > p + ul > li. This keeps the <p>
+    paragraph as description and uses each <li> as a feature row.
     """
     description = clean_kroger_text(description)
     if not description:
         return "", []
 
-    def split_by_marker(pattern):
-        matches = list(re.finditer(pattern, description, flags=re.IGNORECASE | re.UNICODE))
-        if not matches:
-            return "", []
-        intro = normalize_space(description[:matches[0].start()])
-        items = []
-        for idx, match in enumerate(matches):
-            start = match.start()
-            end = matches[idx + 1].start() if idx + 1 < len(matches) else len(description)
-            item = normalize_space(description[start:end])
-            if item:
-                items.append(item)
-        return intro, dedupe_preserve_order(items)[:10]
+    matches = list(re.finditer(_kroger_feature_heading_pattern(), description, flags=re.IGNORECASE | re.UNICODE))
+    if not matches:
+        return description, []
 
-    # Kroger copy commonly has upper-case bullet labels with an em dash.
-    labeled_terms = [
-        r"WHAT'S\s+INCLUDED", r"GENTLE'S\s+IN\s+THE\s+NAME", r"A\s+REFRESHING\s+CLEAN",
-        r"BREAKS\s+DOWN\s+LIKE\s+TOILET\s+PAPER", r"GENTLE\s+FOR\s+SKIN", r"IT\s+TAKES\s+TWO",
-        r"NO\s+FRAGRANCE(?:,\s+NO\s+PROBLEM)?", r"SAFE\s+FOR\s+SENSITIVE\s+SKIN",
-        r"HYPOALLERGENIC", r"PERFECT\s+FOR\s+THE\s+WHOLE\s+FAMILY",
-        r"STRONG\s+CLEANINGRIPPLES", r"BATH\s+TISSUE",
-    ]
-    labeled_pattern = r'(?=\b(?:' + '|'.join(labeled_terms) + r')\b\s*[—-])'
-    intro, features = split_by_marker(labeled_pattern)
-    if len(features) >= 2:
-        return intro or description, features
+    intro = normalize_space(description[:matches[0].start()])
+    items = []
+    for idx, match in enumerate(matches):
+        start = match.start()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(description)
+        item = normalize_space(description[start:end])
+        if item:
+            items.append(item)
 
-    # Other Kroger products flatten sentence-style bullets without dash labels.
-    marker_terms = [
-        r"\d+\s+Depend", r"\d+\s+Mega", r"\d+\s+flip-top",
-        r"DryShield", r"Dryshield", r"Drysheild", r"Super\s+absorbent",
-        r"OdorBLOCK", r"Made\s+with", r"Thin,\s+discreet",
-        r"All-Day\s+Protection", r"Superior\s+Comfort", r"Find\s+your\s+size", r"New\s+look",
-        r"LeakGuard", r"Up\s+to", r"Dermatologist", r"Hypoallergenic",
-        r"Contains", r"Fragrance[-\s]?free", r"Breathable",
-        r"Strong\s+CleaningRipples", r"\d+x\s+thicker", r"Bath\s+tissue",
-        r"Each\s+wet\s+wipe",
-    ]
-    marker_pattern = r'(?=\b(?:' + '|'.join(marker_terms) + r')\b)'
-    intro, features = split_by_marker(marker_pattern)
-    if len(features) >= 2:
-        return intro or description, features
-
-    # Final fallback: multi-word uppercase heading followed by a dash.
-    intro, features = split_by_marker(
-        r'(?=(?:^|\s)(?:[A-Z0-9][A-Z0-9&™®%*/(),.+-]+(?:\s+[A-Z0-9][A-Z0-9&™®%*/(),.+-]+){1,7})\s+[—-]\s+)'
-    )
-    if features:
-        return intro or description, features
-
-    return description, []
+    items = dedupe_preserve_order(items)[:10]
+    return intro or description, items
 
 
 def build_kroger_compact_capture_from_parsed_json(payload):
@@ -4668,28 +4673,15 @@ def normalize_kroger_features(items, max_features=10):
 
 
 def split_kroger_feature_text_if_stuck(text):
-    """Split a Kroger feature row only when multiple labeled bullet headings merged together."""
+    """Split a Kroger feature row only when multiple labeled bullets merged together."""
     value = clean_kroger_text(text)
     if not value:
         return []
-    heading_terms = [
-        r"WHAT'S\s+INCLUDED",
-        r"NO\s+FRAGRANCE(?:,\s+NO\s+PROBLEM)?",
-        r"BREAKS\s+DOWN\s+LIKE\s+TOILET\s+PAPER\*?",
-        r"SAFE\s+FOR\s+SENSITIVE\s+SKIN",
-        r"HYPOALLERGENIC",
-        r"IT\s+TAKES\s+TWO",
-        r"PERFECT\s+FOR\s+THE\s+WHOLE\s+FAMILY",
-        r"GENTLE'S\s+IN\s+THE\s+NAME",
-        r"A\s+REFRESHING\s+CLEAN",
-        r"GENTLE\s+FOR\s+SKIN",
-        r"STRONG\s+CLEANINGRIPPLES",
-        r"BATH\s+TISSUE",
-    ]
-    pattern = r'(?=(?:^|\s)(?:' + '|'.join(heading_terms) + r'))'
-    matches = list(re.finditer(pattern, value, flags=re.UNICODE))
+
+    matches = list(re.finditer(_kroger_feature_heading_pattern(), value, flags=re.IGNORECASE | re.UNICODE))
     if len(matches) < 2:
         return [value]
+
     parts = []
     for idx, match in enumerate(matches):
         start = match.start()
@@ -4701,18 +4693,53 @@ def split_kroger_feature_text_if_stuck(text):
 
 
 def extract_kroger_description_features_from_html_fragment(fragment_html):
-    """Extract Kroger description and feature <li> rows from the Product Details romance block."""
-    raw = html.unescape(str(fragment_html or ""))
-    if not raw.strip() or "<" not in raw or ">" not in raw:
+    """Extract Kroger description and feature rows from Product Details romance HTML.
+
+    Expected split:
+    - Description = the first <p> inside product-details-romance-description.
+    - Features = each <li> inside the following <ul>.
+
+    This also handles malformed TXT/browser-extension fragments such as:
+    product-details-romance-description"><p>...</p><ul><li>...</li></ul>
+    """
+    raw = str(fragment_html or "")
+    for _ in range(3):
+        unescaped = html.unescape(raw)
+        if unescaped == raw:
+            break
+        raw = unescaped
+
+    if not raw.strip():
         return "", []
+
+    marker_match = re.search(r'product-details-romance-description', raw, flags=re.IGNORECASE)
+    if marker_match:
+        # Keep the useful romance section only. This prevents footer/review text
+        # from being pulled into description/features when a TXT capture is large.
+        section_start = marker_match.start()
+        p_start = raw.find("<p", section_start)
+        ul_end_match = re.search(r'</ul\s*>', raw[p_start if p_start != -1 else section_start:], flags=re.IGNORECASE)
+        if p_start != -1 and ul_end_match:
+            local_start = p_start
+            local_end = (p_start + ul_end_match.end()) if p_start != -1 else (section_start + ul_end_match.end())
+            raw = '<section data-testid="product-details-romance-description">' + raw[local_start:local_end] + '</section>'
+        elif p_start != -1:
+            raw = '<section data-testid="product-details-romance-description">' + raw[p_start:] + '</section>'
+
+    if "<" not in raw or ">" not in raw:
+        description, features = split_kroger_parsed_description(raw)
+        return clean_kroger_text(description), normalize_kroger_features(features, max_features=10)
+
     soup = BeautifulSoup(raw, "html.parser")
     holder = soup.select_one('[data-testid="product-details-romance-description"]') or soup
+
     p_tag = holder.find("p")
     description = clean_kroger_text(p_tag.get_text(" ", strip=True)) if p_tag is not None else ""
+
     if not description:
         text_parts = []
         for child in holder.find_all(recursive=False):
-            if getattr(child, "name", None) in {"ul", "ol"}:
+            if getattr(child, "name", None) in {"ul", "ol", "script", "style"}:
                 continue
             child_text = clean_kroger_text(getattr(child, "get_text", lambda *a, **k: "")(" ", strip=True))
             if child_text:
@@ -4720,9 +4747,11 @@ def extract_kroger_description_features_from_html_fragment(fragment_html):
         description = normalize_space(" ".join(text_parts))
 
     features = []
-    for li in holder.find_all("li"):
-        li_soup = BeautifulSoup(str(li), "html.parser")
-        li_copy = li_soup.find("li")
+    primary_list = holder.find("ul") or holder.find("ol")
+    li_nodes = primary_list.find_all("li", recursive=False) if primary_list is not None else holder.find_all("li")
+
+    for li in li_nodes:
+        li_copy = BeautifulSoup(str(li), "html.parser").find("li")
         if li_copy is None:
             continue
         for nested_list in li_copy.find_all(["ul", "ol"]):
@@ -4734,7 +4763,24 @@ def extract_kroger_description_features_from_html_fragment(fragment_html):
         if description and normalize_text(value) == normalize_text(description):
             continue
         features.extend(split_kroger_feature_text_if_stuck(value))
-    return description, normalize_kroger_features(features, max_features=10)
+
+    # Regex fallback for malformed fragments where BeautifulSoup cannot rebuild li nodes.
+    if not features and "<li" in raw.lower():
+        for match in re.finditer(r'<li\b[^>]*>(.*?)(?:</li\s*>|(?=<li\b)|</ul\s*>|$)', raw, flags=re.IGNORECASE | re.DOTALL):
+            item_html = match.group(1) or ""
+            value = clean_kroger_text(item_html)
+            if value and not (description and normalize_text(value) == normalize_text(description)):
+                features.extend(split_kroger_feature_text_if_stuck(value))
+
+    # Last fallback: if the paragraph and li tags flattened into one line, split on headings.
+    if not features:
+        full_text = clean_kroger_text(holder.get_text(" ", strip=True) if hasattr(holder, "get_text") else raw)
+        split_description, split_features = split_kroger_parsed_description(full_text)
+        if split_features:
+            description = description or split_description
+            features = split_features
+
+    return clean_kroger_text(description), normalize_kroger_features(features, max_features=10)
 
 
 def select_kroger_image_urls_by_perspective(images, max_images=6):
@@ -4850,6 +4896,18 @@ def extract_kroger_description_and_features_from_html(html_text):
         debug["description_excerpt"] = description[:500]
         debug["features_excerpt"] = " | ".join(features[:5])[:1000]
         debug["parser_path"] = "kroger_data_testid_romance_div_li_features"
+        if description or features:
+            return description, features, debug
+
+    if "product-details-romance-description" in working.lower():
+        description, features = extract_kroger_description_features_from_html_fragment(working)
+        debug["description_marker_found"] = bool(description)
+        debug["description_end_marker_found"] = bool(description)
+        debug["feature_block_found"] = bool(features)
+        debug["feature_count"] = len(features)
+        debug["description_excerpt"] = description[:500]
+        debug["features_excerpt"] = " | ".join(features[:5])[:1000]
+        debug["parser_path"] = "kroger_raw_romance_marker_p_ul_li_features"
         if description or features:
             return description, features, debug
 
@@ -7338,6 +7396,7 @@ def is_valid_kroger_product_capture(html_text):
         "/product/images/",
         "data-testid=\"product-details-romance-description\"",
         "data-testid='product-details-romance-description'",
+        "product-details-romance-description",
     ]
     shell_markers = [
         "privacy request center",
