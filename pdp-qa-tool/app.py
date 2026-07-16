@@ -4788,6 +4788,138 @@ def extract_cvs_images_from_html(html_text):
     return reorder_cvs_retailer_images_for_visual(ordered_urls, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE)
 
 
+def extract_cvs_visible_details_copy_from_dom(html_text):
+    """CVS-only fallback for the visible Details accordion.
+
+    Some CVS PDP captures have the live description in the rendered Details card
+    instead of the Next.js vendorDetailsParagraph payload. This parser reads only
+    the CVS Details card DOM and returns the visible description plus bullets.
+    It is intentionally not used by any other retailer.
+    """
+    debug = {
+        "Description Path": "",
+        "Features Path": "",
+        "Details Container Found": False,
+        "Description Excerpt": "",
+        "Feature Count": 0,
+    }
+    if not html_text:
+        return {"description": "", "features": [], "debug": debug}
+
+    working = str(html_text or "")
+    for _ in range(3):
+        unescaped = html.unescape(working)
+        if unescaped == working:
+            break
+        working = unescaped
+
+    soup = BeautifulSoup(working, "html.parser")
+    candidate_containers = []
+
+    # Most current CVS PDPs render description/features in a div with
+    # whitespace-pre-line inside the Details accordion.
+    for node in soup.select('[class*="whitespace-pre-line"]'):
+        text_blob = normalize_space(node.get_text(" ", strip=True))
+        if len(text_blob) < 80:
+            continue
+        if node.find("li", id=re.compile(r"^vendorDetailsBullet", re.IGNORECASE)) or node.find("ul"):
+            candidate_containers.append(node)
+
+    # Fallback: locate the accordion heading named Details, then inspect nearby
+    # sibling/parent card content. This covers small CVS class-name changes.
+    if not candidate_containers:
+        for details_text_node in soup.find_all(string=re.compile(r"^\s*Details\s*$", re.IGNORECASE)):
+            heading = details_text_node.find_parent(["h2", "button", "div"])
+            if heading is None:
+                continue
+            card = heading
+            for _ in range(5):
+                if card is None:
+                    break
+                card_text = normalize_space(card.get_text(" ", strip=True))
+                if "Details" in card_text and len(card_text) > 120 and card.find("li"):
+                    candidate_containers.append(card)
+                    break
+                card = card.parent
+
+    best = None
+    best_score = -1
+    for container in candidate_containers:
+        container_text = normalize_space(container.get_text(" ", strip=True))
+        if not container_text:
+            continue
+        lower_text = container_text.lower()
+        if any(bad in lower_text for bad in [
+            "rating & reviews",
+            "explore more at cvs.com",
+            "additional resources",
+            "same-day delivery policies",
+        ]):
+            # The container may still be valid if these appear after Details,
+            # but a smaller whitespace-pre-line node should score higher.
+            penalty = 500
+        else:
+            penalty = 0
+        li_count = len(container.find_all("li"))
+        long_span_count = sum(
+            1 for span in container.find_all("span")
+            if not span.find_parent("li") and len(clean_cvs_text(span.get_text(" ", strip=True))) >= 80
+        )
+        score = (li_count * 100) + (long_span_count * 200) + min(len(container_text), 2000) - penalty
+        if score > best_score:
+            best_score = score
+            best = container
+
+    if best is None:
+        return {"description": "", "features": [], "debug": debug}
+
+    debug["Details Container Found"] = True
+
+    description_candidates = []
+    # Prefer a non-li span. In the current CVS Details card, this is the long
+    # paragraph after title/item number and before the bullet list.
+    for span in best.find_all("span"):
+        if span.find_parent("li"):
+            continue
+        value = clean_cvs_text(span.get_text(" ", strip=True))
+        if len(value) >= 80:
+            description_candidates.append(value)
+
+    # Extra fallback for markup that uses paragraph/div text instead of span.
+    if not description_candidates:
+        for tag in best.find_all(["p", "div"], recursive=True):
+            if tag.find("li") or tag.find_parent("li"):
+                continue
+            value = clean_cvs_text(tag.get_text(" ", strip=True))
+            if len(value) >= 120 and not re.search(r"item\s*#|\d+\s*ct", value, flags=re.IGNORECASE):
+                description_candidates.append(value)
+
+    description = ""
+    if description_candidates:
+        # Pick the richest paragraph, not the title or item-size row.
+        description = max(description_candidates, key=lambda value: (len(value), value))
+        debug["Description Path"] = "cvs_visible_details_dom_non_li_span"
+        debug["Description Excerpt"] = description[:500]
+
+    feature_values = []
+    bullet_nodes = best.find_all("li", id=re.compile(r"^vendorDetailsBullet", re.IGNORECASE))
+    if not bullet_nodes:
+        for ul in best.find_all(["ul", "ol"]):
+            bullet_nodes.extend(ul.find_all("li", recursive=False) or ul.find_all("li"))
+
+    for li in bullet_nodes:
+        value = clean_cvs_feature_text(li.get_text(" ", strip=True))
+        if value:
+            feature_values.append(value)
+
+    features = normalize_cvs_features(feature_values)
+    if features:
+        debug["Features Path"] = "cvs_visible_details_dom_vendorDetailsBullet_li"
+        debug["Feature Count"] = len(features)
+
+    return {"description": description, "features": features[:5], "debug": debug}
+
+
 def _extract_cvs_text_from_html(html_text, retail_url="", target_rpc=""):
     debug = {"Title Path": "", "Description Path": "", "Features Path": ""}
 
@@ -4815,8 +4947,27 @@ def _extract_cvs_text_from_html(html_text, retail_url="", target_rpc=""):
     features = normalize_cvs_features(vendor_copy.get("features", []))
 
     debug.update(vendor_copy.get("debug", {}))
-    debug["Description Path"] = debug.get("Source Used", "") if description else "description_empty"
-    debug["Features Path"] = debug.get("Source Used", "") if features else "features_empty"
+
+    # CVS-only fallback: if Next.js/vendorDetails misses the description,
+    # use the visible Details accordion from the CVS DOM. This does not touch
+    # Walgreens, Kroger, HEB, Sam's Club, or any other retailer parser.
+    cvs_dom_details = {"description": "", "features": [], "debug": {}}
+    if not description or not features:
+        cvs_dom_details = extract_cvs_visible_details_copy_from_dom(html_text)
+        dom_debug = cvs_dom_details.get("debug", {}) or {}
+        if dom_debug:
+            debug["CVS Visible Details Fallback"] = dom_debug
+        if not description and cvs_dom_details.get("description"):
+            description = clean_cvs_text(cvs_dom_details.get("description", ""))
+            debug["Description Path"] = "cvs_visible_details_dom_fallback"
+        if not features and cvs_dom_details.get("features"):
+            features = normalize_cvs_features(cvs_dom_details.get("features", []))
+            debug["Features Path"] = "cvs_visible_details_dom_fallback"
+
+    if not debug.get("Description Path"):
+        debug["Description Path"] = debug.get("Source Used", "") if description else "description_empty"
+    if not debug.get("Features Path"):
+        debug["Features Path"] = debug.get("Source Used", "") if features else "features_empty"
 
     return {
         "title": title,
