@@ -1296,22 +1296,19 @@ def align_cvs_atf_images_by_visual_match(s_images, r_images, locked_slots=3, max
         else:
             ordered.append("")
 
-    # Slots 4+ are ATF/lifestyle rows. Match the best available CVS image when
-    # there is reasonable visual similarity. When similarity is weak, preserve
-    # source order with the next unused CVS image so the review still shows all assets.
+    # Slots 4+ are ATF/lifestyle rows.
+    # Keep CVS images in the exact remaining site order. Do not visually reorder
+    # these rows, because CVS thumbnails/ATF assets can look similar and the
+    # visual matcher can scramble the live site order. If CVS does not have a
+    # packaging image for locked slot 2 or 3, those live CVS images simply stay
+    # unused until this section and are bumped down in site order.
     for s_img in s_images[3:max_slots]:
         if len(ordered) >= max_slots:
             break
-        s_url = _s_url(s_img)
-        if not s_url:
+        if not _s_url(s_img):
             ordered.append("")
             continue
-        best_idx, best_score = _best_unused_match(s_url, pool, used)
-        if best_idx is not None and best_score >= 55:
-            ordered.append(pool[best_idx])
-            used.add(best_idx)
-        else:
-            ordered.append(_next_unused(pool, used))
+        ordered.append(_next_unused(pool, used))
 
     # Append any unused CVS images at the end in original order so the visual QA
     # does not hide retailer images that still need review.
