@@ -1176,151 +1176,90 @@ def reorder_walgreens_salsify_images_for_visual(images, max_slots=MAX_IMAGE_SLOT
 
 
 def reorder_cvs_retailer_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
-    urls = [str(u or "").strip() for u in (images or []) if str(u or "").strip()]
-    if not urls:
-        return []
-    slotted = {}
-    unslotted = []
+    """CVS-only retailer image order.
+
+    Keep CVS images in the exact live site order captured from the page.
+    Do not infer slots from image filenames, because CVS image filenames can
+    contain size/count/product numbers that look like slot numbers and can
+    scramble the carousel order.
+    """
+    ordered = []
     seen = set()
-    for url in urls:
-        base = url.split("?", 1)[0].strip()
+    for url in images or []:
+        base = str(url or "").strip().split("?", 1)[0]
         if not base or base in seen:
             continue
+        ordered.append(base)
         seen.add(base)
-        slot_num = infer_cvs_image_slot_from_url(base)
-        if slot_num is not None and slot_num not in slotted:
-            slotted[slot_num] = base
-        else:
-            unslotted.append(base)
-    ordered = []
-    used = set()
-    def add_url(v):
-        v = str(v or "").strip()
-        if not v or v in used:
-            return False
-        ordered.append(v)
-        used.add(v)
-        return True
-    has_any_explicit_top3 = any(slot in slotted for slot in (1,2,3))
-    if has_any_explicit_top3:
-        for slot_num in (1,2,3):
-            ordered.append(slotted.get(slot_num, ""))
-            if slotted.get(slot_num):
-                used.add(slotted[slot_num])
-    else:
-        first_three = urls[:3]
-        for i in range(3):
-            value = first_three[i] if i < len(first_three) else ""
-            ordered.append(value)
-            if value:
-                used.add(value)
-        unslotted = [u for u in urls[3:] if u not in used]
-    for slot_num in sorted(k for k in slotted.keys() if k > 3):
-        add_url(slotted[slot_num])
-    for url in unslotted:
-        add_url(url)
+        if len(ordered) >= max_slots:
+            break
     return ordered[:max_slots]
 
 def align_cvs_atf_images_by_visual_match(s_images, r_images, locked_slots=3, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
     """CVS-specific image pairing with locked Salsify packaging slots.
 
-    What this fixes:
-    - Salsify slot 2 and slot 3 are required flat packaging audits.
-    - If Salsify is missing Flat Back_2D / Flat Left_2D, Salsify must still show Missing.
-    - CVS should only fill those flat rows when a CVS image is visually close enough.
-    - Weak CVS lifestyle/ATF images should not be pulled upward into flat packaging rows.
-    - After the locked flat rows, remaining CVS images are visually matched to Salsify ATF/lifestyle rows when the match is strong enough.
+    CVS-only rule:
+    - Keep CVS image order exactly as captured from the live CVS carousel.
+    - Slot 1 stays CVS image 1.
+    - Slots 2 and 3 are reserved for packaging audit rows when Salsify has
+      those packaging rows. Use CVS image 2 and CVS image 3 in site order for
+      those rows instead of visual-searching the whole carousel.
+    - If a locked Salsify packaging row is missing, keep the CVS row blank so
+      ATF/lifestyle images do not move up into locked packaging rows.
+    - Slots 4+ continue with the remaining CVS images in site order.
 
-    This function reorders only the CVS side. It never moves Salsify images and never
-    hides missing Salsify flat assets.
+    This avoids the previous problem where image hashing pulled packaging
+    images down into ATF rows or pulled tiny/ATF images up into packaging rows.
     """
     s_images = list(s_images or [])
     r_images = [str(u or "").strip() for u in list(r_images or []) if str(u or "").strip()]
-
-    if not r_images:
-        return []
-
     max_slots = max(0, int(max_slots or MAX_IMAGE_SLOTS_TO_COMPARE))
-    if max_slots <= 0:
+    if not r_images or max_slots <= 0:
         return []
 
     def _s_url(img):
         return str(img.get("url", "") or "").strip() if isinstance(img, dict) else ""
 
-    def _best_unused_match(s_url, pool, used_indexes):
-        best_idx = None
-        best_score = -1
-        if not s_url:
-            return None, -1
-        for idx, r_url in enumerate(pool):
-            if idx in used_indexes or not r_url:
-                continue
-            score = compare_images_visually(s_url, r_url)
-            if score > best_score:
-                best_idx = idx
-                best_score = score
-        return best_idx, best_score
+    ordered = []
+    cvs_idx = 0
 
-    def _next_unused(pool, used_indexes):
-        for idx, url in enumerate(pool):
-            if idx not in used_indexes:
-                used_indexes.add(idx)
-                return url
-        return ""
+    # Slot 1: always use the first live CVS image.
+    if len(ordered) < max_slots:
+        ordered.append(r_images[cvs_idx] if cvs_idx < len(r_images) else "")
+        if cvs_idx < len(r_images):
+            cvs_idx += 1
 
-    # Main image: keep the site's first CVS image as the main image. In almost all
-    # CVS PDPs this is the correct hero/main image and should not be stolen by ATF matching.
-    ordered = [r_images[0]]
-    pool = r_images[1:]
-    used = set()
-
-    # Slots 2 and 3 are locked CVS packaging audit rows.
-    # CVS-only behavior:
-    # - If Salsify slot 2 or 3 is missing, keep the CVS side blank too.
-    # - If Salsify slot 2 or 3 exists, fill CVS only with a strong visual match
-    #   to that packaging image.
-    # - Any CVS image that does not match those locked packaging slots is not
-    #   lost. It stays unused here and gets bumped down into the ATF/lifestyle
-    #   rows below.
+    # Slots 2 and 3: if Salsify has the locked packaging row, use the next CVS
+    # image in true site order. If Salsify is missing the row, leave CVS blank
+    # and do not consume a CVS image, which bumps the remaining CVS images down.
     for s_idx in (1, 2):
         if len(ordered) >= max_slots:
             break
-        s_url = _s_url(s_images[s_idx]) if s_idx < len(s_images) else ""
-        if not s_url:
-            ordered.append("")
-            continue
-        best_idx, best_score = _best_unused_match(s_url, pool, used)
-        if best_idx is not None and best_score >= 70:
-            ordered.append(pool[best_idx])
-            used.add(best_idx)
+        if _s_url(s_images[s_idx]) if s_idx < len(s_images) else "":
+            ordered.append(r_images[cvs_idx] if cvs_idx < len(r_images) else "")
+            if cvs_idx < len(r_images):
+                cvs_idx += 1
         else:
             ordered.append("")
 
-    # Slots 4+ are ATF/lifestyle rows.
-    # Keep CVS images in the exact remaining site order. Do not visually reorder
-    # these rows, because CVS thumbnails/ATF assets can look similar and the
-    # visual matcher can scramble the live site order. If CVS does not have a
-    # packaging image for locked slot 2 or 3, those live CVS images simply stay
-    # unused until this section and are bumped down in site order.
+    # Slots 4+: continue remaining CVS images in exact site order.
     for s_img in s_images[3:max_slots]:
         if len(ordered) >= max_slots:
             break
         if not _s_url(s_img):
             ordered.append("")
             continue
-        ordered.append(_next_unused(pool, used))
+        ordered.append(r_images[cvs_idx] if cvs_idx < len(r_images) else "")
+        if cvs_idx < len(r_images):
+            cvs_idx += 1
 
-    # Append any unused CVS images at the end in original order so the visual QA
-    # does not hide retailer images that still need review.
-    for idx, url in enumerate(pool):
-        if len(ordered) >= max_slots:
-            break
-        if idx not in used:
-            ordered.append(url)
-            used.add(idx)
+    # If CVS has extra images beyond Salsify rows, append them at the end in
+    # site order so the visual audit still shows every live CVS asset.
+    while len(ordered) < max_slots and cvs_idx < len(r_images):
+        ordered.append(r_images[cvs_idx])
+        cvs_idx += 1
 
     return ordered[:max_slots]
-
 
 def apply_retailer_salsify_image_limits(retailer_name, images):
     retailer = str(retailer_name or "").strip().lower()
