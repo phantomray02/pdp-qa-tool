@@ -1275,9 +1275,14 @@ def align_cvs_atf_images_by_visual_match(s_images, r_images, locked_slots=3, max
     used = set()
 
     # Slots 2 and 3 are the locked Salsify flat packaging audit rows.
-    # They should only get a CVS image when the visual match is convincingly close.
-    # Otherwise CVS stays blank in that row so ATF/lifestyle images do not appear
-    # to be missing/incorrect flat packaging.
+    # CVS-only behavior:
+    # - If Salsify slot 2 or 3 is missing, keep the CVS side blank too. This
+    #   preserves the current locked-slot behavior so ATF/lifestyle images do
+    #   not move up and hide missing required Salsify flat assets.
+    # - If Salsify slot 2 or 3 exists, show the best matching CVS image when
+    #   the match is strong enough. If visual hashing is too weak/noisy for a
+    #   dark package image, keep CVS site order and use the next unused CVS
+    #   image instead of rendering Missing.
     for s_idx in (1, 2):
         if len(ordered) >= max_slots:
             break
@@ -1286,11 +1291,11 @@ def align_cvs_atf_images_by_visual_match(s_images, r_images, locked_slots=3, max
             ordered.append("")
             continue
         best_idx, best_score = _best_unused_match(s_url, pool, used)
-        if best_idx is not None and best_score >= 80:
+        if best_idx is not None and best_score >= 70:
             ordered.append(pool[best_idx])
             used.add(best_idx)
         else:
-            ordered.append("")
+            ordered.append(_next_unused(pool, used))
 
     # Slots 4+ are ATF/lifestyle rows. Match the best available CVS image when
     # there is reasonable visual similarity. When similarity is weak, preserve
