@@ -1274,15 +1274,14 @@ def align_cvs_atf_images_by_visual_match(s_images, r_images, locked_slots=3, max
     pool = r_images[1:]
     used = set()
 
-    # Slots 2 and 3 are the locked Salsify flat packaging audit rows.
+    # Slots 2 and 3 are locked CVS packaging audit rows.
     # CVS-only behavior:
-    # - If Salsify slot 2 or 3 is missing, keep the CVS side blank too. This
-    #   preserves the current locked-slot behavior so ATF/lifestyle images do
-    #   not move up and hide missing required Salsify flat assets.
-    # - If Salsify slot 2 or 3 exists, show the best matching CVS image when
-    #   the match is strong enough. If visual hashing is too weak/noisy for a
-    #   dark package image, keep CVS site order and use the next unused CVS
-    #   image instead of rendering Missing.
+    # - If Salsify slot 2 or 3 is missing, keep the CVS side blank too.
+    # - If Salsify slot 2 or 3 exists, fill CVS only with a strong visual match
+    #   to that packaging image.
+    # - Any CVS image that does not match those locked packaging slots is not
+    #   lost. It stays unused here and gets bumped down into the ATF/lifestyle
+    #   rows below.
     for s_idx in (1, 2):
         if len(ordered) >= max_slots:
             break
@@ -1295,7 +1294,7 @@ def align_cvs_atf_images_by_visual_match(s_images, r_images, locked_slots=3, max
             ordered.append(pool[best_idx])
             used.add(best_idx)
         else:
-            ordered.append(_next_unused(pool, used))
+            ordered.append("")
 
     # Slots 4+ are ATF/lifestyle rows. Match the best available CVS image when
     # there is reasonable visual similarity. When similarity is weak, preserve
@@ -1439,6 +1438,23 @@ def salsify_url_candidates(value):
     try:
         parts = urlsplit(raw_url)
         decoded_path = unquote(parts.path or "")
+
+        # Salsify slug recovery. Some uploaded Salsify links contain literal
+        # "andamp" inside the slug, for example SNUGandampDRY. Browser clicks
+        # may still resolve, but server-side requests can return a shell page.
+        # Try the real slug form first: SNUGandDRY.
+        plain_and_path = re.sub(r"andamp;?", "and", decoded_path, flags=re.IGNORECASE)
+        if plain_and_path != decoded_path:
+            add(urlunsplit((
+                parts.scheme,
+                parts.netloc,
+                quote(plain_and_path, safe="/-._~"),
+                parts.query,
+                "",
+            )))
+
+        # Also keep the older encoded-ampersand candidate as a secondary
+        # fallback for any Salsify slug that genuinely expects an ampersand.
         fixed_path = re.sub(r"andamp;?", "&", decoded_path, flags=re.IGNORECASE)
         fixed_path = html.unescape(fixed_path)
         encoded_path = quote(fixed_path, safe="/-._~")
