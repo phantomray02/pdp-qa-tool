@@ -17,7 +17,6 @@ import streamlit as st
 import streamlit.components.v1 as components
 from bs4 import BeautifulSoup
 from PIL import Image, UnidentifiedImageError
-import numpy as np
 import warnings
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
@@ -90,7 +89,6 @@ MAX_CACHE = 400
 WALGREENS_REQUEST_TIMEOUT = 18
 WALGREENS_DEBUG_TIMEOUT = 25
 WALGREENS_API_TIMEOUT = 10
-CVS_REQUEST_TIMEOUT = 25
 
 # =========================================
 # PERFORMANCE SETTINGS
@@ -1178,207 +1176,155 @@ def reorder_walgreens_salsify_images_for_visual(images, max_slots=MAX_IMAGE_SLOT
 
 
 def reorder_cvs_retailer_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
-    """CVS-only retailer image order.
-
-    Keep CVS images in the exact live site order captured from the page.
-    Do not infer slots from image filenames, because CVS image filenames can
-    contain size/count/product numbers that look like slot numbers and can
-    scramble the carousel order.
-    """
-    ordered = []
+    urls = [str(u or "").strip() for u in (images or []) if str(u or "").strip()]
+    if not urls:
+        return []
+    slotted = {}
+    unslotted = []
     seen = set()
-    for url in images or []:
-        base = str(url or "").strip().split("?", 1)[0]
+    for url in urls:
+        base = url.split("?", 1)[0].strip()
         if not base or base in seen:
             continue
-        ordered.append(base)
         seen.add(base)
-        if len(ordered) >= max_slots:
-            break
+        slot_num = infer_cvs_image_slot_from_url(base)
+        if slot_num is not None and slot_num not in slotted:
+            slotted[slot_num] = base
+        else:
+            unslotted.append(base)
+    ordered = []
+    used = set()
+    def add_url(v):
+        v = str(v or "").strip()
+        if not v or v in used:
+            return False
+        ordered.append(v)
+        used.add(v)
+        return True
+    has_any_explicit_top3 = any(slot in slotted for slot in (1,2,3))
+    if has_any_explicit_top3:
+        for slot_num in (1,2,3):
+            ordered.append(slotted.get(slot_num, ""))
+            if slotted.get(slot_num):
+                used.add(slotted[slot_num])
+    else:
+        first_three = urls[:3]
+        for i in range(3):
+            value = first_three[i] if i < len(first_three) else ""
+            ordered.append(value)
+            if value:
+                used.add(value)
+        unslotted = [u for u in urls[3:] if u not in used]
+    for slot_num in sorted(k for k in slotted.keys() if k > 3):
+        add_url(slotted[slot_num])
+    for url in unslotted:
+        add_url(url)
     return ordered[:max_slots]
 
-def _cache_cvs_package_like_result(url, value):
-    global cvs_package_like_cache
-    if "cvs_package_like_cache" not in globals() or not isinstance(globals().get("cvs_package_like_cache"), dict):
-        cvs_package_like_cache = {}
-    cvs_package_like_cache[url] = value
-    while len(cvs_package_like_cache) > IMAGE_HASH_CACHE_MAX:
-        cvs_package_like_cache.pop(next(iter(cvs_package_like_cache)))
+def align_cvs_atf_images_by_visual_match(s_images, r_images, locked_slots=3, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
+    """CVS-specific image pairing with locked Salsify packaging slots.
 
+    What this fixes:
+    - Salsify slot 2 and slot 3 are required flat packaging audits.
+    - If Salsify is missing Flat Back_2D / Flat Left_2D, Salsify must still show Missing.
+    - CVS should only fill those flat rows when a CVS image is visually close enough.
+    - Weak CVS lifestyle/ATF images should not be pulled upward into flat packaging rows.
+    - After the locked flat rows, remaining CVS images are visually matched to Salsify ATF/lifestyle rows when the match is strong enough.
 
-def is_cvs_package_like_image(url):
-    """CVS-only lightweight packaging detector.
-
-    Looks for the centered product-pack / package-panel on white-space pattern.
-    This is only used for CVS locked packaging rows and does not affect any
-    other retailer.
+    This function reorders only the CVS side. It never moves Salsify images and never
+    hides missing Salsify flat assets.
     """
-    global cvs_package_like_cache
-    if "cvs_package_like_cache" not in globals() or not isinstance(globals().get("cvs_package_like_cache"), dict):
-        cvs_package_like_cache = {}
-
-    url = str(url or "").strip()
-    if not url or is_video_like_url(url):
-        return False
-    cache_key = url.split("?", 1)[0]
-    if cache_key in cvs_package_like_cache:
-        return bool(cvs_package_like_cache[cache_key])
-
-    try:
-        image_bytes = _download_image_bytes_with_retry(url)
-        if not image_bytes:
-            _cache_cvs_package_like_result(cache_key, False)
-            return False
-
-        bio = BytesIO(image_bytes)
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", Image.DecompressionBombWarning)
-            img = Image.open(bio)
-            width, height = img.size
-            if width * height > MAX_SAFE_IMAGE_PIXELS:
-                _cache_cvs_package_like_result(cache_key, False)
-                return False
-            img.load()
-
-        if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
-            rgba = img.convert("RGBA")
-            background = Image.new("RGB", rgba.size, (255, 255, 255))
-            background.paste(rgba, mask=rgba.split()[-1])
-            img = background
-        elif img.mode != "RGB":
-            img = img.convert("RGB")
-
-        img.thumbnail((180, 180), Image.LANCZOS)
-        arr = np.asarray(img).astype("int16")
-        if arr.size == 0:
-            _cache_cvs_package_like_result(cache_key, False)
-            return False
-
-        h, w = arr.shape[:2]
-        image_area = max(1, h * w)
-        white_mask = (arr[:, :, 0] >= 244) & (arr[:, :, 1] >= 244) & (arr[:, :, 2] >= 244)
-        nonwhite_mask = ~white_mask
-        nonwhite_count = int(nonwhite_mask.sum())
-        if nonwhite_count <= max(8, image_area * 0.015):
-            _cache_cvs_package_like_result(cache_key, False)
-            return False
-
-        white_ratio = float(white_mask.sum()) / float(image_area)
-        nonwhite_ratio = float(nonwhite_count) / float(image_area)
-
-        ys, xs = np.where(nonwhite_mask)
-        x0, x1 = int(xs.min()), int(xs.max())
-        y0, y1 = int(ys.min()), int(ys.max())
-        bbox_w = max(1, x1 - x0 + 1)
-        bbox_h = max(1, y1 - y0 + 1)
-        bbox_width_ratio = bbox_w / float(w)
-        bbox_height_ratio = bbox_h / float(h)
-        bbox_area_ratio = (bbox_w * bbox_h) / float(image_area)
-        cx = (x0 + x1) / 2.0 / float(w)
-        cy = (y0 + y1) / 2.0 / float(h)
-        centered = (0.32 <= cx <= 0.68) and (0.28 <= cy <= 0.72)
-
-        # Strong negative: full-bleed ATF/lifestyle/card graphics.
-        if white_ratio < 0.08 and bbox_area_ratio > 0.82:
-            _cache_cvs_package_like_result(cache_key, False)
-            return False
-        if nonwhite_ratio > 0.82 and bbox_area_ratio > 0.90:
-            _cache_cvs_package_like_result(cache_key, False)
-            return False
-
-        package_like = False
-        if centered and white_ratio >= 0.18 and bbox_area_ratio <= 0.82:
-            package_like = True
-        if centered and white_ratio >= 0.10 and bbox_height_ratio <= 0.58 and bbox_width_ratio >= 0.45:
-            package_like = True
-        if centered and white_ratio >= 0.40 and nonwhite_ratio <= 0.55:
-            package_like = True
-
-        if bbox_width_ratio > 0.92 and bbox_height_ratio > 0.92 and white_ratio < 0.35:
-            package_like = False
-
-        _cache_cvs_package_like_result(cache_key, bool(package_like))
-        return bool(package_like)
-    except Exception:
-        _cache_cvs_package_like_result(cache_key, False)
-        return False
-
-
-def align_cvs_atf_images_by_visual_match(s_images, r_images, locked_slots=3, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE, retailer_name="CVS"):
-    """CVS-only packaging-window alignment.
-
-    Do not reorder Salsify images. Do not reorder CVS images.
-
-    Extra fix:
-    - When Salsify locked packaging slot 2 or 3 is missing, keep the row blank.
-    - If the next CVS image is package-like, consume/skip it so the CVS package
-      image does not get bumped down into ATF rows.
-    - If the next CVS image is ATF/lifestyle, do not consume it so it appears in
-      the next ATF row.
-    """
-    # Hard guard: this locked packaging/window logic must never run for any
-    # retailer except CVS. If this function is accidentally called elsewhere,
-    # return the retailer images unchanged except for normal max-slot trimming.
-    retailer_key = str(retailer_name or "").strip().lower()
-    if retailer_key != "cvs":
-        return [str(u or "").strip() for u in list(r_images or []) if str(u or "").strip()][:max_slots]
-
     s_images = list(s_images or [])
     r_images = [str(u or "").strip() for u in list(r_images or []) if str(u or "").strip()]
+
+    if not r_images:
+        return []
+
     max_slots = max(0, int(max_slots or MAX_IMAGE_SLOTS_TO_COMPARE))
-    if not r_images or max_slots <= 0:
+    if max_slots <= 0:
         return []
 
     def _s_url(img):
         return str(img.get("url", "") or "").strip() if isinstance(img, dict) else ""
 
-    ordered = []
-    cvs_idx = 0
+    def _best_unused_match(s_url, pool, used_indexes):
+        best_idx = None
+        best_score = -1
+        if not s_url:
+            return None, -1
+        for idx, r_url in enumerate(pool):
+            if idx in used_indexes or not r_url:
+                continue
+            score = compare_images_visually(s_url, r_url)
+            if score > best_score:
+                best_idx = idx
+                best_score = score
+        return best_idx, best_score
 
-    # Slot 1: always use the first live CVS image.
-    if len(ordered) < max_slots:
-        ordered.append(r_images[cvs_idx] if cvs_idx < len(r_images) else "")
-        if cvs_idx < len(r_images):
-            cvs_idx += 1
+    def _next_unused(pool, used_indexes):
+        for idx, url in enumerate(pool):
+            if idx not in used_indexes:
+                used_indexes.add(idx)
+                return url
+        return ""
 
-    # Slots 2 and 3: locked packaging rows.
+    # Main image: keep the site's first CVS image as the main image. In almost all
+    # CVS PDPs this is the correct hero/main image and should not be stolen by ATF matching.
+    ordered = [r_images[0]]
+    pool = r_images[1:]
+    used = set()
+
+    # Slots 2 and 3 are the locked Salsify flat packaging audit rows.
+    # CVS-only behavior:
+    # - If Salsify slot 2 or 3 is missing, keep the CVS side blank too. This
+    #   preserves the current locked-slot behavior so ATF/lifestyle images do
+    #   not move up and hide missing required Salsify flat assets.
+    # - If Salsify slot 2 or 3 exists, show the best matching CVS image when
+    #   the match is strong enough. If visual hashing is too weak/noisy for a
+    #   dark package image, keep CVS site order and use the next unused CVS
+    #   image instead of rendering Missing.
     for s_idx in (1, 2):
         if len(ordered) >= max_slots:
             break
-
-        s_has_locked_packaging_row = bool(_s_url(s_images[s_idx]) if s_idx < len(s_images) else "")
-        next_cvs_url = r_images[cvs_idx] if cvs_idx < len(r_images) else ""
-
-        if not s_has_locked_packaging_row:
-            # Keep Salsify missing row blank. If CVS has a package-like image in
-            # this packaging window, skip it so it does not compare against ATF.
-            if next_cvs_url and is_cvs_package_like_image(next_cvs_url):
-                cvs_idx += 1
+        s_url = _s_url(s_images[s_idx]) if s_idx < len(s_images) else ""
+        if not s_url:
             ordered.append("")
             continue
-
-        if next_cvs_url and is_cvs_package_like_image(next_cvs_url):
-            ordered.append(next_cvs_url)
-            cvs_idx += 1
+        best_idx, best_score = _best_unused_match(s_url, pool, used)
+        if best_idx is not None and best_score >= 70:
+            ordered.append(pool[best_idx])
+            used.add(best_idx)
         else:
-            ordered.append("")
+            ordered.append(_next_unused(pool, used))
 
-    # Slots 4+: remaining CVS images in exact live site order.
+    # Slots 4+ are ATF/lifestyle rows. Match the best available CVS image when
+    # there is reasonable visual similarity. When similarity is weak, preserve
+    # source order with the next unused CVS image so the review still shows all assets.
     for s_img in s_images[3:max_slots]:
         if len(ordered) >= max_slots:
             break
-        if not _s_url(s_img):
+        s_url = _s_url(s_img)
+        if not s_url:
             ordered.append("")
             continue
-        ordered.append(r_images[cvs_idx] if cvs_idx < len(r_images) else "")
-        if cvs_idx < len(r_images):
-            cvs_idx += 1
+        best_idx, best_score = _best_unused_match(s_url, pool, used)
+        if best_idx is not None and best_score >= 55:
+            ordered.append(pool[best_idx])
+            used.add(best_idx)
+        else:
+            ordered.append(_next_unused(pool, used))
 
-    while len(ordered) < max_slots and cvs_idx < len(r_images):
-        ordered.append(r_images[cvs_idx])
-        cvs_idx += 1
+    # Append any unused CVS images at the end in original order so the visual QA
+    # does not hide retailer images that still need review.
+    for idx, url in enumerate(pool):
+        if len(ordered) >= max_slots:
+            break
+        if idx not in used:
+            ordered.append(url)
+            used.add(idx)
 
     return ordered[:max_slots]
+
 
 def apply_retailer_salsify_image_limits(retailer_name, images):
     retailer = str(retailer_name or "").strip().lower()
@@ -1493,23 +1439,6 @@ def salsify_url_candidates(value):
     try:
         parts = urlsplit(raw_url)
         decoded_path = unquote(parts.path or "")
-
-        # Salsify slug recovery. Some uploaded Salsify links contain literal
-        # "andamp" inside the slug, for example SNUGandampDRY. Browser clicks
-        # may still resolve, but server-side requests can return a shell page.
-        # Try the real slug form first: SNUGandDRY.
-        plain_and_path = re.sub(r"andamp;?", "and", decoded_path, flags=re.IGNORECASE)
-        if plain_and_path != decoded_path:
-            add(urlunsplit((
-                parts.scheme,
-                parts.netloc,
-                quote(plain_and_path, safe="/-._~"),
-                parts.query,
-                "",
-            )))
-
-        # Also keep the older encoded-ampersand candidate as a secondary
-        # fallback for any Salsify slug that genuinely expects an ampersand.
         fixed_path = re.sub(r"andamp;?", "&", decoded_path, flags=re.IGNORECASE)
         fixed_path = html.unescape(fixed_path)
         encoded_path = quote(fixed_path, safe="/-._~")
@@ -3728,87 +3657,6 @@ def get_salsify_images(url):
 # =========================================
 # CVS / RETAILER PARSERS
 # =========================================
-def is_probably_cvs_product_html(html_text):
-    """CVS-only check for real product content.
-
-    Some CVS URLs load in a browser but server-side requests can return an
-    empty/shell/challenge page. This keeps live fetches from being trusted when
-    there is no PDP copy or image payload in the HTML.
-    """
-    text = str(html_text or "")
-    if not text.strip():
-        return False
-    lowered = text.lower()
-    product_markers = [
-        "vendordetailsbullets",
-        "vendordetailsparagraph",
-        "vendorcontent",
-        "dynamicmediaurl",
-        "/bizcontent/merchandising/productimages/high_res/",
-        "productimages/high_res",
-        "skuId=",
-        "prodid-",
-        "__next_data__",
-    ]
-    blocked_markers = [
-        "captcha",
-        "are-you-human",
-        "px-captcha",
-        "let us know you're not a robot",
-        "let us know you’re not a robot",
-        "access denied",
-    ]
-    has_product_marker = any(marker in lowered for marker in product_markers)
-    has_block_marker = any(marker in lowered for marker in blocked_markers)
-    return bool(has_product_marker and not has_block_marker)
-
-
-def fetch_cvs_html_with_fallbacks(retail_url):
-    """CVS-only live HTML fetch with safer fallbacks.
-
-    The normal get_html() path is fast and works for most CVS items. A few live
-    CVS pages return empty/shell content to server-side requests, so this adds a
-    longer desktop retry and a mobile-user-agent retry before declaring Missing.
-    """
-    retail_url = str(retail_url or "").strip()
-    if not retail_url:
-        return "", "cvs_url_missing"
-
-    html_text = get_html(retail_url)
-    if is_probably_cvs_product_html(html_text):
-        return html_text, "cvs_get_html"
-
-    desktop_ua = (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    )
-    mobile_ua = (
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) "
-        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1"
-    )
-
-    for label, user_agent in [("cvs_live_desktop_retry", desktop_ua), ("cvs_live_mobile_retry", mobile_ua)]:
-        try:
-            session = get_session()
-            headers = dict(HEADERS)
-            headers.update({
-                "User-Agent": user_agent,
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.9",
-                "Cache-Control": "no-cache",
-                "Pragma": "no-cache",
-                "Upgrade-Insecure-Requests": "1",
-            })
-            r = session.get(retail_url, headers=headers, timeout=CVS_REQUEST_TIMEOUT, allow_redirects=True)
-            if r.status_code == 200 and r.text and is_probably_cvs_product_html(r.text):
-                return r.text, label
-            if r.status_code == 200 and r.text and not html_text:
-                html_text = r.text
-        except Exception:
-            continue
-
-    return html_text or "", "cvs_live_fetch_empty_or_shell"
-
 def clean_cvs_text(text):
     if not text:
         return ""
@@ -5136,8 +4984,8 @@ def _extract_cvs_text_from_html(html_text, retail_url="", target_rpc=""):
 
 @st.cache_data(show_spinner=False)
 def get_cvs_bundle(retail_url, target_rpc=""):
-    html_text, cvs_source_used = fetch_cvs_html_with_fallbacks(retail_url)
-    bundle = {
+    html_text = get_html(retail_url)
+    return {
         "text": _extract_cvs_text_from_html(
             html_text,
             retail_url=retail_url,
@@ -5145,11 +4993,6 @@ def get_cvs_bundle(retail_url, target_rpc=""):
         ),
         "images": extract_cvs_images_from_html(html_text),
     }
-    debug = bundle.setdefault("text", {}).setdefault("debug", {})
-    debug["Source Used"] = cvs_source_used
-    debug["CVS Product HTML Detected"] = bool(is_probably_cvs_product_html(html_text))
-    debug["CVS Live HTML Length"] = len(str(html_text or ""))
-    return bundle
 
 # =========================================
 # KROGER PARSERS
@@ -9897,7 +9740,6 @@ def build_normalized_comparison_payload(
             r_images,
             locked_slots=3,
             max_slots=min(max_slots, cvs_max_slots),
-            retailer_name=retailer_name,
         )
 
     # Sam's Club-only: if Salsify slot 2 is ATF Video-Sams Club, reserve retailer
@@ -9950,7 +9792,7 @@ def get_visual_row_payload(
                 retail_url,
                 target_rpc=current_target_sku,
             )
-    elif retailer_norm in {"heb", "cvs"}:
+    elif retailer_norm == "heb":
         if not row_source_code:
             row_source_code = lookup_uploaded_raw_html(
                 uploaded_html_map,
@@ -9998,7 +9840,7 @@ def process_row(row):
         retailer_norm_for_row = normalize_retailer_name(retailer_name).strip().lower()
         if retailer_norm_for_row == "kroger" and not retail_url and cvs_rpc:
             retail_url = find_kroger_url_in_uploaded_map(st.session_state.uploaded_raw_html_map or {}, target_rpc=cvs_rpc)
-        if retailer_norm_for_row in {"heb", "cvs"} and not row_source_code:
+        if retailer_norm_for_row == "heb" and not row_source_code:
             row_source_code = lookup_uploaded_raw_html(st.session_state.uploaded_raw_html_map or {}, retail_url, target_rpc=cvs_rpc)
 
         title_score = 0
