@@ -1436,9 +1436,9 @@ def clean_uploaded_url_value(value):
     value = value.replace("\u00a0", " ")
     value = re.sub(r"[\u200b-\u200f\u202a-\u202e\u2060\ufeff]", "", value)
     value = value.replace("\r", "").replace("\n", "")
-    # Common when users paste semicolon/comma-separated URL lists into trackers.
-    # Do this after removing whitespace so real query parameters are preserved,
-    # but accidental trailing separators do not break TXT lookup keys.
+    # CVS-only issue surfaced by pasted URL lists: tracker cells can contain
+    # URLs with accidental trailing separators like ?skuId=730205;. Strip only
+    # terminal separators so the real query string remains intact.
     value = value.strip().rstrip(";,")
 
     # If Excel formula text is read instead of the cached result, extract the
@@ -2532,11 +2532,9 @@ def parse_uploaded_raw_html_map(raw_text):
 
         if compact_html:
             if requested_url and "cvs.com" in requested_url.lower() and raw_html_text:
-                # CVS-only root fix: the extension PARSED JSON is sometimes partial
-                # for CVS items. If we use the compact JSON-only page, we can throw
-                # away the real rendered CVS Details/card/image HTML and end up with
-                # Missing title/description/features/images. Keep compact values first,
-                # but append the raw browser-rendered CVS HTML as fallback material.
+                # CVS-only root fix: parsed JSON from the extension can be partial.
+                # Do not discard the full browser-rendered CVS HTML. Put compact
+                # parsed values first, then keep raw CVS HTML as fallback material.
                 html_text = compact_html + "\n<!-- CVS RAW HTML FALLBACK FROM EXTENSION -->\n" + raw_html_text
             else:
                 html_text = compact_html
@@ -2623,8 +2621,8 @@ def lookup_uploaded_raw_html(uploaded_html_map, retail_url, target_rpc=""):
             return html_text
         return ""
 
-    # CVS-only: extension captures can normalize/finalize URLs slightly differently
-    # than the tracker URL. If exact URL matching misses, fall back to skuId/RPC.
+    # CVS-only: extension captures can normalize requested/final URLs slightly
+    # differently than the tracker. If exact URL lookup misses, match by skuId/RPC.
     if retail_url and "cvs.com" in retail_url.lower():
         rpc = re.sub(r"[^0-9A-Za-z_-]", "", str(target_rpc or "").replace(".0", "").strip())
         if not rpc:
@@ -2636,8 +2634,14 @@ def lookup_uploaded_raw_html(uploaded_html_map, retail_url, target_rpc=""):
                 key_str = str(key or "")
                 if re.search(rf"[?&]skuId={re.escape(rpc)}(?:&|$)", key_str, flags=re.IGNORECASE):
                     return str(html_text or "")
-                if re.search(rf"cvs\.com/.+?skuId={re.escape(rpc)}(?:&|$)", key_str, flags=re.IGNORECASE):
-                    return str(html_text or "")
+            # If the key lost the query string, at least try a product-page match
+            # after the exact skuId checks. This is intentionally CVS-only.
+            product_path = re.sub(r"[?#].*$", "", normalize_uploaded_capture_url(retail_url)).lower()
+            if product_path:
+                for key, html_text in uploaded_html_map.items():
+                    key_norm = re.sub(r"[?#].*$", "", normalize_uploaded_capture_url(key)).lower()
+                    if key_norm == product_path:
+                        return str(html_text or "")
 
     if not retail_url and target_rpc:
         matched_key = find_kroger_url_in_uploaded_map(uploaded_html_map, target_rpc=target_rpc)
@@ -5253,6 +5257,49 @@ def _extract_cvs_text_from_html(html_text, retail_url="", target_rpc=""):
 
     if not debug.get("Description Path"):
         debug["Description Path"] = debug.get("Source Used", "") if description else "description_empty"
+    if not title or not description:
+        # CVS-only fallback for extension compact/raw pages and live pages that
+        # expose Product JSON-LD/meta but not vendorDetails fields.
+        try:
+            jsonld_candidates = []
+            for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+                raw_json = (script.string or script.get_text(" ", strip=True) or "").strip()
+                if not raw_json:
+                    continue
+                try:
+                    parsed_json = json.loads(raw_json)
+                except Exception:
+                    continue
+                stack = parsed_json if isinstance(parsed_json, list) else [parsed_json]
+                while stack:
+                    node = stack.pop(0)
+                    if isinstance(node, dict):
+                        node_type = node.get("@type", "")
+                        node_types = node_type if isinstance(node_type, list) else [node_type]
+                        if any(str(t).lower() == "product" for t in node_types):
+                            jsonld_candidates.append(node)
+                        for child in node.values():
+                            if isinstance(child, (dict, list)):
+                                stack.append(child)
+                    elif isinstance(node, list):
+                        stack.extend(node)
+            for node in jsonld_candidates:
+                if not title and node.get("name"):
+                    title = normalize_space(node.get("name", ""))
+                    debug["Title Path"] = "cvs_jsonld_product_name"
+                if not description and node.get("description"):
+                    description = clean_cvs_text(node.get("description", ""))
+                    debug["Description Path"] = "cvs_jsonld_product_description"
+                if title and description:
+                    break
+            if not description:
+                meta_desc = soup.find("meta", attrs={"name": "description"}) or soup.find("meta", attrs={"property": "og:description"})
+                if meta_desc and meta_desc.get("content"):
+                    description = clean_cvs_text(meta_desc.get("content", ""))
+                    debug["Description Path"] = "cvs_meta_description"
+        except Exception:
+            pass
+
     if not debug.get("Features Path"):
         debug["Features Path"] = debug.get("Source Used", "") if features else "features_empty"
 
@@ -8375,7 +8422,11 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
     if uploaded_html.strip():
         if retailer == "cvs":
             bundle = {"text": _extract_cvs_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_cvs_images_from_html(uploaded_html)}
-            bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
+            debug = bundle.setdefault("text", {}).setdefault("debug", {})
+            debug["Source Used"] = "uploaded_txt_html"
+            debug["CVS Uploaded HTML Length"] = len(uploaded_html)
+            debug["CVS Uploaded Has Raw Fallback"] = "CVS RAW HTML FALLBACK FROM EXTENSION" in uploaded_html
+            debug["CVS Uploaded Product HTML Detected"] = bool(is_probably_cvs_product_html(uploaded_html))
             return bundle
         if retailer == "walgreens":
             bundle = {"text": extract_walgreens_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_walgreens_images_from_html(uploaded_html)}
