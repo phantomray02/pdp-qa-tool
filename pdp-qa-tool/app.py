@@ -1437,7 +1437,7 @@ def clean_uploaded_url_value(value):
     value = re.sub(r"[\u200b-\u200f\u202a-\u202e\u2060\ufeff]", "", value)
     value = value.replace("\r", "").replace("\n", "")
     # CVS-only issue surfaced by pasted URL lists: tracker cells can contain
-    # URLs with accidental trailing separators like ?skuId=731730;. Strip only
+    # URLs with accidental trailing separators like ?skuId=137056;. Strip only
     # terminal separators so the real query string remains intact.
     value = value.strip().rstrip(";,")
 
@@ -8524,8 +8524,6 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
             upload_debug["CVS Uploaded HTML Length"] = len(uploaded_html)
             upload_debug["CVS Uploaded Has Raw Fallback"] = "CVS RAW HTML FALLBACK FROM EXTENSION" in uploaded_html
             upload_debug["CVS Uploaded Product HTML Detected"] = bool(is_probably_cvs_product_html(uploaded_html))
-            # CVS-only combined approach: if uploaded TXT is partial, also try the
-            # live fetch and merge the richest pieces. This does not touch other retailers.
             if _cvs_bundle_score(uploaded_bundle) < 550:
                 live_bundle = get_cvs_bundle(retail_url, target_rpc)
                 merged_bundle = merge_cvs_bundles_prefer_richer_copy(uploaded_bundle, live_bundle)
@@ -10854,6 +10852,16 @@ if uploaded_file:
                 st.session_state.auto_batch_upload_key = ""
 
             txt_ready_for_batch = bool(matched_uploaded_html_count > 0)
+            cvs_capture_block_reason = ""
+            cvs_missing_capture_urls = []
+            if selected_retailer == "CVS" and selected_capture_mode == CAPTURE_MODE_USE_EXTENSION:
+                if retailer_df is not None and not retailer_df.empty:
+                    missing_capture_df = retailer_df[retailer_df["copy_source_code"].fillna("").astype(str).str.len() == 0].copy()
+                    cvs_missing_capture_urls = [str(x).strip() for x in missing_capture_df.get("retail_url", pd.Series(dtype=str)).fillna("").astype(str).tolist() if str(x).strip()]
+                if not uploaded_raw_html_map:
+                    cvs_capture_block_reason = "CVS needs a browser extension TXT upload before batch. Live CVS fetch is unstable and can return empty shell pages."
+                elif missing_uploaded_html_count > 0:
+                    cvs_capture_block_reason = f"CVS TXT upload is incomplete: {missing_uploaded_html_count} of {len(retailer_df)} queued CVS rows did not match a captured TXT block."
             isolated_unique_url_count = int(retailer_df["retail_url"].fillna("").astype(str).str.strip().replace("", pd.NA).dropna().nunique()) if retailer_df is not None and not retailer_df.empty and "retail_url" in retailer_df.columns else 0
             st.caption(f"Strict retailer isolation active: {selected_retailer} only. Rows queued: {len(retailer_df)}. Unique retailer URLs queued: {isolated_unique_url_count}.")
             if selected_capture_mode == CAPTURE_MODE_USE_EXTENSION:
@@ -10876,10 +10884,17 @@ if uploaded_file:
 
             if uploaded_raw_html_map:
                 st.caption(f"TXT match status for {selected_retailer}: {matched_uploaded_html_count} matched rows, {missing_uploaded_html_count} unmatched rows.")
+            if cvs_capture_block_reason:
+                st.error(cvs_capture_block_reason)
+                if cvs_missing_capture_urls:
+                    with st.expander("CVS URLs missing from uploaded TXT", expanded=False):
+                        st.code("\n".join(cvs_missing_capture_urls[:200]))
+                        if len(cvs_missing_capture_urls) > 200:
+                            st.caption(f"Showing first 200 of {len(cvs_missing_capture_urls)} missing CVS URLs.")
 
             should_auto_run = False
             auto_run_reason = ""
-            if selected_capture_mode == CAPTURE_MODE_USE_EXTENSION and txt_ready_for_batch:
+            if selected_capture_mode == CAPTURE_MODE_USE_EXTENSION and txt_ready_for_batch and not cvs_capture_block_reason:
                 should_auto_run = True
                 auto_run_reason = "uploaded TXT capture"
             elif selected_capture_mode == CAPTURE_MODE_SKIP_EXTENSION and selected_retailer in AUTO_SKIP_EXTENSION_RETAILERS:
@@ -10921,6 +10936,7 @@ if uploaded_file:
                     "Run Batch",
                     key=f"run_batch_btn::{current_batch_key}",
                     use_container_width=True,
+                    disabled=bool(cvs_capture_block_reason),
                 ):
                     st.session_state.batch_run_requested = True
                     st.session_state.batch_started_key = current_batch_key
