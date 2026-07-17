@@ -2610,6 +2610,149 @@ def parse_uploaded_raw_html_map(raw_text):
 
     return html_map
 
+
+def is_likely_usable_cvs_manual_source(html_text):
+    """CVS-only guard for manually pasted source snippets.
+
+    A few CVS pages were being pasted/copied as stylesheet/footer-only source.
+    Those snippets are not useful product captures and should not count as a
+    matched TXT/HTML capture, otherwise the batch can hide the real missing
+    capture problem. Keep this intentionally CVS-specific.
+    """
+    text = str(html_text or "")
+    if len(text.strip()) < 200:
+        return False
+    lowered = text.lower()
+
+    strong_product_markers = [
+        "vendordetailsbullet",
+        "vendordetails",
+        "bizcontent/merchandising/productimages/high_res",
+        "dynamicmediaurl",
+        "skuId=".lower(),
+        "prodid-",
+    ]
+    has_product_marker = any(marker.lower() in lowered for marker in strong_product_markers)
+    has_product_text = bool(re.search(r"\b(kleenex|kotex|viva|poise|depend|huggies|pull-ups|cottonelle|scott|goodnites|thinx)\b", lowered))
+
+    # This catches the current bad source snippets: they are mostly CVS footer
+    # container CSS and have no product content.
+    footer_css_only = (
+        "sc-cvs-footer-container" in lowered
+        and not has_product_marker
+        and not has_product_text
+    )
+    if footer_css_only:
+        return False
+
+    return bool(has_product_marker or has_product_text)
+
+
+def parse_cvs_manual_source_code_workbook(file_bytes):
+    """Parse a manual CVS source-code workbook.
+
+    Supported format:
+      - Column A: CVS RPC / skuId.
+      - Columns B onward: pasted source snippets for that RPC.
+
+    This is a fallback convenience for manual troubleshooting only. The browser
+    extension TXT remains the best source because Excel cells can truncate long
+    HTML around 32k characters.
+    """
+    html_map = {}
+    stats = {
+        "mode": "cvs_manual_source_xlsx",
+        "rows_seen": 0,
+        "mapped_rows": 0,
+        "skipped_blank": 0,
+        "skipped_weak": 0,
+        "truncated_cell_count": 0,
+    }
+    if not file_bytes:
+        return html_map, stats
+
+    try:
+        wb = load_workbook(BytesIO(file_bytes), read_only=True, data_only=True)
+    except Exception:
+        return html_map, stats
+
+    for ws in wb.worksheets:
+        for row in ws.iter_rows(values_only=True):
+            if not row or not any(cell is not None and str(cell).strip() for cell in row):
+                continue
+            rpc_raw = str(row[0] or "").replace(".0", "").strip()
+            rpc = re.sub(r"[^0-9A-Za-z_-]", "", rpc_raw)
+            if not rpc:
+                continue
+            stats["rows_seen"] += 1
+
+            pieces = []
+            for value in row[1:]:
+                if value is None:
+                    continue
+                part = html.unescape(str(value or "").strip())
+                if not part:
+                    continue
+                if len(part) >= 32760:
+                    stats["truncated_cell_count"] += 1
+                pieces.append(part)
+
+            html_text = "\n".join(pieces).strip()
+            if not html_text:
+                stats["skipped_blank"] += 1
+                continue
+            if not is_likely_usable_cvs_manual_source(html_text):
+                stats["skipped_weak"] += 1
+                continue
+
+            # Wrap snippets so BeautifulSoup can parse fragments consistently.
+            wrapped = (
+                "<html><body>\n"
+                f"<meta name='manual-cvs-rpc' content='{html.escape(rpc, quote=True)}'>\n"
+                "<!-- CVS MANUAL SOURCE XLSX -->\n"
+                + html_text
+                + "\n</body></html>"
+            )
+            html_map[f"cvs_rpc::{rpc}"] = wrapped
+            stats["mapped_rows"] += 1
+
+    return html_map, stats
+
+
+def parse_uploaded_retailer_source_file(file_bytes, file_name):
+    """Parse uploaded captured retailer source.
+
+    TXT/HTML files use the extension parser. XLSX files are treated as manual
+    CVS source-code workbooks keyed by CVS RPC. This keeps the manual fallback
+    isolated to CVS and does not change other retailer capture behavior.
+    """
+    file_name = str(file_name or "").lower().strip()
+    if file_name.endswith(".xlsx"):
+        return parse_cvs_manual_source_code_workbook(file_bytes)
+
+    text_value = ""
+    if isinstance(file_bytes, bytes):
+        for encoding in ["utf-8", "utf-8-sig", "latin1"]:
+            try:
+                text_value = file_bytes.decode(encoding)
+                break
+            except Exception:
+                pass
+    else:
+        text_value = str(file_bytes or "")
+
+    parsed_map = parse_uploaded_raw_html_map(text_value)
+    stats = {
+        "mode": "extension_txt_html",
+        "rows_seen": 0,
+        "mapped_rows": len(parsed_map),
+        "skipped_blank": 0,
+        "skipped_weak": 0,
+        "truncated_cell_count": 0,
+    }
+    return parsed_map, stats
+
+
 def lookup_uploaded_raw_html(uploaded_html_map, retail_url, target_rpc=""):
     uploaded_html_map = uploaded_html_map or {}
     retail_url = str(retail_url or "").strip()
@@ -10652,6 +10795,8 @@ if "uploaded_raw_html_map" not in st.session_state:
     st.session_state.uploaded_raw_html_map = {}
 if "uploaded_raw_html_filename" not in st.session_state:
     st.session_state.uploaded_raw_html_filename = ""
+if "uploaded_raw_html_stats" not in st.session_state:
+    st.session_state.uploaded_raw_html_stats = {}
 if "raw_html_upload_hash" not in st.session_state:
     st.session_state.raw_html_upload_hash = ""
 if "auto_batch_upload_key" not in st.session_state:
@@ -10724,6 +10869,7 @@ if uploaded_file:
             st.session_state.capture_mode = CAPTURE_MODE_USE_EXTENSION
             st.session_state.uploaded_raw_html_map = {}
             st.session_state.uploaded_raw_html_filename = ""
+            st.session_state.uploaded_raw_html_stats = {}
             st.session_state.raw_html_upload_hash = ""
             st.session_state.auto_batch_upload_key = ""
             clear_in_memory_caches()
@@ -10775,26 +10921,45 @@ if uploaded_file:
                 file_ready_for_batch = True
 
             uploaded_raw_html_file = st.file_uploader(
-                "Upload Captured Retailer HTML TXT",
-                type=["txt", "html"],
+                "Upload Captured Retailer HTML TXT or CVS source-code XLSX",
+                type=["txt", "html", "xlsx"],
                 key="uploaded_raw_html_txt_top",
-                help="If you ran the extension and downloaded the TXT, upload it here so batch can run from the captured retailer HTML.",
+                help="Best option: extension TXT/HTML. CVS-only fallback: XLSX with CVS RPC in column A and pasted source snippets in columns B onward.",
             )
             if uploaded_raw_html_file is not None:
                 raw_html_bytes = uploaded_raw_html_file.getvalue()
                 raw_html_hash = hashlib.md5(raw_html_bytes or b"").hexdigest()
                 if st.session_state.raw_html_upload_hash != raw_html_hash:
-                    raw_html_text = get_uploaded_text_file_bytes(uploaded_raw_html_file)
-                    st.session_state.uploaded_raw_html_map = parse_uploaded_raw_html_map(raw_html_text)
+                    parsed_source_map, parsed_source_stats = parse_uploaded_retailer_source_file(raw_html_bytes, uploaded_raw_html_file.name)
+                    st.session_state.uploaded_raw_html_map = parsed_source_map
+                    st.session_state.uploaded_raw_html_stats = parsed_source_stats
                     st.session_state.uploaded_raw_html_filename = uploaded_raw_html_file.name
                     st.session_state.raw_html_upload_hash = raw_html_hash
                     st.session_state.auto_batch_upload_key = ""
                     st.session_state.batch_error_text = ""
                 uploaded_raw_html_map = st.session_state.uploaded_raw_html_map or {}
+                source_stats = st.session_state.get("uploaded_raw_html_stats", {}) or {}
+                source_mode = source_stats.get("mode", "extension_txt_html")
                 if uploaded_raw_html_map:
-                    st.success(f"Loaded TXT capture map from {st.session_state.uploaded_raw_html_filename} with {len(uploaded_raw_html_map)} URL keys.")
+                    if source_mode == "cvs_manual_source_xlsx":
+                        st.success(
+                            f"Loaded CVS manual source workbook from {st.session_state.uploaded_raw_html_filename}: "
+                            f"{source_stats.get('mapped_rows', len(uploaded_raw_html_map))} usable CVS RPC captures mapped."
+                        )
+                        if source_stats.get("skipped_blank", 0) or source_stats.get("skipped_weak", 0):
+                            st.warning(
+                                f"Skipped {source_stats.get('skipped_blank', 0)} blank rows and "
+                                f"{source_stats.get('skipped_weak', 0)} rows that looked like footer/CSS-only source, not product HTML."
+                            )
+                        if source_stats.get("truncated_cell_count", 0):
+                            st.warning(
+                                "Some XLSX cells are near Excel's cell text limit, so pasted HTML may be truncated. "
+                                "For best results, use the extension TXT export when possible."
+                            )
+                    else:
+                        st.success(f"Loaded TXT capture map from {st.session_state.uploaded_raw_html_filename} with {len(uploaded_raw_html_map)} URL keys.")
                 else:
-                    st.warning("TXT uploaded, but no labeled URL + HTML blocks were found yet. If needed, keep using the extension and re-download the TXT.")
+                    st.warning("Source uploaded, but no usable labeled URL/RPC + HTML blocks were found yet. For CVS, use extension TXT/HTML or XLSX with RPC in column A and real product HTML/source in columns B onward.")
             else:
                 uploaded_raw_html_map = st.session_state.uploaded_raw_html_map or {}
 
