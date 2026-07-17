@@ -1305,20 +1305,19 @@ def is_cvs_package_like_image(url):
 
 
 def align_cvs_atf_images_by_visual_match(s_images, r_images, locked_slots=3, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE, retailer_name="CVS"):
-    """CVS-only packaging-window alignment.
+    """CVS-only hybrid packaging alignment.
 
-    Do not reorder Salsify images. Do not reorder CVS images.
+    Goal:
+    - Keep Salsify order stable.
+    - Keep CVS ATF/site order stable.
+    - Lock CVS slots 2 and 3 only when CVS has a real packaging match.
 
-    Extra fix:
-    - When Salsify locked packaging slot 2 or 3 is missing, keep the row blank.
-    - If the next CVS image is package-like, consume/skip it so the CVS package
-      image does not get bumped down into ATF rows.
-    - If the next CVS image is ATF/lifestyle, do not consume it so it appears in
-      the next ATF row.
+    Why this is hybrid:
+    - Some valid CVS package panels are dark/full-frame and fail the simple
+      white-space package detector.
+    - Some CVS image 2 / 3 assets are ATF/detail cards and should not be forced
+      into Salsify's locked packaging rows.
     """
-    # Hard guard: this locked packaging/window logic must never run for any
-    # retailer except CVS. If this function is accidentally called elsewhere,
-    # return the retailer images unchanged except for normal max-slot trimming.
     retailer_key = str(retailer_name or "").strip().lower()
     if retailer_key != "cvs":
         return [str(u or "").strip() for u in list(r_images or []) if str(u or "").strip()][:max_slots]
@@ -1332,55 +1331,93 @@ def align_cvs_atf_images_by_visual_match(s_images, r_images, locked_slots=3, max
     def _s_url(img):
         return str(img.get("url", "") or "").strip() if isinstance(img, dict) else ""
 
+    def _safe_visual_score(s_url, r_url):
+        if not s_url or not r_url:
+            return 0
+        try:
+            return int(compare_images_visually(s_url, r_url) or 0)
+        except Exception:
+            return 0
+
+    def _choose_cvs_packaging_candidate(s_url, remaining_urls, search_window=3):
+        """Choose one CVS image for a locked Salsify packaging row.
+
+        Look only at the next few CVS images. A candidate qualifies if:
+        - it visually matches the Salsify locked packaging row strongly enough, or
+        - it passes the lightweight CVS package-like detector.
+
+        Return the chosen index inside remaining_urls, or None.
+        """
+        best_idx = None
+        best_score = -1
+        window = list(remaining_urls[:max(1, int(search_window or 1))])
+
+        for idx, candidate_url in enumerate(window):
+            if not candidate_url:
+                continue
+            visual_score = _safe_visual_score(s_url, candidate_url)
+            package_like = False
+            try:
+                package_like = bool(is_cvs_package_like_image(candidate_url))
+            except Exception:
+                package_like = False
+
+            # 65+ prevents ATF/detail cards from getting forced into locked
+            # packaging rows, while still allowing real dark/full-frame package
+            # panels to match by visual similarity.
+            if visual_score >= 65 or package_like:
+                rank_score = visual_score + (12 if package_like else 0) - (idx * 3)
+                if rank_score > best_score:
+                    best_idx = idx
+                    best_score = rank_score
+
+        return best_idx
+
     ordered = []
-    cvs_idx = 0
 
     # Slot 1: always use the first live CVS image.
-    if len(ordered) < max_slots:
-        ordered.append(r_images[cvs_idx] if cvs_idx < len(r_images) else "")
-        if cvs_idx < len(r_images):
-            cvs_idx += 1
+    ordered.append(r_images[0] if r_images else "")
+    remaining = list(r_images[1:])
 
-    # Slots 2 and 3: locked packaging rows.
+    # Slots 2 and 3: locked Salsify packaging rows.
+    # Only consume a CVS image if it qualifies for that specific packaging row.
     for s_idx in (1, 2):
         if len(ordered) >= max_slots:
             break
 
-        s_has_locked_packaging_row = bool(_s_url(s_images[s_idx]) if s_idx < len(s_images) else "")
-        next_cvs_url = r_images[cvs_idx] if cvs_idx < len(r_images) else ""
-
-        if not s_has_locked_packaging_row:
-            # Keep Salsify missing row blank. If CVS has a package-like image in
-            # this packaging window, skip it so it does not compare against ATF.
-            if next_cvs_url and is_cvs_package_like_image(next_cvs_url):
-                cvs_idx += 1
+        s_locked_url = _s_url(s_images[s_idx]) if s_idx < len(s_images) else ""
+        if not s_locked_url:
+            # Salsify packaging is missing. Keep this row blank.
+            # If the next CVS image is clearly packaging, consume it so it does
+            # not get bumped down into ATF rows. If it is ATF/lifestyle, preserve
+            # it for the next ATF row.
+            if remaining:
+                try:
+                    if is_cvs_package_like_image(remaining[0]):
+                        remaining.pop(0)
+                except Exception:
+                    pass
             ordered.append("")
             continue
 
-        if next_cvs_url:
-            # Salsify has this locked packaging row, so trust CVS live site
-            # order for slot 2/3. Do not use the package detector here because
-            # dark/full-frame package panels, like Depend, can be valid package
-            # images even without much white space.
-            ordered.append(next_cvs_url)
-            cvs_idx += 1
-        else:
+        chosen_idx = _choose_cvs_packaging_candidate(s_locked_url, remaining, search_window=3)
+        if chosen_idx is None:
+            # Do not force ATF/detail images into locked package rows.
             ordered.append("")
+        else:
+            ordered.append(remaining.pop(chosen_idx))
 
-    # Slots 4+: remaining CVS images in exact live site order.
+    # Slots 4+: continue with remaining CVS images in their original live order.
     for s_img in s_images[3:max_slots]:
         if len(ordered) >= max_slots:
             break
         if not _s_url(s_img):
             ordered.append("")
             continue
-        ordered.append(r_images[cvs_idx] if cvs_idx < len(r_images) else "")
-        if cvs_idx < len(r_images):
-            cvs_idx += 1
+        ordered.append(remaining.pop(0) if remaining else "")
 
-    while len(ordered) < max_slots and cvs_idx < len(r_images):
-        ordered.append(r_images[cvs_idx])
-        cvs_idx += 1
+    while len(ordered) < max_slots and remaining:
+        ordered.append(remaining.pop(0))
 
     return ordered[:max_slots]
 
