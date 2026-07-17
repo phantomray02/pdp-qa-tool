@@ -1208,16 +1208,9 @@ def _cache_cvs_package_like_result(url, value):
 def is_cvs_package_like_image(url):
     """CVS-only lightweight packaging detector.
 
-    Purpose:
-    - Do not reorder CVS images.
-    - Only decide whether the next live CVS image is allowed to occupy locked
-      packaging rows 2 or 3.
-
-    Heuristic:
-    Packaging/main-pack images on CVS typically have the product pack centered
-    on a white/empty background. ATF, lifestyle, and infographic images usually
-    have a full-card layout, multiple panels, people/photos, or distributed text.
-    This function uses simple whitespace/object-box signals instead of AI.
+    Looks for the centered product-pack / package-panel on white-space pattern.
+    This is only used for CVS locked packaging rows and does not affect any
+    other retailer.
     """
     global cvs_package_like_cache
     if "cvs_package_like_cache" not in globals() or not isinstance(globals().get("cvs_package_like_cache"), dict):
@@ -1246,8 +1239,6 @@ def is_cvs_package_like_image(url):
                 return False
             img.load()
 
-        # Composite transparency onto white because most product packshots render
-        # on transparent/white backgrounds.
         if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
             rgba = img.convert("RGBA")
             background = Image.new("RGB", rgba.size, (255, 255, 255))
@@ -1264,9 +1255,6 @@ def is_cvs_package_like_image(url):
 
         h, w = arr.shape[:2]
         image_area = max(1, h * w)
-
-        # Near-white/empty background. Use a forgiving threshold so off-white
-        # CVS thumbnails still count as whitespace.
         white_mask = (arr[:, :, 0] >= 244) & (arr[:, :, 1] >= 244) & (arr[:, :, 2] >= 244)
         nonwhite_mask = ~white_mask
         nonwhite_count = int(nonwhite_mask.sum())
@@ -1285,14 +1273,11 @@ def is_cvs_package_like_image(url):
         bbox_width_ratio = bbox_w / float(w)
         bbox_height_ratio = bbox_h / float(h)
         bbox_area_ratio = (bbox_w * bbox_h) / float(image_area)
-
-        # Centering signal. Packshots are usually centered. ATF cards often run
-        # edge-to-edge and use more of the canvas.
         cx = (x0 + x1) / 2.0 / float(w)
         cy = (y0 + y1) / 2.0 / float(h)
         centered = (0.32 <= cx <= 0.68) and (0.28 <= cy <= 0.72)
 
-        # Strong negative: full-bleed lifestyle/infographic/card-like images.
+        # Strong negative: full-bleed ATF/lifestyle/card graphics.
         if white_ratio < 0.08 and bbox_area_ratio > 0.82:
             _cache_cvs_package_like_result(cache_key, False)
             return False
@@ -1300,10 +1285,6 @@ def is_cvs_package_like_image(url):
             _cache_cvs_package_like_result(cache_key, False)
             return False
 
-        # Strong positives:
-        # 1) Centered item with meaningful white/empty background.
-        # 2) Long, thin side/bottom package panel with whitespace above/below.
-        # 3) Small dark package thumbnails on big white canvas.
         package_like = False
         if centered and white_ratio >= 0.18 and bbox_area_ratio <= 0.82:
             package_like = True
@@ -1312,37 +1293,35 @@ def is_cvs_package_like_image(url):
         if centered and white_ratio >= 0.40 and nonwhite_ratio <= 0.55:
             package_like = True
 
-        # Guardrail: full-card ATF graphics may also have a white background.
-        # If the foreground spans almost the entire image both ways, treat it as
-        # not packaging unless it has a very large amount of whitespace.
         if bbox_width_ratio > 0.92 and bbox_height_ratio > 0.92 and white_ratio < 0.35:
             package_like = False
 
         _cache_cvs_package_like_result(cache_key, bool(package_like))
         return bool(package_like)
-
     except Exception:
         _cache_cvs_package_like_result(cache_key, False)
         return False
 
 
-def align_cvs_atf_images_by_visual_match(s_images, r_images, locked_slots=3, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
+def align_cvs_atf_images_by_visual_match(s_images, r_images, locked_slots=3, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE, retailer_name="CVS"):
     """CVS-only packaging-window alignment.
 
     Do not reorder Salsify images. Do not reorder CVS images.
 
-    Rules:
-    - Slot 1 always uses CVS image 1.
-    - Slots 2 and 3 are locked packaging audit rows.
-    - If the matching Salsify locked row is missing, keep CVS blank and do not
-      consume the next CVS image. This bumps ATF images down.
-    - If Salsify slot 2 or 3 exists, use the next CVS image only when the image
-      looks packaging-like using the whitespace/centered-pack heuristic.
-    - If the next CVS image looks like ATF/lifestyle/infographic, leave the
-      locked row blank and do not consume it. The same CVS image then appears in
-      the next ATF row, preserving live CVS order.
-    - Slots 4+ continue with remaining CVS images in exact site order.
+    Extra fix:
+    - When Salsify locked packaging slot 2 or 3 is missing, keep the row blank.
+    - If the next CVS image is package-like, consume/skip it so the CVS package
+      image does not get bumped down into ATF rows.
+    - If the next CVS image is ATF/lifestyle, do not consume it so it appears in
+      the next ATF row.
     """
+    # Hard guard: this locked packaging/window logic must never run for any
+    # retailer except CVS. If this function is accidentally called elsewhere,
+    # return the retailer images unchanged except for normal max-slot trimming.
+    retailer_key = str(retailer_name or "").strip().lower()
+    if retailer_key != "cvs":
+        return [str(u or "").strip() for u in list(r_images or []) if str(u or "").strip()][:max_slots]
+
     s_images = list(s_images or [])
     r_images = [str(u or "").strip() for u in list(r_images or []) if str(u or "").strip()]
     max_slots = max(0, int(max_slots or MAX_IMAGE_SLOTS_TO_COMPARE))
@@ -1355,32 +1334,35 @@ def align_cvs_atf_images_by_visual_match(s_images, r_images, locked_slots=3, max
     ordered = []
     cvs_idx = 0
 
-    # Slot 1: keep first live CVS image as-is. No classifier here.
+    # Slot 1: always use the first live CVS image.
     if len(ordered) < max_slots:
         ordered.append(r_images[cvs_idx] if cvs_idx < len(r_images) else "")
         if cvs_idx < len(r_images):
             cvs_idx += 1
 
-    # Slots 2 and 3: only consume next CVS image when Salsify has that locked
-    # packaging row and the next CVS image looks packaging-like.
+    # Slots 2 and 3: locked packaging rows.
     for s_idx in (1, 2):
         if len(ordered) >= max_slots:
             break
+
         s_has_locked_packaging_row = bool(_s_url(s_images[s_idx]) if s_idx < len(s_images) else "")
+        next_cvs_url = r_images[cvs_idx] if cvs_idx < len(r_images) else ""
+
         if not s_has_locked_packaging_row:
+            # Keep Salsify missing row blank. If CVS has a package-like image in
+            # this packaging window, skip it so it does not compare against ATF.
+            if next_cvs_url and is_cvs_package_like_image(next_cvs_url):
+                cvs_idx += 1
             ordered.append("")
             continue
 
-        next_cvs_url = r_images[cvs_idx] if cvs_idx < len(r_images) else ""
         if next_cvs_url and is_cvs_package_like_image(next_cvs_url):
             ordered.append(next_cvs_url)
             cvs_idx += 1
         else:
-            # Do not consume the CVS image. It remains next in line for ATF rows.
             ordered.append("")
 
-    # Slots 4+: continue remaining CVS images in exact live site order. Blank
-    # Salsify rows still reserve space, but they do not consume CVS images.
+    # Slots 4+: remaining CVS images in exact live site order.
     for s_img in s_images[3:max_slots]:
         if len(ordered) >= max_slots:
             break
@@ -1391,8 +1373,6 @@ def align_cvs_atf_images_by_visual_match(s_images, r_images, locked_slots=3, max
         if cvs_idx < len(r_images):
             cvs_idx += 1
 
-    # Append any extra CVS images at the end in site order so nothing live on CVS
-    # gets hidden from review.
     while len(ordered) < max_slots and cvs_idx < len(r_images):
         ordered.append(r_images[cvs_idx])
         cvs_idx += 1
@@ -9830,6 +9810,7 @@ def build_normalized_comparison_payload(
             r_images,
             locked_slots=3,
             max_slots=min(max_slots, cvs_max_slots),
+            retailer_name=retailer_name,
         )
 
     # Sam's Club-only: if Salsify slot 2 is ATF Video-Sams Club, reserve retailer
