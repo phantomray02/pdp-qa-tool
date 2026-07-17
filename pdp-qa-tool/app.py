@@ -120,7 +120,7 @@ CVS_VARIANT_MIN_MATCH_SCORE = 35
 
 CAPTURE_MODE_USE_EXTENSION = "Use extension + TXT upload"
 CAPTURE_MODE_SKIP_EXTENSION = "Skip extension and go straight to batch"
-AUTO_SKIP_EXTENSION_RETAILERS = {"CVS", "Walgreens"}
+AUTO_SKIP_EXTENSION_RETAILERS = {"Walgreens"}
 # Retailer-specific Salsify isolation controls.
 # Copy can stay retailer-locked while images still fall back to generic locked Salsify slots if
 # retailer-labeled image assets do not exist yet.
@@ -1307,16 +1307,8 @@ def is_cvs_package_like_image(url):
 def align_cvs_atf_images_by_visual_match(s_images, r_images, locked_slots=3, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE, retailer_name="CVS"):
     """CVS-only hybrid packaging alignment.
 
-    Goal:
-    - Keep Salsify order stable.
-    - Keep CVS ATF/site order stable.
-    - Lock CVS slots 2 and 3 only when CVS has a real packaging match.
-
-    Why this is hybrid:
-    - Some valid CVS package panels are dark/full-frame and fail the simple
-      white-space package detector.
-    - Some CVS image 2 / 3 assets are ATF/detail cards and should not be forced
-      into Salsify's locked packaging rows.
+    Keep Salsify order stable, keep CVS ATF/site order stable, and lock CVS
+    slots 2 and 3 only when CVS has a real packaging match.
     """
     retailer_key = str(retailer_name or "").strip().lower()
     if retailer_key != "cvs":
@@ -1340,18 +1332,9 @@ def align_cvs_atf_images_by_visual_match(s_images, r_images, locked_slots=3, max
             return 0
 
     def _choose_cvs_packaging_candidate(s_url, remaining_urls, search_window=3):
-        """Choose one CVS image for a locked Salsify packaging row.
-
-        Look only at the next few CVS images. A candidate qualifies if:
-        - it visually matches the Salsify locked packaging row strongly enough, or
-        - it passes the lightweight CVS package-like detector.
-
-        Return the chosen index inside remaining_urls, or None.
-        """
         best_idx = None
         best_score = -1
         window = list(remaining_urls[:max(1, int(search_window or 1))])
-
         for idx, candidate_url in enumerate(window):
             if not candidate_url:
                 continue
@@ -1361,36 +1344,22 @@ def align_cvs_atf_images_by_visual_match(s_images, r_images, locked_slots=3, max
                 package_like = bool(is_cvs_package_like_image(candidate_url))
             except Exception:
                 package_like = False
-
-            # 65+ prevents ATF/detail cards from getting forced into locked
-            # packaging rows, while still allowing real dark/full-frame package
-            # panels to match by visual similarity.
             if visual_score >= 65 or package_like:
                 rank_score = visual_score + (12 if package_like else 0) - (idx * 3)
                 if rank_score > best_score:
                     best_idx = idx
                     best_score = rank_score
-
         return best_idx
 
     ordered = []
-
-    # Slot 1: always use the first live CVS image.
     ordered.append(r_images[0] if r_images else "")
     remaining = list(r_images[1:])
 
-    # Slots 2 and 3: locked Salsify packaging rows.
-    # Only consume a CVS image if it qualifies for that specific packaging row.
     for s_idx in (1, 2):
         if len(ordered) >= max_slots:
             break
-
         s_locked_url = _s_url(s_images[s_idx]) if s_idx < len(s_images) else ""
         if not s_locked_url:
-            # Salsify packaging is missing. Keep this row blank.
-            # If the next CVS image is clearly packaging, consume it so it does
-            # not get bumped down into ATF rows. If it is ATF/lifestyle, preserve
-            # it for the next ATF row.
             if remaining:
                 try:
                     if is_cvs_package_like_image(remaining[0]):
@@ -1399,15 +1368,12 @@ def align_cvs_atf_images_by_visual_match(s_images, r_images, locked_slots=3, max
                     pass
             ordered.append("")
             continue
-
         chosen_idx = _choose_cvs_packaging_candidate(s_locked_url, remaining, search_window=3)
         if chosen_idx is None:
-            # Do not force ATF/detail images into locked package rows.
             ordered.append("")
         else:
             ordered.append(remaining.pop(chosen_idx))
 
-    # Slots 4+: continue with remaining CVS images in their original live order.
     for s_img in s_images[3:max_slots]:
         if len(ordered) >= max_slots:
             break
@@ -2454,6 +2420,64 @@ def build_kroger_compact_capture_from_parsed_json(payload):
     return "\n".join(parts)
 
 
+def build_cvs_compact_capture_from_parsed_json(payload):
+    """Build compact parse-friendly CVS HTML from browser-extension output."""
+    if not isinstance(payload, dict):
+        return ""
+    title = normalize_space(payload.get("title", "") or payload.get("documentTitle", ""))
+    description = clean_cvs_text(payload.get("description", "") or "")
+    features = payload.get("features", []) or []
+    if isinstance(features, str):
+        features = [features]
+    features = normalize_cvs_features([str(x or "") for x in features])
+    images = []
+    seen = set()
+    for image_url in payload.get("images", []) or []:
+        clean_url = html.unescape(str(image_url or "").strip()).replace("\\/", "/")
+        if not clean_url or is_video_like_url(clean_url):
+            continue
+        if clean_url.startswith("//"):
+            clean_url = "https:" + clean_url
+        elif clean_url.startswith("/"):
+            clean_url = "https://www.cvs.com" + clean_url
+        if not re.match(r"^https?://", clean_url, flags=re.IGNORECASE):
+            continue
+        if any(token in clean_url.lower() for token in ["sprite", "icon", "logo", "placeholder", "data:image", ".svg"]):
+            continue
+        key = clean_url.split("?", 1)[0]
+        if key and key not in seen:
+            seen.add(key)
+            images.append(key)
+    requested_url = clean_uploaded_url_value(payload.get("requestedUrl", ""))
+    final_url = clean_uploaded_url_value(payload.get("finalUrl", ""))
+    if not (title or description or features or images):
+        return ""
+    product_json_ld = {"@context": "https://schema.org", "@type": "Product", "name": title, "description": description, "image": images}
+    parts = [
+        "<!doctype html><html><head>",
+        f"<title>{html_escape_text(title)}</title>",
+        '<script type="application/ld+json">',
+        json.dumps(product_json_ld, ensure_ascii=False),
+        '</script>',
+        "</head><body>",
+        f"<h1>{html_escape_text(title)}</h1>",
+        "<div data-cvs-compact-capture='1' class='whitespace-pre-line'>",
+        f"<span>{html_escape_text(description)}</span>",
+        "<ul>",
+    ]
+    for feature in features[:10]:
+        parts.append(f"<li id='vendorDetailsBullet'>{html_escape_text(feature)}</li>")
+    parts.extend(["</ul>", "</div>"])
+    for image_url in images[:MAX_IMAGE_SLOTS_TO_COMPARE]:
+        safe_url = html.escape(image_url, quote=True)
+        parts.append(f'<img src="{safe_url}" data-src="{safe_url}" />')
+    if requested_url:
+        parts.append(f"<meta name='requested-url' content='{html.escape(requested_url, quote=True)}'>")
+    if final_url:
+        parts.append(f"<meta name='final-url' content='{html.escape(final_url, quote=True)}'>")
+    parts.append("</body></html>")
+    return "\n".join(parts)
+
 def parse_uploaded_raw_html_map(raw_text):
     raw_text = str(raw_text or "")
     if not raw_text.strip():
@@ -2484,8 +2508,13 @@ def parse_uploaded_raw_html_map(raw_text):
         if parsed_match:
             try:
                 parsed_payload = json.loads(str(parsed_match.group(1) or "").strip())
-                if requested_url and "heb.com" in requested_url.lower():
+                requested_url_lc = str(requested_url or "").lower()
+                if requested_url and "heb.com" in requested_url_lc:
                     compact_html = build_heb_compact_capture_from_parsed_json(parsed_payload)
+                elif requested_url and "cvs.com" in requested_url_lc:
+                    # CVS-only: build a compact capture from browser-rendered CVS PDP content.
+                    # Do not apply this CVS compact page builder to any other retailer.
+                    compact_html = build_cvs_compact_capture_from_parsed_json(parsed_payload)
                 else:
                     compact_html = build_kroger_compact_capture_from_parsed_json(parsed_payload)
             except Exception:
@@ -4964,27 +4993,56 @@ def extract_vendor_copy_from_nextjs(html_text, target_rpc="", retail_url=""):
 
 
 def extract_cvs_images_from_html(html_text):
-    matches = re.findall(r'/bizcontent/merchandising/productimages/high_res/[^\s\"]+\.jpg\?[^\"]*', html_text or "")
-
+    html_text = str(html_text or "")
     best_images = {}
     order = []
 
-    for m in matches:
-        full = "https://www.cvs.com" + m
-        base = full.split("?")[0]
+    def add_candidate(raw_url, size=0):
+        raw_url = html.unescape(str(raw_url or "").strip()).replace("\\/", "/")
+        if not raw_url:
+            return
+        if raw_url.startswith("//"):
+            full = "https:" + raw_url
+        elif raw_url.startswith("/"):
+            full = "https://www.cvs.com" + raw_url
+        elif raw_url.startswith("http://") or raw_url.startswith("https://"):
+            full = raw_url
+        else:
+            return
+        if not re.search(r"/productimages/high_res/[^\s\"'<>]+\.(?:jpg|jpeg|png|webp|avif)", full, flags=re.IGNORECASE):
+            return
+        base = full.split("?", 1)[0]
         name = base.split("/")[-1]
-        size_match = re.search(r"Resize=\((\d+)", m)
-        size = int(size_match.group(1)) if size_match else 0
-
+        if not name:
+            return
+        size = int(size or 0)
         if name not in best_images:
             order.append(name)
             best_images[name] = {"url": base, "size": size}
-        elif size > best_images[name]["size"]:
+        elif size > int(best_images[name].get("size", 0) or 0):
             best_images[name] = {"url": base, "size": size}
+
+    for m in re.findall(r'/bizcontent/merchandising/productimages/high_res/[^\s\\\"]+\.jpg\?[^\\\"]*', html_text):
+        size_match = re.search(r"Resize=\((\d+)", m)
+        add_candidate(m, int(size_match.group(1)) if size_match else 0)
+
+    for m in re.findall(r"https?://[^\s\"'<>]+/productimages/high_res/[^\s\"'<>]+?\.(?:jpg|jpeg|png|webp|avif)(?:\?[^\s\"'<>]*)?", html_text, flags=re.IGNORECASE):
+        size_match = re.search(r"Resize=\((\d+)", m)
+        add_candidate(m, int(size_match.group(1)) if size_match else 0)
+
+    try:
+        soup = BeautifulSoup(html_text, "html.parser")
+        for img in soup.find_all("img"):
+            for attr in ["src", "currentSrc", "data-src", "data-image-src"]:
+                add_candidate(img.get(attr, ""), 0)
+            srcset = str(img.get("srcset", "") or "")
+            for part in srcset.split(","):
+                add_candidate(part.strip().split()[0] if part.strip() else "", 0)
+    except Exception:
+        pass
 
     ordered_urls = [best_images[name]["url"] for name in order]
     return reorder_cvs_retailer_images_for_visual(ordered_urls, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE)
-
 
 def extract_cvs_visible_details_copy_from_dom(html_text):
     """CVS-only fallback for the visible Details accordion.
@@ -10609,10 +10667,12 @@ if uploaded_file:
                     txt_ready=txt_ready_for_batch,
                 )
                 render_extension_batch_bridge(extension_payload)
-                if selected_retailer == "HEB":
+                if selected_retailer == "CVS":
+                    st.caption("CVS mode active: use the extension + TXT upload when live server fetch misses browser-rendered CVS PDP copy/images. This CVS captured-content fallback does not change other retailers.")
+                elif selected_retailer == "HEB":
                     st.caption("HEB mode active: parses TXT once, matches rows by HEB RPC, pulls Salsify copy/features without HEB-only limits, and keeps all available Salsify/HEB image slots for comparison.")
                 else:
-                    st.caption(f"Extension bridge ready for {selected_retailer}. For Kroger, the app can now connect Kroger RPC to the matching Requested URL in the TXT file, fill retail_url from that match, and use that matched retail_url for lookup and display.")
+                    st.caption(f"Extension bridge ready for {selected_retailer}. Existing retailer TXT/live-fetch behavior is unchanged.")
             elif selected_retailer in AUTO_SKIP_EXTENSION_RETAILERS:
                 st.caption(f"{selected_retailer} is in skip-extension mode, so the app can auto-run straight to batch with live retailer fetches.")
 
