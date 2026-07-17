@@ -1437,7 +1437,7 @@ def clean_uploaded_url_value(value):
     value = re.sub(r"[\u200b-\u200f\u202a-\u202e\u2060\ufeff]", "", value)
     value = value.replace("\r", "").replace("\n", "")
     # CVS-only issue surfaced by pasted URL lists: tracker cells can contain
-    # URLs with accidental trailing separators like ?skuId=730205;. Strip only
+    # URLs with accidental trailing separators like ?skuId=730263;. Strip only
     # terminal separators so the real query string remains intact.
     value = value.strip().rstrip(";,")
 
@@ -2567,6 +2567,26 @@ def parse_uploaded_raw_html_map(raw_text):
             if key and key not in keys:
                 keys.append(key)
 
+        # CVS: store captures by skuId/RPC too. This fixes rows where CVS final
+        # URL, requested URL, or tracker URL differ slightly but refer to the same
+        # skuId, e.g. prodid URL variants or trailing semicolon cleanup.
+        if requested_url and "cvs.com" in requested_url.lower():
+            cvs_rpc_candidates = []
+            for url_value in [requested_url, final_url_from_payload]:
+                m_rpc = re.search(r"[?&]skuId=([0-9A-Za-z_-]+)", str(url_value or ""), flags=re.IGNORECASE)
+                if m_rpc and m_rpc.group(1) not in cvs_rpc_candidates:
+                    cvs_rpc_candidates.append(m_rpc.group(1))
+            if isinstance(parsed_payload, dict):
+                for rpc_key_name in ["rpc", "retailer_rpc", "skuId", "sku", "productId", "id"]:
+                    rpc_value = str(parsed_payload.get(rpc_key_name, "") or "").replace(".0", "").strip()
+                    rpc_value = re.sub(r"[^0-9A-Za-z_-]", "", rpc_value)
+                    if rpc_value and rpc_value not in cvs_rpc_candidates:
+                        cvs_rpc_candidates.append(rpc_value)
+            for rpc_value in cvs_rpc_candidates:
+                rpc_key = f"cvs_rpc::{rpc_value}"
+                if rpc_key not in keys:
+                    keys.append(rpc_key)
+
         # HEB: store compact captures by HEB item id/RPC too. This is fast and
         # does not limit copy/images. It only avoids repeated TXT scans.
         if requested_url and "heb.com" in requested_url.lower():
@@ -2605,6 +2625,33 @@ def lookup_uploaded_raw_html(uploaded_html_map, retail_url, target_rpc=""):
             return str(uploaded_html_map.get(matched_key, "") or "")
         return ""
 
+    if (retail_url and "cvs.com" in retail_url.lower()) or (target_rpc and any(str(k).startswith("cvs_rpc::") for k in uploaded_html_map.keys())):
+        rpc = re.sub(r"[^0-9A-Za-z_-]", "", str(target_rpc or "").replace(".0", "").strip())
+        if not rpc and retail_url:
+            m_rpc = re.search(r"[?&]skuId=([0-9A-Za-z_-]+)", str(retail_url or ""), flags=re.IGNORECASE)
+            if m_rpc:
+                rpc = m_rpc.group(1)
+        if rpc:
+            html_text = str(uploaded_html_map.get(f"cvs_rpc::{rpc}", "") or "")
+            if html_text:
+                return html_text
+        key = normalize_uploaded_capture_url(retail_url)
+        html_text = str(uploaded_html_map.get(key, "") or "")
+        if html_text:
+            return html_text
+        for key in uploaded_capture_url_candidates(retail_url):
+            html_text = uploaded_html_map.get(key, "")
+            if html_text:
+                return html_text
+        # Last CVS-only fallback: compare clean product path without query.
+        product_path = re.sub(r"[?#].*$", "", normalize_uploaded_capture_url(retail_url)).lower()
+        if product_path:
+            for map_key, html_text in uploaded_html_map.items():
+                map_path = re.sub(r"[?#].*$", "", normalize_uploaded_capture_url(map_key)).lower()
+                if map_path == product_path:
+                    return str(html_text or "")
+        return ""
+
     if (retail_url and "heb.com" in retail_url.lower()) or (target_rpc and any(str(k).startswith("heb_rpc::") for k in uploaded_html_map.keys())):
         rpc = re.sub(r"[^0-9A-Za-z]", "", str(target_rpc or "").replace(".0", "").strip())
         if not rpc and retail_url:
@@ -2620,28 +2667,6 @@ def lookup_uploaded_raw_html(uploaded_html_map, retail_url, target_rpc=""):
         if html_text:
             return html_text
         return ""
-
-    # CVS-only: extension captures can normalize requested/final URLs slightly
-    # differently than the tracker. If exact URL lookup misses, match by skuId/RPC.
-    if retail_url and "cvs.com" in retail_url.lower():
-        rpc = re.sub(r"[^0-9A-Za-z_-]", "", str(target_rpc or "").replace(".0", "").strip())
-        if not rpc:
-            m_rpc = re.search(r"[?&]skuId=([0-9A-Za-z_-]+)", retail_url, flags=re.IGNORECASE)
-            if m_rpc:
-                rpc = m_rpc.group(1)
-        if rpc:
-            for key, html_text in uploaded_html_map.items():
-                key_str = str(key or "")
-                if re.search(rf"[?&]skuId={re.escape(rpc)}(?:&|$)", key_str, flags=re.IGNORECASE):
-                    return str(html_text or "")
-            # If the key lost the query string, at least try a product-page match
-            # after the exact skuId checks. This is intentionally CVS-only.
-            product_path = re.sub(r"[?#].*$", "", normalize_uploaded_capture_url(retail_url)).lower()
-            if product_path:
-                for key, html_text in uploaded_html_map.items():
-                    key_norm = re.sub(r"[?#].*$", "", normalize_uploaded_capture_url(key)).lower()
-                    if key_norm == product_path:
-                        return str(html_text or "")
 
     if not retail_url and target_rpc:
         matched_key = find_kroger_url_in_uploaded_map(uploaded_html_map, target_rpc=target_rpc)
@@ -2675,6 +2700,7 @@ def build_extension_batch_payload(retailer_df, retailer_name, current_batch_key,
                 "sku": str(row.get("sku", "") or "").strip(),
                 "retail_url": str(row.get("retail_url", "") or "").strip(),
                 "retailer_rpc": str(row.get("retailer_rpc", "") or "").strip(),
+                "rpc": str(row.get("retailer_rpc", "") or "").strip(),
                 "retailer": retailer_name_norm,
             }
             for _, row in retailer_df.iterrows()
