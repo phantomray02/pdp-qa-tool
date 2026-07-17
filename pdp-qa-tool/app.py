@@ -1437,7 +1437,7 @@ def clean_uploaded_url_value(value):
     value = re.sub(r"[\u200b-\u200f\u202a-\u202e\u2060\ufeff]", "", value)
     value = value.replace("\r", "").replace("\n", "")
     # CVS-only issue surfaced by pasted URL lists: tracker cells can contain
-    # URLs with accidental trailing separators like ?skuId=730263;. Strip only
+    # URLs with accidental trailing separators like ?skuId=731730;. Strip only
     # terminal separators so the real query string remains intact.
     value = value.strip().rstrip(";,")
 
@@ -2643,7 +2643,6 @@ def lookup_uploaded_raw_html(uploaded_html_map, retail_url, target_rpc=""):
             html_text = uploaded_html_map.get(key, "")
             if html_text:
                 return html_text
-        # Last CVS-only fallback: compare clean product path without query.
         product_path = re.sub(r"[?#].*$", "", normalize_uploaded_capture_url(retail_url)).lower()
         if product_path:
             for map_key, html_text in uploaded_html_map.items():
@@ -8411,6 +8410,78 @@ def kroger_bundle_has_live_content(bundle):
     has_images = bool(bundle.get("images", []) or [])
     return has_text or has_images
 
+def _cvs_text_score(text_bundle):
+    if not isinstance(text_bundle, dict):
+        return 0
+    score = 0
+    title = normalize_space(text_bundle.get("title", ""))
+    description = normalize_space(text_bundle.get("description", ""))
+    features = [normalize_space(x) for x in (text_bundle.get("features", []) or []) if normalize_space(x)]
+    if title:
+        score += 40 + min(len(title), 120)
+    if description:
+        score += 80 + min(len(description), 1200)
+    if features:
+        score += 60 + (len(features) * 80) + min(sum(len(x) for x in features), 1200)
+    return score
+
+
+def _cvs_bundle_score(bundle):
+    if not isinstance(bundle, dict):
+        return 0
+    text_bundle = bundle.get("text", {}) or {}
+    images = [x for x in (bundle.get("images", []) or []) if str(x or "").strip()]
+    return _cvs_text_score(text_bundle) + (len(images) * 90)
+
+
+def merge_cvs_bundles_prefer_richer_copy(*bundles):
+    """CVS-only source combiner. Pick the richest title/description/features/images
+    independently instead of trusting one source globally.
+    """
+    merged = {"text": {"title": "", "description": "", "features": [], "rating": "", "review_count": "", "debug": {}}, "images": []}
+    source_parts = []
+    best_title = (0, "")
+    best_description = (0, "")
+    best_features = (0, 0, [])
+    best_images = (0, [])
+    for bundle in bundles:
+        if not isinstance(bundle, dict):
+            continue
+        text_bundle = bundle.get("text", {}) or {}
+        debug = text_bundle.get("debug", {}) or {}
+        title = normalize_space(text_bundle.get("title", ""))
+        description = normalize_space(text_bundle.get("description", ""))
+        features = [normalize_space(x) for x in (text_bundle.get("features", []) or []) if normalize_space(x)]
+        images = [str(x or "").strip() for x in (bundle.get("images", []) or []) if str(x or "").strip()]
+        if (len(title), title) > best_title:
+            best_title = (len(title), title)
+        if (len(description), description) > best_description:
+            best_description = (len(description), description)
+        f_tuple = (len(features), sum(len(x) for x in features), features)
+        if f_tuple[:2] > best_features[:2]:
+            best_features = f_tuple
+        if (len(images), images) > best_images:
+            best_images = (len(images), images)
+        if not merged["text"].get("rating") and text_bundle.get("rating"):
+            merged["text"]["rating"] = str(text_bundle.get("rating", "") or "").strip()
+        if not merged["text"].get("review_count") and text_bundle.get("review_count"):
+            merged["text"]["review_count"] = str(text_bundle.get("review_count", "") or "").strip()
+        for k, v in debug.items():
+            if v and not merged["text"]["debug"].get(k):
+                merged["text"]["debug"][k] = v
+        source_used = normalize_space(debug.get("Source Used", ""))
+        if source_used and source_used not in source_parts:
+            source_parts.append(source_used)
+    merged["text"]["title"] = best_title[1]
+    merged["text"]["description"] = best_description[1]
+    merged["text"]["features"] = best_features[2]
+    merged["images"] = best_images[1]
+    if source_parts:
+        merged["text"]["debug"]["Source Used"] = " | ".join(source_parts)
+    merged["text"]["debug"]["CVS Combined Source Score"] = _cvs_bundle_score(merged)
+    return merged
+
+
 @st.cache_data(show_spinner=False, max_entries=1200)
 def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_source_code=""):
     retailer = normalize_retailer_name(retailer_name).strip().lower()
@@ -8447,13 +8518,20 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
 
     if uploaded_html.strip():
         if retailer == "cvs":
-            bundle = {"text": _extract_cvs_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_cvs_images_from_html(uploaded_html)}
-            debug = bundle.setdefault("text", {}).setdefault("debug", {})
-            debug["Source Used"] = "uploaded_txt_html"
-            debug["CVS Uploaded HTML Length"] = len(uploaded_html)
-            debug["CVS Uploaded Has Raw Fallback"] = "CVS RAW HTML FALLBACK FROM EXTENSION" in uploaded_html
-            debug["CVS Uploaded Product HTML Detected"] = bool(is_probably_cvs_product_html(uploaded_html))
-            return bundle
+            uploaded_bundle = {"text": _extract_cvs_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_cvs_images_from_html(uploaded_html)}
+            upload_debug = uploaded_bundle.setdefault("text", {}).setdefault("debug", {})
+            upload_debug["Source Used"] = "uploaded_txt_html"
+            upload_debug["CVS Uploaded HTML Length"] = len(uploaded_html)
+            upload_debug["CVS Uploaded Has Raw Fallback"] = "CVS RAW HTML FALLBACK FROM EXTENSION" in uploaded_html
+            upload_debug["CVS Uploaded Product HTML Detected"] = bool(is_probably_cvs_product_html(uploaded_html))
+            # CVS-only combined approach: if uploaded TXT is partial, also try the
+            # live fetch and merge the richest pieces. This does not touch other retailers.
+            if _cvs_bundle_score(uploaded_bundle) < 550:
+                live_bundle = get_cvs_bundle(retail_url, target_rpc)
+                merged_bundle = merge_cvs_bundles_prefer_richer_copy(uploaded_bundle, live_bundle)
+                merged_bundle.setdefault("text", {}).setdefault("debug", {})["CVS Source Merge"] = "uploaded_txt_plus_live_fallback"
+                return merged_bundle
+            return uploaded_bundle
         if retailer == "walgreens":
             bundle = {"text": extract_walgreens_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_walgreens_images_from_html(uploaded_html)}
             bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
@@ -10301,6 +10379,18 @@ def process_row(row):
         s_images = comparison_payload["s_images"]
         r_text = comparison_payload["r_text"]
         r_images = comparison_payload["r_images"]
+
+        # CVS-only diagnostics: when no uploaded TXT matched and direct CVS fetch
+        # returns an empty shell, make the source issue visible in output.
+        if retailer_norm_for_row == "cvs":
+            r_has_any_content = bool(
+                normalize_space(r_text.get("title", ""))
+                or normalize_space(r_text.get("description", ""))
+                or any(normalize_space(x) for x in (r_text.get("features", []) or []))
+                or any(str(x or "").strip() for x in (r_images or []))
+            )
+            if not r_has_any_content and not row_source_code:
+                status_notes.append("CVS TXT capture missing/unmatched and live CVS fetch returned empty shell")
 
         debug_data = r_text.get("debug", {})
 
