@@ -1436,6 +1436,10 @@ def clean_uploaded_url_value(value):
     value = value.replace("\u00a0", " ")
     value = re.sub(r"[\u200b-\u200f\u202a-\u202e\u2060\ufeff]", "", value)
     value = value.replace("\r", "").replace("\n", "")
+    # Common when users paste semicolon/comma-separated URL lists into trackers.
+    # Do this after removing whitespace so real query parameters are preserved,
+    # but accidental trailing separators do not break TXT lookup keys.
+    value = value.strip().rstrip(";,")
 
     # If Excel formula text is read instead of the cached result, extract the
     # first URL from formulas like =HYPERLINK("https://...", "link").
@@ -2523,23 +2527,34 @@ def parse_uploaded_raw_html_map(raw_text):
 
         final_url_from_payload = clean_uploaded_url_value(parsed_payload.get("finalUrl", "")) if isinstance(parsed_payload, dict) else ""
 
+        html_match = re.search(r'(?is)-----BEGIN HTML-----(.*?)-----END HTML-----', block)
+        raw_html_text = html.unescape(str(html_match.group(1) or "").strip()) if html_match else ""
+
         if compact_html:
-            html_text = compact_html
+            if requested_url and "cvs.com" in requested_url.lower() and raw_html_text:
+                # CVS-only root fix: the extension PARSED JSON is sometimes partial
+                # for CVS items. If we use the compact JSON-only page, we can throw
+                # away the real rendered CVS Details/card/image HTML and end up with
+                # Missing title/description/features/images. Keep compact values first,
+                # but append the raw browser-rendered CVS HTML as fallback material.
+                html_text = compact_html + "\n<!-- CVS RAW HTML FALLBACK FROM EXTENSION -->\n" + raw_html_text
+            else:
+                html_text = compact_html
         else:
-            html_match = re.search(r'(?is)-----BEGIN HTML-----(.*?)-----END HTML-----', block)
-            html_text = html.unescape(str(html_match.group(1) or "").strip()) if html_match else ""
-            if requested_url and "kroger.com" in requested_url.lower() and html_text and not is_valid_kroger_product_capture(html_text):
-                html_text = build_kroger_invalid_capture_stub(
-                    requested_url=requested_url,
-                    final_url=final_url_from_payload,
-                    reason="invalid_kroger_shell_or_product_unavailable_capture",
-                )
-            if requested_url and "kroger.com" in requested_url.lower() and not html_text and parsed_match:
-                html_text = build_kroger_invalid_capture_stub(
-                    requested_url=requested_url,
-                    final_url=final_url_from_payload,
-                    reason="parsed_json_missing_kroger_product_copy_and_images",
-                )
+            html_text = raw_html_text
+
+        if requested_url and "kroger.com" in requested_url.lower() and html_text and not is_valid_kroger_product_capture(html_text):
+            html_text = build_kroger_invalid_capture_stub(
+                requested_url=requested_url,
+                final_url=final_url_from_payload,
+                reason="invalid_kroger_shell_or_product_unavailable_capture",
+            )
+        if requested_url and "kroger.com" in requested_url.lower() and not html_text and parsed_match:
+            html_text = build_kroger_invalid_capture_stub(
+                requested_url=requested_url,
+                final_url=final_url_from_payload,
+                reason="parsed_json_missing_kroger_product_copy_and_images",
+            )
 
         if not html_text or len(html_text) < 30:
             continue
@@ -2607,6 +2622,22 @@ def lookup_uploaded_raw_html(uploaded_html_map, retail_url, target_rpc=""):
         if html_text:
             return html_text
         return ""
+
+    # CVS-only: extension captures can normalize/finalize URLs slightly differently
+    # than the tracker URL. If exact URL matching misses, fall back to skuId/RPC.
+    if retail_url and "cvs.com" in retail_url.lower():
+        rpc = re.sub(r"[^0-9A-Za-z_-]", "", str(target_rpc or "").replace(".0", "").strip())
+        if not rpc:
+            m_rpc = re.search(r"[?&]skuId=([0-9A-Za-z_-]+)", retail_url, flags=re.IGNORECASE)
+            if m_rpc:
+                rpc = m_rpc.group(1)
+        if rpc:
+            for key, html_text in uploaded_html_map.items():
+                key_str = str(key or "")
+                if re.search(rf"[?&]skuId={re.escape(rpc)}(?:&|$)", key_str, flags=re.IGNORECASE):
+                    return str(html_text or "")
+                if re.search(rf"cvs\.com/.+?skuId={re.escape(rpc)}(?:&|$)", key_str, flags=re.IGNORECASE):
+                    return str(html_text or "")
 
     if not retail_url and target_rpc:
         matched_key = find_kroger_url_in_uploaded_map(uploaded_html_map, target_rpc=target_rpc)
@@ -3816,7 +3847,7 @@ def is_probably_cvs_product_html(html_text):
         "dynamicmediaurl",
         "/bizcontent/merchandising/productimages/high_res/",
         "productimages/high_res",
-        "skuId=",
+        "skuid=",
         "prodid-",
         "__next_data__",
     ]
