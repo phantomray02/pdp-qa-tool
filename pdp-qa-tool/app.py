@@ -17,6 +17,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from bs4 import BeautifulSoup
 from PIL import Image, UnidentifiedImageError
+import numpy as np
 import warnings
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
@@ -1195,21 +1196,152 @@ def reorder_cvs_retailer_images_for_visual(images, max_slots=MAX_IMAGE_SLOTS_TO_
             break
     return ordered[:max_slots]
 
+def _cache_cvs_package_like_result(url, value):
+    global cvs_package_like_cache
+    if "cvs_package_like_cache" not in globals() or not isinstance(globals().get("cvs_package_like_cache"), dict):
+        cvs_package_like_cache = {}
+    cvs_package_like_cache[url] = value
+    while len(cvs_package_like_cache) > IMAGE_HASH_CACHE_MAX:
+        cvs_package_like_cache.pop(next(iter(cvs_package_like_cache)))
+
+
+def is_cvs_package_like_image(url):
+    """CVS-only lightweight packaging detector.
+
+    Purpose:
+    - Do not reorder CVS images.
+    - Only decide whether the next live CVS image is allowed to occupy locked
+      packaging rows 2 or 3.
+
+    Heuristic:
+    Packaging/main-pack images on CVS typically have the product pack centered
+    on a white/empty background. ATF, lifestyle, and infographic images usually
+    have a full-card layout, multiple panels, people/photos, or distributed text.
+    This function uses simple whitespace/object-box signals instead of AI.
+    """
+    global cvs_package_like_cache
+    if "cvs_package_like_cache" not in globals() or not isinstance(globals().get("cvs_package_like_cache"), dict):
+        cvs_package_like_cache = {}
+
+    url = str(url or "").strip()
+    if not url or is_video_like_url(url):
+        return False
+    cache_key = url.split("?", 1)[0]
+    if cache_key in cvs_package_like_cache:
+        return bool(cvs_package_like_cache[cache_key])
+
+    try:
+        image_bytes = _download_image_bytes_with_retry(url)
+        if not image_bytes:
+            _cache_cvs_package_like_result(cache_key, False)
+            return False
+
+        bio = BytesIO(image_bytes)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            img = Image.open(bio)
+            width, height = img.size
+            if width * height > MAX_SAFE_IMAGE_PIXELS:
+                _cache_cvs_package_like_result(cache_key, False)
+                return False
+            img.load()
+
+        # Composite transparency onto white because most product packshots render
+        # on transparent/white backgrounds.
+        if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+            rgba = img.convert("RGBA")
+            background = Image.new("RGB", rgba.size, (255, 255, 255))
+            background.paste(rgba, mask=rgba.split()[-1])
+            img = background
+        elif img.mode != "RGB":
+            img = img.convert("RGB")
+
+        img.thumbnail((180, 180), Image.LANCZOS)
+        arr = np.asarray(img).astype("int16")
+        if arr.size == 0:
+            _cache_cvs_package_like_result(cache_key, False)
+            return False
+
+        h, w = arr.shape[:2]
+        image_area = max(1, h * w)
+
+        # Near-white/empty background. Use a forgiving threshold so off-white
+        # CVS thumbnails still count as whitespace.
+        white_mask = (arr[:, :, 0] >= 244) & (arr[:, :, 1] >= 244) & (arr[:, :, 2] >= 244)
+        nonwhite_mask = ~white_mask
+        nonwhite_count = int(nonwhite_mask.sum())
+        if nonwhite_count <= max(8, image_area * 0.015):
+            _cache_cvs_package_like_result(cache_key, False)
+            return False
+
+        white_ratio = float(white_mask.sum()) / float(image_area)
+        nonwhite_ratio = float(nonwhite_count) / float(image_area)
+
+        ys, xs = np.where(nonwhite_mask)
+        x0, x1 = int(xs.min()), int(xs.max())
+        y0, y1 = int(ys.min()), int(ys.max())
+        bbox_w = max(1, x1 - x0 + 1)
+        bbox_h = max(1, y1 - y0 + 1)
+        bbox_width_ratio = bbox_w / float(w)
+        bbox_height_ratio = bbox_h / float(h)
+        bbox_area_ratio = (bbox_w * bbox_h) / float(image_area)
+
+        # Centering signal. Packshots are usually centered. ATF cards often run
+        # edge-to-edge and use more of the canvas.
+        cx = (x0 + x1) / 2.0 / float(w)
+        cy = (y0 + y1) / 2.0 / float(h)
+        centered = (0.32 <= cx <= 0.68) and (0.28 <= cy <= 0.72)
+
+        # Strong negative: full-bleed lifestyle/infographic/card-like images.
+        if white_ratio < 0.08 and bbox_area_ratio > 0.82:
+            _cache_cvs_package_like_result(cache_key, False)
+            return False
+        if nonwhite_ratio > 0.82 and bbox_area_ratio > 0.90:
+            _cache_cvs_package_like_result(cache_key, False)
+            return False
+
+        # Strong positives:
+        # 1) Centered item with meaningful white/empty background.
+        # 2) Long, thin side/bottom package panel with whitespace above/below.
+        # 3) Small dark package thumbnails on big white canvas.
+        package_like = False
+        if centered and white_ratio >= 0.18 and bbox_area_ratio <= 0.82:
+            package_like = True
+        if centered and white_ratio >= 0.10 and bbox_height_ratio <= 0.58 and bbox_width_ratio >= 0.45:
+            package_like = True
+        if centered and white_ratio >= 0.40 and nonwhite_ratio <= 0.55:
+            package_like = True
+
+        # Guardrail: full-card ATF graphics may also have a white background.
+        # If the foreground spans almost the entire image both ways, treat it as
+        # not packaging unless it has a very large amount of whitespace.
+        if bbox_width_ratio > 0.92 and bbox_height_ratio > 0.92 and white_ratio < 0.35:
+            package_like = False
+
+        _cache_cvs_package_like_result(cache_key, bool(package_like))
+        return bool(package_like)
+
+    except Exception:
+        _cache_cvs_package_like_result(cache_key, False)
+        return False
+
+
 def align_cvs_atf_images_by_visual_match(s_images, r_images, locked_slots=3, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
-    """CVS-specific image pairing with locked Salsify packaging slots.
+    """CVS-only packaging-window alignment.
 
-    CVS-only rule:
-    - Keep CVS image order exactly as captured from the live CVS carousel.
-    - Slot 1 stays CVS image 1.
-    - Slots 2 and 3 are reserved for packaging audit rows when Salsify has
-      those packaging rows. Use CVS image 2 and CVS image 3 in site order for
-      those rows instead of visual-searching the whole carousel.
-    - If a locked Salsify packaging row is missing, keep the CVS row blank so
-      ATF/lifestyle images do not move up into locked packaging rows.
-    - Slots 4+ continue with the remaining CVS images in site order.
+    Do not reorder Salsify images. Do not reorder CVS images.
 
-    This avoids the previous problem where image hashing pulled packaging
-    images down into ATF rows or pulled tiny/ATF images up into packaging rows.
+    Rules:
+    - Slot 1 always uses CVS image 1.
+    - Slots 2 and 3 are locked packaging audit rows.
+    - If the matching Salsify locked row is missing, keep CVS blank and do not
+      consume the next CVS image. This bumps ATF images down.
+    - If Salsify slot 2 or 3 exists, use the next CVS image only when the image
+      looks packaging-like using the whitespace/centered-pack heuristic.
+    - If the next CVS image looks like ATF/lifestyle/infographic, leave the
+      locked row blank and do not consume it. The same CVS image then appears in
+      the next ATF row, preserving live CVS order.
+    - Slots 4+ continue with remaining CVS images in exact site order.
     """
     s_images = list(s_images or [])
     r_images = [str(u or "").strip() for u in list(r_images or []) if str(u or "").strip()]
@@ -1223,26 +1355,32 @@ def align_cvs_atf_images_by_visual_match(s_images, r_images, locked_slots=3, max
     ordered = []
     cvs_idx = 0
 
-    # Slot 1: always use the first live CVS image.
+    # Slot 1: keep first live CVS image as-is. No classifier here.
     if len(ordered) < max_slots:
         ordered.append(r_images[cvs_idx] if cvs_idx < len(r_images) else "")
         if cvs_idx < len(r_images):
             cvs_idx += 1
 
-    # Slots 2 and 3: if Salsify has the locked packaging row, use the next CVS
-    # image in true site order. If Salsify is missing the row, leave CVS blank
-    # and do not consume a CVS image, which bumps the remaining CVS images down.
+    # Slots 2 and 3: only consume next CVS image when Salsify has that locked
+    # packaging row and the next CVS image looks packaging-like.
     for s_idx in (1, 2):
         if len(ordered) >= max_slots:
             break
-        if _s_url(s_images[s_idx]) if s_idx < len(s_images) else "":
-            ordered.append(r_images[cvs_idx] if cvs_idx < len(r_images) else "")
-            if cvs_idx < len(r_images):
-                cvs_idx += 1
+        s_has_locked_packaging_row = bool(_s_url(s_images[s_idx]) if s_idx < len(s_images) else "")
+        if not s_has_locked_packaging_row:
+            ordered.append("")
+            continue
+
+        next_cvs_url = r_images[cvs_idx] if cvs_idx < len(r_images) else ""
+        if next_cvs_url and is_cvs_package_like_image(next_cvs_url):
+            ordered.append(next_cvs_url)
+            cvs_idx += 1
         else:
+            # Do not consume the CVS image. It remains next in line for ATF rows.
             ordered.append("")
 
-    # Slots 4+: continue remaining CVS images in exact site order.
+    # Slots 4+: continue remaining CVS images in exact live site order. Blank
+    # Salsify rows still reserve space, but they do not consume CVS images.
     for s_img in s_images[3:max_slots]:
         if len(ordered) >= max_slots:
             break
@@ -1253,8 +1391,8 @@ def align_cvs_atf_images_by_visual_match(s_images, r_images, locked_slots=3, max
         if cvs_idx < len(r_images):
             cvs_idx += 1
 
-    # If CVS has extra images beyond Salsify rows, append them at the end in
-    # site order so the visual audit still shows every live CVS asset.
+    # Append any extra CVS images at the end in site order so nothing live on CVS
+    # gets hidden from review.
     while len(ordered) < max_slots and cvs_idx < len(r_images):
         ordered.append(r_images[cvs_idx])
         cvs_idx += 1
