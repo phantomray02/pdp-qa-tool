@@ -90,6 +90,7 @@ MAX_CACHE = 400
 WALGREENS_REQUEST_TIMEOUT = 18
 WALGREENS_DEBUG_TIMEOUT = 25
 WALGREENS_API_TIMEOUT = 10
+CVS_REQUEST_TIMEOUT = 25
 
 # =========================================
 # PERFORMANCE SETTINGS
@@ -3727,6 +3728,87 @@ def get_salsify_images(url):
 # =========================================
 # CVS / RETAILER PARSERS
 # =========================================
+def is_probably_cvs_product_html(html_text):
+    """CVS-only check for real product content.
+
+    Some CVS URLs load in a browser but server-side requests can return an
+    empty/shell/challenge page. This keeps live fetches from being trusted when
+    there is no PDP copy or image payload in the HTML.
+    """
+    text = str(html_text or "")
+    if not text.strip():
+        return False
+    lowered = text.lower()
+    product_markers = [
+        "vendordetailsbullets",
+        "vendordetailsparagraph",
+        "vendorcontent",
+        "dynamicmediaurl",
+        "/bizcontent/merchandising/productimages/high_res/",
+        "productimages/high_res",
+        "skuId=",
+        "prodid-",
+        "__next_data__",
+    ]
+    blocked_markers = [
+        "captcha",
+        "are-you-human",
+        "px-captcha",
+        "let us know you're not a robot",
+        "let us know you’re not a robot",
+        "access denied",
+    ]
+    has_product_marker = any(marker in lowered for marker in product_markers)
+    has_block_marker = any(marker in lowered for marker in blocked_markers)
+    return bool(has_product_marker and not has_block_marker)
+
+
+def fetch_cvs_html_with_fallbacks(retail_url):
+    """CVS-only live HTML fetch with safer fallbacks.
+
+    The normal get_html() path is fast and works for most CVS items. A few live
+    CVS pages return empty/shell content to server-side requests, so this adds a
+    longer desktop retry and a mobile-user-agent retry before declaring Missing.
+    """
+    retail_url = str(retail_url or "").strip()
+    if not retail_url:
+        return "", "cvs_url_missing"
+
+    html_text = get_html(retail_url)
+    if is_probably_cvs_product_html(html_text):
+        return html_text, "cvs_get_html"
+
+    desktop_ua = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    )
+    mobile_ua = (
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) "
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1"
+    )
+
+    for label, user_agent in [("cvs_live_desktop_retry", desktop_ua), ("cvs_live_mobile_retry", mobile_ua)]:
+        try:
+            session = get_session()
+            headers = dict(HEADERS)
+            headers.update({
+                "User-Agent": user_agent,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Cache-Control": "no-cache",
+                "Pragma": "no-cache",
+                "Upgrade-Insecure-Requests": "1",
+            })
+            r = session.get(retail_url, headers=headers, timeout=CVS_REQUEST_TIMEOUT, allow_redirects=True)
+            if r.status_code == 200 and r.text and is_probably_cvs_product_html(r.text):
+                return r.text, label
+            if r.status_code == 200 and r.text and not html_text:
+                html_text = r.text
+        except Exception:
+            continue
+
+    return html_text or "", "cvs_live_fetch_empty_or_shell"
+
 def clean_cvs_text(text):
     if not text:
         return ""
@@ -5054,8 +5136,8 @@ def _extract_cvs_text_from_html(html_text, retail_url="", target_rpc=""):
 
 @st.cache_data(show_spinner=False)
 def get_cvs_bundle(retail_url, target_rpc=""):
-    html_text = get_html(retail_url)
-    return {
+    html_text, cvs_source_used = fetch_cvs_html_with_fallbacks(retail_url)
+    bundle = {
         "text": _extract_cvs_text_from_html(
             html_text,
             retail_url=retail_url,
@@ -5063,6 +5145,11 @@ def get_cvs_bundle(retail_url, target_rpc=""):
         ),
         "images": extract_cvs_images_from_html(html_text),
     }
+    debug = bundle.setdefault("text", {}).setdefault("debug", {})
+    debug["Source Used"] = cvs_source_used
+    debug["CVS Product HTML Detected"] = bool(is_probably_cvs_product_html(html_text))
+    debug["CVS Live HTML Length"] = len(str(html_text or ""))
+    return bundle
 
 # =========================================
 # KROGER PARSERS
@@ -9863,7 +9950,7 @@ def get_visual_row_payload(
                 retail_url,
                 target_rpc=current_target_sku,
             )
-    elif retailer_norm == "heb":
+    elif retailer_norm in {"heb", "cvs"}:
         if not row_source_code:
             row_source_code = lookup_uploaded_raw_html(
                 uploaded_html_map,
@@ -9911,7 +9998,7 @@ def process_row(row):
         retailer_norm_for_row = normalize_retailer_name(retailer_name).strip().lower()
         if retailer_norm_for_row == "kroger" and not retail_url and cvs_rpc:
             retail_url = find_kroger_url_in_uploaded_map(st.session_state.uploaded_raw_html_map or {}, target_rpc=cvs_rpc)
-        if retailer_norm_for_row == "heb" and not row_source_code:
+        if retailer_norm_for_row in {"heb", "cvs"} and not row_source_code:
             row_source_code = lookup_uploaded_raw_html(st.session_state.uploaded_raw_html_map or {}, retail_url, target_rpc=cvs_rpc)
 
         title_score = 0
