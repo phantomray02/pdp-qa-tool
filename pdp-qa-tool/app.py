@@ -120,7 +120,7 @@ CVS_VARIANT_MIN_MATCH_SCORE = 35
 
 CAPTURE_MODE_USE_EXTENSION = "Use extension + TXT upload"
 CAPTURE_MODE_SKIP_EXTENSION = "Skip extension and go straight to batch"
-AUTO_SKIP_EXTENSION_RETAILERS = {"Walgreens"}
+AUTO_SKIP_EXTENSION_RETAILERS = {"CVS", "Walgreens"}
 # Retailer-specific Salsify isolation controls.
 # Copy can stay retailer-locked while images still fall back to generic locked Salsify slots if
 # retailer-labeled image assets do not exist yet.
@@ -3997,6 +3997,193 @@ def get_salsify_images(url):
 # =========================================
 # CVS / RETAILER PARSERS
 # =========================================
+
+def get_cvs_sku_id_from_url(retail_url):
+    """CVS-only skuId/RPC extractor."""
+    retail_url = str(retail_url or "").strip()
+    m = re.search(r"[?&]skuId=([0-9A-Za-z_-]+)", retail_url, flags=re.IGNORECASE)
+    if m:
+        return m.group(1)
+    m = re.search(r"prodid-([0-9A-Za-z_-]+)", retail_url, flags=re.IGNORECASE)
+    if m:
+        return m.group(1)
+    return ""
+
+
+def cvs_url_candidates(retail_url):
+    """CVS-only URL fallback order: uploaded URL, canonical no-query URL, then skuId URL."""
+    raw_url = clean_uploaded_url_value(retail_url)
+    if not raw_url:
+        return []
+    candidates = []
+    def add(candidate):
+        candidate = str(candidate or "").strip()
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+    add(raw_url)
+    no_hash = raw_url.split("#", 1)[0].strip()
+    add(no_hash)
+    canonical = no_hash.split("?", 1)[0].strip()
+    add(canonical)
+    sku_id = get_cvs_sku_id_from_url(raw_url)
+    if canonical and sku_id:
+        add(f"{canonical}?skuId={sku_id}")
+    if canonical.endswith("/"):
+        add(canonical.rstrip("/"))
+    return candidates
+
+
+def fetch_cvs_url_once(url, user_agent="", timeout_seconds=None):
+    """CVS-only request helper with browser-like headers."""
+    if not url:
+        return ""
+    try:
+        session = get_session()
+        headers = dict(HEADERS)
+        if user_agent:
+            headers["User-Agent"] = user_agent
+        headers.update({
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+            "Upgrade-Insecure-Requests": "1",
+            "Referer": "https://www.cvs.com/",
+        })
+        r = session.get(url, headers=headers, timeout=timeout_seconds or CVS_REQUEST_TIMEOUT, allow_redirects=True)
+        if r.status_code == 200 and r.text:
+            return r.text
+    except Exception:
+        pass
+    return ""
+
+
+def cvs_live_html_quality_score(html_text):
+    """CVS-only source quality score so the richest direct response wins."""
+    value = str(html_text or "")
+    if not value.strip():
+        return 0
+    lowered = value.lower()
+    score = 0
+    strong_markers = [
+        "vendordetailsbullets", "vendordetailsparagraph", "vendorcontent", "dynamicmediaurl",
+        "/bizcontent/merchandising/productimages/high_res/", "productimages/high_res", "__next_data__",
+    ]
+    useful_markers = ["item #", "skuid=", "prodid-", "rating & reviews", "product type", "details"]
+    for marker in strong_markers:
+        if marker in lowered:
+            score += 250
+    for marker in useful_markers:
+        if marker in lowered:
+            score += 50
+    if re.search(r"/shop/[^\s\"'<>]+prodid-", lowered):
+        score += 80
+    if re.search(r"\b(kleenex|kotex|viva|poise|depend|huggies|pull-ups|cottonelle|scott|goodnites|thinx)\b", lowered):
+        score += 120
+    if "captcha" in lowered or "are-you-human" in lowered or "px-captcha" in lowered:
+        score -= 1000
+    if "sc-cvs-footer-container" in lowered and score < 200:
+        score -= 250
+    return max(score + min(len(value) // 5000, 50), 0)
+
+
+def cvs_title_from_url_slug(retail_url):
+    """CVS-only title fallback from /shop/{slug}-prodid-{id}."""
+    m = re.search(r"/shop/([^/?#]+?)-prodid-[0-9A-Za-z_-]+", str(retail_url or ""), flags=re.IGNORECASE)
+    if not m:
+        return ""
+    slug = html.unescape(m.group(1)).replace("-", " ")
+    slug = re.sub(r"\s+", " ", slug).strip()
+    if not slug:
+        return ""
+    return " ".join(word.upper() if word.lower() in {"cvs", "ct"} else word.capitalize() for word in slug.split())
+
+
+def normalize_cvs_visible_text_blob(html_text):
+    """CVS-only visible text builder for canonical/simple HTML fallbacks."""
+    if not html_text:
+        return ""
+    working = str(html_text or "")
+    for _ in range(4):
+        unescaped = html.unescape(working)
+        if unescaped == working:
+            break
+        working = unescaped
+    try:
+        visible = BeautifulSoup(working, "html.parser").get_text("\n", strip=True)
+    except Exception:
+        visible = working
+    visible = visible.replace("\r", "\n")
+    visible = re.sub(r"\n{2,}", "\n", visible)
+    return visible.strip()
+
+
+def extract_cvs_indexed_text_fallback(html_text, retail_url="", target_rpc=""):
+    """CVS-only fallback when product copy exists as visible text rather than vendorDetails."""
+    debug = {"Description Path": "", "Features Path": "", "Title Path": "", "Visible Text Length": 0}
+    visible = normalize_cvs_visible_text_blob(html_text)
+    debug["Visible Text Length"] = len(visible)
+    if not visible:
+        return {"title": "", "description": "", "features": [], "debug": debug}
+    lines = [normalize_space(x) for x in visible.splitlines() if normalize_space(x)]
+    title = ""
+    sku_id = normalize_space(target_rpc) or get_cvs_sku_id_from_url(retail_url)
+    for idx, line in enumerate(lines[:120]):
+        if sku_id and re.search(rf"\bItem\s*#\s*{re.escape(sku_id)}\b", line, flags=re.IGNORECASE):
+            for prior in reversed(lines[max(0, idx - 4):idx]):
+                if len(prior) >= 12 and not re.search(r"^(Details|Rating|Reviews|How to get it)$", prior, flags=re.IGNORECASE):
+                    title = prior
+                    break
+            break
+    if not title:
+        for line in lines[:80]:
+            if len(line) >= 20 and any(token in line.lower() for token in ["kleenex", "kotex", "viva", "poise", "depend", "huggies", "pull-ups", "cottonelle", "scott", "goodnites", "thinx"]):
+                title = line
+                break
+    if not title:
+        title = cvs_title_from_url_slug(retail_url)
+    if title:
+        debug["Title Path"] = "cvs_visible_text_or_url_slug"
+    compact = normalize_space(" ".join(lines))
+    desc_start = 0
+    if sku_id:
+        m = re.search(rf"Item\s*#\s*{re.escape(sku_id)}\b", compact, flags=re.IGNORECASE)
+        if m:
+            desc_start = m.end()
+    if not desc_start and title:
+        title_idx = compact.lower().find(title.lower())
+        if title_idx >= 0:
+            desc_start = title_idx + len(title)
+    working = compact[desc_start:].strip() if desc_start else compact
+    stop_match = re.search(r"\b(Rating\s*&\s*reviews|Ingredients|Specifications|Same-Day Delivery policies|Delivery Details)\b", working, flags=re.IGNORECASE)
+    if stop_match:
+        working = working[:stop_match.start()].strip()
+    feature_heading_pattern = re.compile(
+        r"(?=(?:WHAT['’]?S INCLUDED|HELPS SKIN FEEL RESTORED|INSTANT COOLING RELIEF|A HINT OF ALOE|CLEAN AND COMFORTED SKIN|FRESHNESS YOU CAN FEEL|BREAKS DOWN LIKE TOILET PAPER|GENTLE FOR SKIN|ODOR CONTROL|DRYNESS|LEAK ?GUARD|ALL DAY PROTECTION)\s+[—-]\s+)",
+        flags=re.IGNORECASE,
+    )
+    matches = list(feature_heading_pattern.finditer(working))
+    description = ""
+    features = []
+    if matches:
+        description = clean_cvs_text(working[:matches[0].start()])
+        for i, match in enumerate(matches):
+            start = match.start()
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(working)
+            item = clean_cvs_feature_text(working[start:end])
+            if item:
+                features.append(item)
+    else:
+        description = clean_cvs_text(working)
+    if title and normalize_text(description).startswith(normalize_text(title)):
+        description = clean_cvs_text(description[len(title):])
+    features = normalize_cvs_features(features)
+    if description:
+        debug["Description Path"] = "cvs_visible_indexed_text_fallback"
+    if features:
+        debug["Features Path"] = "cvs_visible_indexed_text_feature_heading_split"
+    return {"title": title, "description": description, "features": features[:5], "debug": debug}
+
 def is_probably_cvs_product_html(html_text):
     """CVS-only check for real product content.
 
@@ -4033,20 +4220,10 @@ def is_probably_cvs_product_html(html_text):
 
 
 def fetch_cvs_html_with_fallbacks(retail_url):
-    """CVS-only live HTML fetch with safer fallbacks.
-
-    The normal get_html() path is fast and works for most CVS items. A few live
-    CVS pages return empty/shell content to server-side requests, so this adds a
-    longer desktop retry and a mobile-user-agent retry before declaring Missing.
-    """
+    """CVS-only live HTML fetch with smarter URL and source fallbacks."""
     retail_url = str(retail_url or "").strip()
     if not retail_url:
         return "", "cvs_url_missing"
-
-    html_text = get_html(retail_url)
-    if is_probably_cvs_product_html(html_text):
-        return html_text, "cvs_get_html"
-
     desktop_ua = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -4055,28 +4232,36 @@ def fetch_cvs_html_with_fallbacks(retail_url):
         "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) "
         "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1"
     )
-
-    for label, user_agent in [("cvs_live_desktop_retry", desktop_ua), ("cvs_live_mobile_retry", mobile_ua)]:
-        try:
-            session = get_session()
-            headers = dict(HEADERS)
-            headers.update({
-                "User-Agent": user_agent,
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.9",
-                "Cache-Control": "no-cache",
-                "Pragma": "no-cache",
-                "Upgrade-Insecure-Requests": "1",
-            })
-            r = session.get(retail_url, headers=headers, timeout=CVS_REQUEST_TIMEOUT, allow_redirects=True)
-            if r.status_code == 200 and r.text and is_probably_cvs_product_html(r.text):
-                return r.text, label
-            if r.status_code == 200 and r.text and not html_text:
-                html_text = r.text
-        except Exception:
-            continue
-
-    return html_text or "", "cvs_live_fetch_empty_or_shell"
+    best_html = ""
+    best_score = -1
+    best_label = "cvs_live_fetch_empty_or_shell"
+    candidate_urls = cvs_url_candidates(retail_url)
+    if not candidate_urls:
+        return "", "cvs_url_missing"
+    try:
+        first_html = get_html(candidate_urls[0])
+        first_score = cvs_live_html_quality_score(first_html)
+        if first_score > best_score:
+            best_html = first_html
+            best_score = first_score
+            best_label = "cvs_get_html"
+        if is_probably_cvs_product_html(first_html):
+            return first_html, "cvs_get_html"
+    except Exception:
+        pass
+    for candidate_url in candidate_urls:
+        for label, user_agent in [("cvs_live_desktop_retry", desktop_ua), ("cvs_live_mobile_retry", mobile_ua)]:
+            html_text = fetch_cvs_url_once(candidate_url, user_agent=user_agent, timeout_seconds=CVS_REQUEST_TIMEOUT)
+            score = cvs_live_html_quality_score(html_text)
+            if score > best_score:
+                best_html = html_text
+                best_score = score
+                best_label = f"{label} | {candidate_url}"
+            if is_probably_cvs_product_html(html_text):
+                return html_text, f"{label} | {candidate_url}"
+    if best_html:
+        return best_html, best_label
+    return "", "cvs_live_fetch_empty_or_shell"
 
 def clean_cvs_text(text):
     if not text:
@@ -5192,12 +5377,14 @@ def extract_vendor_copy_from_nextjs(html_text, target_rpc="", retail_url=""):
 
 
 def extract_cvs_images_from_html(html_text):
+    """CVS-only image extractor with broader productimages/high_res patterns."""
     html_text = str(html_text or "")
     best_images = {}
     order = []
-
     def add_candidate(raw_url, size=0):
-        raw_url = html.unescape(str(raw_url or "").strip()).replace("\\/", "/")
+        raw_url = html.unescape(str(raw_url or "").strip())
+        raw_url = raw_url.replace("\\/", "/").replace("\\u002F", "/").replace("\\u002f", "/")
+        raw_url = raw_url.strip(' \"\'[](),;')
         if not raw_url:
             return
         if raw_url.startswith("//"):
@@ -5220,26 +5407,30 @@ def extract_cvs_images_from_html(html_text):
             best_images[name] = {"url": base, "size": size}
         elif size > int(best_images[name].get("size", 0) or 0):
             best_images[name] = {"url": base, "size": size}
-
-    for m in re.findall(r'/bizcontent/merchandising/productimages/high_res/[^\s\\\"]+\.jpg\?[^\\\"]*', html_text):
-        size_match = re.search(r"Resize=\((\d+)", m)
-        add_candidate(m, int(size_match.group(1)) if size_match else 0)
-
-    for m in re.findall(r"https?://[^\s\"'<>]+/productimages/high_res/[^\s\"'<>]+?\.(?:jpg|jpeg|png|webp|avif)(?:\?[^\s\"'<>]*)?", html_text, flags=re.IGNORECASE):
-        size_match = re.search(r"Resize=\((\d+)", m)
-        add_candidate(m, int(size_match.group(1)) if size_match else 0)
-
+    working_values = [html_text, html.unescape(html_text), html_text.replace("\\/", "/").replace("\\u002F", "/").replace("\\u002f", "/")]
+    for working in working_values:
+        for m in re.findall(r'/bizcontent/merchandising/productimages/high_res/[^\s\\\"\'<>]+?\.(?:jpg|jpeg|png|webp|avif)(?:\?[^\\\"\'<>\s]*)?', working, flags=re.IGNORECASE):
+            size_match = re.search(r"Resize=\((\d+)", m, flags=re.IGNORECASE)
+            add_candidate(m, int(size_match.group(1)) if size_match else 0)
+        for m in re.findall(r"https?://[^\s\"'<>]+/productimages/high_res/[^\s\"'<>]+?\.(?:jpg|jpeg|png|webp|avif)(?:\?[^\s\"'<>]*)?", working, flags=re.IGNORECASE):
+            size_match = re.search(r"Resize=\((\d+)", m, flags=re.IGNORECASE)
+            add_candidate(m, int(size_match.group(1)) if size_match else 0)
+        for m in re.findall(r'"(?:dynamicMediaUrl|imageUrl|image|src|url|thumbnailUrl|largeImageUrl)"\s*:\s*"((?:\\.|[^"\\])+)"', working, flags=re.IGNORECASE | re.DOTALL):
+            add_candidate(m, 0)
     try:
         soup = BeautifulSoup(html_text, "html.parser")
         for img in soup.find_all("img"):
-            for attr in ["src", "currentSrc", "data-src", "data-image-src"]:
+            for attr in ["src", "currentSrc", "data-src", "data-image-src", "data-lazy-src"]:
                 add_candidate(img.get(attr, ""), 0)
             srcset = str(img.get("srcset", "") or "")
             for part in srcset.split(","):
                 add_candidate(part.strip().split()[0] if part.strip() else "", 0)
+        for source in soup.find_all("source"):
+            srcset = str(source.get("srcset", "") or "")
+            for part in srcset.split(","):
+                add_candidate(part.strip().split()[0] if part.strip() else "", 0)
     except Exception:
         pass
-
     ordered_urls = [best_images[name]["url"] for name in order]
     return reorder_cvs_retailer_images_for_visual(ordered_urls, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE)
 
@@ -5464,6 +5655,33 @@ def _extract_cvs_text_from_html(html_text, retail_url="", target_rpc=""):
         except Exception:
             pass
 
+    # CVS-only public/indexed/visible-text fallback. This helps when CVS returns
+    # copy as rendered text or a canonical page without the usual vendorDetails payload.
+    visible_fallback = {"title": "", "description": "", "features": [], "debug": {}}
+    if not description or not features or not title:
+        visible_fallback = extract_cvs_indexed_text_fallback(
+            html_text,
+            retail_url=retail_url,
+            target_rpc=target_rpc,
+        )
+        visible_debug = visible_fallback.get("debug", {}) or {}
+        if visible_debug:
+            debug["CVS Visible Indexed Fallback"] = visible_debug
+        if not title and visible_fallback.get("title"):
+            title = normalize_space(visible_fallback.get("title", ""))
+            debug["Title Path"] = visible_debug.get("Title Path", "cvs_visible_indexed_fallback")
+        if not description and visible_fallback.get("description"):
+            description = clean_cvs_text(visible_fallback.get("description", ""))
+            debug["Description Path"] = visible_debug.get("Description Path", "cvs_visible_indexed_fallback")
+        fallback_features = normalize_cvs_features(visible_fallback.get("features", []))
+        if (not features) and fallback_features:
+            features = fallback_features
+            debug["Features Path"] = visible_debug.get("Features Path", "cvs_visible_indexed_fallback")
+    if not title:
+        title = cvs_title_from_url_slug(retail_url)
+        if title:
+            debug["Title Path"] = "cvs_url_slug_fallback"
+
     if not debug.get("Features Path"):
         debug["Features Path"] = debug.get("Source Used", "") if features else "features_empty"
 
@@ -5490,6 +5708,8 @@ def get_cvs_bundle(retail_url, target_rpc=""):
     debug["Source Used"] = cvs_source_used
     debug["CVS Product HTML Detected"] = bool(is_probably_cvs_product_html(html_text))
     debug["CVS Live HTML Length"] = len(str(html_text or ""))
+    debug["CVS Live HTML Quality Score"] = cvs_live_html_quality_score(html_text)
+    debug["CVS URL Candidates Tried"] = " | ".join(cvs_url_candidates(retail_url))
     return bundle
 
 # =========================================
@@ -11028,9 +11248,11 @@ if uploaded_file:
                     missing_capture_df = retailer_df[retailer_df["copy_source_code"].fillna("").astype(str).str.len() == 0].copy()
                     cvs_missing_capture_urls = [str(x).strip() for x in missing_capture_df.get("retail_url", pd.Series(dtype=str)).fillna("").astype(str).tolist() if str(x).strip()]
                 if not uploaded_raw_html_map:
-                    cvs_capture_block_reason = "CVS needs a browser extension TXT upload before batch. Live CVS fetch is unstable and can return empty shell pages."
+                    cvs_capture_block_reason = ""
+                    st.caption("CVS direct-first mode active: the app will try live CVS fetches, canonical URL fallbacks, and CVS visible-text/image parsing before needing any source upload.")
                 elif missing_uploaded_html_count > 0:
-                    cvs_capture_block_reason = f"CVS TXT upload is incomplete: {missing_uploaded_html_count} of {len(retailer_df)} queued CVS rows did not match a captured TXT block."
+                    cvs_capture_block_reason = ""
+                    st.caption(f"CVS direct-first mode active: {missing_uploaded_html_count} of {len(retailer_df)} CVS rows did not match uploaded source, so those rows will fall back to live CVS/direct parsing.")
             isolated_unique_url_count = int(retailer_df["retail_url"].fillna("").astype(str).str.strip().replace("", pd.NA).dropna().nunique()) if retailer_df is not None and not retailer_df.empty and "retail_url" in retailer_df.columns else 0
             st.caption(f"Strict retailer isolation active: {selected_retailer} only. Rows queued: {len(retailer_df)}. Unique retailer URLs queued: {isolated_unique_url_count}.")
             if selected_capture_mode == CAPTURE_MODE_USE_EXTENSION:
@@ -11043,7 +11265,7 @@ if uploaded_file:
                 )
                 render_extension_batch_bridge(extension_payload)
                 if selected_retailer == "CVS":
-                    st.caption("CVS mode active: use the extension + TXT upload when live server fetch misses browser-rendered CVS PDP copy/images. This CVS captured-content fallback does not change other retailers.")
+                    st.caption("CVS mode active: direct-first parsing is enabled. Uploaded TXT/HTML/XLSX source is optional fallback only when CVS live/canonical fetch still misses product copy/images. This does not change other retailers.")
                 elif selected_retailer == "HEB":
                     st.caption("HEB mode active: parses TXT once, matches rows by HEB RPC, pulls Salsify copy/features without HEB-only limits, and keeps all available Salsify/HEB image slots for comparison.")
                 else:
