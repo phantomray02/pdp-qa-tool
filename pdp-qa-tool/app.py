@@ -115,6 +115,12 @@ MAX_SAFE_IMAGE_PIXELS = 50_000_000
 MAX_IMAGE_SLOTS_TO_COMPARE = 20
 MAX_IMAGE_SLOTS_TO_SCORE = 12
 STRICT_LIVE_RETAILER_ONLY = True
+# Strict comparison mode means: compare Salsify side to selected retailer side only.
+# Do not copy Salsify content/images into retailer fields and do not use hard-coded
+# known-product catalogs as if they were live retailer data.
+STRICT_COMPARISON_MODE = True
+ALLOW_RETAILER_KNOWN_COPY_FALLBACKS = False
+ALLOW_RETAILER_GENERATED_IMAGE_FALLBACKS = False
 STRICT_CVS_VARIANT_MATCH = True
 CVS_VARIANT_MIN_MATCH_SCORE = 35
 
@@ -757,6 +763,42 @@ def normalize_retailer_name(value):
         "retailer": "Retailer",
     }
     return mapping.get(lowered, value)
+
+
+RETAILER_URL_DOMAIN_RULES = {
+    "cvs": ("cvs.com",),
+    "walgreens": ("walgreens.com",),
+    "kroger": ("kroger.com",),
+    "heb": ("heb.com",),
+    "sam's club": ("samsclub.com",),
+    "sams club": ("samsclub.com",),
+    "samsclub": ("samsclub.com",),
+    "walmart": ("walmart.com",),
+    "target": ("target.com",),
+    "amazon": ("amazon.com",),
+}
+
+
+def retailer_url_matches_selected(retail_url, selected_retailer):
+    """True only when the retailer URL belongs to the selected retailer.
+
+    This is the first guardrail for retailer isolation. It prevents a row labeled
+    CVS from accidentally being parsed by CVS code if the URL is actually Kroger,
+    Walgreens, etc. Blank URLs are handled elsewhere as missing URLs.
+    """
+    retailer = normalize_retailer_name(selected_retailer).strip().lower()
+    url = str(retail_url or "").strip().lower()
+    if not url:
+        return True
+    expected_domains = RETAILER_URL_DOMAIN_RULES.get(retailer)
+    if not expected_domains:
+        return True
+    return any(domain in url for domain in expected_domains)
+
+
+def build_retailer_url_mismatch_status(retail_url, selected_retailer):
+    retailer = normalize_retailer_name(selected_retailer)
+    return f"Skipped: URL does not match selected retailer {retailer}: {retail_url}"
 
 
 def build_empty_retailer_bundle(retailer_name="Retailer", reason=""):
@@ -1703,6 +1745,9 @@ def strict_filter_rows_for_selected_retailer(df, selected_retailer, dedupe_by_ur
 
     out["retail_url"] = out["retail_url"].fillna("").astype(str).str.strip()
     out = out[out["retail_url"] != ""].copy()
+
+    if not out.empty:
+        out = out[out["retail_url"].apply(lambda value: retailer_url_matches_selected(value, selected_retailer_norm))].copy()
 
     if dedupe_by_url and not out.empty:
         out = out.drop_duplicates(subset=["retail_url"], keep="first").copy()
@@ -4107,6 +4152,8 @@ def cvs_generated_image_candidates_for_sku(sku_id, max_slots=8):
     return candidates[:max_slots]
 
 def get_cvs_known_product_fallback_bundle(retail_url="", target_rpc=""):
+    if not bool(globals().get("ALLOW_RETAILER_KNOWN_COPY_FALLBACKS", False)):
+        return {"text": {"title": "", "description": "", "features": [], "debug": {}}, "images": []}
     sku_id = normalize_space(target_rpc) or get_cvs_sku_id_from_url(retail_url)
     sku_id = re.sub(r"[^0-9A-Za-z_-]", "", str(sku_id or "").strip())
     data = CVS_KNOWN_PRODUCT_FALLBACKS.get(sku_id)
@@ -6117,7 +6164,7 @@ def get_cvs_bundle(retail_url, target_rpc=""):
         debug["Source Used"] = (str(debug.get("Source Used", "")) + " | cvs_known_product_fallback_catalog").strip(" |")
         debug["CVS Known Product Fallback Applied"] = True
     cvs_product_html_detected = bool(debug.get("CVS Product HTML Detected"))
-    if fallback_images and (not has_images or not cvs_product_html_detected):
+    if bool(globals().get("ALLOW_RETAILER_GENERATED_IMAGE_FALLBACKS", False)) and fallback_images and (not has_images or not cvs_product_html_detected):
         bundle["images"] = fallback_images[:MAX_IMAGE_SLOTS_TO_COMPARE]
         debug["CVS Known Image URL Pattern Fallback Applied"] = True
         if has_images and not cvs_product_html_detected:
@@ -9258,6 +9305,9 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
     retailer = normalize_retailer_name(retailer_name).strip().lower()
     uploaded_html = str(row_source_code or "")
 
+    if retail_url and not retailer_url_matches_selected(retail_url, retailer):
+        return build_empty_retailer_bundle(retailer_name or "Retailer", build_retailer_url_mismatch_status(retail_url, retailer))
+
     if retailer == "kroger":
         if uploaded_html.strip() and is_valid_kroger_product_capture(uploaded_html):
             bundle = {
@@ -11073,6 +11123,8 @@ def process_row(row):
             status_notes.append("Missing Salsify URL")
         if not retail_url:
             status_notes.append("Missing Retail URL")
+        if retail_url and not retailer_url_matches_selected(retail_url, retailer_name):
+            status_notes.append(build_retailer_url_mismatch_status(retail_url, retailer_name))
         if status_notes:
             return {
                 "summary": {
@@ -11160,7 +11212,7 @@ def process_row(row):
                 or any(str(x or "").strip() for x in (r_images or []))
             )
             if not r_has_any_content and not row_source_code:
-                status_notes.append("CVS source missing/unmatched after combined TXT + live/canonical fallbacks")
+                status_notes.append("CVS source missing/unmatched from selected CVS source paths")
 
         debug_data = r_text.get("debug", {})
 
