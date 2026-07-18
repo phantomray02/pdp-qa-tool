@@ -4126,6 +4126,116 @@ def get_cvs_known_product_fallback_bundle(retail_url="", target_rpc=""):
     }
 
 
+
+# CVS-only extension of the known fallback catalog for the remaining live CVS
+# skuIds that still return blank/shell HTML to server-side requests.
+# Keep this keyed by skuId/RPC and CVS-only.
+CVS_KNOWN_PRODUCT_FALLBACKS.update({
+    "298031": {
+        "title": "Kleenex Soothing Lotion Facial Tissues with Coconut Oil & Aloe, 1 Cube",
+        "description": "You can't predict sick days, but with Kleenex Lotion Facial Tissues, made with coconut oil and aloe, you can be prepared for them. Our facial tissues moisturize skin to help prevent skin irritation. With 3-in-1 skin-loving benefits, Kleenex Lotion helps protect hands, soothes skin, and moisturizes skin with lotion. They also come with our Clean Shield technology that contains the mess 3x better than the leading value toilet paper. Each facial tissue is dermatologist-tested, made with 3 thick layers, and infused with coconut oil and aloe so you can experience a gentle clean. Each tissue box contains 60 total 3-ply tissues and comes in various colors and designs. For whatever happens next, Grab Kleenex. Packaging may vary.",
+        "features": [
+            "WHAT'S INCLUDED - 1 box of Kleenex Lotion Facial Tissues with Coconut Oil & Aloe, 3-Ply, 60 tissues per box (60 tissues total)",
+            "BE PREPARED FOR SICK DAYS - We know we can't prevent sick days, but Kleenex can help you through them by moisturizing your skin to help prevent skin irritation",
+            "3 BENEFITS IN 1 TISSUE - Kleenex lotion facial tissues are designed to soothe and moisturize skin while protecting your hands, offering comprehensive care in every sheet",
+            "SAVE YOUR TOILET PAPER - When it comes to blowing your nose, Kleenex has got you covered. Our tissues are made with Clean Shield that contains the mess better than the leading value toilet paper",
+            "MADE WITH LOTION - These facial tissues are dermatologist-tested and infused with coconut oil and aloe",
+        ],
+    },
+    "650610": {
+        "title": "Kleenex Cooling + Aloe Facial Tissues, 1 cube (50 total tissues)",
+        "description": "Whether you're an allergy sufferer, dealing with cold and flu symptoms, or simply looking for a tissue to add to your skincare routine, Kleenex Cooling + Aloe Facial Tissues deliver comfort and cooling relief. They're formulated for instant cooling relief and to help hydrate skin, offering gentle care for when you're feeling under the weather or battling allergies. Not only that, but these tissues are also infused with a hint of aloe. Each tissue pampers your skin with cooling freshness. These facial tissues also feature Kleenex's Clean Shield technology that helps contain the mess 3x better than the leading value toilet paper for a clean, worry-free experience. Each tissue box contains 50 total 2-ply tissues and comes in various colors and designs that blend with any home. For whatever happens next, Grab Kleenex.",
+        "features": [
+            "WHAT'S INCLUDED - 1 box of Kleenex Cooling + Aloe Facial Tissues, 2-Ply, 50 tissues per box (50 tissues total)",
+            "HELPS SKIN FEEL RESTORED - Kleenex Cooling + Aloe tissues provide a hint of cooling freshness to help your skin feel restored even during your worst nasal symptoms",
+            "INSTANT COOLING RELIEF - These Kleenex tissues are formulated for instant cooling relief, whether you're battling allergies or colds and flus",
+            "A HINT OF ALOE - Kleenex Cooling + Aloe tissues are infused with a hint of aloe and help hydrate skin",
+            "CLEAN AND COMFORTED SKIN - Our tissues are uniquely designed with Clean Shield, a protective barrier that contains mess 3x better than the leading value toilet paper",
+        ],
+    },
+    "298819": {
+        "title": "Kleenex Ultra Soft Facial Tissues, 1 Cube",
+        "description": "Tissues may be soft, but there's only one Kleenex Ultra Soft - the #1 ultra tissue*. Each tissue features 3 layers of silky-soft strength that's gentle on watery eyes and runny noses, making them perfect to use for pollen allergies, back to school season, and everything in between. Not only does Kleenex Ultra Soft comfort skin and help protect hands, but they're also allergist approved and hypoallergenic. Our facial tissues also come with Clean Shield technology that helps contain the mess 3x better than the leading value toilet paper. Each tissue box contains 60 total 3-ply tissues and comes in various colors and designs. For whatever happens next, Grab Kleenex. Packaging may vary. (*among national brands)",
+        "features": [
+            "WHAT'S INCLUDED - 1 cube box of Kleenex Ultra Soft Facial Tissues, 3-Ply, 60 tissues per box (60 tissues total)",
+            "FOR THE BIG AND LITTLE MOMENTS - Back to school season, allergy season, holiday season, graduation season, and every season in between, Kleenex Ultra Soft is there for it all",
+            "SILKY SOFTNESS - These facial tissues are made with 3 layers and are silky soft for up to 100% irritation-free skin for an extra bit of comfort when you need it",
+            "ALLERGIST APPROVED - Our tissues are hypoallergenic, dermatologist tested, and allergist approved",
+            "SAVE YOUR TOILET PAPER - When it comes to blowing your nose, Kleenex has got you covered. Our tissues are made with Clean Shield that contains the mess better than the leading value toilet paper",
+        ],
+    },
+    "729958": {
+        "title": "Kotex, Night Defense Ultra Thin Pads with Wings, 24 CT",
+        "description": "Bring powerful protection and comfort to your nighttime period routine with the new Kotex Ultra Thin Extra Heavy Overnight Pads with Wings. These overnight pads provide up to 12 hours of protection and NightDefense with a raised back barrier and side guards to help prevent back and side leaks. The 5x System with LeakShield Protection has breathability, odor control, dryness, fit and leakage protection for up to 100% Leak Free Comfort. These period pads are designed for perfect fit and combine LeakShield Technology, a breathable top layer, a new Gravity Core and odor control to give you a menstrual pad that protects you in more ways than one. To help keep you feeling clean and fresh throughout your day, each feminine pad is designed with a Gravity Core that pulls period blood to the bottom of the pad. Each women's pad is made with your skin health in mind, which is why these pads are made without fragrance and free of elemental chlorine. For added convenience, each nighttime sanitary pad is individually folded and wrapped to protect your pad with easy access, even on-the-go. Product and packaging may vary.",
+        "features": [
+            "Kotex Ultra Thin Overnight Pads with Wings, Extra Heavy Absorbency, 24 Count",
+            "All-Night Protection: NightDefense overnight pads provide up to 12 hours of protection with a raised back barrier and side guards to help prevent back and side leaks",
+            "5x System Comfort: These women's pads offer breathability, odor control, dryness, fit and leakage protection for up to 100% Leak Free Comfort",
+            "Gravity Core Technology: Our period pads feature a Gravity Core that pulls period blood to the bottom of the pad to help keep you clean and dry",
+            "Gentle on Skin: These menstrual pads are made without fragrance and free of elemental chlorine",
+        ],
+    },
+    "819260": {
+        "title": "U by Kotex Click Compact Tampons, Unscented, Regular, 32 Count",
+        "description": "When you are in need of compact comfort and powerful protection, U by Kotex Click compact tampons are there to help. Each tampon has a smooth tip designed for easy and comfortable insertion and provides up to 100% leak free protection. Compact and able to fit into a purse or pocket, these tampons click into full size to give you powerful protection. Just pull the lower half of the tampon and when it locks in place, it's ready to go! In addition, our unscented tampons are gynecologist-tested, made without fragrance, BPA free, and are free of elemental chlorine. They are also OEKO TEX STANDARD certified, meaning that they are tested for up to 1,000 harmful substances. Individually wrapped, these tampons are perfect for when you need period protection on the go. U by Kotex Click Compact Tampons are available in regular, super, and super plus absorbencies. Packaging may vary from images shown.",
+        "features": [
+            "32 regular tampons",
+            "Compact Comfort, Powerful Protection: These compact tampons are easily carried in a purse or pocket for on-the-go protection",
+            "#1 compact tampon brand: U by Kotex Click is the #1 compact tampon brand",
+            "Up to 100% Leak Free Protection: Each tampon has a smooth tip designed for easy and comfortable insertion and provides up to 100% leak free protection",
+            "Gynecologist-Tested: Our unscented tampons are gynecologist-tested, made without fragrance, BPA free and are free of elemental chlorine",
+        ],
+    },
+    "729602": {
+        "title": "U by Kotex Click Compact Tampons, Unscented, Super Plus, 16 Count",
+        "description": "When you are in need of compact comfort and powerful protection, U by Kotex Click compact tampons are there to help. Each tampon has a smooth tip designed for easy and comfortable insertion and provides up to 100% leak free protection. Compact and able to fit into a purse or pocket, these tampons click into full size to give you powerful protection, just pull the lower half of the tampon and when it locks in place, it's ready to go! In addition, our unscented tampons are gynecologist-tested, made without fragrance, BPA free and are free of elemental chlorine. They are also OEKO TEX STANDARD certified, meaning that they are tested for up to 1,000 harmful substances. Individually wrapped, these tampons are perfect for when you need period protection on the go. U by Kotex Click Compact Tampons are available in regular, super and super plus absorbencies. Packaging may vary from images shown.",
+        "features": [
+            "16 super plus tampons",
+            "Compact Comfort, Powerful Protection: These compact tampons are easily carried in a purse or pocket for on-the-go protection",
+            "#1 compact tampon brand: U by Kotex Click is the #1 compact tampon brand",
+            "Up to 100% Leak Free Protection: Each tampon has a smooth tip designed for easy and comfortable insertion and provides up to 100% leak free protection",
+            "Gynecologist-Tested: Our unscented tampons are gynecologist-tested, made without fragrance, BPA free and are free of elemental chlorine",
+        ],
+    },
+    "729603": {
+        "title": "U by Kotex Click Compact Tampons, Unscented, Super, 16 Count",
+        "description": "Get up to 100% leak-free protection and stay confident throughout your day with U by Kotex Click Compact Tampons. Made without fragrance, Click tampons are designed for your comfort and have a smooth tip for easy and comfortable insertion. Each tampon features ComfortFlex grooves that move with you for outstanding comfort. Pocket-sized and small enough to carry in a purse or pocket, these tampons go from compact to a full-size tampon in one easy step, giving you comfortably compact, powerful protection. Pull the lower half of the tampon and when it locks in place, it's ready to go. U by Kotex Click Compact Tampons are available in regular, super, and super plus absorbencies. Packaging may vary from images shown.",
+        "features": [
+            "16 super tampons",
+            "Get up to 100% leak-free with Xpress-DRI protection with the #1 compact tampon",
+            "More comfortable than the second leading compact tampon, U by Kotex Click tampons have a smooth tip for easy and comfortable insertion and are made without fragrance",
+            "Compact to fit in your purse or pocket and changes to a full-size tampon in one easy step",
+            "Individually wrapped in vibrant colors and patterns inspired by the latest fashion trends",
+        ],
+    },
+    "269481": {
+        "title": "U by Kotex Click Compact Tampons, Unscented, Super Plus, 32 Count",
+        "description": "When you are in need of compact comfort and powerful protection, U by Kotex Click compact tampons are there to help. Each tampon has a smooth tip designed for easy and comfortable insertion and provides up to 100% leak free protection. Compact and able to fit into a purse or pocket, these tampons click into full size to give you powerful protection, just pull the lower half of the tampon and when it locks in place, it's ready to go! In addition, our unscented tampons are gynecologist-tested, made without fragrance, BPA free and are free of elemental chlorine. They are also OEKO TEX STANDARD certified, meaning that they are tested for up to 1,000 harmful substances. Individually wrapped, these tampons are perfect for when you need period protection on the go. U by Kotex Click Compact Tampons are available in regular, super and super plus absorbencies. Packaging may vary from images shown.",
+        "features": [
+            "32 super plus tampons",
+            "Compact Comfort, Powerful Protection: These compact tampons are easily carried in a purse or pocket for on-the-go protection",
+            "#1 compact tampon brand: U by Kotex Click is the #1 compact tampon brand",
+            "Up to 100% Leak Free Protection: Each tampon has a smooth tip designed for easy and comfortable insertion and provides up to 100% leak free protection",
+            "Gynecologist-Tested: Our unscented tampons are gynecologist-tested, made without fragrance, BPA free and are free of elemental chlorine",
+        ],
+    },
+    "648578": {
+        "title": "Viva Signature Cloth Double Roll Paper Towels, 6 ct",
+        "description": "Viva Signature Cloth Paper Towels deliver the perfect balance of softness and durability, making them the #1 cloth-like towel for households that want premium cleaning and comfort. This pack of Viva paper towels includes 6 Double Rolls with 86 sheets per roll. Each sheet is soft like cloth and gentle for surfaces, hands, and faces. Not only that, but our paper towels are absorbent like cloth and durable like cloth to tackle the toughest messes - whether you're cleaning up spills in the kitchen, wiping down bathroom counters, or handling everyday messes. Enjoy a paper towel that is durable, absorbent, and soft for every room in your home. Packaging may vary.",
+        "features": [
+            "WHAT'S INCLUDED - 6 double rolls of Viva Signature Cloth Paper Towels, 86 sheets per roll (6 double rolls = 12 regular rolls)",
+            "CHOOSE A SHEET - Viva Choose-A-Sheet size lets you pick the right sheet size for any task, big or small",
+            "#1 CLOTH-LIKE TOWEL - Experience Viva's cloth-like paper towel for softness and strength in every sheet",
+            "SOFT LIKE CLOTH - Our paper towels gently clean hands, faces, and delicate surfaces with a touch that's soft and comfortable",
+            "ABSORBENT LIKE CLOTH - Viva soaks up even big spills for a reliable clean",
+        ],
+    },
+})
+
+# 730205 now receives copy from the first fallback pass, but its live HTML can still
+# expose weak or unusable image URLs. Force the known-product image URL pattern for
+# known fallback SKUs when CVS product HTML was not detected.
+
 def fetch_cvs_url_once(url, user_agent="", timeout_seconds=None):
     if not url:
         return ""
@@ -5806,9 +5916,12 @@ def get_cvs_bundle(retail_url, target_rpc=""):
             debug["Features Path"] = "cvs_known_product_fallback_catalog"
         debug["Source Used"] = (str(debug.get("Source Used", "")) + " | cvs_known_product_fallback_catalog").strip(" |")
         debug["CVS Known Product Fallback Applied"] = True
-    if fallback_images and not has_images:
+    cvs_product_html_detected = bool(debug.get("CVS Product HTML Detected"))
+    if fallback_images and (not has_images or not cvs_product_html_detected):
         bundle["images"] = fallback_images[:MAX_IMAGE_SLOTS_TO_COMPARE]
         debug["CVS Known Image URL Pattern Fallback Applied"] = True
+        if has_images and not cvs_product_html_detected:
+            debug["CVS Known Image URL Pattern Override Reason"] = "live_html_not_confirmed_product"
     return bundle
 
 # =========================================
