@@ -4013,20 +4013,20 @@ def cvs_url_candidates(retail_url):
     raw_url = clean_uploaded_url_value(retail_url)
     if not raw_url:
         return []
-    candidates = []
-    def add(candidate):
-        candidate = str(candidate or "").strip()
-        if candidate and candidate not in candidates:
-            candidates.append(candidate)
+    out = []
+    def add(url):
+        url = str(url or "").strip()
+        if url and url not in out:
+            out.append(url)
     add(raw_url)
     no_hash = raw_url.split("#", 1)[0].strip()
     add(no_hash)
     canonical = no_hash.split("?", 1)[0].strip()
     add(canonical)
-    sku_id = get_cvs_sku_id_from_url(raw_url)
-    if canonical and sku_id:
-        add(f"{canonical}?skuId={sku_id}")
-    return candidates
+    sku = get_cvs_sku_id_from_url(raw_url)
+    if canonical and sku:
+        add(f"{canonical}?skuId={sku}")
+    return out
 
 
 def fetch_cvs_url_once(url, user_agent="", timeout_seconds=None):
@@ -4123,7 +4123,7 @@ def extract_cvs_indexed_text_fallback(html_text, retail_url="", target_rpc=""):
             break
     if not title:
         for line in lines[:80]:
-            if len(line) >= 20 and any(token in line.lower() for token in ["kleenex", "kotex", "viva", "poise", "depend", "huggies", "pull-ups", "cottonelle", "scott", "goodnites", "thinx"]):
+            if len(line) >= 20 and any(t in line.lower() for t in ["kleenex", "kotex", "viva", "poise", "depend", "huggies", "pull-ups", "cottonelle", "scott", "goodnites", "thinx"]):
                 title = line
                 break
     if not title:
@@ -4145,15 +4145,12 @@ def extract_cvs_indexed_text_fallback(html_text, retail_url="", target_rpc=""):
     if stop:
         working = working[:stop.start()].strip()
     known = (
-        "WHAT['’]?S INCLUDED|HELPS SKIN FEEL RESTORED|INSTANT COOLING RELIEF|A HINT OF ALOE|"
-        "CLEAN AND COMFORTED SKIN|PERFECTLY SIZED FOR ANY ADVENTURE|SAVE YOUR TOILET PAPER|"
-        "SMALL BUT MIGHTY|STYLE WHEREVER YOU GO|FOR COLDS ?& ?FLUS|HOW IT WORKS|"
-        "3 LAYERS OF STRENGTH|PERFECT FOR ANY HOME|FRESHNESS YOU CAN FEEL|"
-        "BREAKS DOWN LIKE TOILET PAPER|GENTLE FOR SKIN|ODOR CONTROL|DRYNESS|LEAK ?GUARD|"
-        "ALL DAY PROTECTION|XPRESS DRI CORE|LIGHT FLOW PROTECTION|CLEAN AND FRESH|"
-        "MADE WITHOUT FRAGRANCE|COMPACT COMFORT, POWERFUL PROTECTION|#1 COMPACT TAMPON BRAND|"
-        "UP TO 100% LEAK FREE PROTECTION|GYNECOLOGIST-TESTED|CHOOSE A SHEET|#1 CLOTH-LIKE TOWEL|"
-        "SOFT LIKE CLOTH|ABSORBENT LIKE CLOTH|DURABLE LIKE CLOTH|VERSATILE CLEANING|PACKAGING MAY VARY"
+        "WHAT['’]?S INCLUDED|HELPS SKIN FEEL RESTORED|INSTANT COOLING RELIEF|A HINT OF ALOE|CLEAN AND COMFORTED SKIN|"
+        "BE PREPARED FOR SICK DAYS|3 BENEFITS IN 1 TISSUE|SAVE YOUR TOILET PAPER|MADE WITH LOTION|MOISTURIZES TO PREVENT SKIN IRRITATION|"
+        "PERFECTLY SIZED FOR ANY ADVENTURE|SMALL BUT MIGHTY|STYLE WHEREVER YOU GO|FOR COLDS ?& ?FLUS|HOW IT WORKS|3 LAYERS OF STRENGTH|PERFECT FOR ANY HOME|"
+        "FRESHNESS YOU CAN FEEL|BREAKS DOWN LIKE TOILET PAPER|GENTLE FOR SKIN|ODOR CONTROL|DRYNESS|LEAK ?GUARD|ALL DAY PROTECTION|"
+        "XPRESS DRI CORE|LIGHT FLOW PROTECTION|CLEAN AND FRESH|MADE WITHOUT FRAGRANCE|COMPACT COMFORT, POWERFUL PROTECTION|#1 COMPACT TAMPON BRAND|"
+        "UP TO 100% LEAK FREE PROTECTION|GYNECOLOGIST-TESTED|CHOOSE A SHEET|#1 CLOTH-LIKE TOWEL|SOFT LIKE CLOTH|ABSORBENT LIKE CLOTH|DURABLE LIKE CLOTH|VERSATILE CLEANING|PACKAGING MAY VARY"
     )
     generic_colon = r"[A-Z0-9#][A-Za-z0-9#&’'®™+./-]*(?:\s+[A-Za-z0-9#&’'®™+./-]+){0,7}"
     heading = re.compile(rf"(?=(?:{known})\s*(?:[—-]|:)\s+|(?:{generic_colon})\s*:\s+)", flags=re.IGNORECASE)
@@ -4219,14 +4216,8 @@ def fetch_cvs_html_with_fallbacks(retail_url):
     retail_url = str(retail_url or "").strip()
     if not retail_url:
         return "", "cvs_url_missing"
-    desktop_ua = (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    )
-    mobile_ua = (
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) "
-        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1"
-    )
+    desktop_ua = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+    mobile_ua = ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) " "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1")
     best_html = ""
     best_score = -1
     best_label = "cvs_live_fetch_empty_or_shell"
@@ -5370,8 +5361,7 @@ def extract_cvs_images_from_html(html_text):
     best_images = {}
     order = []
     def add_candidate(raw_url, size=0):
-        raw_url = html.unescape(str(raw_url or "").strip())
-        raw_url = raw_url.replace("\\/", "/").replace("\\u002F", "/").replace("\\u002f", "/")
+        raw_url = html.unescape(str(raw_url or "").strip()).replace("\\/", "/").replace("\\u002F", "/").replace("\\u002f", "/")
         raw_url = raw_url.strip(' \"\'[](),;')
         if not raw_url:
             return
@@ -5637,7 +5627,7 @@ def _extract_cvs_text_from_html(html_text, retail_url="", target_rpc=""):
             pass
 
     visible_fallback = {"title": "", "description": "", "features": [], "debug": {}}
-    if not description or not features or not title:
+    if not description or not features or not title or len(features) < 5:
         visible_fallback = extract_cvs_indexed_text_fallback(html_text, retail_url=retail_url, target_rpc=target_rpc)
         visible_debug = visible_fallback.get("debug", {}) or {}
         if visible_debug:
@@ -5645,13 +5635,20 @@ def _extract_cvs_text_from_html(html_text, retail_url="", target_rpc=""):
         if not title and visible_fallback.get("title"):
             title = normalize_space(visible_fallback.get("title", ""))
             debug["Title Path"] = visible_debug.get("Title Path", "cvs_visible_indexed_fallback")
-        if not description and visible_fallback.get("description"):
-            description = clean_cvs_text(visible_fallback.get("description", ""))
+        visible_description = clean_cvs_text(visible_fallback.get("description", ""))
+        if visible_description and (not description or len(visible_description) > len(description) + 80):
+            description = visible_description
             debug["Description Path"] = visible_debug.get("Description Path", "cvs_visible_indexed_fallback")
         fallback_features = normalize_cvs_features(visible_fallback.get("features", []))
-        if not features and fallback_features:
-            features = fallback_features
-            debug["Features Path"] = visible_debug.get("Features Path", "cvs_visible_indexed_fallback")
+        if fallback_features:
+            if not features:
+                features = fallback_features
+                debug["Features Path"] = visible_debug.get("Features Path", "cvs_visible_indexed_fallback")
+            else:
+                combined_features = dedupe_preserve_order(list(features or []) + list(fallback_features or []))
+                if len(combined_features) > len(features):
+                    features = normalize_cvs_features(combined_features)
+                    debug["Features Path"] = (str(debug.get("Features Path", "")) + " | cvs_visible_indexed_supplement").strip(" |")
     if not title:
         title = cvs_title_from_url_slug(retail_url)
         if title:
