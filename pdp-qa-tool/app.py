@@ -2614,10 +2614,10 @@ def parse_uploaded_raw_html_map(raw_text):
 def is_likely_usable_cvs_manual_source(html_text):
     """CVS-only guard for manually pasted source snippets.
 
-    A few CVS pages were being pasted/copied as stylesheet/footer-only source.
+    A few CVS pages can be pasted/copied as stylesheet/footer-only source.
     Those snippets are not useful product captures and should not count as a
-    matched TXT/HTML capture, otherwise the batch can hide the real missing
-    capture problem. Keep this intentionally CVS-specific.
+    matched capture, otherwise the batch can hide the real missing capture
+    problem. Keep this intentionally CVS-specific.
     """
     text = str(html_text or "")
     if len(text.strip()) < 200:
@@ -2629,14 +2629,12 @@ def is_likely_usable_cvs_manual_source(html_text):
         "vendordetails",
         "bizcontent/merchandising/productimages/high_res",
         "dynamicmediaurl",
-        "skuId=".lower(),
+        "skuid=",
         "prodid-",
     ]
     has_product_marker = any(marker.lower() in lowered for marker in strong_product_markers)
     has_product_text = bool(re.search(r"\b(kleenex|kotex|viva|poise|depend|huggies|pull-ups|cottonelle|scott|goodnites|thinx)\b", lowered))
 
-    # This catches the current bad source snippets: they are mostly CVS footer
-    # container CSS and have no product content.
     footer_css_only = (
         "sc-cvs-footer-container" in lowered
         and not has_product_marker
@@ -2651,13 +2649,12 @@ def is_likely_usable_cvs_manual_source(html_text):
 def parse_cvs_manual_source_code_workbook(file_bytes):
     """Parse a manual CVS source-code workbook.
 
-    Supported format:
+    Supported CVS-only manual fallback format:
       - Column A: CVS RPC / skuId.
       - Columns B onward: pasted source snippets for that RPC.
 
-    This is a fallback convenience for manual troubleshooting only. The browser
-    extension TXT remains the best source because Excel cells can truncate long
-    HTML around 32k characters.
+    The browser extension TXT remains the best source because Excel cells can
+    truncate long HTML around 32k characters.
     """
     html_map = {}
     stats = {
@@ -2705,7 +2702,6 @@ def parse_cvs_manual_source_code_workbook(file_bytes):
                 stats["skipped_weak"] += 1
                 continue
 
-            # Wrap snippets so BeautifulSoup can parse fragments consistently.
             wrapped = (
                 "<html><body>\n"
                 f"<meta name='manual-cvs-rpc' content='{html.escape(rpc, quote=True)}'>\n"
@@ -10929,7 +10925,15 @@ if uploaded_file:
             if uploaded_raw_html_file is not None:
                 raw_html_bytes = uploaded_raw_html_file.getvalue()
                 raw_html_hash = hashlib.md5(raw_html_bytes or b"").hexdigest()
-                if st.session_state.raw_html_upload_hash != raw_html_hash:
+                source_file_name_lc = str(uploaded_raw_html_file.name or "").lower().strip()
+                existing_source_stats = st.session_state.get("uploaded_raw_html_stats", {}) or {}
+                should_reparse_uploaded_source = (
+                    st.session_state.raw_html_upload_hash != raw_html_hash
+                    or not (st.session_state.uploaded_raw_html_map or {})
+                    or st.session_state.uploaded_raw_html_filename != uploaded_raw_html_file.name
+                    or (source_file_name_lc.endswith(".xlsx") and existing_source_stats.get("mode") != "cvs_manual_source_xlsx")
+                )
+                if should_reparse_uploaded_source:
                     parsed_source_map, parsed_source_stats = parse_uploaded_retailer_source_file(raw_html_bytes, uploaded_raw_html_file.name)
                     st.session_state.uploaded_raw_html_map = parsed_source_map
                     st.session_state.uploaded_raw_html_stats = parsed_source_stats
