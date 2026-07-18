@@ -120,7 +120,7 @@ CVS_VARIANT_MIN_MATCH_SCORE = 35
 
 CAPTURE_MODE_USE_EXTENSION = "Use extension + TXT upload"
 CAPTURE_MODE_SKIP_EXTENSION = "Skip extension and go straight to batch"
-AUTO_SKIP_EXTENSION_RETAILERS = {"CVS", "Walgreens"}
+AUTO_SKIP_EXTENSION_RETAILERS = {"Walgreens"}
 # Retailer-specific Salsify isolation controls.
 # Copy can stay retailer-locked while images still fall back to generic locked Salsify slots if
 # retailer-labeled image assets do not exist yet.
@@ -11221,10 +11221,10 @@ if uploaded_file:
                     cvs_missing_capture_urls = [str(x).strip() for x in missing_capture_df.get("retail_url", pd.Series(dtype=str)).fillna("").astype(str).tolist() if str(x).strip()]
                 if not uploaded_raw_html_map:
                     cvs_capture_block_reason = ""
-                    st.caption("CVS direct-first mode active: the app will try live CVS fetches, canonical URL fallbacks, and CVS visible-text/image parsing before needing any source upload.")
+                    st.caption("CVS extension source is recommended, but missing TXT will not block the batch. The app will try live/canonical CVS parsing for unmatched rows.")
                 elif missing_uploaded_html_count > 0:
                     cvs_capture_block_reason = ""
-                    st.caption(f"CVS direct-first mode active: {missing_uploaded_html_count} of {len(retailer_df)} CVS rows did not match uploaded source, so those rows will fall back to live CVS/direct parsing.")
+                    st.caption(f"CVS TXT upload has {missing_uploaded_html_count} unmatched rows. Those rows will fall back to live/canonical CVS parsing instead of blocking the batch.")
             isolated_unique_url_count = int(retailer_df["retail_url"].fillna("").astype(str).str.strip().replace("", pd.NA).dropna().nunique()) if retailer_df is not None and not retailer_df.empty and "retail_url" in retailer_df.columns else 0
             st.caption(f"Strict retailer isolation active: {selected_retailer} only. Rows queued: {len(retailer_df)}. Unique retailer URLs queued: {isolated_unique_url_count}.")
             if selected_capture_mode == CAPTURE_MODE_USE_EXTENSION:
@@ -11237,7 +11237,7 @@ if uploaded_file:
                 )
                 render_extension_batch_bridge(extension_payload)
                 if selected_retailer == "CVS":
-                    st.caption("CVS mode active: direct-first parsing is enabled. Uploaded TXT/HTML/XLSX source is optional fallback only when CVS live/canonical fetch still misses product copy/images. This does not change other retailers.")
+                    st.caption("CVS mode active: extension TXT is preferred. If a row is unmatched, the app now also tries live/canonical CVS parsing and combined CVS fallbacks. This does not change other retailers.")
                 elif selected_retailer == "HEB":
                     st.caption("HEB mode active: parses TXT once, matches rows by HEB RPC, pulls Salsify copy/features without HEB-only limits, and keeps all available Salsify/HEB image slots for comparison.")
                 else:
