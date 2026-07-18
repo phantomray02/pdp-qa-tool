@@ -4358,42 +4358,19 @@ CVS_KNOWN_PRODUCT_FALLBACKS.update({
 # use the known fallback path, mirror the already-aligned Salsify image URLs into the
 # CVS side so visual QA reflects what is visible on the live CVS page instead of showing
 # broken generated URLs. This is isolated to CVS and only these skuIds.
-CVS_MIRROR_SALSIFY_IMAGE_FALLBACK_SKUS = {
-    "495589", "731730", "730140", "802539", "470890", "980948", "556510", "729603",
-    "867564", "650610", "730214", "730230", "729958", "819260", "729602", "269481",
-    "298031", "298819", "648578", "730205",
-}
+# CVS image isolation guard.
+# IMPORTANT: Never copy or mirror Salsify image URLs into the CVS/retailer image side.
+# CVS retailer images must come only from CVS page HTML, CVS uploaded source captures,
+# or CVS-owned image URL fallbacks generated from CVS skuId/RPC.
+CVS_MIRROR_SALSIFY_IMAGE_FALLBACK_SKUS = set()
 
 
 def cvs_should_mirror_salsify_images(retail_url="", target_rpc="", r_debug=None):
-    r_debug = r_debug or {}
-    sku_id = normalize_space(target_rpc) or get_cvs_sku_id_from_url(retail_url)
-    sku_id = re.sub(r"[^0-9A-Za-z_-]", "", str(sku_id or "").strip())
-    if sku_id not in CVS_MIRROR_SALSIFY_IMAGE_FALLBACK_SKUS:
-        return False
-    # These skuIds are explicitly flagged because CVS either served an empty/shell page
-    # to the app or served image URLs that rendered/scored as broken despite the live
-    # browser PDP showing syndicated assets. For this isolated CVS list, mirror the
-    # already-aligned Salsify images into the CVS visual side so known-live rows do not
-    # stay stuck at false 0% image scores.
-    source_used = str(r_debug.get("Source Used", "") or "").lower()
-    known_fallback_used = bool(r_debug.get("CVS Known Product Fallback Applied") or r_debug.get("CVS Known Image URL Pattern Fallback Applied"))
-    if known_fallback_used:
-        return True
-    if "cvs_known_product_fallback_catalog" in source_used or "empty_or_shell" in source_used or "shell" in source_used:
-        return True
-    return True
+    return False
 
 
 def cvs_mirror_salsify_images_for_retailer_side(s_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
-    mirrored = []
-    for img in list(s_images or [])[:max_slots]:
-        if isinstance(img, dict):
-            mirrored.append(str(img.get("url", "") or "").strip())
-        else:
-            mirrored.append("")
-    return mirrored[:max_slots]
-
+    return []
 
 # CVS-only final-six fallback catalog update.
 # These are the last CVS rows from pdp_qa_results_cvs_all_brands (30).xlsx that
@@ -4457,11 +4434,6 @@ CVS_KNOWN_PRODUCT_FALLBACKS.update({
     },
 })
 
-# The remaining six CVS problem rows need the same mirror-image fallback as the prior
-# known-broken CVS rows. 854178 already had copy, but images were still 0%, so include it too.
-CVS_MIRROR_SALSIFY_IMAGE_FALLBACK_SKUS.update({
-    "817844", "130245", "854178", "731394", "896560", "482747",
-})
 
 def fetch_cvs_url_once(url, user_agent="", timeout_seconds=None):
     if not url:
@@ -10946,16 +10918,6 @@ def build_normalized_comparison_payload(
     r_images = r_bundle["images"] or []
     r_debug_for_cvs = (r_bundle.get("text", {}) or {}).get("debug", {}) if isinstance(r_bundle, dict) else {}
 
-    if retailer_norm == "cvs" and cvs_should_mirror_salsify_images(
-        retail_url=retail_url,
-        target_rpc=current_target_sku,
-        r_debug=r_debug_for_cvs,
-    ):
-        cvs_max_slots = int(get_retailer_salsify_requirements(retailer_name).get("max_images", MAX_IMAGE_SLOTS_TO_COMPARE) or MAX_IMAGE_SLOTS_TO_COMPARE)
-        r_images = cvs_mirror_salsify_images_for_retailer_side(s_images, max_slots=min(max_slots, cvs_max_slots))
-        r_debug_for_cvs["CVS Salsify Image Mirror Fallback Applied"] = True
-        r_debug_for_cvs["CVS Salsify Image Mirror Fallback Reason"] = "known_live_cvs_row_with_broken_or_shell_image_fetch"
-
     if retailer_norm == "kroger":
         s_images = select_kroger_salsify_images(s_images, max_slots=max_slots)
         compare_slots = len(s_images) if s_images else 0
@@ -10985,14 +10947,13 @@ def build_normalized_comparison_payload(
     # but visually align the remaining CVS ATF/lifestyle images after slots 1-3.
     if retailer_norm == "cvs":
         cvs_max_slots = int(get_retailer_salsify_requirements(retailer_name).get("max_images", MAX_IMAGE_SLOTS_TO_COMPARE) or MAX_IMAGE_SLOTS_TO_COMPARE)
-        if not bool(r_debug_for_cvs.get("CVS Salsify Image Mirror Fallback Applied")):
-            r_images = align_cvs_atf_images_by_visual_match(
-                s_images,
-                r_images,
-                locked_slots=3,
-                max_slots=min(max_slots, cvs_max_slots),
-                retailer_name=retailer_name,
-            )
+        r_images = align_cvs_atf_images_by_visual_match(
+            s_images,
+            r_images,
+            locked_slots=3,
+            max_slots=min(max_slots, cvs_max_slots),
+            retailer_name=retailer_name,
+        )
 
     # Sam's Club-only: if Salsify slot 2 is ATF Video-Sams Club, reserve retailer
     # slot 2 for a retailer video or blank spacer so the remaining retailer images
