@@ -4150,10 +4150,14 @@ def extract_cvs_indexed_text_fallback(html_text, retail_url="", target_rpc=""):
         "PERFECTLY SIZED FOR ANY ADVENTURE|SMALL BUT MIGHTY|STYLE WHEREVER YOU GO|FOR COLDS ?& ?FLUS|HOW IT WORKS|3 LAYERS OF STRENGTH|PERFECT FOR ANY HOME|"
         "FRESHNESS YOU CAN FEEL|BREAKS DOWN LIKE TOILET PAPER|GENTLE FOR SKIN|ODOR CONTROL|DRYNESS|LEAK ?GUARD|ALL DAY PROTECTION|"
         "XPRESS DRI CORE|LIGHT FLOW PROTECTION|CLEAN AND FRESH|MADE WITHOUT FRAGRANCE|COMPACT COMFORT, POWERFUL PROTECTION|#1 COMPACT TAMPON BRAND|"
-        "UP TO 100% LEAK FREE PROTECTION|GYNECOLOGIST-TESTED|CHOOSE A SHEET|#1 CLOTH-LIKE TOWEL|SOFT LIKE CLOTH|ABSORBENT LIKE CLOTH|DURABLE LIKE CLOTH|VERSATILE CLEANING|PACKAGING MAY VARY"
+        "UP TO 100% LEAK FREE PROTECTION|GYNECOLOGIST-TESTED|CHOOSE A SHEET|#1 CLOTH-LIKE TOWEL|SOFT LIKE CLOTH|ABSORBENT LIKE CLOTH|DURABLE LIKE CLOTH|VERSATILE CLEANING|PACKAGING MAY VARY|"
+        "CLOTH-LIKE|CLEAN,? FRESH,? ?& ?DRY|FRAGRANCE FREE|ABSORBENT|SKIP THE TRIP|STYLISH DESIGNS"
     )
-    generic_colon = r"[A-Z0-9#][A-Za-z0-9#&’'®™+./-]*(?:\s+[A-Za-z0-9#&’'®™+./-]+){0,7}"
-    heading = re.compile(rf"(?=(?:{known})\s*(?:[—-]|:)\s+|(?:{generic_colon})\s*:\s+)", flags=re.IGNORECASE)
+    # CVS combined fallback splitter.
+    # Use known headings only so normal sentence text does not get split character-by-character.
+    # The Kleenex hand-towel item also exposes its first feature as a count sentence with no heading.
+    hand_towel_count_feature = r"1\s+box\s+of\s+Kleenex\s+Disposable\s+Paper\s+Hand\s+Towels"
+    heading = re.compile(rf"(?=(?:{known})\s*(?:[—-]|:)\s+|(?:{hand_towel_count_feature})\b)", flags=re.IGNORECASE)
     matches = list(heading.finditer(working))
     description = ""
     features = []
@@ -10719,7 +10723,7 @@ def process_row(row):
                 or any(str(x or "").strip() for x in (r_images or []))
             )
             if not r_has_any_content and not row_source_code:
-                status_notes.append("CVS TXT capture missing/unmatched and live CVS fetch returned empty shell")
+                status_notes.append("CVS source missing/unmatched after combined TXT + live/canonical fallbacks")
 
         debug_data = r_text.get("debug", {})
 
