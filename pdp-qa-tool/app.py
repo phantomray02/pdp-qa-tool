@@ -1660,6 +1660,13 @@ def prepare_input_df(df):
             "h-e-b rpc": "heb_rpc",
             "heb item id": "heb_rpc",
             "h-e-b item id": "heb_rpc",
+            "all source code": "copy_source_code",
+            "source code": "copy_source_code",
+            "copy source code": "copy_source_code",
+            "raw source code": "copy_source_code",
+            "html source": "copy_source_code",
+            "raw html": "copy_source_code",
+            "page source": "copy_source_code",
         },
         inplace=True,
     )
@@ -1687,12 +1694,13 @@ def prepare_input_df(df):
         if rpc_col in df.columns:
             df.drop(columns=[rpc_col], inplace=True)
 
-    for col in ["sku", "salsify_url", "retail_url", "brand", "retailer_rpc", "rating", "review_count"]:
+    for col in ["sku", "salsify_url", "retail_url", "brand", "retailer_rpc", "rating", "review_count", "copy_source_code"]:
         if col not in df.columns:
             df[col] = ""
 
     for col in ["sku", "salsify_url", "retail_url", "brand", "retailer_rpc", "rating", "review_count"]:
         df[col] = df[col].replace("#N/A", "").fillna("").astype(str).str.strip()
+    df["copy_source_code"] = df["copy_source_code"].fillna("").astype(str)
 
     # Keep the original full Salsify URL, including the product slug.
     # The full URL is needed for Walgreens image/asset extraction. A shortened
@@ -2697,12 +2705,11 @@ def is_likely_usable_cvs_manual_source(html_text):
 def parse_cvs_manual_source_code_workbook(file_bytes):
     """Parse a manual CVS source-code workbook.
 
-    Supported CVS-only manual fallback format:
-      - Column A: CVS RPC / skuId.
-      - Columns B onward: pasted source snippets for that RPC.
+    Supported CVS-only manual fallback formats:
+    1. Header format with CVS RPC / Retailer RPC / skuId plus all source code / source code / raw HTML.
+    2. Legacy format where column A is CVS RPC and columns B onward are source snippets.
 
-    The browser extension TXT remains the best source because Excel cells can
-    truncate long HTML around 32k characters.
+    Excel cells can truncate long page source around 32k characters, so browser extension TXT is still preferred.
     """
     html_map = {}
     stats = {
@@ -2712,27 +2719,64 @@ def parse_cvs_manual_source_code_workbook(file_bytes):
         "skipped_blank": 0,
         "skipped_weak": 0,
         "truncated_cell_count": 0,
+        "header_aware_mapping": False,
     }
     if not file_bytes:
         return html_map, stats
-
     try:
         wb = load_workbook(BytesIO(file_bytes), read_only=True, data_only=True)
     except Exception:
         return html_map, stats
 
+    rpc_header_options = {
+        "cvs rpc", "retailer rpc", "sku", "skuid", "sku id", "cvs skuid", "cvs sku", "item id", "productid", "product id"
+    }
+    source_header_tokens = (
+        "all source code", "source code", "copy source code", "raw source code", "html source", "raw html", "page source", "source html"
+    )
+
+    def clean_header(value):
+        return normalize_space(value).strip().lower().replace("_", " ")
+
     for ws in wb.worksheets:
-        for row in ws.iter_rows(values_only=True):
+        rows = list(ws.iter_rows(values_only=True))
+        if not rows:
+            continue
+        header_row_index = None
+        rpc_idx = None
+        source_indices = []
+        for idx, row in enumerate(rows[:8]):
+            headers = [clean_header(x) for x in (row or [])]
+            possible_rpc_idx = None
+            possible_source_indices = []
+            for c_idx, header in enumerate(headers):
+                if possible_rpc_idx is None and header in rpc_header_options:
+                    possible_rpc_idx = c_idx
+                if any(token in header for token in source_header_tokens):
+                    possible_source_indices.append(c_idx)
+            if possible_rpc_idx is not None and possible_source_indices:
+                header_row_index = idx
+                rpc_idx = possible_rpc_idx
+                source_indices = possible_source_indices
+                stats["header_aware_mapping"] = True
+                break
+        data_rows = rows[header_row_index + 1:] if header_row_index is not None else rows
+        for row in data_rows:
             if not row or not any(cell is not None and str(cell).strip() for cell in row):
                 continue
-            rpc_raw = str(row[0] or "").replace(".0", "").strip()
+            if header_row_index is not None and rpc_idx is not None and source_indices:
+                rpc_raw = row[rpc_idx] if rpc_idx < len(row) else ""
+                values_to_scan = [row[i] for i in source_indices if i < len(row)]
+            else:
+                rpc_raw = row[0] if len(row) else ""
+                values_to_scan = list(row[1:])
+            rpc_raw = str(rpc_raw or "").replace(".0", "").strip()
             rpc = re.sub(r"[^0-9A-Za-z_-]", "", rpc_raw)
-            if not rpc:
+            if not rpc or rpc.lower() in {"cvs", "retailer", "rpc", "cvsrpc"}:
                 continue
             stats["rows_seen"] += 1
-
             pieces = []
-            for value in row[1:]:
+            for value in values_to_scan:
                 if value is None:
                     continue
                 part = html.unescape(str(value or "").strip())
@@ -2741,7 +2785,6 @@ def parse_cvs_manual_source_code_workbook(file_bytes):
                 if len(part) >= 32760:
                     stats["truncated_cell_count"] += 1
                 pieces.append(part)
-
             html_text = "\n".join(pieces).strip()
             if not html_text:
                 stats["skipped_blank"] += 1
@@ -2749,19 +2792,15 @@ def parse_cvs_manual_source_code_workbook(file_bytes):
             if not is_likely_usable_cvs_manual_source(html_text):
                 stats["skipped_weak"] += 1
                 continue
-
             wrapped = (
-                "<html><body>\n"
-                f"<meta name='manual-cvs-rpc' content='{html.escape(rpc, quote=True)}'>\n"
-                "<!-- CVS MANUAL SOURCE XLSX -->\n"
+                "\n"
+                f"<!-- CVS MANUAL SOURCE XLSX RPC {html.escape(rpc)} -->\n"
                 + html_text
-                + "\n</body></html>"
+                + "\n"
             )
             html_map[f"cvs_rpc::{rpc}"] = wrapped
             stats["mapped_rows"] += 1
-
     return html_map, stats
-
 
 def parse_uploaded_retailer_source_file(file_bytes, file_name):
     """Parse uploaded captured retailer source.
