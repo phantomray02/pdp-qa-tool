@@ -4301,10 +4301,15 @@ CVS_KNOWN_PRODUCT_FALLBACKS = {
 
 
 CVS_KNOWN_IMAGE_BASE_BY_SKU = {
-    # CVS skuId/RPC -> actual CVS high_res image basename from live PDP HTML.
-    # CVS image basenames are often UPC/image keys, not the skuId.
     "298031": "3600054271",
     "730204": "3600058233",
+    "729602": "3600051582",
+    "731730": "3600058318",
+    "817844": "3600038586",
+    "819260": "3600051583",
+    "729958": "3600058353",
+    "730263": "3600058258",
+    "730214": "3600058228",
 }
 
 
@@ -4314,9 +4319,10 @@ def cvs_generated_image_candidates_for_sku(sku_id, max_slots=8):
         return []
     image_base = str(CVS_KNOWN_IMAGE_BASE_BY_SKU.get(sku_id, sku_id) or sku_id).strip()
     resize_query = "?im=Resize=(600,600),aspect=ignore"
+    max_slots = max(1, int(max_slots or 8))
     candidates = [f"https://www.cvs.com/bizcontent/merchandising/productimages/high_res/{image_base}.jpg{resize_query}"]
-    # CVS commonly stores carousel images as imagebase_1.jpg, imagebase_2.jpg, etc.
-    for idx in range(1, max(1, int(max_slots or 8))):
+    # CVS PDP carousel image naming normally starts with the base image, then _2, _3, etc.
+    for idx in range(2, max_slots + 1):
         candidates.append(f"https://www.cvs.com/bizcontent/merchandising/productimages/high_res/{image_base}_{idx}.jpg{resize_query}")
     return candidates[:max_slots]
 
