@@ -4185,6 +4185,58 @@ def cvs_url_candidates(retail_url):
         add(f"{canonical}?skuId={sku}")
     return out
 
+
+def extract_cvs_relevant_source_chunk(source, retail_url="", target_rpc=""):
+    """CVS-only source slicer for messy pasted/browser source captures.
+
+    Some pasted CVS captures can contain more than one PDP back-to-back. The
+    image parser gathers every CVS high_res image it sees, so a multi-product
+    blob can make the wrong product images win. This scopes CVS parsing to the
+    selected row by locating the matching CVS URL first, then falling back to
+    the Item # / skuId anchor.
+    """
+    source = str(source or "")
+    if not source.strip():
+        return ""
+    retail_url = clean_uploaded_url_value(retail_url)
+    target_rpc = get_cvs_effective_sku_id(retail_url=retail_url, target_rpc=target_rpc)
+    lowered_source = source.lower()
+    candidates = []
+    for url in cvs_url_candidates(retail_url):
+        if url:
+            candidates.append(url)
+            candidates.append(html.escape(url, quote=True))
+    if retail_url:
+        candidates.append(retail_url.split("?", 1)[0])
+    start = -1
+    for candidate in candidates:
+        candidate = str(candidate or "").strip()
+        if not candidate:
+            continue
+        idx = lowered_source.find(candidate.lower())
+        if idx >= 0:
+            start = idx
+            break
+    if start < 0 and target_rpc:
+        hit_positions = []
+        for pattern in [
+            rf"[?&]skuId={re.escape(target_rpc)}\b",
+            rf"Item\s*#\s*{re.escape(target_rpc)}\b",
+            rf"cvs_rpc::{re.escape(target_rpc)}\b",
+        ]:
+            for m in re.finditer(pattern, source, flags=re.IGNORECASE):
+                hit_positions.append(m.start())
+        if hit_positions:
+            hit = min(hit_positions)
+            prior = list(re.finditer(r"https?://www\.cvs\.com/shop/", source[:hit], flags=re.IGNORECASE))
+            start = prior[-1].start() if prior else max(0, hit - 45000)
+    if start < 0:
+        return source
+    next_match = re.search(r"https?://www\.cvs\.com/shop/", source[start + 20:], flags=re.IGNORECASE)
+    end = start + 20 + next_match.start() if next_match else len(source)
+    chunk = source[start:end]
+    return chunk if len(chunk.strip()) >= 200 else source
+
 # CVS-only emergency fallback catalog.
 # A small number of live CVS PDPs sometimes return a shell/blocked page to server-side
 # requests even though the products are live in a normal browser and in the search index.
@@ -4248,16 +4300,24 @@ CVS_KNOWN_PRODUCT_FALLBACKS = {
 }
 
 
+CVS_KNOWN_IMAGE_BASE_BY_SKU = {
+    # CVS skuId/RPC -> actual CVS high_res image basename from live PDP HTML.
+    # CVS image basenames are often UPC/image keys, not the skuId.
+    "298031": "3600054271",
+    "730204": "3600058233",
+}
+
+
 def cvs_generated_image_candidates_for_sku(sku_id, max_slots=8):
     sku_id = re.sub(r"[^0-9A-Za-z_-]", "", str(sku_id or "").strip())
     if not sku_id:
         return []
-    resize_query = "?im=Resize=(600,600)"
-    candidates = [f"https://www.cvs.com/bizcontent/merchandising/productimages/high_res/{sku_id}.jpg{resize_query}"]
-    # CVS commonly stores carousel images as sku_1.jpg, sku_2.jpg, etc.
-    # Keep the resize query because browser-rendered PDP image URLs often rely on it.
+    image_base = str(CVS_KNOWN_IMAGE_BASE_BY_SKU.get(sku_id, sku_id) or sku_id).strip()
+    resize_query = "?im=Resize=(600,600),aspect=ignore"
+    candidates = [f"https://www.cvs.com/bizcontent/merchandising/productimages/high_res/{image_base}.jpg{resize_query}"]
+    # CVS commonly stores carousel images as imagebase_1.jpg, imagebase_2.jpg, etc.
     for idx in range(1, max(1, int(max_slots or 8))):
-        candidates.append(f"https://www.cvs.com/bizcontent/merchandising/productimages/high_res/{sku_id}_{idx}.jpg{resize_query}")
+        candidates.append(f"https://www.cvs.com/bizcontent/merchandising/productimages/high_res/{image_base}_{idx}.jpg{resize_query}")
     return candidates[:max_slots]
 
 
@@ -4719,6 +4779,23 @@ CVS_KNOWN_PRODUCT_FALLBACKS.update({
             "5x System with LeakShield Protection: Bamboo women's pads are made with a 5x System with LeakShield Technology that offers breathability, odor control, dryness, fit and leakage protection for up to 100% Leak Free Comfort",
             "Gravity Core: Our menstrual pads feature a Gravity Core that pulls period blood to the bottom of the period pad to help keep you clean and dry",
             "Made Without Fragrance: These pads for women are made without fragrance and are elemental chlorine free. These pads are also pesticide free",
+        ],
+    },
+})
+
+
+# CVS-only fallback for live PDP 730204. The live source shows the image
+# basename 3600058233, not the skuId, so pair this with CVS_KNOWN_IMAGE_BASE_BY_SKU.
+CVS_KNOWN_PRODUCT_FALLBACKS.update({
+    "730204": {
+        "title": "Kotex Ultra Thin Overnight Pads With Wings, Heavy Absorbency, 36 CT",
+        "description": "Bring powerful protection and comfort to your nighttime period routine with the new Kotex Ultra Thin Overnight Pads with Wings. These overnight pads provide up to 12 hours of protection and NightDefense with a raised back barrier and side guards to help prevent back and side leaks. The 5x System with LeakShield Protection has breathability, odor control, dryness, fit and leakage protection for up to 100% Leak Free Comfort. These period pads are designed for perfect fit and combine LeakShield Technology, a breathable top layer, a new Gravity Core and odor control to give you a menstrual pad that protects you in more ways than one. To help keep you feeling clean and fresh throughout your day, each feminine pad is designed with a Gravity Core that pulls period blood to the bottom of the pad. Each women's pad is made with your skin health in mind, which is why these pads are made without fragrance and free of elemental chlorine. For added convenience, each nighttime sanitary pad is individually folded and wrapped to protect your pad with easy access, even on-the-go. For daytime protection, check out Kotex Ultra Thin Pads with Wings. Kotex feminine products are FSA/HSA/HRA-eligible in the US. Product and packaging may vary.",
+        "features": [
+            "Kotex Ultra Thin Overnight Pads With Wings, Heavy Absorbency, 36 Count",
+            "All-Night Protection: NightDefense overnight pads provide up to 12 hours of protection with a raised back barrier and side guards to help prevent back and side leaks",
+            "5x System Comfort: These women's pads offer breathability, odor control, dryness, fit and leakage protection for up to 100% Leak Free Comfort",
+            "Gravity Core Technology: Our period pads feature a Gravity Core that pulls period blood to the bottom of the pad to help keep you clean and dry",
+            "Gentle on Skin: These menstrual pads are made without fragrance and free of elemental chlorine",
         ],
     },
 })
@@ -9612,12 +9689,15 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
 
     if uploaded_html.strip():
         if retailer == "cvs":
-            uploaded_bundle = {"text": _extract_cvs_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_cvs_images_from_html(uploaded_html)}
+            cvs_uploaded_html = extract_cvs_relevant_source_chunk(uploaded_html, retail_url=retail_url, target_rpc=target_rpc)
+            uploaded_bundle = {"text": _extract_cvs_text_from_html(cvs_uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_cvs_images_from_html(cvs_uploaded_html)}
             upload_debug = uploaded_bundle.setdefault("text", {}).setdefault("debug", {})
             upload_debug["Source Used"] = "uploaded_txt_html"
             upload_debug["CVS Uploaded HTML Length"] = len(uploaded_html)
+            upload_debug["CVS Uploaded Scoped HTML Length"] = len(cvs_uploaded_html)
+            upload_debug["CVS Uploaded Chunk Scoped"] = bool(cvs_uploaded_html and cvs_uploaded_html != uploaded_html)
             upload_debug["CVS Uploaded Has Raw Fallback"] = "CVS RAW HTML FALLBACK FROM EXTENSION" in uploaded_html
-            upload_debug["CVS Uploaded Product HTML Detected"] = bool(is_probably_cvs_product_html(uploaded_html))
+            upload_debug["CVS Uploaded Product HTML Detected"] = bool(is_probably_cvs_product_html(cvs_uploaded_html))
 
             # CVS combined approach: always try both uploaded source and live CVS,
             # then merge the richest title/description/features/images by field.
