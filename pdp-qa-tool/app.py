@@ -4153,6 +4153,19 @@ def get_cvs_sku_id_from_url(retail_url):
     return ""
 
 
+def get_cvs_effective_sku_id(retail_url="", target_rpc=""):
+    """CVS-only effective skuId/RPC selector.
+
+    Prefer the skuId from the CVS URL because Visual QA/manual paths can pass
+    the Salsify SKU as target_rpc. CVS fallback catalogs and image URL fallback
+    must use the CVS skuId/RPC, not the Salsify SKU.
+    """
+    url_sku = get_cvs_sku_id_from_url(retail_url)
+    if url_sku:
+        return re.sub(r"[^0-9A-Za-z_-]", "", str(url_sku or "").strip())
+    return re.sub(r"[^0-9A-Za-z_-]", "", str(target_rpc or "").replace(".0", "").strip())
+
+
 def cvs_url_candidates(retail_url):
     raw_url = clean_uploaded_url_value(retail_url)
     if not raw_url:
@@ -4284,8 +4297,7 @@ def add_cvs_generated_image_fallback_if_needed(bundle, retail_url="", target_rpc
     bundle.setdefault("images", [])
     if cvs_bundle_has_images(bundle):
         return bundle
-    sku_id = normalize_space(target_rpc) or get_cvs_sku_id_from_url(retail_url)
-    sku_id = re.sub(r"[^0-9A-Za-z_-]", "", str(sku_id or "").strip())
+    sku_id = get_cvs_effective_sku_id(retail_url=retail_url, target_rpc=target_rpc)
     if not sku_id:
         return bundle
     generated_images = cvs_generated_image_candidates_for_sku(sku_id, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE)
@@ -4299,6 +4311,55 @@ def add_cvs_generated_image_fallback_if_needed(bundle, retail_url="", target_rpc
     return bundle
 
 
+def apply_cvs_targeted_copy_rescue_if_needed(bundle, retail_url="", target_rpc="", reason=""):
+    """CVS-only final copy rescue for exact approved skuIds.
+
+    This only runs for CVS_TARGETED_COPY_RESCUE_SKUS and only fills fields that
+    are still missing after uploaded + live parsing. It never copies Salsify
+    content into CVS fields.
+    """
+    if not isinstance(bundle, dict):
+        bundle = {"text": {"title": "", "description": "", "features": [], "rating": "", "review_count": "", "debug": {}}, "images": []}
+    text_bundle = bundle.setdefault("text", {})
+    debug = text_bundle.setdefault("debug", {})
+    sku_id = get_cvs_effective_sku_id(retail_url=retail_url, target_rpc=target_rpc)
+    if sku_id not in globals().get("CVS_TARGETED_COPY_RESCUE_SKUS", set()):
+        return bundle
+
+    rescue_bundle = get_cvs_known_product_fallback_bundle(retail_url=retail_url, target_rpc=sku_id)
+    rescue_text = rescue_bundle.get("text", {}) if isinstance(rescue_bundle, dict) else {}
+    if not rescue_text:
+        return bundle
+
+    applied = False
+    if not normalize_space(text_bundle.get("title", "")) and normalize_space(rescue_text.get("title", "")):
+        text_bundle["title"] = rescue_text.get("title", "")
+        debug["Title Path"] = rescue_text.get("debug", {}).get("Title Path", "cvs_targeted_copy_rescue_catalog")
+        applied = True
+    if not normalize_space(text_bundle.get("description", "")) and normalize_space(rescue_text.get("description", "")):
+        text_bundle["description"] = rescue_text.get("description", "")
+        debug["Description Path"] = rescue_text.get("debug", {}).get("Description Path", "cvs_targeted_copy_rescue_catalog")
+        applied = True
+    if not any(normalize_space(x) for x in (text_bundle.get("features", []) or [])) and rescue_text.get("features"):
+        text_bundle["features"] = rescue_text.get("features", [])[:5]
+        debug["Features Path"] = rescue_text.get("debug", {}).get("Features Path", "cvs_targeted_copy_rescue_catalog")
+        applied = True
+
+    if not cvs_bundle_has_images(bundle) and rescue_bundle.get("images"):
+        bundle["images"] = rescue_bundle.get("images", [])[:MAX_IMAGE_SLOTS_TO_COMPARE]
+        debug["CVS Image Fallback Applied"] = "cvs_targeted_rescue_images"
+        applied = True
+
+    if applied:
+        rescue_source = rescue_text.get("debug", {}).get("Source Used", "cvs_targeted_copy_rescue_catalog")
+        debug["Source Used"] = (str(debug.get("Source Used", "")) + " | " + str(rescue_source)).strip(" |")
+        debug["CVS Targeted Rescue Applied"] = True
+        debug["CVS Targeted Rescue SKU"] = sku_id
+        if reason:
+            debug["CVS Targeted Rescue Reason"] = reason
+    return bundle
+
+
 # CVS-only targeted rescue list.
 # These are confirmed live CVS PDPs that can still return empty/shell HTML to
 # server-side requests. Use the isolated CVS fallback catalog only for these
@@ -4307,8 +4368,7 @@ CVS_TARGETED_COPY_RESCUE_SKUS = {"817844", "730263", "819260"}
 
 
 def get_cvs_known_product_fallback_bundle(retail_url="", target_rpc=""):
-    sku_id = normalize_space(target_rpc) or get_cvs_sku_id_from_url(retail_url)
-    sku_id = re.sub(r"[^0-9A-Za-z_-]", "", str(sku_id or "").strip())
+    sku_id = get_cvs_effective_sku_id(retail_url=retail_url, target_rpc=target_rpc)
     targeted_rescue_allowed = sku_id in globals().get("CVS_TARGETED_COPY_RESCUE_SKUS", set())
     if not bool(globals().get("ALLOW_RETAILER_KNOWN_COPY_FALLBACKS", False)) and not targeted_rescue_allowed:
         return {"text": {"title": "", "description": "", "features": [], "debug": {}}, "images": []}
@@ -4739,7 +4799,7 @@ def extract_cvs_indexed_text_fallback(html_text, retail_url="", target_rpc=""):
     if not visible:
         return {"title": "", "description": "", "features": [], "debug": debug}
     lines = [normalize_space(x) for x in visible.splitlines() if normalize_space(x)]
-    sku_id = normalize_space(target_rpc) or get_cvs_sku_id_from_url(retail_url)
+    sku_id = get_cvs_effective_sku_id(retail_url=retail_url, target_rpc=target_rpc)
     title = ""
     for idx, line in enumerate(lines[:120]):
         if sku_id and re.search(rf"\bItem\s*#\s*{re.escape(sku_id)}\b", line, flags=re.IGNORECASE):
@@ -6363,6 +6423,12 @@ def get_cvs_bundle(retail_url, target_rpc=""):
             debug["Features Path"] = fallback_text.get("debug", {}).get("Features Path", "cvs_known_product_fallback_catalog")
         debug["Source Used"] = (str(debug.get("Source Used", "")) + " | " + str(fallback_text.get("debug", {}).get("Source Used", "cvs_known_product_fallback_catalog"))).strip(" |")
         debug["CVS Known Product Fallback Applied"] = True
+    bundle = apply_cvs_targeted_copy_rescue_if_needed(
+        bundle,
+        retail_url=retail_url,
+        target_rpc=target_rpc,
+        reason="direct_cvs_html_missing_copy_or_wrong_target_rpc",
+    )
     bundle = add_cvs_generated_image_fallback_if_needed(
         bundle,
         retail_url=retail_url,
@@ -9553,6 +9619,12 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
             # retailer fields.
             live_bundle = get_cvs_bundle(retail_url, target_rpc)
             merged_bundle = merge_cvs_bundles_prefer_richer_copy(uploaded_bundle, live_bundle)
+            merged_bundle = apply_cvs_targeted_copy_rescue_if_needed(
+                merged_bundle,
+                retail_url=retail_url,
+                target_rpc=target_rpc,
+                reason="uploaded_plus_live_missing_copy_or_wrong_target_rpc",
+            )
             merged_bundle = add_cvs_generated_image_fallback_if_needed(
                 merged_bundle,
                 retail_url=retail_url,
