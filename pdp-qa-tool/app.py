@@ -4247,6 +4247,57 @@ def cvs_generated_image_candidates_for_sku(sku_id, max_slots=8):
         candidates.append(f"https://www.cvs.com/bizcontent/merchandising/productimages/high_res/{sku_id}_{idx}.jpg{resize_query}")
     return candidates[:max_slots]
 
+
+def cvs_bundle_has_copy(bundle):
+    """CVS-only: True when the bundle has real retailer copy.
+
+    Images alone should not make a CVS source look complete because this tool
+    is comparing live PDP copy and live PDP images separately.
+    """
+    if not isinstance(bundle, dict):
+        return False
+    text_bundle = bundle.get("text", {}) or {}
+    return bool(
+        normalize_space(text_bundle.get("title", ""))
+        or normalize_space(text_bundle.get("description", ""))
+        or any(normalize_space(x) for x in (text_bundle.get("features", []) or []))
+    )
+
+
+def cvs_bundle_has_images(bundle):
+    """CVS-only: True when the bundle has any retailer image URL."""
+    if not isinstance(bundle, dict):
+        return False
+    return bool(any(str(x or "").strip() for x in (bundle.get("images", []) or [])))
+
+
+def add_cvs_generated_image_fallback_if_needed(bundle, retail_url="", target_rpc="", reason=""):
+    """CVS-only image safety net.
+
+    This creates CVS-side image URL candidates from the selected CVS skuId/RPC
+    only when CVS image parsing failed. It never copies Salsify images into the
+    retailer side and it never invents CVS copy.
+    """
+    if not isinstance(bundle, dict):
+        bundle = {"text": {"title": "", "description": "", "features": [], "debug": {}}, "images": []}
+    bundle.setdefault("text", {}).setdefault("debug", {})
+    bundle.setdefault("images", [])
+    if cvs_bundle_has_images(bundle):
+        return bundle
+    sku_id = normalize_space(target_rpc) or get_cvs_sku_id_from_url(retail_url)
+    sku_id = re.sub(r"[^0-9A-Za-z_-]", "", str(sku_id or "").strip())
+    if not sku_id:
+        return bundle
+    generated_images = cvs_generated_image_candidates_for_sku(sku_id, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE)
+    if generated_images:
+        bundle["images"] = generated_images[:MAX_IMAGE_SLOTS_TO_COMPARE]
+        debug = bundle["text"]["debug"]
+        debug["CVS Image Fallback Applied"] = "cvs_sku_high_res_url_pattern"
+        debug["CVS Image Fallback SKU"] = sku_id
+        if reason:
+            debug["CVS Image Fallback Reason"] = reason
+    return bundle
+
 def get_cvs_known_product_fallback_bundle(retail_url="", target_rpc=""):
     if not bool(globals().get("ALLOW_RETAILER_KNOWN_COPY_FALLBACKS", False)):
         return {"text": {"title": "", "description": "", "features": [], "debug": {}}, "images": []}
@@ -6263,16 +6314,16 @@ def get_cvs_bundle(retail_url, target_rpc=""):
     debug["CVS Live HTML Quality Score"] = cvs_live_html_quality_score(html_text)
     debug["CVS URL Candidates Tried"] = " | ".join(cvs_url_candidates(retail_url))
 
-    # CVS-only final fallback: if both TXT and live/canonical fetches fail, use the
-    # small known-product fallback catalog for specific CVS skuIds that are live
-    # in the search index but return empty/shell HTML to server-side requests.
+    # CVS combined approach, live-only for copy:
+    # - Keep copy from direct CVS HTML only.
+    # - Do not use the hard-coded known-product catalog unless the global flag is
+    #   explicitly enabled for a separate reference mode.
+    # - If images are missing, use CVS skuId high_res URL candidates only.
     fallback_bundle = get_cvs_known_product_fallback_bundle(retail_url=retail_url, target_rpc=target_rpc)
     fallback_text = fallback_bundle.get("text", {}) if isinstance(fallback_bundle, dict) else {}
-    fallback_images = fallback_bundle.get("images", []) if isinstance(fallback_bundle, dict) else []
     has_title = bool(normalize_space(bundle.get("text", {}).get("title", "")))
     has_description = bool(normalize_space(bundle.get("text", {}).get("description", "")))
     has_features = bool(any(normalize_space(x) for x in (bundle.get("text", {}).get("features", []) or [])))
-    has_images = bool(any(str(x or "").strip() for x in (bundle.get("images", []) or [])))
     if fallback_text and (not has_title or not has_description or not has_features):
         if not has_title and normalize_space(fallback_text.get("title", "")):
             bundle["text"]["title"] = fallback_text.get("title", "")
@@ -6285,12 +6336,12 @@ def get_cvs_bundle(retail_url, target_rpc=""):
             debug["Features Path"] = "cvs_known_product_fallback_catalog"
         debug["Source Used"] = (str(debug.get("Source Used", "")) + " | cvs_known_product_fallback_catalog").strip(" |")
         debug["CVS Known Product Fallback Applied"] = True
-    cvs_product_html_detected = bool(debug.get("CVS Product HTML Detected"))
-    if bool(globals().get("ALLOW_RETAILER_GENERATED_IMAGE_FALLBACKS", False)) and fallback_images and (not has_images or not cvs_product_html_detected):
-        bundle["images"] = fallback_images[:MAX_IMAGE_SLOTS_TO_COMPARE]
-        debug["CVS Known Image URL Pattern Fallback Applied"] = True
-        if has_images and not cvs_product_html_detected:
-            debug["CVS Known Image URL Pattern Override Reason"] = "live_html_not_confirmed_product"
+    bundle = add_cvs_generated_image_fallback_if_needed(
+        bundle,
+        retail_url=retail_url,
+        target_rpc=target_rpc,
+        reason="direct_cvs_html_had_no_parseable_images",
+    )
     return bundle
 
 # =========================================
@@ -9467,12 +9518,22 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
             upload_debug["CVS Uploaded HTML Length"] = len(uploaded_html)
             upload_debug["CVS Uploaded Has Raw Fallback"] = "CVS RAW HTML FALLBACK FROM EXTENSION" in uploaded_html
             upload_debug["CVS Uploaded Product HTML Detected"] = bool(is_probably_cvs_product_html(uploaded_html))
-            if _cvs_bundle_score(uploaded_bundle) < 550:
-                live_bundle = get_cvs_bundle(retail_url, target_rpc)
-                merged_bundle = merge_cvs_bundles_prefer_richer_copy(uploaded_bundle, live_bundle)
-                merged_bundle.setdefault("text", {}).setdefault("debug", {})["CVS Source Merge"] = "uploaded_txt_plus_live_fallback"
-                return merged_bundle
-            return uploaded_bundle
+
+            # CVS combined approach: always try both uploaded source and live CVS,
+            # then merge the richest title/description/features/images by field.
+            # This fixes partial captures where one path has copy and the other
+            # path has images. It remains CVS-only and never pulls Salsify into
+            # retailer fields.
+            live_bundle = get_cvs_bundle(retail_url, target_rpc)
+            merged_bundle = merge_cvs_bundles_prefer_richer_copy(uploaded_bundle, live_bundle)
+            merged_bundle = add_cvs_generated_image_fallback_if_needed(
+                merged_bundle,
+                retail_url=retail_url,
+                target_rpc=target_rpc,
+                reason="uploaded_plus_live_had_no_parseable_images",
+            )
+            merged_bundle.setdefault("text", {}).setdefault("debug", {})["CVS Source Merge"] = "uploaded_txt_plus_live_always"
+            return merged_bundle
         if retailer == "walgreens":
             bundle = {"text": extract_walgreens_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_walgreens_images_from_html(uploaded_html)}
             bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
@@ -11324,17 +11385,21 @@ def process_row(row):
         r_text = comparison_payload["r_text"]
         r_images = comparison_payload["r_images"]
 
-        # CVS-only diagnostics: when no uploaded TXT matched and direct CVS fetch
-        # returns an empty shell, make the source issue visible in output.
+        # CVS-only diagnostics: images alone do not mean CVS copy was found.
+        # This keeps the combined image fallback from hiding missing live copy.
         if retailer_norm_for_row == "cvs":
-            r_has_any_content = bool(
+            r_has_copy = bool(
                 normalize_space(r_text.get("title", ""))
                 or normalize_space(r_text.get("description", ""))
                 or any(normalize_space(x) for x in (r_text.get("features", []) or []))
-                or any(str(x or "").strip() for x in (r_images or []))
             )
-            if not r_has_any_content and not row_source_code:
-                status_notes.append("CVS source missing/unmatched from selected CVS source paths")
+            r_has_images = bool(any(str(x or "").strip() for x in (r_images or [])))
+            if not r_has_copy and not row_source_code:
+                status_notes.append("CVS live copy missing/unmatched from selected CVS source paths")
+            elif not r_has_copy and row_source_code:
+                status_notes.append("CVS uploaded source matched but copy parser found no live copy")
+            if not r_has_images:
+                status_notes.append("CVS retailer images missing from selected CVS source paths")
 
         debug_data = r_text.get("debug", {})
 
