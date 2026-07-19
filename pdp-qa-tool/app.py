@@ -4309,13 +4309,11 @@ CVS_KNOWN_IMAGE_BASE_BY_SKU = {
     "729602": "3600051582",
     "729603": "3600051581",  # source-confirmed from pasted CVS carousel HTML.
     "731730": "3600058318",
-    "817844": "3600038587",
+    "817844": "3600038586",
     "819260": "3600051583",
     "729958": "3600058353",
     "730263": "3600058258",
     "730214": "3600058228",
-    "470890": "81013395906",
-    "167387": "3600051589",
 }
 
 
@@ -4393,9 +4391,10 @@ def cvs_bundle_has_images(bundle):
 def add_cvs_generated_image_fallback_if_needed(bundle, retail_url="", target_rpc="", reason=""):
     """CVS-only image safety net.
 
-    This creates CVS-side image URL candidates from the selected CVS skuId/RPC
-    only when CVS image parsing failed. It never copies Salsify images into the
-    retailer side and it never invents CVS copy.
+    Live-only guard:
+    - By default, do NOT add generated/guessed CVS image URLs.
+    - CVS retailer images should come from live CVS HTML or uploaded browser/source capture.
+    - Set ALLOW_RETAILER_GENERATED_IMAGE_FALLBACKS=True only for a separate troubleshooting/reference mode.
     """
     if not isinstance(bundle, dict):
         bundle = {"text": {"title": "", "description": "", "features": [], "debug": {}}, "images": []}
@@ -4403,14 +4402,25 @@ def add_cvs_generated_image_fallback_if_needed(bundle, retail_url="", target_rpc
     bundle.setdefault("images", [])
     if cvs_bundle_has_images(bundle):
         return bundle
+
+    debug = bundle["text"]["debug"]
     sku_id = get_cvs_effective_sku_id(retail_url=retail_url, target_rpc=target_rpc)
     if not sku_id:
+        debug["CVS Image Fallback Skipped"] = "live_only_no_cvs_sku_id"
         return bundle
+
+    if not bool(globals().get("ALLOW_RETAILER_GENERATED_IMAGE_FALLBACKS", False)):
+        debug["CVS Image Fallback Skipped"] = "live_only_generated_image_fallback_disabled"
+        debug["CVS Image Fallback SKU"] = sku_id
+        debug["CVS Image Fallback Base"] = str(CVS_KNOWN_IMAGE_BASE_BY_SKU.get(sku_id, sku_id) or sku_id)
+        if reason:
+            debug["CVS Image Fallback Skipped Reason"] = reason
+        return bundle
+
     generated_images = cvs_generated_image_candidates_for_sku(sku_id, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE)
     if generated_images:
         bundle["images"] = generated_images[:MAX_IMAGE_SLOTS_TO_COMPARE]
-        debug = bundle["text"]["debug"]
-        debug["CVS Image Fallback Applied"] = "cvs_sku_high_res_url_pattern"
+        debug["CVS Image Fallback Applied"] = "cvs_sku_high_res_url_pattern_reference_mode"
         debug["CVS Image Fallback SKU"] = sku_id
         debug["CVS Image Fallback Base"] = str(CVS_KNOWN_IMAGE_BASE_BY_SKU.get(sku_id, sku_id) or sku_id)
         debug["CVS Image Fallback Count"] = len(bundle.get("images") or [])
@@ -4433,6 +4443,10 @@ def apply_cvs_targeted_copy_rescue_if_needed(bundle, retail_url="", target_rpc="
     text_bundle = bundle.setdefault("text", {})
     debug = text_bundle.setdefault("debug", {})
     sku_id = get_cvs_effective_sku_id(retail_url=retail_url, target_rpc=target_rpc)
+    if not bool(globals().get("ALLOW_RETAILER_KNOWN_COPY_FALLBACKS", False)):
+        debug["CVS Combined Catalog Rescue Skipped"] = "live_only_known_copy_fallback_disabled"
+        debug["CVS Combined Catalog Rescue SKU"] = sku_id
+        return bundle
     if sku_id not in globals().get("CVS_KNOWN_PRODUCT_FALLBACKS", {}):
         return bundle
 
@@ -4458,8 +4472,6 @@ def apply_cvs_targeted_copy_rescue_if_needed(bundle, retail_url="", target_rpc="
     if not cvs_bundle_has_images(bundle) and rescue_bundle.get("images"):
         bundle["images"] = rescue_bundle.get("images", [])[:MAX_IMAGE_SLOTS_TO_COMPARE]
         debug["CVS Image Fallback Applied"] = "cvs_targeted_rescue_images"
-        debug["CVS Image Fallback Base"] = str(CVS_KNOWN_IMAGE_BASE_BY_SKU.get(sku_id, sku_id) or sku_id)
-        debug["CVS Image Fallback Count"] = len(bundle.get("images") or [])
         applied = True
 
     if applied:
@@ -4485,14 +4497,12 @@ def get_cvs_known_product_fallback_bundle(retail_url="", target_rpc=""):
     if not data:
         return {"text": {"title": "", "description": "", "features": [], "debug": {}}, "images": []}
 
-    # Combined CVS fallback rule:
-    # Global known-copy fallbacks can stay off. If the selected CVS skuId/RPC is
-    # already in this CVS-only catalog, allow it as the last-resort CVS source.
-    # This prevents the issue from shifting to the next blocked CVS item.
-    catalog_rescue_allowed = sku_id in globals().get("CVS_KNOWN_PRODUCT_FALLBACKS", {})
-    if not bool(globals().get("ALLOW_RETAILER_KNOWN_COPY_FALLBACKS", False)) and not catalog_rescue_allowed:
-        return {"text": {"title": "", "description": "", "features": [], "debug": {}}, "images": []}
-    rescue_source = "cvs_combined_catalog_rescue" if catalog_rescue_allowed else "cvs_known_product_fallback_catalog"
+    # Live-only guard:
+    # Known-product catalog copy/images are NOT live retailer scrape data.
+    # Keep them disabled unless explicitly enabled for a separate reference mode.
+    if not bool(globals().get("ALLOW_RETAILER_KNOWN_COPY_FALLBACKS", False)):
+        return {"text": {"title": "", "description": "", "features": [], "debug": {"CVS Known Catalog Fallback Skipped": "live_only_known_copy_fallback_disabled"}}, "images": []}
+    rescue_source = "cvs_known_product_fallback_catalog_reference_mode"
     debug = {
         "Source Used": rescue_source,
         "CVS Known Fallback SKU": sku_id,
@@ -4729,21 +4739,6 @@ CVS_KNOWN_PRODUCT_FALLBACKS.update({
             "Up to 100% Leak Free Protection: Each tampon has a smooth tip designed for easy and comfortable insertion and provides up to 100% leak free protection",
             "Pocket-sized and changes to a full-size tampon in one easy step",
             "Made without fragrance and individually wrapped for on-the-go period protection",
-        ],
-    },
-})
-
-
-CVS_KNOWN_PRODUCT_FALLBACKS.update({
-    "167387": {
-        "title": "U by Kotex Click Compact Tampons, Multipack, Regular/Super Absorbency, Unscented, 45 Count",
-        "description": "When you are in need of compact comfort and powerful protection, U by Kotex Click compact tampons are there to help. Each tampon has a smooth tip designed for easy and comfortable insertion and provides up to 100% leak free protection. Compact and able to fit into a purse or pocket, these tampons click into full size to give you powerful protection, just pull the lower half of the tampon and when it locks in place, it's ready to go! In addition, our unscented tampons are gynecologist-tested, made without fragrance, BPA free, and are free of elemental chlorine. They are also OEKO TEX STANDARD certified, meaning that they are tested for up to 1,000 harmful substances. Individually wrapped, these tampons are perfect for when you need period protection on the go. U by Kotex Click Compact Tampons are available in regular, super, and super plus absorbencies. For backup period protection, try U by Kotex Daily Panty Liners. Kotex feminine products are FSA/HSA/HRA-eligible in the U.S. Packaging may vary from images shown.",
-        "features": [
-            "45 tampons (multipack contains: 25 regular, 20 super)",
-            "Compact Comfort, Powerful Protection: These compact tampons are easily carried in a purse or pocket for on-the-go protection",
-            "#1 compact tampon brand: U by Kotex Click is the #1 compact tampon brand",
-            "Up to 100% Leak Free Protection: Each tampon has a smooth tip designed for easy and comfortable insertion and provides up to 100% leak free protection",
-            "Gynecologist-Tested: Our unscented tampons are gynecologist-tested, made without fragrance, BPA free and are free of elemental chlorine",
         ],
     },
 })
