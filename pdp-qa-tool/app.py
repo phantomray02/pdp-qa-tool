@@ -1671,6 +1671,63 @@ def prepare_input_df(df):
         inplace=True,
     )
 
+
+    # CVS/manual-source rescue:
+    # Some tracker/source workbooks have page source in an unnamed column or a
+    # placeholder column such as "\\". If copy_source_code is blank, scan the
+    # non-core columns for HTML-like page source and copy the richest cell into
+    # copy_source_code. Retailer parsing is still isolated later by selected
+    # retailer, so this does not make non-CVS parsers use CVS logic.
+    if "copy_source_code" not in df.columns:
+        df["copy_source_code"] = ""
+
+    def _looks_like_uploaded_page_source(value):
+        value = str(value or "")
+        if len(value.strip()) < 200:
+            return False
+        lowered = value.lower()
+        return bool(
+            "<!doctype html" in lowered
+            or "<html" in lowered
+            or "self.__next_f.push" in lowered
+            or "vendorcontent" in lowered
+            or "vendordetails" in lowered
+            or "sp-schema" in lowered
+            or "/bizcontent/merchandising/productimages/high_res/" in lowered
+            or "schema.org" in lowered
+        )
+
+    core_columns_for_source_scan = {
+        "retailer", "sku", "salsify_url", "retail_url", "brand", "retailer_rpc",
+        "rating", "review_count", "copy_source_code", "kroger_rpc", "heb_rpc",
+        "cvs rpc", "walgreens rpc", "sams club rpc",
+    }
+    source_like_columns = []
+    for candidate_col in list(df.columns):
+        candidate_col_name = str(candidate_col or "").strip().lower()
+        if candidate_col_name in core_columns_for_source_scan:
+            continue
+        try:
+            sample_values = df[candidate_col].dropna().astype(str).head(25).tolist()
+        except Exception:
+            sample_values = []
+        if any(_looks_like_uploaded_page_source(value) for value in sample_values):
+            source_like_columns.append(candidate_col)
+
+    if source_like_columns:
+        def _pick_best_row_source(row):
+            existing = str(row.get("copy_source_code", "") or "")
+            if existing.strip():
+                return existing
+            candidates = []
+            for candidate_col in source_like_columns:
+                value = str(row.get(candidate_col, "") or "")
+                if _looks_like_uploaded_page_source(value):
+                    candidates.append(value)
+            return max(candidates, key=len) if candidates else existing
+
+        df["copy_source_code"] = df.apply(_pick_best_row_source, axis=1)
+
     rpc_candidates = []
     for rpc_col in ["retailer_rpc", "kroger_rpc", "heb_rpc", "cvs rpc", "walgreens rpc", "sams club rpc"]:
         if rpc_col in df.columns:
@@ -6051,6 +6108,12 @@ def _extract_cvs_text_from_html(html_text, retail_url="", target_rpc=""):
         title = normalize_space(soup.title.get_text(" ", strip=True))
         debug["Title Path"] = "html_title"
 
+    if title:
+        cleaned_title = re.sub(r"\s+-\s+CVS\s+Pharmacy\s*$", "", title, flags=re.IGNORECASE).strip()
+        if cleaned_title != title:
+            title = cleaned_title
+            debug["Title Path"] = (str(debug.get("Title Path", "")) + " | cvs_title_suffix_removed").strip(" |")
+
     vendor_copy = extract_vendor_copy_from_nextjs(
         html_text,
         target_rpc=target_rpc,
@@ -6085,10 +6148,14 @@ def _extract_cvs_text_from_html(html_text, retail_url="", target_rpc=""):
         # expose Product JSON-LD/meta but not vendorDetails fields.
         try:
             jsonld_candidates = []
-            for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+            structured_scripts = []
+            structured_scripts.extend(soup.find_all("script", attrs={"type": "application/ld+json"}))
+            structured_scripts.extend(soup.find_all("script", attrs={"id": re.compile(r"^sp-schema$", re.IGNORECASE)}))
+            for script in structured_scripts:
                 raw_json = (script.string or script.get_text(" ", strip=True) or "").strip()
                 if not raw_json:
                     continue
+                raw_json = html.unescape(raw_json)
                 try:
                     parsed_json = json.loads(raw_json)
                 except Exception:
@@ -6113,8 +6180,22 @@ def _extract_cvs_text_from_html(html_text, retail_url="", target_rpc=""):
                 if not description and node.get("description"):
                     description = clean_cvs_text(node.get("description", ""))
                     debug["Description Path"] = "cvs_jsonld_product_description"
+                aggregate_rating = node.get("aggregateRating") if isinstance(node.get("aggregateRating"), dict) else {}
+                if aggregate_rating:
+                    rating_value = str(aggregate_rating.get("ratingValue", "") or "").strip()
+                    review_count_value = str(aggregate_rating.get("reviewCount", "") or "").strip()
+                    if rating_value:
+                        debug["CVS Structured Rating"] = rating_value
+                    if review_count_value:
+                        debug["CVS Structured Review Count"] = review_count_value
                 if title and description:
                     break
+            if not title:
+                meta_title = soup.find("meta", attrs={"property": "og:title"}) or soup.find("meta", attrs={"name": "twitter:title"})
+                if meta_title and meta_title.get("content"):
+                    title = normalize_space(meta_title.get("content", ""))
+                    title = re.sub(r"\s+-\s+CVS\s+Pharmacy\s*$", "", title, flags=re.IGNORECASE).strip()
+                    debug["Title Path"] = "cvs_meta_title"
             if not description:
                 meta_desc = soup.find("meta", attrs={"name": "description"}) or soup.find("meta", attrs={"property": "og:description"})
                 if meta_desc and meta_desc.get("content"):
@@ -6158,6 +6239,8 @@ def _extract_cvs_text_from_html(html_text, retail_url="", target_rpc=""):
         "title": title,
         "description": description,
         "features": features[:5],
+        "rating": str(debug.get("CVS Structured Rating", "") or ""),
+        "review_count": str(debug.get("CVS Structured Review Count", "") or ""),
         "debug": debug,
     }
 
