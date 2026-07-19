@@ -4301,9 +4301,13 @@ CVS_KNOWN_PRODUCT_FALLBACKS = {
 
 
 CVS_KNOWN_IMAGE_BASE_BY_SKU = {
+    # CVS skuId/RPC -> actual CVS high_res image basename from live PDP/source HTML.
+    # CVS basenames are often UPC/KC image keys, not the CVS skuId.
+    # This map is CVS-only and never mirrors Salsify image URLs into CVS.
     "298031": "3600054271",
     "730204": "3600058233",
     "729602": "3600051582",
+    "729603": "3600051581",  # source-confirmed from pasted CVS carousel HTML.
     "731730": "3600058318",
     "817844": "3600038586",
     "819260": "3600051583",
@@ -4321,7 +4325,41 @@ def cvs_generated_image_candidates_for_sku(sku_id, max_slots=8):
     resize_query = "?im=Resize=(600,600),aspect=ignore"
     max_slots = max(1, int(max_slots or 8))
     candidates = [f"https://www.cvs.com/bizcontent/merchandising/productimages/high_res/{image_base}.jpg{resize_query}"]
-    # CVS PDP carousel image naming normally starts with the base image, then _2, _3, etc.
+    # CVS PDP carousel image naming normally starts with base.jpg, then _2, _3, etc.
+    # Do not generate _1 first because current CVS PDP source does not use _1.
+    for idx in range(2, max_slots + 1):
+        candidates.append(f"https://www.cvs.com/bizcontent/merchandising/productimages/high_res/{image_base}_{idx}.jpg{resize_query}")
+    return candidates[:max_slots]
+
+
+def infer_cvs_image_base_from_images(image_urls):
+    """Infer the shared CVS high_res carousel image base from parsed CVS image URLs.
+
+    Example: 3600051581.jpg, 3600051581_2.jpg -> 3600051581.
+    CVS-only: uses only CVS retailer image URLs parsed from CVS HTML/source capture.
+    """
+    counts = {}
+    for url in image_urls or []:
+        url = str(url or "").strip()
+        if "/productimages/high_res/" not in url.lower():
+            continue
+        name = url.split("?", 1)[0].rsplit("/", 1)[-1]
+        stem = re.sub(r"\.(?:jpg|jpeg|png|webp|avif)$", "", name, flags=re.IGNORECASE)
+        base = re.sub(r"_\d+$", "", stem)
+        if base and re.search(r"\d", base):
+            counts[base] = counts.get(base, 0) + 1
+    if not counts:
+        return ""
+    return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
+
+
+def cvs_generated_image_candidates_for_base(image_base, max_slots=8):
+    image_base = re.sub(r"[^0-9A-Za-z_-]", "", str(image_base or "").strip())
+    if not image_base:
+        return []
+    resize_query = "?im=Resize=(600,600),aspect=ignore"
+    max_slots = max(1, int(max_slots or 8))
+    candidates = [f"https://www.cvs.com/bizcontent/merchandising/productimages/high_res/{image_base}.jpg{resize_query}"]
     for idx in range(2, max_slots + 1):
         candidates.append(f"https://www.cvs.com/bizcontent/merchandising/productimages/high_res/{image_base}_{idx}.jpg{resize_query}")
     return candidates[:max_slots]
@@ -4372,6 +4410,8 @@ def add_cvs_generated_image_fallback_if_needed(bundle, retail_url="", target_rpc
         debug = bundle["text"]["debug"]
         debug["CVS Image Fallback Applied"] = "cvs_sku_high_res_url_pattern"
         debug["CVS Image Fallback SKU"] = sku_id
+        debug["CVS Image Fallback Base"] = str(CVS_KNOWN_IMAGE_BASE_BY_SKU.get(sku_id, sku_id) or sku_id)
+        debug["CVS Image Fallback Count"] = len(bundle.get("images") or [])
         if reason:
             debug["CVS Image Fallback Reason"] = reason
     return bundle
@@ -6490,6 +6530,15 @@ def get_cvs_bundle(retail_url, target_rpc=""):
     debug["CVS Live HTML Length"] = len(str(html_text or ""))
     debug["CVS Live HTML Quality Score"] = cvs_live_html_quality_score(html_text)
     debug["CVS URL Candidates Tried"] = " | ".join(cvs_url_candidates(retail_url))
+    parsed_image_base = infer_cvs_image_base_from_images(bundle.get("images", []))
+    if parsed_image_base:
+        debug["CVS Parsed Image Base"] = parsed_image_base
+        debug["CVS Parsed Image Count"] = len(bundle.get("images", []) or [])
+        if len(bundle.get("images", []) or []) < 8:
+            bundle["images"] = cvs_generated_image_candidates_for_base(parsed_image_base, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE)
+            debug["CVS Image Fallback Applied"] = "cvs_parsed_image_base_expanded"
+            debug["CVS Image Fallback Base"] = parsed_image_base
+            debug["CVS Image Fallback Count"] = len(bundle.get("images") or [])
 
     # CVS combined approach, live-only for copy:
     # - Keep copy from direct CVS HTML only.
@@ -9704,6 +9753,15 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
             upload_debug["CVS Uploaded Chunk Scoped"] = bool(cvs_uploaded_html and cvs_uploaded_html != uploaded_html)
             upload_debug["CVS Uploaded Has Raw Fallback"] = "CVS RAW HTML FALLBACK FROM EXTENSION" in uploaded_html
             upload_debug["CVS Uploaded Product HTML Detected"] = bool(is_probably_cvs_product_html(cvs_uploaded_html))
+            uploaded_image_base = infer_cvs_image_base_from_images(uploaded_bundle.get("images", []))
+            if uploaded_image_base:
+                upload_debug["CVS Uploaded Image Base"] = uploaded_image_base
+                upload_debug["CVS Uploaded Image Count"] = len(uploaded_bundle.get("images", []) or [])
+                if len(uploaded_bundle.get("images", []) or []) < 8:
+                    uploaded_bundle["images"] = cvs_generated_image_candidates_for_base(uploaded_image_base, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE)
+                    upload_debug["CVS Image Fallback Applied"] = "cvs_uploaded_image_base_expanded"
+                    upload_debug["CVS Image Fallback Base"] = uploaded_image_base
+                    upload_debug["CVS Image Fallback Count"] = len(uploaded_bundle.get("images") or [])
 
             # CVS combined approach: always try both uploaded source and live CVS,
             # then merge the richest title/description/features/images by field.
