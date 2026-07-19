@@ -4287,44 +4287,24 @@ def cvs_bundle_has_images(bundle):
 def add_cvs_generated_image_fallback_if_needed(bundle, retail_url="", target_rpc="", reason=""):
     """CVS-only image safety net.
 
-    IMPORTANT: generated skuId image URLs are not treated as live CVS images by
-    default. CVS can return blocked/broken image responses for guessed high_res
-    URLs, which causes false broken thumbnails and false 0% image scores.
-
-    Real CVS retailer images should come from:
-    1. uploaded browser/source capture,
-    2. live CVS HTML when available, or
-    3. generated URL pattern only when ALLOW_RETAILER_GENERATED_IMAGE_FALLBACKS
-       is explicitly turned on for troubleshooting.
+    This creates CVS-side image URL candidates from the selected CVS skuId/RPC
+    only when CVS image parsing failed. It never copies Salsify images into the
+    retailer side and it never invents CVS copy.
     """
     if not isinstance(bundle, dict):
         bundle = {"text": {"title": "", "description": "", "features": [], "debug": {}}, "images": []}
     bundle.setdefault("text", {}).setdefault("debug", {})
     bundle.setdefault("images", [])
-    debug = bundle["text"]["debug"]
     if cvs_bundle_has_images(bundle):
         return bundle
-
     sku_id = get_cvs_effective_sku_id(retail_url=retail_url, target_rpc=target_rpc)
     if not sku_id:
-        debug["CVS Images Missing Reason"] = "no_cvs_sku_id_available_for_image_fallback"
         return bundle
-
-    if not bool(globals().get("ALLOW_RETAILER_GENERATED_IMAGE_FALLBACKS", False)):
-        debug["CVS Images Missing Reason"] = "no_live_or_uploaded_cvs_image_source"
-        debug["CVS Image Capture Needed"] = (
-            "Upload a CVS browser/source capture TXT/HTML for this skuId so the app can "
-            "use real CVS image URLs instead of guessed high_res URLs."
-        )
-        debug["CVS Image Fallback SKU"] = sku_id
-        if reason:
-            debug["CVS Image Fallback Skipped Reason"] = reason
-        return bundle
-
     generated_images = cvs_generated_image_candidates_for_sku(sku_id, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE)
     if generated_images:
         bundle["images"] = generated_images[:MAX_IMAGE_SLOTS_TO_COMPARE]
-        debug["CVS Image Fallback Applied"] = "cvs_sku_high_res_url_pattern_generated_debug_mode"
+        debug = bundle["text"]["debug"]
+        debug["CVS Image Fallback Applied"] = "cvs_sku_high_res_url_pattern"
         debug["CVS Image Fallback SKU"] = sku_id
         if reason:
             debug["CVS Image Fallback Reason"] = reason
@@ -4368,15 +4348,9 @@ def apply_cvs_targeted_copy_rescue_if_needed(bundle, retail_url="", target_rpc="
         applied = True
 
     if not cvs_bundle_has_images(bundle) and rescue_bundle.get("images"):
-        if bool(globals().get("ALLOW_RETAILER_GENERATED_IMAGE_FALLBACKS", False)):
-            bundle["images"] = rescue_bundle.get("images", [])[:MAX_IMAGE_SLOTS_TO_COMPARE]
-            debug["CVS Image Fallback Applied"] = "cvs_combined_catalog_rescue_images_generated_debug_mode"
-            applied = True
-        else:
-            debug["CVS Images Missing Reason"] = "catalog_copy_rescue_has_no_verified_live_cvs_images"
-            debug["CVS Image Capture Needed"] = (
-                "Upload CVS browser/source capture TXT/HTML for this skuId to capture real CVS image URLs."
-            )
+        bundle["images"] = rescue_bundle.get("images", [])[:MAX_IMAGE_SLOTS_TO_COMPARE]
+        debug["CVS Image Fallback Applied"] = "cvs_targeted_rescue_images"
+        applied = True
 
     if applied:
         rescue_source = rescue_text.get("debug", {}).get("Source Used", "cvs_combined_catalog_rescue")
