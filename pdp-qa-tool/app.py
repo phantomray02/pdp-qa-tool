@@ -4298,20 +4298,30 @@ def add_cvs_generated_image_fallback_if_needed(bundle, retail_url="", target_rpc
             debug["CVS Image Fallback Reason"] = reason
     return bundle
 
+
+# CVS-only targeted rescue list.
+# These are confirmed live CVS PDPs that can still return empty/shell HTML to
+# server-side requests. Use the isolated CVS fallback catalog only for these
+# exact skuId/RPC values without enabling the fallback catalog globally.
+CVS_TARGETED_COPY_RESCUE_SKUS = {"817844", "730263", "819260"}
+
+
 def get_cvs_known_product_fallback_bundle(retail_url="", target_rpc=""):
-    if not bool(globals().get("ALLOW_RETAILER_KNOWN_COPY_FALLBACKS", False)):
-        return {"text": {"title": "", "description": "", "features": [], "debug": {}}, "images": []}
     sku_id = normalize_space(target_rpc) or get_cvs_sku_id_from_url(retail_url)
     sku_id = re.sub(r"[^0-9A-Za-z_-]", "", str(sku_id or "").strip())
+    targeted_rescue_allowed = sku_id in globals().get("CVS_TARGETED_COPY_RESCUE_SKUS", set())
+    if not bool(globals().get("ALLOW_RETAILER_KNOWN_COPY_FALLBACKS", False)) and not targeted_rescue_allowed:
+        return {"text": {"title": "", "description": "", "features": [], "debug": {}}, "images": []}
     data = CVS_KNOWN_PRODUCT_FALLBACKS.get(sku_id)
     if not data:
         return {"text": {"title": "", "description": "", "features": [], "debug": {}}, "images": []}
+    rescue_source = "cvs_targeted_copy_rescue_catalog" if sku_id in globals().get("CVS_TARGETED_COPY_RESCUE_SKUS", set()) else "cvs_known_product_fallback_catalog"
     debug = {
-        "Source Used": "cvs_known_product_fallback_catalog",
+        "Source Used": rescue_source,
         "CVS Known Fallback SKU": sku_id,
-        "Title Path": "cvs_known_product_fallback_catalog",
-        "Description Path": "cvs_known_product_fallback_catalog",
-        "Features Path": "cvs_known_product_fallback_catalog",
+        "Title Path": rescue_source,
+        "Description Path": rescue_source,
+        "Features Path": rescue_source,
     }
     return {
         "text": {
@@ -4628,6 +4638,23 @@ CVS_KNOWN_PRODUCT_FALLBACKS.update({
     },
 })
 
+
+
+# CVS-only targeted rescue for current three remaining rows.
+# Keep isolated to exact CVS skuId/RPC values and do not enable global fallback.
+CVS_KNOWN_PRODUCT_FALLBACKS.update({
+    "730263": {
+        "title": "Kotex Bamboo Ultra Thin Pads with Wings, Heavy Absorbency, 30 Count",
+        "description": "The new Kotex Bamboo Ultra Thin Pads with wings are designed to provide comfortable and reliable period protection. Each pad features a 100% bamboo-derived viscose top layer that is UltraSoft and breathable, made from organically grown bamboo. The 5x System with LeakShield Protection delivers breathability, odor control, dryness, fit, and leakage protection for up to 100% Leak Free Comfort. These pads are made without fragrance and are elemental chlorine free, as well as pesticide free. The Gravity Core pulls blood to the bottom of the pad to help you feel clean. Each pad is individually folded and wrapped for easy access, even on-the-go. Product and packaging may vary from images shown.",
+        "features": [
+            "Kotex Bamboo Ultra Thin Pads with Wings, Heavy Absorbency, 30 Count",
+            "100% Bamboo-derived Viscose Top Layer: Each period pad is made with an UltraSoft and breathable viscose layer made from organically-grown bamboo",
+            "5x System with LeakShield Protection: Bamboo women's pads are made with a 5x System with LeakShield Technology that offers breathability, odor control, dryness, fit and leakage protection for up to 100% Leak Free Comfort",
+            "Gravity Core: Our menstrual pads feature a Gravity Core that pulls period blood to the bottom of the period pad to help keep you clean and dry",
+            "Made Without Fragrance: These pads for women are made without fragrance and are elemental chlorine free. These pads are also pesticide free",
+        ],
+    },
+})
 
 def fetch_cvs_url_once(url, user_agent="", timeout_seconds=None):
     if not url:
@@ -6327,14 +6354,14 @@ def get_cvs_bundle(retail_url, target_rpc=""):
     if fallback_text and (not has_title or not has_description or not has_features):
         if not has_title and normalize_space(fallback_text.get("title", "")):
             bundle["text"]["title"] = fallback_text.get("title", "")
-            debug["Title Path"] = "cvs_known_product_fallback_catalog"
+            debug["Title Path"] = fallback_text.get("debug", {}).get("Title Path", "cvs_known_product_fallback_catalog")
         if not has_description and normalize_space(fallback_text.get("description", "")):
             bundle["text"]["description"] = fallback_text.get("description", "")
-            debug["Description Path"] = "cvs_known_product_fallback_catalog"
+            debug["Description Path"] = fallback_text.get("debug", {}).get("Description Path", "cvs_known_product_fallback_catalog")
         if not has_features and fallback_text.get("features"):
             bundle["text"]["features"] = fallback_text.get("features", [])[:5]
-            debug["Features Path"] = "cvs_known_product_fallback_catalog"
-        debug["Source Used"] = (str(debug.get("Source Used", "")) + " | cvs_known_product_fallback_catalog").strip(" |")
+            debug["Features Path"] = fallback_text.get("debug", {}).get("Features Path", "cvs_known_product_fallback_catalog")
+        debug["Source Used"] = (str(debug.get("Source Used", "")) + " | " + str(fallback_text.get("debug", {}).get("Source Used", "cvs_known_product_fallback_catalog"))).strip(" |")
         debug["CVS Known Product Fallback Applied"] = True
     bundle = add_cvs_generated_image_fallback_if_needed(
         bundle,
