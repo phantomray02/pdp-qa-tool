@@ -4309,11 +4309,13 @@ CVS_KNOWN_IMAGE_BASE_BY_SKU = {
     "729602": "3600051582",
     "729603": "3600051581",  # source-confirmed from pasted CVS carousel HTML.
     "731730": "3600058318",
-    "817844": "3600038586",
+    "817844": "3600038587",
     "819260": "3600051583",
     "729958": "3600058353",
     "730263": "3600058258",
     "730214": "3600058228",
+    "470890": "81013395906",
+    "167387": "3600051589",
 }
 
 
@@ -4456,6 +4458,8 @@ def apply_cvs_targeted_copy_rescue_if_needed(bundle, retail_url="", target_rpc="
     if not cvs_bundle_has_images(bundle) and rescue_bundle.get("images"):
         bundle["images"] = rescue_bundle.get("images", [])[:MAX_IMAGE_SLOTS_TO_COMPARE]
         debug["CVS Image Fallback Applied"] = "cvs_targeted_rescue_images"
+        debug["CVS Image Fallback Base"] = str(CVS_KNOWN_IMAGE_BASE_BY_SKU.get(sku_id, sku_id) or sku_id)
+        debug["CVS Image Fallback Count"] = len(bundle.get("images") or [])
         applied = True
 
     if applied:
@@ -4725,6 +4729,21 @@ CVS_KNOWN_PRODUCT_FALLBACKS.update({
             "Up to 100% Leak Free Protection: Each tampon has a smooth tip designed for easy and comfortable insertion and provides up to 100% leak free protection",
             "Pocket-sized and changes to a full-size tampon in one easy step",
             "Made without fragrance and individually wrapped for on-the-go period protection",
+        ],
+    },
+})
+
+
+CVS_KNOWN_PRODUCT_FALLBACKS.update({
+    "167387": {
+        "title": "U by Kotex Click Compact Tampons, Multipack, Regular/Super Absorbency, Unscented, 45 Count",
+        "description": "When you are in need of compact comfort and powerful protection, U by Kotex Click compact tampons are there to help. Each tampon has a smooth tip designed for easy and comfortable insertion and provides up to 100% leak free protection. Compact and able to fit into a purse or pocket, these tampons click into full size to give you powerful protection, just pull the lower half of the tampon and when it locks in place, it's ready to go! In addition, our unscented tampons are gynecologist-tested, made without fragrance, BPA free, and are free of elemental chlorine. They are also OEKO TEX STANDARD certified, meaning that they are tested for up to 1,000 harmful substances. Individually wrapped, these tampons are perfect for when you need period protection on the go. U by Kotex Click Compact Tampons are available in regular, super, and super plus absorbencies. For backup period protection, try U by Kotex Daily Panty Liners. Kotex feminine products are FSA/HSA/HRA-eligible in the U.S. Packaging may vary from images shown.",
+        "features": [
+            "45 tampons (multipack contains: 25 regular, 20 super)",
+            "Compact Comfort, Powerful Protection: These compact tampons are easily carried in a purse or pocket for on-the-go protection",
+            "#1 compact tampon brand: U by Kotex Click is the #1 compact tampon brand",
+            "Up to 100% Leak Free Protection: Each tampon has a smooth tip designed for easy and comfortable insertion and provides up to 100% leak free protection",
+            "Gynecologist-Tested: Our unscented tampons are gynecologist-tested, made without fragrance, BPA free and are free of elemental chlorine",
         ],
     },
 })
