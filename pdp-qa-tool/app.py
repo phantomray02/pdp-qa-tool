@@ -121,6 +121,12 @@ STRICT_LIVE_RETAILER_ONLY = True
 STRICT_COMPARISON_MODE = True
 ALLOW_RETAILER_KNOWN_COPY_FALLBACKS = False
 ALLOW_RETAILER_GENERATED_IMAGE_FALLBACKS = False
+# CVS fallback policy:
+# - Keep fallback PARSERS that read CVS live HTML or uploaded CVS source.
+# - Do not fill CVS retailer copy/images from Salsify.
+# - Do not use hardcoded CVS catalog content unless explicitly flipped for a separate reference/debug mode.
+CVS_ALLOW_CATALOG_REFERENCE_FALLBACKS = False
+CVS_ALLOW_BLIND_IMAGE_URL_FALLBACKS = False
 STRICT_CVS_VARIANT_MATCH = True
 CVS_VARIANT_MIN_MATCH_SCORE = 35
 
@@ -4309,11 +4315,13 @@ CVS_KNOWN_IMAGE_BASE_BY_SKU = {
     "729602": "3600051582",
     "729603": "3600051581",  # source-confirmed from pasted CVS carousel HTML.
     "731730": "3600058318",
-    "817844": "3600038586",
+    "817844": "3600038587",
     "819260": "3600051583",
     "729958": "3600058353",
     "730263": "3600058258",
     "730214": "3600058228",
+    "470890": "81013395906",
+    "167387": "3600051589",
 }
 
 
@@ -4387,36 +4395,74 @@ def cvs_bundle_has_images(bundle):
         return False
     return bool(any(str(x or "").strip() for x in (bundle.get("images", []) or [])))
 
+def sanitize_cvs_retailer_bundle_source_only(bundle, reason=""):
+    """CVS-only guardrail for live-site comparison.
+
+    This keeps CVS retailer-side data isolated:
+    - CVS images must be CVS URLs or blank.
+    - Salsify asset URLs are removed from CVS retailer image slots.
+    - Known catalog/reference fallback output is removed unless explicitly enabled.
+    """
+    if not isinstance(bundle, dict):
+        bundle = {"text": {"title": "", "description": "", "features": [], "rating": "", "review_count": "", "debug": {}}, "images": []}
+    text_bundle = bundle.setdefault("text", {})
+    debug = text_bundle.setdefault("debug", {})
+    clean_images = []
+    removed_images = 0
+    for url in bundle.get("images", []) or []:
+        url = str(url or "").strip()
+        if not url:
+            continue
+        lowered = url.lower()
+        if "salsify" in lowered or "salsify.com" in lowered:
+            removed_images += 1
+            continue
+        # CVS retailer image side should be CVS-owned assets only.
+        if "cvs.com" not in lowered and "/bizcontent/merchandising/productimages/" not in lowered:
+            removed_images += 1
+            continue
+        clean_images.append(url)
+    bundle["images"] = clean_images
+    if removed_images:
+        debug["CVS Source Isolation Removed Non-CVS Images"] = removed_images
+    source_used = str(debug.get("Source Used", "") or "").lower()
+    catalog_markers = ("cvs_combined_catalog_rescue", "cvs_known_product_fallback_catalog")
+    if any(marker in source_used for marker in catalog_markers) and not bool(globals().get("CVS_ALLOW_CATALOG_REFERENCE_FALLBACKS", False)):
+        text_bundle["title"] = ""
+        text_bundle["description"] = ""
+        text_bundle["features"] = []
+        bundle["images"] = []
+        debug["CVS Catalog Reference Removed"] = "live_site_only_cvs_parser_fallbacks"
+    if reason:
+        debug["CVS Source Isolation Reason"] = reason
+    return bundle
+
 
 def add_cvs_generated_image_fallback_if_needed(bundle, retail_url="", target_rpc="", reason=""):
     """CVS-only image safety net.
 
-    Live-only guard:
-    - By default, do NOT add generated/guessed CVS image URLs.
-    - CVS retailer images should come from live CVS HTML or uploaded browser/source capture.
-    - Set ALLOW_RETAILER_GENERATED_IMAGE_FALLBACKS=True only for a separate troubleshooting/reference mode.
+    In live-site mode, this does NOT blindly generate CVS image URLs when no
+    CVS image was parsed. Source-derived expansion still happens earlier when
+    a real CVS image base was parsed from live/uploaded CVS HTML.
     """
     if not isinstance(bundle, dict):
         bundle = {"text": {"title": "", "description": "", "features": [], "debug": {}}, "images": []}
     bundle.setdefault("text", {}).setdefault("debug", {})
     bundle.setdefault("images", [])
     if cvs_bundle_has_images(bundle):
-        return bundle
-
-    debug = bundle["text"]["debug"]
+        return sanitize_cvs_retailer_bundle_source_only(bundle, reason="cvs_images_already_parsed")
     sku_id = get_cvs_effective_sku_id(retail_url=retail_url, target_rpc=target_rpc)
+    debug = bundle["text"]["debug"]
     if not sku_id:
-        debug["CVS Image Fallback Skipped"] = "live_only_no_cvs_sku_id"
+        debug["CVS Image Fallback Skipped"] = "no_cvs_sku_id"
         return bundle
-
-    if not bool(globals().get("ALLOW_RETAILER_GENERATED_IMAGE_FALLBACKS", False)):
-        debug["CVS Image Fallback Skipped"] = "live_only_generated_image_fallback_disabled"
+    if not bool(globals().get("CVS_ALLOW_BLIND_IMAGE_URL_FALLBACKS", False)) and not bool(globals().get("ALLOW_RETAILER_GENERATED_IMAGE_FALLBACKS", False)):
+        debug["CVS Image Fallback Skipped"] = "live_site_only_no_blind_generated_images"
         debug["CVS Image Fallback SKU"] = sku_id
         debug["CVS Image Fallback Base"] = str(CVS_KNOWN_IMAGE_BASE_BY_SKU.get(sku_id, sku_id) or sku_id)
         if reason:
             debug["CVS Image Fallback Skipped Reason"] = reason
         return bundle
-
     generated_images = cvs_generated_image_candidates_for_sku(sku_id, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE)
     if generated_images:
         bundle["images"] = generated_images[:MAX_IMAGE_SLOTS_TO_COMPARE]
@@ -4426,7 +4472,7 @@ def add_cvs_generated_image_fallback_if_needed(bundle, retail_url="", target_rpc
         debug["CVS Image Fallback Count"] = len(bundle.get("images") or [])
         if reason:
             debug["CVS Image Fallback Reason"] = reason
-    return bundle
+    return sanitize_cvs_retailer_bundle_source_only(bundle, reason="cvs_generated_reference_mode")
 
 
 def apply_cvs_targeted_copy_rescue_if_needed(bundle, retail_url="", target_rpc="", reason=""):
@@ -4443,10 +4489,10 @@ def apply_cvs_targeted_copy_rescue_if_needed(bundle, retail_url="", target_rpc="
     text_bundle = bundle.setdefault("text", {})
     debug = text_bundle.setdefault("debug", {})
     sku_id = get_cvs_effective_sku_id(retail_url=retail_url, target_rpc=target_rpc)
-    if not bool(globals().get("ALLOW_RETAILER_KNOWN_COPY_FALLBACKS", False)):
-        debug["CVS Combined Catalog Rescue Skipped"] = "live_only_known_copy_fallback_disabled"
+    if not bool(globals().get("CVS_ALLOW_CATALOG_REFERENCE_FALLBACKS", False)) and not bool(globals().get("ALLOW_RETAILER_KNOWN_COPY_FALLBACKS", False)):
+        debug["CVS Combined Catalog Rescue Skipped"] = "live_site_only_cvs_parser_fallbacks"
         debug["CVS Combined Catalog Rescue SKU"] = sku_id
-        return bundle
+        return sanitize_cvs_retailer_bundle_source_only(bundle, reason="catalog_rescue_disabled")
     if sku_id not in globals().get("CVS_KNOWN_PRODUCT_FALLBACKS", {}):
         return bundle
 
@@ -4472,6 +4518,8 @@ def apply_cvs_targeted_copy_rescue_if_needed(bundle, retail_url="", target_rpc="
     if not cvs_bundle_has_images(bundle) and rescue_bundle.get("images"):
         bundle["images"] = rescue_bundle.get("images", [])[:MAX_IMAGE_SLOTS_TO_COMPARE]
         debug["CVS Image Fallback Applied"] = "cvs_targeted_rescue_images"
+        debug["CVS Image Fallback Base"] = str(CVS_KNOWN_IMAGE_BASE_BY_SKU.get(sku_id, sku_id) or sku_id)
+        debug["CVS Image Fallback Count"] = len(bundle.get("images") or [])
         applied = True
 
     if applied:
@@ -4497,11 +4545,11 @@ def get_cvs_known_product_fallback_bundle(retail_url="", target_rpc=""):
     if not data:
         return {"text": {"title": "", "description": "", "features": [], "debug": {}}, "images": []}
 
-    # Live-only guard:
-    # Known-product catalog copy/images are NOT live retailer scrape data.
-    # Keep them disabled unless explicitly enabled for a separate reference mode.
-    if not bool(globals().get("ALLOW_RETAILER_KNOWN_COPY_FALLBACKS", False)):
-        return {"text": {"title": "", "description": "", "features": [], "debug": {"CVS Known Catalog Fallback Skipped": "live_only_known_copy_fallback_disabled"}}, "images": []}
+    # Live-site comparison guard:
+    # Known-product catalog values are reference data, not parsed live CVS/source content.
+    # Keep disabled unless explicitly enabled for a separate reference/debug mode.
+    if not bool(globals().get("CVS_ALLOW_CATALOG_REFERENCE_FALLBACKS", False)) and not bool(globals().get("ALLOW_RETAILER_KNOWN_COPY_FALLBACKS", False)):
+        return {"text": {"title": "", "description": "", "features": [], "debug": {"CVS Known Catalog Fallback Skipped": "live_site_only_cvs_parser_fallbacks"}}, "images": []}
     rescue_source = "cvs_known_product_fallback_catalog_reference_mode"
     debug = {
         "Source Used": rescue_source,
@@ -4739,6 +4787,21 @@ CVS_KNOWN_PRODUCT_FALLBACKS.update({
             "Up to 100% Leak Free Protection: Each tampon has a smooth tip designed for easy and comfortable insertion and provides up to 100% leak free protection",
             "Pocket-sized and changes to a full-size tampon in one easy step",
             "Made without fragrance and individually wrapped for on-the-go period protection",
+        ],
+    },
+})
+
+
+CVS_KNOWN_PRODUCT_FALLBACKS.update({
+    "167387": {
+        "title": "U by Kotex Click Compact Tampons, Multipack, Regular/Super Absorbency, Unscented, 45 Count",
+        "description": "When you are in need of compact comfort and powerful protection, U by Kotex Click compact tampons are there to help. Each tampon has a smooth tip designed for easy and comfortable insertion and provides up to 100% leak free protection. Compact and able to fit into a purse or pocket, these tampons click into full size to give you powerful protection, just pull the lower half of the tampon and when it locks in place, it's ready to go! In addition, our unscented tampons are gynecologist-tested, made without fragrance, BPA free, and are free of elemental chlorine. They are also OEKO TEX STANDARD certified, meaning that they are tested for up to 1,000 harmful substances. Individually wrapped, these tampons are perfect for when you need period protection on the go. U by Kotex Click Compact Tampons are available in regular, super, and super plus absorbencies. For backup period protection, try U by Kotex Daily Panty Liners. Kotex feminine products are FSA/HSA/HRA-eligible in the U.S. Packaging may vary from images shown.",
+        "features": [
+            "45 tampons (multipack contains: 25 regular, 20 super)",
+            "Compact Comfort, Powerful Protection: These compact tampons are easily carried in a purse or pocket for on-the-go protection",
+            "#1 compact tampon brand: U by Kotex Click is the #1 compact tampon brand",
+            "Up to 100% Leak Free Protection: Each tampon has a smooth tip designed for easy and comfortable insertion and provides up to 100% leak free protection",
+            "Gynecologist-Tested: Our unscented tampons are gynecologist-tested, made without fragrance, BPA free and are free of elemental chlorine",
         ],
     },
 })
@@ -6588,7 +6651,7 @@ def get_cvs_bundle(retail_url, target_rpc=""):
         target_rpc=target_rpc,
         reason="direct_cvs_html_had_no_parseable_images",
     )
-    return bundle
+    return sanitize_cvs_retailer_bundle_source_only(bundle, reason="get_cvs_bundle_final")
 
 # =========================================
 # KROGER PARSERS
@@ -9797,7 +9860,7 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
                 reason="uploaded_plus_live_had_no_parseable_images",
             )
             merged_bundle.setdefault("text", {}).setdefault("debug", {})["CVS Source Merge"] = "uploaded_txt_plus_live_always"
-            return merged_bundle
+            return sanitize_cvs_retailer_bundle_source_only(merged_bundle, reason="uploaded_txt_plus_live_final")
         if retailer == "walgreens":
             bundle = {"text": extract_walgreens_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_walgreens_images_from_html(uploaded_html)}
             bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
@@ -11411,6 +11474,8 @@ def build_normalized_comparison_payload(
         brand=brand,
     )
 
+    if retailer_norm == "cvs":
+        r_bundle = sanitize_cvs_retailer_bundle_source_only(r_bundle, reason="normalized_payload_guard")
     r_text = finalize_retailer_copy(retailer_name, r_bundle["text"] or {})
     r_images = r_bundle["images"] or []
     r_debug_for_cvs = (r_bundle.get("text", {}) or {}).get("debug", {}) if isinstance(r_bundle, dict) else {}
