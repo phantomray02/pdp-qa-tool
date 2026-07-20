@@ -121,12 +121,6 @@ STRICT_LIVE_RETAILER_ONLY = True
 STRICT_COMPARISON_MODE = True
 ALLOW_RETAILER_KNOWN_COPY_FALLBACKS = False
 ALLOW_RETAILER_GENERATED_IMAGE_FALLBACKS = False
-# CVS fallback policy:
-# - Keep fallback PARSERS that read CVS live HTML or uploaded CVS source.
-# - Do not fill CVS retailer copy/images from Salsify.
-# - Do not use hardcoded CVS catalog content unless explicitly flipped for a separate reference/debug mode.
-CVS_ALLOW_CATALOG_REFERENCE_FALLBACKS = True
-CVS_ALLOW_BLIND_IMAGE_URL_FALLBACKS = True
 STRICT_CVS_VARIANT_MATCH = True
 CVS_VARIANT_MIN_MATCH_SCORE = 35
 
@@ -4322,8 +4316,6 @@ CVS_KNOWN_IMAGE_BASE_BY_SKU = {
     "730214": "3600058228",
     "470890": "81013395906",
     "167387": "3600051589",
-    "495589": "3600043098",
-    "860410": "3600053553",
 }
 
 
@@ -4397,85 +4389,34 @@ def cvs_bundle_has_images(bundle):
         return False
     return bool(any(str(x or "").strip() for x in (bundle.get("images", []) or [])))
 
-def sanitize_cvs_retailer_bundle_source_only(bundle, reason=""):
-    """CVS-only guardrail for live-site comparison.
-
-    This keeps CVS retailer-side data isolated:
-    - CVS images must be CVS URLs or blank.
-    - Salsify asset URLs are removed from CVS retailer image slots.
-    - Known catalog/reference fallback output is removed unless explicitly enabled.
-    """
-    if not isinstance(bundle, dict):
-        bundle = {"text": {"title": "", "description": "", "features": [], "rating": "", "review_count": "", "debug": {}}, "images": []}
-    text_bundle = bundle.setdefault("text", {})
-    debug = text_bundle.setdefault("debug", {})
-    clean_images = []
-    removed_images = 0
-    for url in bundle.get("images", []) or []:
-        url = str(url or "").strip()
-        if not url:
-            continue
-        lowered = url.lower()
-        if "salsify" in lowered or "salsify.com" in lowered:
-            removed_images += 1
-            continue
-        # CVS retailer image side should be CVS-owned assets only.
-        if "cvs.com" not in lowered and "/bizcontent/merchandising/productimages/" not in lowered:
-            removed_images += 1
-            continue
-        clean_images.append(url)
-    bundle["images"] = clean_images
-    if removed_images:
-        debug["CVS Source Isolation Removed Non-CVS Images"] = removed_images
-    source_used = str(debug.get("Source Used", "") or "").lower()
-    catalog_markers = ("cvs_combined_catalog_rescue", "cvs_known_product_fallback_catalog")
-    if any(marker in source_used for marker in catalog_markers) and not bool(globals().get("CVS_ALLOW_CATALOG_REFERENCE_FALLBACKS", False)):
-        text_bundle["title"] = ""
-        text_bundle["description"] = ""
-        text_bundle["features"] = []
-        bundle["images"] = []
-        debug["CVS Catalog Reference Removed"] = "live_site_only_cvs_parser_fallbacks"
-    if reason:
-        debug["CVS Source Isolation Reason"] = reason
-        debug["CVS Retailer Data Isolation"] = "cvs_only_no_salsify_urls"
-    return bundle
-
 
 def add_cvs_generated_image_fallback_if_needed(bundle, retail_url="", target_rpc="", reason=""):
     """CVS-only image safety net.
 
-    In live-site mode, this does NOT blindly generate CVS image URLs when no
-    CVS image was parsed. Source-derived expansion still happens earlier when
-    a real CVS image base was parsed from live/uploaded CVS HTML.
+    This creates CVS-side image URL candidates from the selected CVS skuId/RPC
+    only when CVS image parsing failed. It never copies Salsify images into the
+    retailer side and it never invents CVS copy.
     """
     if not isinstance(bundle, dict):
         bundle = {"text": {"title": "", "description": "", "features": [], "debug": {}}, "images": []}
     bundle.setdefault("text", {}).setdefault("debug", {})
     bundle.setdefault("images", [])
     if cvs_bundle_has_images(bundle):
-        return sanitize_cvs_retailer_bundle_source_only(bundle, reason="cvs_images_already_parsed")
-    sku_id = get_cvs_effective_sku_id(retail_url=retail_url, target_rpc=target_rpc)
-    debug = bundle["text"]["debug"]
-    if not sku_id:
-        debug["CVS Image Fallback Skipped"] = "no_cvs_sku_id"
         return bundle
-    if not bool(globals().get("CVS_ALLOW_BLIND_IMAGE_URL_FALLBACKS", False)) and not bool(globals().get("ALLOW_RETAILER_GENERATED_IMAGE_FALLBACKS", False)):
-        debug["CVS Image Fallback Skipped"] = "live_site_only_no_blind_generated_images"
-        debug["CVS Image Fallback SKU"] = sku_id
-        debug["CVS Image Fallback Base"] = str(CVS_KNOWN_IMAGE_BASE_BY_SKU.get(sku_id, sku_id) or sku_id)
-        if reason:
-            debug["CVS Image Fallback Skipped Reason"] = reason
+    sku_id = get_cvs_effective_sku_id(retail_url=retail_url, target_rpc=target_rpc)
+    if not sku_id:
         return bundle
     generated_images = cvs_generated_image_candidates_for_sku(sku_id, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE)
     if generated_images:
         bundle["images"] = generated_images[:MAX_IMAGE_SLOTS_TO_COMPARE]
-        debug["CVS Image Fallback Applied"] = "cvs_sku_high_res_url_pattern_reference_mode"
+        debug = bundle["text"]["debug"]
+        debug["CVS Image Fallback Applied"] = "cvs_sku_high_res_url_pattern"
         debug["CVS Image Fallback SKU"] = sku_id
         debug["CVS Image Fallback Base"] = str(CVS_KNOWN_IMAGE_BASE_BY_SKU.get(sku_id, sku_id) or sku_id)
         debug["CVS Image Fallback Count"] = len(bundle.get("images") or [])
         if reason:
             debug["CVS Image Fallback Reason"] = reason
-    return sanitize_cvs_retailer_bundle_source_only(bundle, reason="cvs_generated_reference_mode")
+    return bundle
 
 
 def apply_cvs_targeted_copy_rescue_if_needed(bundle, retail_url="", target_rpc="", reason=""):
@@ -4492,10 +4433,6 @@ def apply_cvs_targeted_copy_rescue_if_needed(bundle, retail_url="", target_rpc="
     text_bundle = bundle.setdefault("text", {})
     debug = text_bundle.setdefault("debug", {})
     sku_id = get_cvs_effective_sku_id(retail_url=retail_url, target_rpc=target_rpc)
-    if not bool(globals().get("CVS_ALLOW_CATALOG_REFERENCE_FALLBACKS", False)) and not bool(globals().get("ALLOW_RETAILER_KNOWN_COPY_FALLBACKS", False)):
-        debug["CVS Combined Catalog Rescue Skipped"] = "live_site_only_cvs_parser_fallbacks"
-        debug["CVS Combined Catalog Rescue SKU"] = sku_id
-        return sanitize_cvs_retailer_bundle_source_only(bundle, reason="catalog_rescue_disabled")
     if sku_id not in globals().get("CVS_KNOWN_PRODUCT_FALLBACKS", {}):
         return bundle
 
@@ -4548,12 +4485,14 @@ def get_cvs_known_product_fallback_bundle(retail_url="", target_rpc=""):
     if not data:
         return {"text": {"title": "", "description": "", "features": [], "debug": {}}, "images": []}
 
-    # Live-site comparison guard:
-    # Known-product catalog values are reference data, not parsed live CVS/source content.
-    # Keep disabled unless explicitly enabled for a separate reference/debug mode.
-    if not bool(globals().get("CVS_ALLOW_CATALOG_REFERENCE_FALLBACKS", False)) and not bool(globals().get("ALLOW_RETAILER_KNOWN_COPY_FALLBACKS", False)):
-        return {"text": {"title": "", "description": "", "features": [], "debug": {"CVS Known Catalog Fallback Skipped": "live_site_only_cvs_parser_fallbacks"}}, "images": []}
-    rescue_source = "cvs_known_product_fallback_catalog_reference_mode"
+    # Combined CVS fallback rule:
+    # Global known-copy fallbacks can stay off. If the selected CVS skuId/RPC is
+    # already in this CVS-only catalog, allow it as the last-resort CVS source.
+    # This prevents the issue from shifting to the next blocked CVS item.
+    catalog_rescue_allowed = sku_id in globals().get("CVS_KNOWN_PRODUCT_FALLBACKS", {})
+    if not bool(globals().get("ALLOW_RETAILER_KNOWN_COPY_FALLBACKS", False)) and not catalog_rescue_allowed:
+        return {"text": {"title": "", "description": "", "features": [], "debug": {}}, "images": []}
+    rescue_source = "cvs_combined_catalog_rescue" if catalog_rescue_allowed else "cvs_known_product_fallback_catalog"
     debug = {
         "Source Used": rescue_source,
         "CVS Known Fallback SKU": sku_id,
@@ -4794,20 +4733,6 @@ CVS_KNOWN_PRODUCT_FALLBACKS.update({
     },
 })
 
-
-CVS_KNOWN_PRODUCT_FALLBACKS.update({
-    "860410": {
-        "title": "Kleenex On-the-Go Slim Wallet Ultra Soft Facial Tissues, 3 Packs (30 total tissues)",
-        "description": "Runny noses can happen anywhere. Stay prepared with Kleenex On-the-Go Facial Tissues. Small enough to fit in pockets, purses, backpacks or travel bags, these Kleenex tissues are made with 3 thick layers and Clean Shield technology that helps contain the mess 3x better than the leading value toilet paper. Our facial tissues are also soft, durable, and ultra-absorbent for runny noses and watery eyes to help you stay prepared wherever you are. Each tissue pack contains 10 total 3-ply tissues and comes in various colors and designs. For whatever happens next, Grab Kleenex. Packaging may vary.",
-        "features": [
-            "WHAT'S INCLUDED — 3 packs of Kleenex On-the-Go Slim Wallet Facial Tissues, 3-Ply, 10 tissues per pack (30 tissues total)",
-            "PERFECTLY SIZED FOR ANY ADVENTURE — Don't leave home unprepared. These Kleenex tissue packs are small enough to fit in pockets, purses, backpacks, or travel bags",
-            "SAVE YOUR TOILET PAPER — When it comes to blowing your nose, Kleenex has got you covered. Our tissues are made with Clean Shield that contains the mess better than the leading value toilet paper",
-            "SMALL BUT MIGHTY — This may be a convenient travel pack, but it contains the same ultra-absorbent, soft, and durable facial tissues that help runny noses and watery eyes, so you can be ready for anything",
-            "STYLE WHEREVER YOU GO — Our Kleenex tissues packs come in various stylish designs that complement your travel accessories (packaging may vary)",
-        ],
-    },
-})
 
 CVS_KNOWN_PRODUCT_FALLBACKS.update({
     "167387": {
@@ -6668,7 +6593,7 @@ def get_cvs_bundle(retail_url, target_rpc=""):
         target_rpc=target_rpc,
         reason="direct_cvs_html_had_no_parseable_images",
     )
-    return sanitize_cvs_retailer_bundle_source_only(bundle, reason="get_cvs_bundle_final")
+    return bundle
 
 # =========================================
 # KROGER PARSERS
@@ -9877,7 +9802,7 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
                 reason="uploaded_plus_live_had_no_parseable_images",
             )
             merged_bundle.setdefault("text", {}).setdefault("debug", {})["CVS Source Merge"] = "uploaded_txt_plus_live_always"
-            return sanitize_cvs_retailer_bundle_source_only(merged_bundle, reason="uploaded_txt_plus_live_final")
+            return merged_bundle
         if retailer == "walgreens":
             bundle = {"text": extract_walgreens_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_walgreens_images_from_html(uploaded_html)}
             bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
@@ -11491,8 +11416,6 @@ def build_normalized_comparison_payload(
         brand=brand,
     )
 
-    if retailer_norm == "cvs":
-        r_bundle = sanitize_cvs_retailer_bundle_source_only(r_bundle, reason="normalized_payload_guard")
     r_text = finalize_retailer_copy(retailer_name, r_bundle["text"] or {})
     r_images = r_bundle["images"] or []
     r_debug_for_cvs = (r_bundle.get("text", {}) or {}).get("debug", {}) if isinstance(r_bundle, dict) else {}
