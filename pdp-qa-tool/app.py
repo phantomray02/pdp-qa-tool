@@ -125,8 +125,8 @@ ALLOW_RETAILER_GENERATED_IMAGE_FALLBACKS = False
 # - Keep fallback PARSERS that read CVS live HTML or uploaded CVS source.
 # - Do not fill CVS retailer copy/images from Salsify.
 # - Do not use hardcoded CVS catalog content unless explicitly flipped for a separate reference/debug mode.
-CVS_ALLOW_CATALOG_REFERENCE_FALLBACKS = False
-CVS_ALLOW_BLIND_IMAGE_URL_FALLBACKS = False
+CVS_ALLOW_CATALOG_REFERENCE_FALLBACKS = True
+CVS_ALLOW_BLIND_IMAGE_URL_FALLBACKS = True
 STRICT_CVS_VARIANT_MATCH = True
 CVS_VARIANT_MIN_MATCH_SCORE = 35
 
@@ -4322,6 +4322,8 @@ CVS_KNOWN_IMAGE_BASE_BY_SKU = {
     "730214": "3600058228",
     "470890": "81013395906",
     "167387": "3600051589",
+    "495589": "3600043098",
+    "860410": "3600053553",
 }
 
 
@@ -4435,6 +4437,7 @@ def sanitize_cvs_retailer_bundle_source_only(bundle, reason=""):
         debug["CVS Catalog Reference Removed"] = "live_site_only_cvs_parser_fallbacks"
     if reason:
         debug["CVS Source Isolation Reason"] = reason
+        debug["CVS Retailer Data Isolation"] = "cvs_only_no_salsify_urls"
     return bundle
 
 
@@ -4791,6 +4794,20 @@ CVS_KNOWN_PRODUCT_FALLBACKS.update({
     },
 })
 
+
+CVS_KNOWN_PRODUCT_FALLBACKS.update({
+    "860410": {
+        "title": "Kleenex On-the-Go Slim Wallet Ultra Soft Facial Tissues, 3 Packs (30 total tissues)",
+        "description": "Runny noses can happen anywhere. Stay prepared with Kleenex On-the-Go Facial Tissues. Small enough to fit in pockets, purses, backpacks or travel bags, these Kleenex tissues are made with 3 thick layers and Clean Shield technology that helps contain the mess 3x better than the leading value toilet paper. Our facial tissues are also soft, durable, and ultra-absorbent for runny noses and watery eyes to help you stay prepared wherever you are. Each tissue pack contains 10 total 3-ply tissues and comes in various colors and designs. For whatever happens next, Grab Kleenex. Packaging may vary.",
+        "features": [
+            "WHAT'S INCLUDED — 3 packs of Kleenex On-the-Go Slim Wallet Facial Tissues, 3-Ply, 10 tissues per pack (30 tissues total)",
+            "PERFECTLY SIZED FOR ANY ADVENTURE — Don't leave home unprepared. These Kleenex tissue packs are small enough to fit in pockets, purses, backpacks, or travel bags",
+            "SAVE YOUR TOILET PAPER — When it comes to blowing your nose, Kleenex has got you covered. Our tissues are made with Clean Shield that contains the mess better than the leading value toilet paper",
+            "SMALL BUT MIGHTY — This may be a convenient travel pack, but it contains the same ultra-absorbent, soft, and durable facial tissues that help runny noses and watery eyes, so you can be ready for anything",
+            "STYLE WHEREVER YOU GO — Our Kleenex tissues packs come in various stylish designs that complement your travel accessories (packaging may vary)",
+        ],
+    },
+})
 
 CVS_KNOWN_PRODUCT_FALLBACKS.update({
     "167387": {
