@@ -4748,16 +4748,13 @@ CVS_KNOWN_PRODUCT_FALLBACKS.update({
     },
 })
 
-# CVS-only image fallback rows where live copy is fixed but CVS image download/rendering
-# can still return broken images because the server-side fetch receives shell/blocked
-# HTML or generated high_res URLs are not stable enough for every SKU. When these rows
-# use the known fallback path, mirror the already-aligned Salsify image URLs into the
-# CVS side so visual QA reflects what is visible on the live CVS page instead of showing
-# broken generated URLs. This is isolated to CVS and only these skuIds.
 # CVS image isolation guard.
 # IMPORTANT: Never copy or mirror Salsify image URLs into the CVS/retailer image side.
-# CVS retailer images must come only from CVS page HTML, CVS uploaded source captures,
-# or CVS-owned image URL fallbacks generated from CVS skuId/RPC.
+# CVS retailer images must come only from:
+#   1. CVS live PDP HTML.
+#   2. Uploaded CVS source/TXT/HTML captures.
+#   3. CVS-owned /bizcontent/merchandising/productimages/high_res/... URLs.
+#   4. CVS-owned generated high_res URL candidates based on a CVS skuId/RPC or confirmed CVS image base.
 CVS_MIRROR_SALSIFY_IMAGE_FALLBACK_SKUS = set()
 
 
@@ -4767,6 +4764,58 @@ def cvs_should_mirror_salsify_images(retail_url="", target_rpc="", r_debug=None)
 
 def cvs_mirror_salsify_images_for_retailer_side(s_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
     return []
+
+
+def is_cvs_retailer_image_url(url):
+    """True only for CVS-owned retailer image URLs.
+
+    This is intentionally strict so Salsify assets can never appear in the CVS
+    retailer image side, even if an older fallback or future edit accidentally
+    passes Salsify URLs into r_images.
+    """
+    value = html.unescape(str(url or "").strip()).replace("\\/", "/")
+    if not value:
+        return False
+    lowered = value.lower()
+    if "salsify" in lowered or "images.salsify.com" in lowered or "assets.salsify.com" in lowered:
+        return False
+    if lowered.startswith("data:"):
+        return False
+    return bool(
+        "/bizcontent/merchandising/productimages/high_res/" in lowered
+        or "cvs.com/bizcontent/merchandising/productimages/high_res/" in lowered
+    )
+
+
+def sanitize_cvs_retailer_images(image_urls, debug=None, reason=""):
+    """Remove any non-CVS image from the CVS retailer side.
+
+    This function never substitutes Salsify images. It only keeps CVS-owned
+    image URLs and preserves their original order.
+    """
+    cleaned = []
+    removed = []
+    seen = set()
+    for raw_url in image_urls or []:
+        url = html.unescape(str(raw_url or "").strip()).replace("\\/", "/")
+        if not url:
+            continue
+        if not is_cvs_retailer_image_url(url):
+            removed.append(url)
+            continue
+        key = url.split("?", 1)[0]
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(url)
+    if isinstance(debug, dict):
+        debug["CVS Image Isolation"] = "cvs_only_no_salsify_image_backup"
+        if reason:
+            debug["CVS Image Isolation Reason"] = reason
+        if removed:
+            debug["CVS Image Isolation Removed Count"] = len(removed)
+            debug["CVS Image Isolation Removed Sample"] = " | ".join(removed[:3])
+    return cleaned
 
 # CVS-only final-six fallback catalog update.
 # These are the last CVS rows from pdp_qa_results_cvs_all_brands (30).xlsx that
@@ -11419,6 +11468,8 @@ def build_normalized_comparison_payload(
     r_text = finalize_retailer_copy(retailer_name, r_bundle["text"] or {})
     r_images = r_bundle["images"] or []
     r_debug_for_cvs = (r_bundle.get("text", {}) or {}).get("debug", {}) if isinstance(r_bundle, dict) else {}
+    if retailer_norm == "cvs":
+        r_images = sanitize_cvs_retailer_images(r_images, debug=r_debug_for_cvs, reason="normalized_payload_initial_guard")
 
     if retailer_norm == "kroger":
         s_images = select_kroger_salsify_images(s_images, max_slots=max_slots)
@@ -11456,6 +11507,7 @@ def build_normalized_comparison_payload(
             max_slots=min(max_slots, cvs_max_slots),
             retailer_name=retailer_name,
         )
+        r_images = sanitize_cvs_retailer_images(r_images, debug=r_debug_for_cvs, reason="normalized_payload_final_guard")
 
     # Sam's Club-only: if Salsify slot 2 is ATF Video-Sams Club, reserve retailer
     # slot 2 for a retailer video or blank spacer so the remaining retailer images
