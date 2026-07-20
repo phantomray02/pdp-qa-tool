@@ -2595,6 +2595,137 @@ def build_cvs_compact_capture_from_parsed_json(payload):
     parts.append("</body></html>")
     return "\n".join(parts)
 
+def build_sams_compact_capture_from_parsed_json(payload):
+    """Build compact parse-friendly Sam's Club HTML from extension PARSED JSON.
+
+    Sam's Club pages often expose clean copy/images in the extension parsed JSON while
+    the raw hydrated HTML also contains navigation SVGs, sponsored shelves, customer
+    photos, and membership graphics. This compact page keeps only PDP copy plus real
+    product-gallery media so the Sam's Club app parser stays retailer-isolated and
+    does not ingest page chrome assets.
+    """
+    if not isinstance(payload, dict):
+        return ""
+
+    def _clean_local(value):
+        value = html.unescape(str(value or ""))
+        value = value.replace("\\u003c", "<").replace("\\u003e", ">")
+        value = value.replace("\\u0026", "&").replace("\\u00a0", " ")
+        value = value.replace("\\/", "/").replace('\\"', '"')
+        if "<" in value and ">" in value:
+            value = BeautifulSoup(value, "html.parser").get_text(" ", strip=True)
+        value = re.sub(r"\s+", " ", value).strip()
+        return value
+
+    def _is_sams_product_media(url):
+        url = html.unescape(str(url or "").strip()).replace("\\/", "/")
+        if not url:
+            return False
+        lowered = url.lower().split("?", 1)[0]
+        if lowered.startswith("data:"):
+            return False
+        if lowered.endswith(".svg"):
+            return False
+        if any(token in lowered for token in [
+            "/dfw/", "sams-mav", "sprite", "icon", "logo", "badge", "placeholder",
+            "avatar", "rating", "stars", "review", "customer",
+        ]):
+            return False
+        if is_video_like_url(url):
+            return "i5-richmedia.samsclubimages.com" in lowered or "samsclubimages.com" in lowered
+        return bool(
+            ("samsclubimages.com/asr/" in lowered or "walmartimages.com" in lowered)
+            and re.search(r"\.(?:jpg|jpeg|png|webp|avif)$", lowered, flags=re.IGNORECASE)
+        )
+
+    def _normalize_media_url(url):
+        url = html.unescape(str(url or "").strip()).replace("\\/", "/")
+        if url.startswith("//"):
+            url = "https:" + url
+        if not re.match(r"^https?://", url, flags=re.IGNORECASE):
+            return ""
+        if is_video_like_url(url):
+            return url
+        base = url.split("?", 1)[0]
+        if "samsclubimages.com/asr/" in base.lower():
+            return f"{base}?odnHeight=450&odnWidth=450&odnBg=FFFFFF"
+        return url
+
+    title = _clean_local(payload.get("title", "") or payload.get("name", "") or payload.get("documentTitle", ""))
+    title = re.sub(r"\s+-\s+Samsclub\.com\s*$", "", title, flags=re.IGNORECASE).strip()
+
+    raw_description = payload.get("description", "") or payload.get("longDescription", "") or ""
+    description = _clean_local(raw_description)
+
+    features = payload.get("features", []) or payload.get("highlights", []) or []
+    if isinstance(features, str):
+        features = [features]
+    feature_items = []
+    # If description is only a UL from the Sam's Club highlights block, make those LIs features.
+    if raw_description and "<li" in str(raw_description).lower():
+        try:
+            soup = BeautifulSoup(str(raw_description), "html.parser")
+            li_items = [_clean_local(li.get_text(" ", strip=True)) for li in soup.find_all("li")]
+            feature_items.extend([x for x in li_items if x])
+            if not description or len(description) < 40:
+                description = ""
+        except Exception:
+            pass
+    for feature in features:
+        clean = _clean_local(feature)
+        if not clean:
+            continue
+        if re.search(r"^(shipping|pickup|delivery|reorder|savings|departments|services|same day delivery)$", clean, flags=re.IGNORECASE):
+            continue
+        if len(clean) > 240:
+            continue
+        feature_items.append(clean)
+    feature_items = dedupe_preserve_order(feature_items)[:10]
+
+    images = []
+    for image_url in payload.get("images", []) or []:
+        normalized = _normalize_media_url(image_url)
+        if normalized and _is_sams_product_media(normalized):
+            images.append(normalized)
+    images = dedupe_preserve_order(images)[:MAX_IMAGE_SLOTS_TO_COMPARE]
+
+    requested_url = clean_uploaded_url_value(payload.get("requestedUrl", ""))
+    final_url = clean_uploaded_url_value(payload.get("finalUrl", ""))
+
+    if not (title or description or feature_items or images):
+        return ""
+
+    parts = ["<html><body>"]
+    if title:
+        parts.append(f"<h1>{html_escape_text(title)}</h1>")
+        parts.append(f"\n## {html_escape_text(title)}\n")
+    if feature_items:
+        parts.append("\n### Highlights\n")
+        parts.append("<ul data-sams-highlights='1'>")
+        for feature in feature_items:
+            parts.append(f"<li>{html_escape_text(feature)}</li>")
+            parts.append(f"- {html_escape_text(feature)}")
+        parts.append("</ul>")
+        parts.append("Read more")
+    if description:
+        parts.append("\n#### Product details\n")
+        parts.append(f"<p>{html_escape_text(description)}</p>")
+        parts.append(description)
+        parts.append("\n### Specifications\n")
+    for idx, image_url in enumerate(images, start=1):
+        safe_url = html.escape(image_url, quote=True)
+        safe_title = html.escape(title or "Sam's Club product", quote=True)
+        if is_video_like_url(image_url):
+            parts.append(f'<video src="{safe_url}" data-sams-gallery="1"></video>')
+        else:
+            parts.append(f'<img src="{safe_url}" data-src="{safe_url}" alt="thumbnail image {idx} of {safe_title}, {idx} of {len(images)}" data-sams-gallery="1" />')
+    if requested_url:
+        parts.append(f"<meta name='requested-url' content='{html.escape(requested_url, quote=True)}'>")
+    if final_url:
+        parts.append(f"<meta name='final-url' content='{html.escape(final_url, quote=True)}'>")
+    parts.append("</body></html>")
+    return "\n".join(parts)
+
 def parse_uploaded_raw_html_map(raw_text):
     raw_text = str(raw_text or "")
     if not raw_text.strip():
@@ -2632,6 +2763,10 @@ def parse_uploaded_raw_html_map(raw_text):
                     # CVS-only: build a compact capture from browser-rendered CVS PDP content.
                     # Do not apply this CVS compact page builder to any other retailer.
                     compact_html = build_cvs_compact_capture_from_parsed_json(parsed_payload)
+                elif requested_url and "samsclub.com" in requested_url_lc:
+                    # Sam's Club-only: use extension parsed JSON first so product
+                    # gallery images do not get polluted by navigation/member SVGs.
+                    compact_html = build_sams_compact_capture_from_parsed_json(parsed_payload)
                 else:
                     compact_html = build_kroger_compact_capture_from_parsed_json(parsed_payload)
             except Exception:
@@ -2649,6 +2784,10 @@ def parse_uploaded_raw_html_map(raw_text):
                 # Do not discard the full browser-rendered CVS HTML. Put compact
                 # parsed values first, then keep raw CVS HTML as fallback material.
                 html_text = compact_html + "\n<!-- CVS RAW HTML FALLBACK FROM EXTENSION -->\n" + raw_html_text
+            elif requested_url and "samsclub.com" in requested_url.lower() and raw_html_text:
+                # Sam's Club-only: parsed JSON gives the clean gallery/copy; raw HTML
+                # remains as copy fallback for Product Details / Highlights.
+                html_text = compact_html + "\n<!-- SAMS RAW HTML FALLBACK FROM EXTENSION -->\n" + raw_html_text
             else:
                 html_text = compact_html
         else:
@@ -9037,7 +9176,7 @@ def clean_sams_title(text):
     return normalize_space(text)
 
 
-def normalize_sams_features_final(items, max_features=5):
+def normalize_sams_features_final(items, max_features=10):
     if not items:
         return []
 
@@ -9126,7 +9265,7 @@ def extract_sams_features_from_short_description_html(short_desc_html):
             items.append(li_text)
 
     if items:
-        return normalize_sams_features_final(items, max_features=5)
+        return normalize_sams_features_final(items, max_features=10)
 
     fallback_text = clean_sams_text(working)
     if not fallback_text:
@@ -9139,7 +9278,7 @@ def extract_sams_features_from_short_description_html(short_desc_html):
     else:
         parts = [fallback_text]
 
-    return normalize_sams_features_final(parts, max_features=5)
+    return normalize_sams_features_final(parts, max_features=10)
 
 
 def _extract_visible_sams_title(source_text):
@@ -9177,7 +9316,7 @@ def _extract_visible_sams_highlights(source_text):
     bullets = re.findall(r"-\s+(.+?)(?=\s*-\s+|$)", block, flags=re.DOTALL)
 
     cleaned = [clean_sams_text(x) for x in bullets if clean_sams_text(x)]
-    return normalize_sams_features_final(cleaned, max_features=5)
+    return normalize_sams_features_final(cleaned, max_features=10)
 
 
 
@@ -9348,7 +9487,7 @@ def extract_sams_copy_from_source(source_text, retail_url=""):
     if short_match:
         short_html = _decode_sams_json_string(short_match.group(1))
         features = extract_sams_features_from_short_description_html(short_html)
-        features = normalize_sams_features_final(features, max_features=5)
+        features = normalize_sams_features_final(features, max_features=10)
         if features:
             debug["Features Path"] = "sams_shortDescription_html"
 
@@ -9361,7 +9500,7 @@ def extract_sams_copy_from_source(source_text, retail_url=""):
         if short_match_relaxed:
             short_html = _decode_sams_json_string(short_match_relaxed.group(1))
             features = extract_sams_features_from_short_description_html(short_html)
-            features = normalize_sams_features_final(features, max_features=5)
+            features = normalize_sams_features_final(features, max_features=10)
             if features:
                 debug["Features Path"] = "sams_shortDescription_relaxed_ul"
 
@@ -9381,7 +9520,7 @@ def extract_sams_copy_from_source(source_text, retail_url=""):
     return {
         "title": title,
         "description": description,
-        "features": features[:5],
+        "features": features[:10],
         "rating": rating,
         "review_count": review_count,
         "debug": debug,
@@ -9412,157 +9551,164 @@ def _normalize_sams_medium_image_url(url):
 
 
 def extract_sams_images_from_html(html_text):
-    """
-    Pull Sam's Club PDP Images & Videos rail in true onsite slot order.
-    Keep image 1, video 2, the other front image 3, then the rest.
-    Prefer the actual mp4 for video slots when present in raw HTML.
+    """Extract Sam's Club PDP gallery images only.
+
+    Priority:
+    1. Extension compact capture / parsed JSON image arrays.
+    2. Sam's Club gallery thumbnail/hero image tags.
+    3. Raw ASR URLs as a last resort.
+
+    This intentionally rejects SVG, /dfw/ navigation assets, logo/icon/badge URLs,
+    sponsored/review/customer media, and unrelated page chrome.
     """
     if not html_text:
         return []
+
     working = str(html_text or "")
-    for _ in range(3):
+    for _ in range(4):
         unescaped = html.unescape(working)
         if unescaped == working:
             break
         working = unescaped
 
-    def _base_asr_url(url):
-        url = html.unescape(str(url or "").strip())
-        m = re.search(r'(https://i5\.samsclubimages\.com/asr/[^?\s"<>]+\.jpe?g)', url, flags=re.IGNORECASE)
-        return m.group(1) if m else ""
+    def _clean_url(url):
+        url = html.unescape(str(url or "").strip()).replace("\\/", "/")
+        if url.startswith("//"):
+            url = "https:" + url
+        return url
 
-    def _normalized_medium(url):
-        url = html.unescape(str(url or "").strip())
-        if not url:
+    def _base_url(url):
+        url = _clean_url(url)
+        if is_video_like_url(url):
+            return url.split("?", 1)[0]
+        return url.split("?", 1)[0]
+
+    def _is_sams_product_media(url):
+        url = _clean_url(url)
+        if not url or not re.match(r"^https?://", url, flags=re.IGNORECASE):
+            return False
+        lowered_full = url.lower()
+        lowered = lowered_full.split("?", 1)[0]
+        if lowered.startswith("data:") or lowered.endswith(".svg"):
+            return False
+        if any(token in lowered for token in [
+            "/dfw/", "sams-mav", "sprite", "icon", "logo", "badge", "placeholder",
+            "customer", "review", "ratings", "stars", "avatar", "sponsored", "midas",
+        ]):
+            return False
+        if is_video_like_url(url):
+            return "samsclubimages.com" in lowered or "samsclubimages.com" in lowered_full
+        return bool(
+            ("samsclubimages.com/asr/" in lowered or "walmartimages.com" in lowered)
+            and re.search(r"\.(?:jpg|jpeg|png|webp|avif)$", lowered, flags=re.IGNORECASE)
+        )
+
+    def _normalize_product_media(url):
+        url = _clean_url(url)
+        if not _is_sams_product_media(url):
             return ""
         if is_video_like_url(url):
             return url
-        base = _base_asr_url(url)
-        if base:
+        base = url.split("?", 1)[0]
+        if "samsclubimages.com/asr/" in base.lower():
             return f"{base}?odnHeight=450&odnWidth=450&odnBg=FFFFFF"
-        if re.match(r'^https?://', url, flags=re.IGNORECASE) and re.search(r'\.(?:jpg|jpeg|png|webp|avif)(?:\?|$)', url, flags=re.IGNORECASE):
-            return url
-        return ""
+        return url
 
-    def _is_unwanted_alt(alt_text):
-        alt_text = normalize_space(alt_text).lower()
-        return any(token in alt_text for token in ['customer photos', 'member photos', 'review image', 'related product', 'sponsored'])
+    def _add(out, seen, url):
+        normalized = _normalize_product_media(url)
+        if not normalized:
+            return
+        key = _base_url(normalized)
+        if not key or key in seen:
+            return
+        seen.add(key)
+        out.append(normalized)
 
-    def _extract_slot_num_from_alt(alt_text):
-        alt_text = normalize_space(alt_text)
-        m = re.search(r'thumbnail\s+image\s+(\d+)\s+of', alt_text, flags=re.IGNORECASE)
-        if m:
-            return int(m.group(1)), 'image'
-        m = re.search(r'thumbnail\s+video\s+image\s+(\d+)\s+of', alt_text, flags=re.IGNORECASE)
-        if m:
-            return int(m.group(1)), 'video'
-        m = re.search(r'thumbnail\s+video\s+(\d+)\s+of', alt_text, flags=re.IGNORECASE)
-        if m:
-            return int(m.group(1)), 'video'
-        return None, ''
-
-    def _first_url_from_srcset(srcset_value):
-        srcset_value = str(srcset_value or '').strip()
-        if not srcset_value:
-            return ''
-        first = srcset_value.split(',')[0].strip()
-        if not first:
-            return ''
-        return first.split()[0].strip()
-
-    def _video_urls_from_text(text):
-        found = re.findall(r'https?://[^\s"<>]+(?:\.mp4|\.m3u8)(?:\?[^\s"<>]*)?', str(text or ''), flags=re.IGNORECASE)
-        out, seen = [], set()
-        for url in found:
-            clean = html.unescape(str(url or '').strip())
-            if clean and clean not in seen:
-                seen.add(clean)
-                out.append(clean)
-        return out
-
-    slot_candidates = {}
-    global_video_urls = _video_urls_from_text(working)
-    img_tag_pattern = re.compile(r'<img\b[^>]*>', flags=re.IGNORECASE | re.DOTALL)
-    for tag_match in img_tag_pattern.finditer(working):
-        tag = tag_match.group(0)
-        alt_match = re.search(r'alt="([^"]+)"', tag, flags=re.IGNORECASE | re.DOTALL)
-        if not alt_match:
-            continue
-        alt_text = html.unescape(alt_match.group(1) or '')
-        if _is_unwanted_alt(alt_text):
-            continue
-        slot_num, slot_kind = _extract_slot_num_from_alt(alt_text)
-        if slot_num is None:
-            continue
-        src_match = re.search(r'src="([^"]+)"', tag, flags=re.IGNORECASE | re.DOTALL)
-        chosen_url = src_match.group(1) if src_match else ''
-        if not chosen_url:
-            srcset_match = re.search(r'srcset="([^"]+)"', tag, flags=re.IGNORECASE | re.DOTALL)
-            if srcset_match:
-                chosen_url = _first_url_from_srcset(srcset_match.group(1))
-        if not chosen_url:
-            data_src_match = re.search(r'data-src="([^"]+)"', tag, flags=re.IGNORECASE | re.DOTALL)
-            if data_src_match:
-                chosen_url = data_src_match.group(1)
-        normalized = _normalized_medium(chosen_url)
-        if slot_kind == 'video':
-            local_window = working[max(0, tag_match.start() - 1500): min(len(working), tag_match.end() + 5000)]
-            local_videos = _video_urls_from_text(local_window)
-            if local_videos:
-                normalized = local_videos[0]
-            elif global_video_urls:
-                normalized = global_video_urls[0]
-        if normalized and slot_num not in slot_candidates:
-            slot_candidates[slot_num] = normalized
-
-    ordered_urls = [slot_candidates[k] for k in sorted(slot_candidates.keys()) if slot_candidates.get(k)]
-    if not ordered_urls:
-        hero_patterns = [
-            r'<img\b[^>]*data-testid="hero-image"[^>]*src="([^"]+)"',
-            r'<img\b[^>]*data-seo-id="hero-image"[^>]*src="([^"]+)"',
-            r'<img\b[^>]*alt="[^"]*Hero image 0 of[^"]*"[^>]*src="([^"]+)"',
-        ]
-        for pattern in hero_patterns:
-            hero_match = re.search(pattern, working, flags=re.IGNORECASE | re.DOTALL)
-            if hero_match:
-                normalized = _normalized_medium(hero_match.group(1))
-                if normalized:
-                    ordered_urls.append(normalized)
-                    break
-    if not ordered_urls:
-        raw_urls = re.findall(r'https://i5\.samsclubimages\.com/asr/[^\s"<>]+', working, flags=re.IGNORECASE)
-        for raw in raw_urls:
-            normalized = _normalized_medium(raw)
-            if normalized:
-                ordered_urls.append(normalized)
+    def _json_values(obj, key_names=("images", "image", "allImages", "thumbnailUrl", "largeUrl", "url")):
+        found = []
+        def walk(value, parent_key=""):
+            if isinstance(value, dict):
+                for k, v in value.items():
+                    if str(k) in key_names:
+                        walk(v, str(k))
+                    else:
+                        walk(v, str(k))
+            elif isinstance(value, list):
+                for item in value:
+                    walk(item, parent_key)
+            elif isinstance(value, str):
+                if re.match(r"^https?://", value.strip(), flags=re.IGNORECASE):
+                    found.append(value.strip())
+        walk(obj)
+        return found
 
     out, seen = [], set()
-    for url in ordered_urls:
-        if is_video_like_url(url):
-            key = html.unescape(str(url or '').strip())
-            final_url = key
-        else:
-            key = _base_asr_url(url) or str(url or '').split('?', 1)[0].strip()
-            final_url = f"{_base_asr_url(url)}?odnHeight=450&odnWidth=450&odnBg=FFFFFF" if _base_asr_url(url) else str(url or '').strip()
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        out.append(final_url)
 
-    if out:
-        first_key = (_base_asr_url(out[0]) or str(out[0]).split('?', 1)[0].strip())
-        deduped_out, first_seen = [], False
-        for url in out:
-            current_key = (_base_asr_url(url) or str(url).split('?', 1)[0].strip())
-            if current_key == first_key:
-                if first_seen:
-                    continue
-                first_seen = True
-            deduped_out.append(url)
-        out = deduped_out
+    # Priority 1: parsed JSON blocks from the extension TXT.
+    for json_match in re.finditer(r'-----BEGIN PARSED JSON-----(.*?)-----END PARSED JSON-----', working, flags=re.IGNORECASE | re.DOTALL):
+        try:
+            payload = json.loads(json_match.group(1).strip())
+        except Exception:
+            payload = None
+        if isinstance(payload, dict):
+            for url in _json_values(payload):
+                _add(out, seen, url)
+
+    # Priority 2: Next.js app data often contains imageInfo/allImages/product images.
+    for script_match in re.finditer(r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>', working, flags=re.IGNORECASE | re.DOTALL):
+        raw_json = html.unescape(script_match.group(1) or "")
+        try:
+            payload = json.loads(raw_json)
+        except Exception:
+            payload = None
+        if isinstance(payload, dict):
+            for url in _json_values(payload):
+                _add(out, seen, url)
+
+    # Priority 3: gallery-tag order from compact capture or onsite thumbnails.
+    img_tag_pattern = re.compile(r'<img\b[^>]*>', flags=re.IGNORECASE | re.DOTALL)
+    tagged = []
+    for tag_match in img_tag_pattern.finditer(working):
+        tag = tag_match.group(0)
+        alt_match = re.search(r'alt=["\']([^"\']*)["\']', tag, flags=re.IGNORECASE | re.DOTALL)
+        alt_text = normalize_space(html.unescape(alt_match.group(1) if alt_match else ""))
+        if re.search(r'customer|review|sponsored|related product|member photos?', alt_text, flags=re.IGNORECASE):
+            continue
+        slot_num = None
+        m_slot = re.search(r'thumbnail\s+image\s+(\d+)\s+of|hero\s+image\s+(\d+)\s+of', alt_text, flags=re.IGNORECASE)
+        if m_slot:
+            slot_num = int((m_slot.group(1) or m_slot.group(2) or "999"))
+        attrs = []
+        for attr_name in ["src", "data-src", "data-image-src", "currentSrc"]:
+            m_attr = re.search(attr_name + r'=["\']([^"\']+)["\']', tag, flags=re.IGNORECASE | re.DOTALL)
+            if m_attr:
+                attrs.append(m_attr.group(1))
+        m_srcset = re.search(r'srcset=["\']([^"\']+)["\']', tag, flags=re.IGNORECASE | re.DOTALL)
+        if m_srcset:
+            for part in m_srcset.group(1).split(','):
+                attrs.append(part.strip().split()[0])
+        for raw_url in attrs:
+            normalized = _normalize_product_media(raw_url)
+            if normalized:
+                tagged.append((slot_num if slot_num is not None else 9999, tag_match.start(), normalized))
+                break
+    for _, _, url in sorted(tagged, key=lambda x: (x[0], x[1])):
+        _add(out, seen, url)
+
+    # Priority 4: direct raw raster URLs, ASR first.
+    raw_url_patterns = [
+        r'https?://i5\.samsclubimages\.com/asr/[^\s"\'<>]+',
+        r'https?://i5\.walmartimages\.com/[^\s"\'<>]+',
+        r'https?://i5-richmedia\.samsclubimages\.com/[^\s"\'<>]+(?:\.mp4|\.m3u8)[^\s"\'<>]*',
+    ]
+    for raw_pattern in raw_url_patterns:
+        for raw_url in re.findall(raw_pattern, working, flags=re.IGNORECASE):
+            _add(out, seen, raw_url)
+
     return out[:MAX_IMAGE_SLOTS_TO_COMPARE]
 
 def extract_sams_text_from_html(html_text, retail_url="", target_rpc=""):
+
     debug = {
         "Title Path": "",
         "Description Path": "",
