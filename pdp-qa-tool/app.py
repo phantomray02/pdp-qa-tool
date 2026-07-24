@@ -78,7 +78,7 @@ components.html(
 st.markdown(
     """
     <style>
-    .block-container {padding-top:2.35rem; padding-bottom:2rem; max-width:1920px; width:100%;}
+    .block-container {padding-top:3.75rem; padding-bottom:2rem; max-width:1920px; width:100%;}
     [data-testid="stSidebar"] {min-width: 235px; max-width: 235px;}
     h1 {font-size: 1.55rem !important; margin-bottom: .2rem !important;}
     h2 {font-size: 1.10rem !important; margin-top: .4rem !important;}
@@ -1017,15 +1017,7 @@ def find_extension_capture(captures, retailer_key, rpc, retail_url):
             return captures[key]
     return {}
 
-st.markdown(
-    f"""
-    <div style="display:flex; align-items:center; gap:10px; margin:0 0 12px 0; padding-top:2px;">
-      <img src="{APP_FAVICON_DATA_URI}" alt="KC logo" style="width:32px; height:32px; object-fit:contain; border-radius:4px; flex:0 0 auto;" />
-      <h1 style="font-size:1.55rem; line-height:1.2; margin:0; padding:0;">Brand Compliance Portal</h1>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+header_area = st.container()
 # Source of truth for item list: the current retailer file in /data.
 # Source of truth for retailer parsing: TXT capture files in /data/captures.
 # Do not read compliance.db for display rows.
@@ -1157,13 +1149,27 @@ if df.empty:
     st.stop()
 
 export_file_label = re.sub(r"[^A-Za-z0-9]+", "_", str(selected_retailer or "all")).strip("_").lower() or "all"
-st.download_button(
-    "Download Excel",
-    data=build_current_view_excel(df),
-    file_name=f"brand_compliance_{export_file_label}_current_view.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    use_container_width=False,
-)
+with header_area:
+    title_col, download_col = st.columns([0.78, 0.22], vertical_alignment="center")
+    with title_col:
+        st.markdown(
+            f"""
+            <div style="display:flex; align-items:center; gap:10px; margin:0 0 8px 0; padding-top:6px;">
+              <img src="{APP_FAVICON_DATA_URI}" alt="KC logo" style="width:34px; height:34px; object-fit:contain; border-radius:4px; flex:0 0 auto;" />
+              <h1 style="font-size:1.55rem; line-height:1.2; margin:0; padding:0;">Brand Compliance Portal</h1>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with download_col:
+        st.download_button(
+            "Download Excel",
+            data=build_current_view_excel(df),
+            file_name=f"brand_compliance_{export_file_label}_current_view.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
+
 
 def clean_url(value):
     value = str(value or "").strip()
@@ -1403,7 +1409,8 @@ def render_item_detail(row):
     )
 
 
-st.subheader(f"{selected_retailer} items")
+
+st.markdown("<div style=\"height:6px\"></div>", unsafe_allow_html=True)
 
 for _, row in df.iterrows():
     item_status = safe(row, "status", "Unavailable")
