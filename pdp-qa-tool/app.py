@@ -65,36 +65,52 @@ components.html(
     """
     <script>
     const BCP_REMOVE_TEXTS = [
+      "Runtime mode: current retailer file + TXT captures only. DB display disabled.",
+      "All matching items are listed below. Open any row to view the full PDP QA comparison.",
+      "Current retailer queue rows loaded from /data only:",
+      "TXT capture file(s) detected:",
+      "TXT capture match(es):",
       "Sam's Club items",
       "Compliance",
+      "Items",
       "Issues",
       "Blocked"
     ];
+    function bcpShouldHide(text) {
+      if (!text) return false;
+      const clean = String(text).replace(/\s+/g, ' ').trim();
+      if (!clean) return false;
+      if (BCP_REMOVE_TEXTS.some(t => clean === t || clean.startsWith(t))) return true;
+      if (/^(Compliance|Items|Issues|Blocked)(\s|$)/.test(clean)) return true;
+      if (/^Current retailer queue rows loaded from \/data only:/.test(clean)) return true;
+      if (/^TXT capture file\(s\) detected:/.test(clean)) return true;
+      if (/^TXT capture match\(es\):/.test(clean)) return true;
+      return false;
+    }
     function bcpCleanOldUi() {
       try {
         const doc = window.parent.document;
-        const candidates = Array.from(doc.querySelectorAll('p, span, div, h1, h2, h3, [data-testid="stMetric"], [data-testid="stCaptionContainer"]'));
+        const selector = 'p, span, div, h1, h2, h3, [data-testid="stMetric"], [data-testid="stCaptionContainer"], [data-testid="stMarkdownContainer"]';
+        const candidates = Array.from(doc.querySelectorAll(selector));
         for (const node of candidates) {
           const text = (node.innerText || node.textContent || '').trim();
-          if (!text) continue;
-          const exactRemove = BCP_REMOVE_TEXTS.some(t => text === t || text.startsWith(t));
-          const metricRemove = /^(Compliance|Items|Issues|Blocked)\s*
-/.test(text) || /^(Compliance|Items|Issues|Blocked)$/.test(text);
-          if (exactRemove || metricRemove) {
-            const metric = node.closest('[data-testid="stMetric"]');
-            const caption = node.closest('[data-testid="stCaptionContainer"]');
-            const target = metric || caption || node;
-            target.style.display = 'none';
-            target.setAttribute('data-bcp-hidden-old-ui', 'true');
-          }
+          if (!bcpShouldHide(text)) continue;
+          const metric = node.closest('[data-testid="stMetric"]');
+          const caption = node.closest('[data-testid="stCaptionContainer"]');
+          const markdown = node.closest('[data-testid="stMarkdownContainer"]');
+          const target = metric || caption || markdown || node;
+          target.style.display = 'none';
+          target.setAttribute('data-bcp-hidden-old-ui', 'true');
         }
       } catch (error) {}
     }
     bcpCleanOldUi();
     window.setInterval(bcpCleanOldUi, 500);
-    try { new MutationObserver(bcpCleanOldUi).observe(window.parent.document.body, {childList:true, subtree:true, characterData:true}); } catch (error) {}
+    try {
+      new MutationObserver(bcpCleanOldUi).observe(window.parent.document.body, {childList:true, subtree:true, characterData:true});
+    } catch (error) {}
     </script>
-    <!-- BCP_UI_FORCE_REMOVE_OLD_TEXT_2026_07_24 -->
+    <!-- BCP_UI_REMOVE_RUNTIME_METRICS_SIDEBAR_2026_07_24_FINAL -->
     """,
     height=0,
     width=0,
@@ -105,6 +121,7 @@ st.markdown(
     <style>
     .block-container {padding-top:3.75rem; padding-bottom:2rem; max-width:1920px; width:100%;}
     [data-testid="stSidebar"] {min-width: 235px; max-width: 235px;}
+    [data-bcp-hidden-old-ui="true"] {display:none !important;}
     h1 {font-size: 1.55rem !important; margin-bottom: .2rem !important;}
     h2 {font-size: 1.10rem !important; margin-top: .4rem !important;}
     h3 {font-size: .98rem !important;}
