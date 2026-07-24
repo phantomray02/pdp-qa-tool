@@ -60,10 +60,50 @@ components.html(
     width=0,
 )
 
+
+components.html(
+    """
+    <script>
+    const BCP_REMOVE_TEXTS = [
+      "Sam's Club items",
+      "Compliance",
+      "Issues",
+      "Blocked"
+    ];
+    function bcpCleanOldUi() {
+      try {
+        const doc = window.parent.document;
+        const candidates = Array.from(doc.querySelectorAll('p, span, div, h1, h2, h3, [data-testid="stMetric"], [data-testid="stCaptionContainer"]'));
+        for (const node of candidates) {
+          const text = (node.innerText || node.textContent || '').trim();
+          if (!text) continue;
+          const exactRemove = BCP_REMOVE_TEXTS.some(t => text === t || text.startsWith(t));
+          const metricRemove = /^(Compliance|Items|Issues|Blocked)\s*
+/.test(text) || /^(Compliance|Items|Issues|Blocked)$/.test(text);
+          if (exactRemove || metricRemove) {
+            const metric = node.closest('[data-testid="stMetric"]');
+            const caption = node.closest('[data-testid="stCaptionContainer"]');
+            const target = metric || caption || node;
+            target.style.display = 'none';
+            target.setAttribute('data-bcp-hidden-old-ui', 'true');
+          }
+        }
+      } catch (error) {}
+    }
+    bcpCleanOldUi();
+    window.setInterval(bcpCleanOldUi, 500);
+    try { new MutationObserver(bcpCleanOldUi).observe(window.parent.document.body, {childList:true, subtree:true, characterData:true}); } catch (error) {}
+    </script>
+    <!-- BCP_UI_FORCE_REMOVE_OLD_TEXT_2026_07_24 -->
+    """,
+    height=0,
+    width=0,
+)
+
 st.markdown(
     """
     <style>
-    .block-container {padding-top:4.25rem; padding-bottom:2rem; max-width:1920px; width:100%;}
+    .block-container {padding-top:3.75rem; padding-bottom:2rem; max-width:1920px; width:100%;}
     [data-testid="stSidebar"] {min-width: 235px; max-width: 235px;}
     h1 {font-size: 1.55rem !important; margin-bottom: .2rem !important;}
     h2 {font-size: 1.10rem !important; margin-top: .4rem !important;}
@@ -998,7 +1038,6 @@ def find_extension_capture(captures, retailer_key, rpc, retail_url):
     return {}
 
 header_area = st.container()
-components.html("<!-- BCP_UI_BUILD_2026_07_24_CLEAN_HEADER_NO_RUNTIME -->", height=0, width=0)
 
 # Source of truth for item list: current retailer file in /data.
 # Source of truth for retailer parsing: TXT capture files in /data/captures.
@@ -1112,7 +1151,7 @@ with header_area:
     title_col, download_col = st.columns([0.78, 0.22], vertical_alignment="center")
     with title_col:
         st.markdown(f"""
-        <div style="display:flex; align-items:center; gap:10px; margin:0 0 14px 0; padding-top:8px;">
+        <div style="display:flex; align-items:center; gap:10px; margin:0 0 8px 0; padding-top:6px;">
           <img src="{APP_FAVICON_DATA_URI}" alt="KC logo" style="width:34px; height:34px; object-fit:contain; border-radius:4px; flex:0 0 auto;" />
           <h1 style="font-size:1.55rem; line-height:1.2; margin:0; padding:0;">Brand Compliance Portal</h1>
         </div>
