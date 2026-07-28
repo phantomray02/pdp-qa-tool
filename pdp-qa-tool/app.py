@@ -7439,6 +7439,60 @@ def _extract_kroger_perspective_from_url(url):
     return ""
 
 
+
+def _kroger_image_key_from_capture(html_text, retail_url="", target_rpc=""):
+    """Find Kroger's zero-padded image key/UPC from TXT/HTML capture, URL, or RPC."""
+    sources = [str(html_text or ""), str(retail_url or ""), str(target_rpc or "")]
+    patterns = [
+        r"UPC:\s*([0-9]{8,14})",
+        r'"upc"\s*:\s*"?([0-9]{8,14})"?',
+        r'"rpc"\s*:\s*"?([0-9]{8,14})"?',
+        r"/product/images/(?:xlarge|large|medium|small|thumbnail)/(?:front|back|left|right|top|bottom)/([0-9]{8,14})",
+        r"/(?:p/[^\s/]+/)?([0-9]{8,14})(?:[/?#\s]|$)",
+        r"^([0-9]{8,14})$",
+    ]
+    for source in sources:
+        if not source:
+            continue
+        for pattern in patterns:
+            match = re.search(pattern, source, flags=re.IGNORECASE)
+            if match:
+                digits = re.sub(r"\D+", "", match.group(1) or "")
+                if digits:
+                    return digits.zfill(13)
+    return ""
+
+
+def _kroger_visible_perspectives_from_capture(html_text):
+    """Return Kroger perspective labels found in capture text, preserving site order."""
+    source = html.unescape(str(html_text or ""))
+    found = []
+    for match in re.finditer(r"Perspective\s*:\s*(front|back|left|right|top|bottom)", source, flags=re.IGNORECASE):
+        perspective = str(match.group(1) or "").lower()
+        if perspective and perspective not in found:
+            found.append(perspective)
+    return found
+
+
+def _kroger_canonical_perspective_image_urls(html_text, retail_url="", target_rpc=""):
+    """Build Kroger image-service URLs for perspectives exposed on the PDP.
+
+    Some browser/TXT captures include perspective labels but omit image src URLs for
+    back/left/right/top/bottom. Kroger uses predictable product image URLs by UPC:
+    /product/images/large/{perspective}/{upc}.
+    """
+    image_key = _kroger_image_key_from_capture(html_text, retail_url=retail_url, target_rpc=target_rpc)
+    if not image_key:
+        return []
+    perspectives = _kroger_visible_perspectives_from_capture(html_text)
+    if not perspectives:
+        perspectives = ["front", "back", "left", "right", "top", "bottom"]
+    ordered = []
+    for perspective in ["front", "back", "left", "right", "top", "bottom"]:
+        if perspective in perspectives:
+            ordered.append(f"https://www.kroger.com/product/images/large/{perspective}/{image_key}")
+    return ordered
+
 def extract_kroger_images_from_html(html_text):
     if not html_text:
         return []
@@ -7522,6 +7576,15 @@ def extract_kroger_images_from_html(html_text):
         )
         for idx, raw_url in enumerate(raw_urls):
             add_candidate(raw_url, slot_index=idx)
+
+    # Kroger TXT/browser captures sometimes expose perspective labels but only one src URL.
+    # Fill those missing retailer slots from Kroger's canonical image-service URLs.
+    canonical_urls = _kroger_canonical_perspective_image_urls(working)
+    if canonical_urls:
+        canonical_slot_base = 1000
+        for idx, canonical_url in enumerate(canonical_urls):
+            perspective_hint = _extract_kroger_perspective_from_url(canonical_url)
+            add_candidate(canonical_url, slot_index=canonical_slot_base + idx, perspective_hint=perspective_hint)
 
     candidates.sort(key=lambda item: (item[0], item[1], item[2]))
     ordered_urls = [url for _, _, url in candidates]
@@ -13029,7 +13092,7 @@ if (
                     or r_text.get("kroger_size_variant", "")
                     or (r_text.get("debug", {}) or {}).get("Kroger Size Variant", "")
                 )
-            r_title_display = prepend_kroger_variant_for_display(r_title, kroger_size_variant, retailer_name)
+            r_title_display = r_title
             s_desc = s_text.get("description") or ""
             r_desc = r_text.get("description") or ""
             retailer_features = r_text.get("features") or []
@@ -13082,7 +13145,7 @@ if (
             with left:
                 raw_rpc = current_target_sku or current_rpc
                 clean_rpc = clean_item_number(raw_rpc)
-                display_rpc = prepend_kroger_variant_for_display(clean_rpc, kroger_size_variant, retailer_name)
+                display_rpc = clean_rpc
 
                 salsify_header_html = column_header_link_html("Salsify", sku, salsify_url)
                 retailer_header_html = column_header_link_html(
@@ -13124,7 +13187,7 @@ if (
                     )
                 with t2:
                     st.markdown(
-                        "<div style='margin-bottom:4px'>" + equal_height_block(r_title_display or "Missing", min_height=56) + "</div>",
+                        "<div style='margin-bottom:4px'>" + equal_height_block(r_title or "Missing", min_height=56) + "</div>",
                         unsafe_allow_html=True,
                     )
 
