@@ -385,6 +385,20 @@ def locked_visual_header_row_html(
         '</div>'
     )
 
+
+def prepend_kroger_variant_for_display(value, variant_size, retailer_name=""):
+    """Kroger-only display helper. Keeps scoring values unchanged."""
+    value = str(value or "").strip()
+    variant_size = clean_kroger_variant_size(variant_size)
+    if str(retailer_name or "").strip().lower() != "kroger" or not variant_size:
+        return value
+    if not value:
+        return variant_size
+    if value.lower().startswith(variant_size.lower()):
+        return value
+    return f"{variant_size} | {value}"
+
+
 def column_header_link_html(label, item_number, href):
     safe_label = html_escape_text(label or "")
     safe_item = html_escape_text(item_number or "")
@@ -6809,6 +6823,134 @@ def clean_kroger_text(text):
     return text
 
 
+
+def clean_kroger_variant_size(value):
+    """Normalize Kroger selected size/pack variant text for UI and Excel output."""
+    value = clean_kroger_text(value)
+    if not value:
+        return ""
+    value = re.sub(r"\bButton\s+Group\s+Options\b.*$", "", value, flags=re.IGNORECASE).strip()
+    value = re.sub(r"\bShow\s+more\s+sizes\b.*$", "", value, flags=re.IGNORECASE).strip()
+    value = re.sub(r"\bThis\s+selection\s+is\s+unavailable\b.*$", "", value, flags=re.IGNORECASE).strip()
+    value = value.strip(" :-|,;")
+    if not value:
+        return ""
+    if len(value) > 60:
+        return ""
+    lowered = value.lower()
+    blocked = {
+        "regular", "heavy", "overnight", "extra heavy overnight",
+        "front", "back", "left", "right", "top", "bottom", "main",
+    }
+    if lowered in blocked:
+        return ""
+    if re.search(r"\b(aisle|coupon|pickup|delivery|reviews?|rating|upc|located|discounted|sign in|cart)\b", lowered):
+        return ""
+    # Kroger size variants usually include a count/package unit. Keep this broad enough for
+    # values like "48 ct", "10 pk / 56 ct", "6 pk / 160 ct", "16 count".
+    if not re.search(r"\b\d", value):
+        return ""
+    if not re.search(r"\b(ct|count|pk|pack|packs|oz|fl oz|lb|lbs|g|kg|ml|in|size)\b", lowered):
+        return ""
+    return value
+
+
+def extract_kroger_selected_variant_from_html(html_text):
+    """Extract the live selected Kroger size variant, e.g. 48 ct.
+
+    Preferred source is Kroger's selected variant label:
+    <label data-testid="selected-variant-option"><input value="48 ct" checked>48 ct</label>
+
+    Fallbacks support browser-extension TXT captures where the selected value appears as:
+    "Size: 26 ctButton Group Options 16 count 26 ct 36 ct"
+    or on the UPC line like:
+    "10 pk / 56 ctUPC: 0003600050129".
+    """
+    raw = str(html_text or "")
+    if not raw.strip():
+        return ""
+    working = html.unescape(raw)
+    for _ in range(2):
+        next_working = html.unescape(working)
+        if next_working == working:
+            break
+        working = next_working
+
+    # 1. Exact selected Kroger label from hydrated HTML.
+    try:
+        soup = BeautifulSoup(working, "html.parser")
+        selected_labels = []
+        selected_labels.extend(soup.select('label[data-testid="selected-variant-option"]'))
+        for inp in soup.find_all("input", attrs={"checked": True}):
+            parent_label = inp.find_parent("label")
+            if parent_label:
+                selected_labels.append(parent_label)
+            input_value = clean_kroger_variant_size(inp.get("value", ""))
+            if input_value:
+                return input_value
+        for label in selected_labels:
+            label_input = label.find("input")
+            if label_input:
+                input_value = clean_kroger_variant_size(label_input.get("value", ""))
+                if input_value:
+                    return input_value
+            label_text = clean_kroger_variant_size(label.get_text(" ", strip=True))
+            if label_text:
+                return label_text
+    except Exception:
+        pass
+
+    # 2. Raw string fallback for escaped or partial label snippets.
+    label_patterns = [
+        r'data-testid=["\']selected-variant-option["\'][^>]*>\s*(?:<input\b[^>]*\bvalue=["\']([^"\']+)["\'][^>]*>)?([^<]{0,80})',
+        r'<input\b[^>]*\bvalue=["\']([^"\']+)["\'][^>]*\bchecked\b[^>]*>\s*([^<]{0,80})',
+        r'<input\b[^>]*\bchecked\b[^>]*\bvalue=["\']([^"\']+)["\'][^>]*>\s*([^<]{0,80})',
+    ]
+    for pattern in label_patterns:
+        for match in re.finditer(pattern, working, flags=re.IGNORECASE | re.DOTALL):
+            for group_value in match.groups():
+                selected = clean_kroger_variant_size(group_value)
+                if selected:
+                    return selected
+
+    text_blob = clean_kroger_text(BeautifulSoup(working, "html.parser").get_text(" ", strip=True) if "<" in working and ">" in working else working)
+
+    # 3. Markdown/browser capture: Size: selected value Button Group Options...
+    size_match = re.search(
+        r'\bSize\s*:\s*(.+?)(?:\s*Button\s+Group\s+Options\b|\s*This\s+selection\s+is\s+unavailable\b|\s*Item\s+Availability\b|\s*Sign\s+In\b|\s*UPC\s*:|$)',
+        text_blob,
+        flags=re.IGNORECASE,
+    )
+    if size_match:
+        selected = clean_kroger_variant_size(size_match.group(1))
+        if selected:
+            return selected
+
+    # 4. UPC line fallback: selected size immediately before UPC.
+    upc_match = re.search(
+        r'(?<![A-Za-z0-9])([0-9][A-Za-z0-9 /.,-]{0,45}?(?:ct|count|pk|pack|packs|oz|fl oz|lb|lbs|g|kg|ml))\s*UPC\s*:',
+        text_blob,
+        flags=re.IGNORECASE,
+    )
+    if upc_match:
+        selected = clean_kroger_variant_size(upc_match.group(1))
+        if selected:
+            return selected
+
+    # 5. Title suffix fallback: title, selected size - Kroger.
+    title_size_match = re.search(
+        r',\s*([0-9][A-Za-z0-9 /.,-]{0,45}?\b(?:ct|count|pk|pack|packs|oz|fl oz|lb|lbs|g|kg|ml)\b)\s*-\s*Kroger\b',
+        text_blob,
+        flags=re.IGNORECASE,
+    )
+    if title_size_match:
+        selected = clean_kroger_variant_size(title_size_match.group(1))
+        if selected:
+            return selected
+
+    return ""
+
+
 def normalize_kroger_features(items, max_features=10):
     if not items:
         return []
@@ -7126,10 +7268,14 @@ def extract_kroger_text_from_html(html_text, retail_url="", target_rpc=""):
         debug["Title Path"] = "kroger_txt_missing"
         debug["Description Path"] = "kroger_txt_missing"
         debug["Features Path"] = "kroger_txt_missing"
-        return {"title": "", "description": "", "features": [], "rating": "", "review_count": "", "debug": debug}
+        return {"title": "", "description": "", "features": [], "rating": "", "review_count": "", "variant_size": "", "kroger_size_variant": "", "debug": debug}
 
     working = html.unescape(str(html_text or ""))
     soup = BeautifulSoup(working, "html.parser")
+    variant_size = extract_kroger_selected_variant_from_html(working)
+    if variant_size:
+        debug["Kroger Size Variant"] = variant_size
+        debug["Kroger Size Variant Path"] = "kroger_selected_variant"
 
     title = ""
     h1 = soup.find('h1')
@@ -7221,6 +7367,8 @@ def extract_kroger_text_from_html(html_text, retail_url="", target_rpc=""):
         "features": (features or [])[:10],
         "rating": rating,
         "review_count": review_count,
+        "variant_size": variant_size,
+        "kroger_size_variant": variant_size,
         "debug": debug,
     }
 
@@ -11786,6 +11934,7 @@ def process_row(row):
                     "Retail URL": retail_url,
                     "Rating": rating_value,
                     "Review Count": review_count_value,
+                    "Kroger Size Variant": "",
                     "Title %": title_score,
                     "Description %": desc_score,
                     "Feature %": avg_feature_score,
@@ -11804,6 +11953,7 @@ def process_row(row):
                     "Retail URL": retail_url,
                     "Rating": rating_value,
                     "Review Count": review_count_value,
+                    "Kroger Size Variant": "",
                     "Title %": title_score,
                     "Description %": desc_score,
                     "Feature %": avg_feature_score,
@@ -11821,6 +11971,7 @@ def process_row(row):
                     "Retail URL": retail_url,
                     "Rating": rating_value,
                     "Review Count": review_count_value,
+                    "Kroger Size Variant": "",
                     "Salsify URL": salsify_url,
                     "Status": ", ".join(status_notes),
                 },
@@ -11872,6 +12023,13 @@ def process_row(row):
 
         output_rating_value = (r_text.get("rating", "") if isinstance(r_text, dict) else "") or rating_value
         output_review_count_value = (r_text.get("review_count", "") if isinstance(r_text, dict) else "") or review_count_value
+        kroger_size_variant = ""
+        if retailer_norm_for_row == "kroger" and isinstance(r_text, dict):
+            kroger_size_variant = clean_kroger_variant_size(
+                r_text.get("variant_size", "")
+                or r_text.get("kroger_size_variant", "")
+                or (r_text.get("debug", {}) or {}).get("Kroger Size Variant", "")
+            )
 
         title_score = keyword_score(s_text.get("title", ""), r_text.get("title", ""))
 
@@ -11927,6 +12085,7 @@ def process_row(row):
                 "Retail URL": retail_url,
                 "Rating": output_rating_value,
                 "Review Count": output_review_count_value,
+                "Kroger Size Variant": kroger_size_variant,
                 "Title %": title_score,
                 "Description %": desc_score,
                 "Feature %": avg_feature_score,
@@ -11945,6 +12104,7 @@ def process_row(row):
                 "Retail URL": retail_url,
                 "Rating": output_rating_value,
                 "Review Count": output_review_count_value,
+                "Kroger Size Variant": kroger_size_variant,
                 "Title %": title_score,
                 "Description %": desc_score,
                 "Feature %": avg_feature_score,
@@ -11994,6 +12154,7 @@ def process_row(row):
                 "Retail URL": retail_url,
                 "Rating": output_rating_value,
                 "Review Count": output_review_count_value,
+                "Kroger Size Variant": kroger_size_variant,
                 "Salsify URL": salsify_url,
                 "Retailer Title": r_text.get("title", ""),
                     "Retailer Description": r_text.get("description", ""),
@@ -12861,6 +13022,14 @@ if (
 
             s_title = s_text.get("title") or ""
             r_title = r_text.get("title") or ""
+            kroger_size_variant = ""
+            if str(retailer_name or "").strip().lower() == "kroger" and isinstance(r_text, dict):
+                kroger_size_variant = clean_kroger_variant_size(
+                    r_text.get("variant_size", "")
+                    or r_text.get("kroger_size_variant", "")
+                    or (r_text.get("debug", {}) or {}).get("Kroger Size Variant", "")
+                )
+            r_title_display = prepend_kroger_variant_for_display(r_title, kroger_size_variant, retailer_name)
             s_desc = s_text.get("description") or ""
             r_desc = r_text.get("description") or ""
             retailer_features = r_text.get("features") or []
@@ -12913,11 +13082,12 @@ if (
             with left:
                 raw_rpc = current_target_sku or current_rpc
                 clean_rpc = clean_item_number(raw_rpc)
+                display_rpc = prepend_kroger_variant_for_display(clean_rpc, kroger_size_variant, retailer_name)
 
                 salsify_header_html = column_header_link_html("Salsify", sku, salsify_url)
                 retailer_header_html = column_header_link_html(
                     retailer_name,
-                    clean_rpc,
+                    display_rpc,
                     retail_url,
                 )
 
@@ -12954,7 +13124,7 @@ if (
                     )
                 with t2:
                     st.markdown(
-                        "<div style='margin-bottom:4px'>" + equal_height_block(r_title or "Missing", min_height=56) + "</div>",
+                        "<div style='margin-bottom:4px'>" + equal_height_block(r_title_display or "Missing", min_height=56) + "</div>",
                         unsafe_allow_html=True,
                     )
 
