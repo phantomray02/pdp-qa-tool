@@ -2550,74 +2550,92 @@ def build_kroger_compact_capture_from_parsed_json(payload):
 
 
 
+
 def build_kroger_compact_capture_from_raw_html(raw_html_text, requested_url="", final_url=""):
     """Build a compact Kroger capture from BEGIN HTML only, never extension PARSED JSON.
 
-    Kroger feature parsing must come from the retailer HTML block, especially:
-    data-testid="product-details-romance-description" with <p> description and <li> features.
-    This keeps the exact live HTML list structure and avoids merged/missing bullets caused by
-    the browser extension's PARSED JSON flattening.
+    Performance note:
+    Kroger TXT captures can be very large. This function intentionally avoids
+    BeautifulSoup on the full capture. It uses fast string/regex slicing to keep
+    only the product title, romance description block, selected variant/UPC context,
+    and image perspective labels. The smaller HTML is what the normal Kroger parser
+    reads later.
     """
     raw = str(raw_html_text or "")
     if not raw.strip():
         return ""
 
     working = html.unescape(raw)
-    for _ in range(2):
-        unescaped = html.unescape(working)
-        if unescaped == working:
-            break
-        working = unescaped
 
     title = ""
-    try:
-        soup = BeautifulSoup(working, "html.parser")
-        h1 = soup.find("h1")
-        if h1:
-            title = normalize_space(h1.get_text(" ", strip=True))
-        if not title and soup.title:
-            title = normalize_space(soup.title.get_text(" ", strip=True))
-            title = re.sub(r"\s*-\s*Kroger\s*$", "", title, flags=re.IGNORECASE)
-    except Exception:
-        pass
-    if not title:
-        heading_match = re.search(r"(?m)^##\s+(.+?)\s*$", working)
-        if heading_match:
-            title = normalize_space(heading_match.group(1))
+    title_patterns = [
+        r"(?im)^#\s+(.+?)\s*-\s*Kroger(?:\[|\s|$)",
+        r"(?im)^##\s+(.+?)\s*$",
+        r"<h1\b[^>]*>(.*?)</h1\s*>",
+        r"<title\b[^>]*>(.*?)\s*-\s*Kroger\s*</title\s*>",
+    ]
+    for pattern in title_patterns:
+        match = re.search(pattern, working, flags=re.IGNORECASE | re.DOTALL)
+        if match:
+            candidate = clean_kroger_text(match.group(1))
+            candidate = re.sub(r"\s*-\s*Kroger\s*$", "", candidate, flags=re.IGNORECASE).strip()
+            if candidate and candidate.lower() != "kroger":
+                title = candidate
+                break
 
     romance_html = ""
-    marker_match = re.search(r'data-testid=["\']product-details-romance-description["\']|product-details-romance-description', working, flags=re.IGNORECASE)
+    marker_match = re.search(
+        r'data-testid=["\']product-details-romance-description["\']|product-details-romance-description',
+        working,
+        flags=re.IGNORECASE,
+    )
     if marker_match:
         start = marker_match.start()
         open_tag_start = working.rfind("<", 0, start)
         if open_tag_start != -1:
             start = open_tag_start
+
+        search_window = working[start:start + 200000]
         end = -1
-        reviews_match = re.search(r'<div\b[^>]*class=["\'][^"\']*ProductDetails--Reviews', working[start:], flags=re.IGNORECASE)
+        reviews_match = re.search(
+            r'<div\b[^>]*class=["\'][^"\']*ProductDetails--Reviews',
+            search_window,
+            flags=re.IGNORECASE,
+        )
         if reviews_match:
             end = start + reviews_match.start()
         if end == -1:
-            ul_end_match = re.search(r'</ul\s*>', working[start:], flags=re.IGNORECASE)
+            ul_end_match = re.search(r'</ul\s*>', search_window, flags=re.IGNORECASE)
             if ul_end_match:
                 end = start + ul_end_match.end()
         if end != -1 and end > start:
             romance_html = working[start:end]
 
     if not romance_html:
-        return working
+        small = working[:12000]
+        return "\n".join([
+            "<html><head>",
+            f"<title>{html_escape_text(title or 'Kroger Product')} - Kroger</title>",
+            "</head><body>",
+            f"<h1>{html_escape_text(title)}</h1>" if title else "",
+            small,
+            "</body></html>",
+        ])
 
     context_lines = []
-    for pattern in [
+    context_patterns = [
         r'[^\n\r]{0,180}Perspective\s*:\s*(?:front|back|left|right|top|bottom)[^\n\r]{0,180}',
         r'[^\n\r]{0,120}\bUPC\s*:\s*[0-9]{8,14}[^\n\r]{0,120}',
-        r'[^\n\r]{0,120}\bSize\s*:[^\n\r]{0,200}',
-        r'<label\b[^>]*data-testid=["\']selected-variant-option["\'][\s\S]{0,300?</label>',
-    ]:
-        for match in re.finditer(pattern, working, flags=re.IGNORECASE):
+        r'[^\n\r]{0,120}\bSize\s*:[^\n\r]{0,240}',
+        r'<label\b[^>]*data-testid=["\']selected-variant-option["\'][\s\S]{0,400?</label>',
+    ]
+    context_source = working[:50000] + "\n" + romance_html[:50000]
+    for pattern in context_patterns:
+        for match in re.finditer(pattern, context_source, flags=re.IGNORECASE):
             value = match.group(0)
             if value and value not in context_lines:
                 context_lines.append(value)
-            if len(context_lines) >= 40:
+            if len(context_lines) >= 50:
                 break
 
     parts = [
@@ -2639,6 +2657,7 @@ def build_kroger_compact_capture_from_raw_html(raw_html_text, requested_url="", 
         parts.append("</pre>")
     parts.append("</body></html>")
     return "\n".join(parts)
+
 
 def build_cvs_compact_capture_from_parsed_json(payload):
     """Build compact parse-friendly CVS HTML from browser-extension output."""
@@ -2854,34 +2873,42 @@ def parse_uploaded_raw_html_map(raw_text):
 
         compact_html = ""
         parsed_payload = {}
-        parsed_match = re.search(
-            r'(?is)-----BEGIN PARSED JSON-----(.*?)-----END PARSED JSON-----',
-            block,
-        )
-        if parsed_match:
-            try:
-                parsed_payload = json.loads(str(parsed_match.group(1) or "").strip())
-                requested_url_lc = str(requested_url or "").lower()
-                if requested_url and "heb.com" in requested_url_lc:
-                    compact_html = build_heb_compact_capture_from_parsed_json(parsed_payload)
-                elif requested_url and "cvs.com" in requested_url_lc:
-                    # CVS-only: build a compact capture from browser-rendered CVS PDP content.
-                    # Do not apply this CVS compact page builder to any other retailer.
-                    compact_html = build_cvs_compact_capture_from_parsed_json(parsed_payload)
-                elif requested_url and "samsclub.com" in requested_url_lc:
-                    # Sam's Club-only: use extension parsed JSON first so product
-                    # gallery images do not get polluted by navigation/member SVGs.
-                    compact_html = build_sams_compact_capture_from_parsed_json(parsed_payload)
-                else:
-                    compact_html = build_kroger_compact_capture_from_parsed_json(parsed_payload)
-            except Exception:
-                parsed_payload = {}
-                compact_html = ""
-
-        final_url_from_payload = clean_uploaded_url_value(parsed_payload.get("finalUrl", "")) if isinstance(parsed_payload, dict) else ""
+        requested_url_lc = str(requested_url or "").lower()
 
         html_match = re.search(r'(?is)-----BEGIN HTML-----(.*?)-----END HTML-----', block)
-        raw_html_text = html.unescape(str(html_match.group(1) or "").strip()) if html_match else ""
+        raw_html_text = str(html_match.group(1) or "").strip() if html_match else ""
+
+        # Kroger-only speed fix: do not load or trust extension PARSED JSON.
+        # The HTML romance block is the source of truth for Kroger copy/features.
+        parsed_match = None
+        if "kroger.com" not in requested_url_lc:
+            parsed_match = re.search(
+                r'(?is)-----BEGIN PARSED JSON-----(.*?)-----END PARSED JSON-----',
+                block,
+            )
+            if parsed_match:
+                try:
+                    parsed_payload = json.loads(str(parsed_match.group(1) or "").strip())
+                    if requested_url and "heb.com" in requested_url_lc:
+                        compact_html = build_heb_compact_capture_from_parsed_json(parsed_payload)
+                    elif requested_url and "cvs.com" in requested_url_lc:
+                        # CVS-only: build a compact capture from browser-rendered CVS PDP content.
+                        # Do not apply this CVS compact page builder to any other retailer.
+                        compact_html = build_cvs_compact_capture_from_parsed_json(parsed_payload)
+                    elif requested_url and "samsclub.com" in requested_url_lc:
+                        # Sam's Club-only: use extension parsed JSON first so product
+                        # gallery images do not get polluted by navigation/member SVGs.
+                        compact_html = build_sams_compact_capture_from_parsed_json(parsed_payload)
+                    else:
+                        compact_html = build_kroger_compact_capture_from_parsed_json(parsed_payload)
+                except Exception:
+                    parsed_payload = {}
+                    compact_html = ""
+
+        final_url_from_payload = clean_uploaded_url_value(parsed_payload.get("finalUrl", "")) if isinstance(parsed_payload, dict) else ""
+        if not final_url_from_payload:
+            final_url_match = re.search(r'(?im)^Final\s+URL\s*:\s*(https?://\S+)', block)
+            final_url_from_payload = clean_uploaded_url_value(final_url_match.group(1)) if final_url_match else ""
 
         if requested_url and "kroger.com" in requested_url.lower():
             # Kroger-only: do NOT trust or use the extension PARSED JSON for copy/features.
@@ -12715,7 +12742,7 @@ if uploaded_file:
                 st.caption(f"{selected_retailer} is in skip-extension mode, so the app can auto-run straight to batch with live retailer fetches.")
 
             if uploaded_raw_html_map:
-                st.caption(f"TXT match status for {selected_retailer}: {matched_uploaded_html_count} matched rows, {missing_uploaded_html_count} unmatched rows.")
+                st.caption(f"TXT match status for {selected_retailer}: {matched_uploaded_html_count} matched rows, {missing_uploaded_html_count} unmatched rows. Optimized Kroger HTML-only map is active.")
             if cvs_capture_block_reason:
                 st.error(cvs_capture_block_reason)
                 if cvs_missing_capture_urls:
