@@ -2474,6 +2474,56 @@ def split_kroger_parsed_description(description):
     return description, []
 
 
+
+def normalize_kroger_extension_feature_candidates(items, title="", max_features=10):
+    """Clean feature candidates from Kroger extension PARSED JSON.
+
+    Kroger extension PARSED JSON can mix navigation/category text with product copy,
+    and can also flatten description + bullets into one description string. This helper
+    keeps product-looking bullets separate and avoids nav/category pollution.
+    """
+    if not items:
+        return []
+    if isinstance(items, str):
+        items = [items]
+
+    title_norm = normalize_text(title)
+    blocked_exact = {
+        "pharmacy & health", "digital coupons", "weekly ad",
+        "back to school list", "back to school wellness", "meal planning & recipes",
+        "store locator", "about the company", "shop store brands",
+        "zero hunger | zero waste", "personal care", "feminine care", "baby wipes",
+        "cleaning and household", "paper products", "product details",
+        "product information", "ratings & reviews",
+    }
+    blocked_contains = [
+        "breadcrumbs", "coupon", "cash back", "qualifying products",
+        "item availability", "sign in", "pickup", "delivery", "reviews",
+        "privacy", "terms and conditions",
+    ]
+
+    out = []
+    for item in items:
+        value = clean_kroger_text(item)
+        if not value:
+            continue
+        for part in split_kroger_feature_text_if_stuck(value):
+            part = clean_kroger_text(part)
+            if not part:
+                continue
+            lowered = part.lower().strip()
+            if lowered in blocked_exact:
+                continue
+            if any(token in lowered for token in blocked_contains):
+                continue
+            if title_norm and normalize_text(part) == title_norm:
+                continue
+            if len(part) < 18 and not re.search(r"\d", part):
+                continue
+            out.append(part)
+
+    return dedupe_preserve_order(out)[:max_features]
+
 def build_kroger_compact_capture_from_parsed_json(payload):
     """Build small parse-friendly HTML from Kroger extension PARSED JSON.
 
@@ -2486,6 +2536,7 @@ def build_kroger_compact_capture_from_parsed_json(payload):
 
     title = clean_kroger_text(payload.get("title", ""))
     raw_description = str(payload.get("description", "") or "")
+    raw_feature_candidates = payload.get("features", []) or []
     html_description, html_feature_items = extract_kroger_description_features_from_html_fragment(raw_description)
     description = html_description or clean_kroger_text(raw_description)
     images = select_kroger_image_urls_by_perspective(
@@ -2505,6 +2556,15 @@ def build_kroger_compact_capture_from_parsed_json(payload):
         feature_items = html_feature_items
     else:
         intro, feature_items = split_kroger_parsed_description(description)
+
+    # If the extension did parse features separately, keep them separate as a fallback.
+    # Do not let navigation/category crumbs from the extension become product bullets.
+    if not feature_items:
+        feature_items = normalize_kroger_extension_feature_candidates(raw_feature_candidates, title=title, max_features=10)
+    if feature_items and intro:
+        # Keep description as the standalone description, not description + bullet copy.
+        intro = clean_kroger_text(intro)
+
     final_url = clean_uploaded_url_value(payload.get("finalUrl", ""))
     requested_url = clean_uploaded_url_value(payload.get("requestedUrl", ""))
 
@@ -2911,13 +2971,31 @@ def parse_uploaded_raw_html_map(raw_text):
             final_url_from_payload = clean_uploaded_url_value(final_url_match.group(1)) if final_url_match else ""
 
         if requested_url and "kroger.com" in requested_url.lower():
-            # Kroger-only: do NOT trust or use the extension PARSED JSON for copy/features.
-            # The Kroger parser should read the live HTML romance block so <li> features stay split.
+            # Kroger-only: HTML is the source of truth for product copy/features.
+            # If the extension also parsed JSON, use it only as a separated-copy fallback
+            # when the HTML block is missing or does not contain the romance section.
             html_text = build_kroger_compact_capture_from_raw_html(
                 raw_html_text,
                 requested_url=requested_url,
                 final_url=final_url_from_payload,
             ) if raw_html_text else ""
+            if not html_text or "product-details-romance-description" not in html_text.lower():
+                parsed_match = re.search(
+                    r'(?is)-----BEGIN PARSED JSON-----(.*?)-----END PARSED JSON-----',
+                    block,
+                )
+                if parsed_match:
+                    try:
+                        parsed_payload = json.loads(str(parsed_match.group(1) or "").strip())
+                    except Exception:
+                        parsed_payload = {}
+                    parsed_fallback_html = build_kroger_compact_capture_from_parsed_json(parsed_payload) if isinstance(parsed_payload, dict) else ""
+                    if parsed_fallback_html:
+                        html_text = (
+                            (html_text or "")
+                            + "\n<!-- KROGER PARSED JSON FALLBACK: separated title/description/features only -->\n"
+                            + parsed_fallback_html
+                        ).strip()
         elif compact_html:
             if requested_url and "cvs.com" in requested_url.lower() and raw_html_text:
                 # CVS-only root fix: parsed JSON from the extension can be partial.
