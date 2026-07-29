@@ -1642,6 +1642,9 @@ def prepare_input_df(df):
     df.rename(
         columns={
             "salsify url": "salsify_url",
+            "retailer salsify url": "salsify_url",
+            "retailer salsify link": "salsify_url",
+            "retailer pdp deck link": "salsify_url",
             "salsify_url": "salsify_url",
             "salsify link": "salsify_url",
             "salsify pdp deck link": "salsify_url",
@@ -1669,6 +1672,9 @@ def prepare_input_df(df):
             "brand characteristic": "brand",
             "retailer name": "retailer",
             "retailer_name": "retailer",
+            "retailer sku": "sku",
+            "retailer rpc": "retailer_rpc",
+            "retailer item id": "retailer_rpc",
             "kroger rpc": "kroger_rpc",
             "heb rpc": "heb_rpc",
             "h-e-b rpc": "heb_rpc",
@@ -1823,10 +1829,12 @@ def strict_filter_rows_for_selected_retailer(df, selected_retailer, dedupe_by_ur
         out["retail_url"] = ""
 
     out["retail_url"] = out["retail_url"].fillna("").astype(str).str.strip()
-    out = out[out["retail_url"] != ""].copy()
 
+    # New SKU-list workflow: retailer URL is optional. The extension can find the
+    # URL/content from Retailer RPC/Search Term, then the app maps the extension result
+    # back by RPC. Keep blank-URL rows in the selected retailer queue.
     if not out.empty:
-        out = out[out["retail_url"].apply(lambda value: retailer_url_matches_selected(value, selected_retailer_norm))].copy()
+        out = out[out["retail_url"].apply(lambda value: (not str(value or "").strip()) or retailer_url_matches_selected(value, selected_retailer_norm))].copy()
 
     if dedupe_by_url and not out.empty:
         out = out.drop_duplicates(subset=["retail_url"], keep="first").copy()
@@ -3247,6 +3255,182 @@ def parse_cvs_manual_source_code_workbook(file_bytes):
             stats["mapped_rows"] += 1
     return html_map, stats
 
+
+def build_extension_input_csv(retailer_df, retailer_name):
+    """Build the simple two-column input the browser extension expects.
+
+    This lets the app run from a retailer SKU list instead of manually prepared URL files.
+    The extension only needs Retailer + Search Term, where Search Term is the retailer RPC
+    when available, otherwise the SKU.
+    """
+    retailer_name = normalize_retailer_name(retailer_name)
+    rows = []
+    df = retailer_df.copy() if retailer_df is not None else pd.DataFrame()
+    if df.empty:
+        return "Retailer,Search Term\n"
+    for _, row in df.iterrows():
+        search_term = normalize_space(row.get("retailer_rpc", "")) or normalize_space(row.get("sku", ""))
+        if not search_term:
+            continue
+        rows.append({"Retailer": retailer_name, "Search Term": search_term})
+    if not rows:
+        return "Retailer,Search Term\n"
+    return pd.DataFrame(rows).drop_duplicates().to_csv(index=False)
+
+
+def parse_json_list(value):
+    value = str(value or "").strip()
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+        if isinstance(parsed, list):
+            return [normalize_space(x) for x in parsed if normalize_space(x)]
+    except Exception:
+        pass
+    if " | " in value:
+        return [normalize_space(x) for x in value.split(" | ") if normalize_space(x)]
+    return [normalize_space(value)] if normalize_space(value) else []
+
+
+def build_structured_extension_capture_html(row):
+    """Build tiny parseable HTML from the extension's separated-copy CSV/XLSX output."""
+    title = normalize_space(row.get("parsed_title", "") or row.get("matched_title", "") or "")
+    description = normalize_space(row.get("parsed_description", ""))
+    variant_size = normalize_space(row.get("parsed_variant_size", ""))
+    source = normalize_space(row.get("parsed_copy_source", "")) or "extension_structured_results"
+    retailer = normalize_retailer_name(row.get("retailer", "") or "Retailer")
+    product_url = clean_uploaded_url_value(row.get("product_url", "") or row.get("retail_url", "") or "")
+    search_term = normalize_space(row.get("search_term", "") or row.get("retailer_rpc", "") or "")
+
+    features = []
+    for i in range(1, 11):
+        value = normalize_space(row.get(f"parsed_feature_{i}", ""))
+        if value:
+            features.append(value)
+    if not features:
+        features.extend(parse_json_list(row.get("parsed_features_json", "")))
+    features = dedupe_preserve_order(features)[:10]
+
+    images = parse_json_list(row.get("parsed_images_json", ""))
+    images = [clean_uploaded_url_value(x) for x in images if clean_uploaded_url_value(x)]
+    images = dedupe_preserve_order(images)[:12]
+
+    parts = [
+        "<html><head>",
+        f"<title>{html_escape_text(title or retailer + ' Product')}</title>",
+        "</head><body data-pdp-structured-extension-capture='1' "
+        f"data-retailer='{html.escape(retailer, quote=True)}' "
+        f"data-source='{html.escape(source, quote=True)}' "
+        f"data-search-term='{html.escape(search_term, quote=True)}'>",
+    ]
+    if title:
+        parts.append(f"<h1>{html_escape_text(title)}</h1>")
+    if product_url:
+        parts.append(f"<!-- Product URL: {html_escape_text(product_url)} -->")
+    if variant_size:
+        parts.append(
+            "<label data-testid='selected-variant-option'>"
+            f"<input type='radio' value='{html.escape(variant_size, quote=True)}' checked>"
+            f"{html_escape_text(variant_size)}</label>"
+        )
+    parts.append("<section data-testid='product-details-romance-description' data-retailer-description='1'>")
+    if description:
+        parts.append(f"<p>{html_escape_text(description)}</p>")
+    if features:
+        parts.append("<ul>")
+        for feature in features:
+            parts.append(f"<li>{html_escape_text(feature)}</li>")
+        parts.append("</ul>")
+    parts.append("</section>")
+    for idx, image_url in enumerate(images[:12], start=1):
+        perspective = _extract_kroger_perspective_from_url(image_url) if "kroger.com" in image_url.lower() else ""
+        perspective_label = perspective or f"image-{idx}"
+        parts.append(
+            f"<div data-testid='main-image-perspective' aria-label='{html_escape_text(title)} Perspective: {html_escape_text(perspective_label)}'>"
+            f"<img class='ProductImages-image' src='{html.escape(image_url, quote=True)}' alt='{html_escape_text(title)} Perspective: {html_escape_text(perspective_label)}' />"
+            "</div>"
+        )
+    parts.append("</body></html>")
+    return "\n".join(parts)
+
+
+def parse_extension_results_structured_file(file_bytes, file_name):
+    """Parse extension result CSV/XLSX with separated copy fields into source map."""
+    file_name = str(file_name or "").lower().strip()
+    if file_name.endswith(".xlsx"):
+        df = pd.read_excel(BytesIO(file_bytes), engine="openpyxl")
+    else:
+        last_error = None
+        for encoding in ["utf-8-sig", "utf-8", "latin1"]:
+            try:
+                df = pd.read_csv(BytesIO(file_bytes), encoding=encoding)
+                break
+            except Exception as e:
+                last_error = e
+        else:
+            raise last_error
+    df = df.copy()
+    df.columns = [str(c).strip().lower().replace(" ", "_") for c in df.columns]
+    rename_map = {
+        "product_url": "product_url",
+        "retail_url": "product_url",
+        "retailer_url": "product_url",
+        "search_term": "search_term",
+        "retailer_rpc": "search_term",
+        "parsed_title": "parsed_title",
+        "parsed_variant_size": "parsed_variant_size",
+        "parsed_description": "parsed_description",
+        "parsed_features_json": "parsed_features_json",
+        "parsed_images_json": "parsed_images_json",
+        "parsed_copy_source": "parsed_copy_source",
+    }
+    df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns}, inplace=True)
+    html_map = {}
+    stats = {"mode": "extension_structured_results", "rows_seen": len(df), "mapped_rows": 0, "skipped_blank": 0, "skipped_weak": 0}
+    for _, row in df.iterrows():
+        row_dict = {str(k): ("" if pd.isna(v) else v) for k, v in row.to_dict().items()}
+        product_url = clean_uploaded_url_value(row_dict.get("product_url", ""))
+        search_term = normalize_space(row_dict.get("search_term", ""))
+        title = normalize_space(row_dict.get("parsed_title", "") or row_dict.get("matched_title", ""))
+        description = normalize_space(row_dict.get("parsed_description", ""))
+        if not (product_url or search_term):
+            stats["skipped_blank"] += 1
+            continue
+        if not (title or description or row_dict.get("parsed_features_json", "") or row_dict.get("parsed_images_json", "")):
+            stats["skipped_weak"] += 1
+            continue
+        html_text = build_structured_extension_capture_html(row_dict)
+        keys = []
+        key = normalize_uploaded_capture_url(product_url)
+        if key:
+            keys.append(key)
+        for rpc in kroger_rpc_candidates(search_term):
+            keys.append(f"kroger_rpc::{rpc}")
+            keys.append(f"rpc::{rpc}")
+        clean_search = re.sub(r"[^0-9A-Za-z_-]", "", str(search_term or ""))
+        if clean_search:
+            keys.append(f"rpc::{clean_search}")
+        for map_key in dedupe_preserve_order(keys):
+            html_map[map_key] = html_text
+        stats["mapped_rows"] += 1
+    return html_map, stats
+
+
+def looks_like_extension_results_file(file_bytes, file_name):
+    file_name = str(file_name or "").lower().strip()
+    if not (file_name.endswith(".csv") or file_name.endswith(".xlsx")):
+        return False
+    try:
+        if file_name.endswith(".xlsx"):
+            df_head = pd.read_excel(BytesIO(file_bytes), engine="openpyxl", nrows=3)
+        else:
+            df_head = pd.read_csv(BytesIO(file_bytes), nrows=3)
+        cols = {str(c).strip().lower().replace(" ", "_") for c in df_head.columns}
+        return bool({"parsed_title", "parsed_description", "parsed_features_json", "parsed_images_json", "product_url"} & cols)
+    except Exception:
+        return False
+
 def parse_uploaded_retailer_source_file(file_bytes, file_name):
     """Parse uploaded captured retailer source.
 
@@ -3255,6 +3439,8 @@ def parse_uploaded_retailer_source_file(file_bytes, file_name):
     isolated to CVS and does not change other retailer capture behavior.
     """
     file_name = str(file_name or "").lower().strip()
+    if looks_like_extension_results_file(file_bytes, file_name):
+        return parse_extension_results_structured_file(file_bytes, file_name)
     if file_name.endswith(".xlsx"):
         return parse_cvs_manual_source_code_workbook(file_bytes)
 
@@ -3285,6 +3471,14 @@ def lookup_uploaded_raw_html(uploaded_html_map, retail_url, target_rpc=""):
     uploaded_html_map = uploaded_html_map or {}
     retail_url = str(retail_url or "").strip()
     target_rpc = str(target_rpc or "").strip()
+
+    # Structured extension CSV/XLSX results are keyed by generic rpc::{value}.
+    for rpc in kroger_rpc_candidates(target_rpc) + [re.sub(r"[^0-9A-Za-z_-]", "", target_rpc)]:
+        if not rpc:
+            continue
+        html_text = str(uploaded_html_map.get(f"rpc::{rpc}", "") or "")
+        if html_text:
+            return html_text
 
     if retail_url and "kroger.com" in retail_url.lower():
         key = normalize_uploaded_capture_url(retail_url)
@@ -3369,17 +3563,19 @@ def build_extension_batch_payload(retailer_df, retailer_name, current_batch_key,
             for x in retailer_df["retail_url"].fillna("").astype(str).tolist()
             if str(x).strip()
         ]
-        row_payload = [
-            {
+        row_payload = []
+        for _, row in retailer_df.iterrows():
+            search_term = str(row.get("retailer_rpc", "") or "").strip() or str(row.get("sku", "") or "").strip()
+            if not search_term:
+                continue
+            row_payload.append({
                 "sku": str(row.get("sku", "") or "").strip(),
+                "search_term": search_term,
                 "retail_url": str(row.get("retail_url", "") or "").strip(),
                 "retailer_rpc": str(row.get("retailer_rpc", "") or "").strip(),
                 "rpc": str(row.get("retailer_rpc", "") or "").strip(),
                 "retailer": retailer_name_norm,
-            }
-            for _, row in retailer_df.iterrows()
-            if str(row.get("retail_url", "") or "").strip()
-        ]
+            })
 
     return {
         "ready": True,
@@ -3388,7 +3584,7 @@ def build_extension_batch_payload(retailer_df, retailer_name, current_batch_key,
         "batchKey": str(current_batch_key or ""),
         "captureMode": str(capture_mode or ""),
         "txtReady": bool(txt_ready),
-        "totalRows": int(len(retail_urls)),
+        "totalRows": int(len(row_payload)),
         "uniqueRetailUrlCount": int(len(retail_urls)),
         "retailUrls": retail_urls,
         "rows": row_payload,
@@ -12224,7 +12420,7 @@ def process_row(row):
 
         if not salsify_url:
             status_notes.append("Missing Salsify URL")
-        if not retail_url:
+        if not retail_url and not row_source_code:
             status_notes.append("Missing Retail URL")
         if retail_url and not retailer_url_matches_selected(retail_url, retailer_name):
             status_notes.append(build_retailer_url_mismatch_status(retail_url, retailer_name))
@@ -12609,7 +12805,7 @@ if "auto_batch_upload_key" not in st.session_state:
 top_upload_col, top_download_col = st.columns([2.4, 1.1], gap="small")
 
 with top_upload_col:
-    uploaded_file = st.file_uploader("Upload Master File", type=["xlsx", "csv"])
+    uploaded_file = st.file_uploader("Upload Retailer SKU List", type=["xlsx", "csv"], help="Use the retailer SKU list with columns like Retailer, SKU, Retailer RPC, Retailer Salsify URL, Retailer URL, Brand. Retailer URL can be blank when you use the extension results workflow.")
 
 with top_download_col:
     st.markdown("<div style='height: 30px;'></div>", unsafe_allow_html=True)
@@ -12722,10 +12918,10 @@ if uploaded_file:
                 file_ready_for_batch = True
 
             uploaded_raw_html_file = st.file_uploader(
-                "Upload Captured Retailer HTML TXT or CVS source-code XLSX",
-                type=["txt", "html", "xlsx"],
+                "Upload Extension Results CSV/XLSX or Captured Retailer HTML TXT",
+                type=["csv", "xlsx", "txt", "html"],
                 key="uploaded_raw_html_txt_top",
-                help="Best option: extension TXT/HTML. CVS-only fallback: XLSX with CVS RPC in column A and pasted source snippets in columns B onward.",
+                help="Preferred: extension results CSV/XLSX with separated copy columns. Still supports captured TXT/HTML. CVS-only fallback: XLSX with CVS RPC in column A and pasted source snippets in columns B onward.",
             )
             if uploaded_raw_html_file is not None:
                 raw_html_bytes = uploaded_raw_html_file.getvalue()
@@ -12736,7 +12932,8 @@ if uploaded_file:
                     st.session_state.raw_html_upload_hash != raw_html_hash
                     or not (st.session_state.uploaded_raw_html_map or {})
                     or st.session_state.uploaded_raw_html_filename != uploaded_raw_html_file.name
-                    or (source_file_name_lc.endswith(".xlsx") and existing_source_stats.get("mode") != "cvs_manual_source_xlsx")
+                    or (source_file_name_lc.endswith(".xlsx") and existing_source_stats.get("mode") not in {"cvs_manual_source_xlsx", "extension_structured_results"})
+                    or (source_file_name_lc.endswith(".csv") and existing_source_stats.get("mode") != "extension_structured_results")
                 )
                 if should_reparse_uploaded_source:
                     parsed_source_map, parsed_source_stats = parse_uploaded_retailer_source_file(raw_html_bytes, uploaded_raw_html_file.name)
@@ -12750,7 +12947,12 @@ if uploaded_file:
                 source_stats = st.session_state.get("uploaded_raw_html_stats", {}) or {}
                 source_mode = source_stats.get("mode", "extension_txt_html")
                 if uploaded_raw_html_map:
-                    if source_mode == "cvs_manual_source_xlsx":
+                    if source_mode == "extension_structured_results":
+                        st.success(
+                            f"Loaded extension results from {st.session_state.uploaded_raw_html_filename}: "
+                            f"{source_stats.get('mapped_rows', len(uploaded_raw_html_map))} separated-copy rows mapped."
+                        )
+                    elif source_mode == "cvs_manual_source_xlsx":
                         st.success(
                             f"Loaded CVS manual source workbook from {st.session_state.uploaded_raw_html_filename}: "
                             f"{source_stats.get('mapped_rows', len(uploaded_raw_html_map))} usable CVS RPC captures mapped."
@@ -12840,6 +13042,23 @@ if uploaded_file:
                     st.caption(f"CVS TXT upload has {missing_uploaded_html_count} unmatched rows. Those rows will fall back to live/canonical CVS parsing instead of blocking the batch.")
             isolated_unique_url_count = int(retailer_df["retail_url"].fillna("").astype(str).str.strip().replace("", pd.NA).dropna().nunique()) if retailer_df is not None and not retailer_df.empty and "retail_url" in retailer_df.columns else 0
             st.caption(f"Strict retailer isolation active: {selected_retailer} only. Rows queued: {len(retailer_df)}. Unique retailer URLs queued: {isolated_unique_url_count}.")
+            if selected_capture_mode == CAPTURE_MODE_USE_EXTENSION and retailer_df is not None and not retailer_df.empty:
+                extension_input_csv = build_extension_input_csv(retailer_df, selected_retailer)
+                st.download_button(
+                    label=f"⬇ Download {selected_retailer} extension input CSV",
+                    data=extension_input_csv.encode("utf-8"),
+                    file_name=f"extension_input_{str(selected_retailer).lower().replace(' ', '_').replace("'", '')}.csv",
+                    mime="text/csv",
+                    key=f"download_extension_input_{selected_retailer}_{file_hash}",
+                    help="Use this in the browser extension. It contains only Retailer and Search Term from the SKU list.",
+                )
+                with st.expander("Copy/paste extension input", expanded=False):
+                    st.text_area(
+                        "Retailer extension input",
+                        value=extension_input_csv,
+                        height=180,
+                        key=f"extension_input_text_{selected_retailer}_{file_hash}",
+                    )
             if selected_capture_mode == CAPTURE_MODE_USE_EXTENSION:
                 extension_payload = build_extension_batch_payload(
                     retailer_df=retailer_df,
