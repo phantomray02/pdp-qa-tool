@@ -2549,6 +2549,97 @@ def build_kroger_compact_capture_from_parsed_json(payload):
     return "\n".join(parts)
 
 
+
+def build_kroger_compact_capture_from_raw_html(raw_html_text, requested_url="", final_url=""):
+    """Build a compact Kroger capture from BEGIN HTML only, never extension PARSED JSON.
+
+    Kroger feature parsing must come from the retailer HTML block, especially:
+    data-testid="product-details-romance-description" with <p> description and <li> features.
+    This keeps the exact live HTML list structure and avoids merged/missing bullets caused by
+    the browser extension's PARSED JSON flattening.
+    """
+    raw = str(raw_html_text or "")
+    if not raw.strip():
+        return ""
+
+    working = html.unescape(raw)
+    for _ in range(2):
+        unescaped = html.unescape(working)
+        if unescaped == working:
+            break
+        working = unescaped
+
+    title = ""
+    try:
+        soup = BeautifulSoup(working, "html.parser")
+        h1 = soup.find("h1")
+        if h1:
+            title = normalize_space(h1.get_text(" ", strip=True))
+        if not title and soup.title:
+            title = normalize_space(soup.title.get_text(" ", strip=True))
+            title = re.sub(r"\s*-\s*Kroger\s*$", "", title, flags=re.IGNORECASE)
+    except Exception:
+        pass
+    if not title:
+        heading_match = re.search(r"(?m)^##\s+(.+?)\s*$", working)
+        if heading_match:
+            title = normalize_space(heading_match.group(1))
+
+    romance_html = ""
+    marker_match = re.search(r'data-testid=["\']product-details-romance-description["\']|product-details-romance-description', working, flags=re.IGNORECASE)
+    if marker_match:
+        start = marker_match.start()
+        open_tag_start = working.rfind("<", 0, start)
+        if open_tag_start != -1:
+            start = open_tag_start
+        end = -1
+        reviews_match = re.search(r'<div\b[^>]*class=["\'][^"\']*ProductDetails--Reviews', working[start:], flags=re.IGNORECASE)
+        if reviews_match:
+            end = start + reviews_match.start()
+        if end == -1:
+            ul_end_match = re.search(r'</ul\s*>', working[start:], flags=re.IGNORECASE)
+            if ul_end_match:
+                end = start + ul_end_match.end()
+        if end != -1 and end > start:
+            romance_html = working[start:end]
+
+    if not romance_html:
+        return working
+
+    context_lines = []
+    for pattern in [
+        r'[^\n\r]{0,180}Perspective\s*:\s*(?:front|back|left|right|top|bottom)[^\n\r]{0,180}',
+        r'[^\n\r]{0,120}\bUPC\s*:\s*[0-9]{8,14}[^\n\r]{0,120}',
+        r'[^\n\r]{0,120}\bSize\s*:[^\n\r]{0,200}',
+        r'<label\b[^>]*data-testid=["\']selected-variant-option["\'][\s\S]{0,300?</label>',
+    ]:
+        for match in re.finditer(pattern, working, flags=re.IGNORECASE):
+            value = match.group(0)
+            if value and value not in context_lines:
+                context_lines.append(value)
+            if len(context_lines) >= 40:
+                break
+
+    parts = [
+        "<html><head>",
+        f"<title>{html_escape_text(title or 'Kroger Product')} - Kroger</title>",
+        "</head><body>",
+    ]
+    if title:
+        parts.append(f"<h1>{html_escape_text(title)}</h1>")
+    if requested_url:
+        parts.append(f"<!-- Requested URL: {html_escape_text(requested_url)} -->")
+    if final_url:
+        parts.append(f"<!-- Final URL: {html_escape_text(final_url)} -->")
+    parts.append("<!-- KROGER HTML SOURCE ONLY: extension PARSED JSON intentionally ignored for copy/features. -->")
+    parts.append(romance_html)
+    if context_lines:
+        parts.append("<pre data-kroger-html-context='1'>")
+        parts.append(html_escape_text("\n".join(context_lines)))
+        parts.append("</pre>")
+    parts.append("</body></html>")
+    return "\n".join(parts)
+
 def build_cvs_compact_capture_from_parsed_json(payload):
     """Build compact parse-friendly CVS HTML from browser-extension output."""
     if not isinstance(payload, dict):
@@ -2792,7 +2883,15 @@ def parse_uploaded_raw_html_map(raw_text):
         html_match = re.search(r'(?is)-----BEGIN HTML-----(.*?)-----END HTML-----', block)
         raw_html_text = html.unescape(str(html_match.group(1) or "").strip()) if html_match else ""
 
-        if compact_html:
+        if requested_url and "kroger.com" in requested_url.lower():
+            # Kroger-only: do NOT trust or use the extension PARSED JSON for copy/features.
+            # The Kroger parser should read the live HTML romance block so <li> features stay split.
+            html_text = build_kroger_compact_capture_from_raw_html(
+                raw_html_text,
+                requested_url=requested_url,
+                final_url=final_url_from_payload,
+            ) if raw_html_text else ""
+        elif compact_html:
             if requested_url and "cvs.com" in requested_url.lower() and raw_html_text:
                 # CVS-only root fix: parsed JSON from the extension can be partial.
                 # Do not discard the full browser-rendered CVS HTML. Put compact
@@ -2806,7 +2905,6 @@ def parse_uploaded_raw_html_map(raw_text):
                 html_text = compact_html
         else:
             html_text = raw_html_text
-
         if requested_url and "kroger.com" in requested_url.lower() and html_text and not is_valid_kroger_product_capture(html_text):
             html_text = build_kroger_invalid_capture_stub(
                 requested_url=requested_url,
@@ -7208,7 +7306,7 @@ def extract_kroger_description_and_features_from_html(html_text):
         debug["feature_count"] = len(features)
         debug["description_excerpt"] = description[:500]
         debug["features_excerpt"] = " | ".join(features[:5])[:1000]
-        debug["parser_path"] = "kroger_data_testid_romance_div_li_features"
+        debug["parser_path"] = "kroger_html_romance_div_p_ul_li_features"
         if description or features:
             return description, features, debug
 
@@ -7220,7 +7318,7 @@ def extract_kroger_description_and_features_from_html(html_text):
         debug["feature_count"] = len(features)
         debug["description_excerpt"] = description[:500]
         debug["features_excerpt"] = " | ".join(features[:5])[:1000]
-        debug["parser_path"] = "kroger_raw_romance_marker_p_ul_li_features"
+        debug["parser_path"] = "kroger_html_raw_romance_marker_p_ul_li_features"
         if description or features:
             return description, features, debug
 
