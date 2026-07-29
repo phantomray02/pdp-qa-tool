@@ -2910,20 +2910,143 @@ def build_sams_compact_capture_from_parsed_json(payload):
     parts.append("</body></html>")
     return "\n".join(parts)
 
+
+def _kroger_rpc_values_from_capture_context(*values):
+    """Extract likely Kroger UPC/RPC keys from URLs or compact capture context."""
+    out=[]
+    seen=set()
+    for value in values:
+        source=str(value or "")
+        if not source:
+            continue
+        patterns=[
+            r"UPC:\s*([0-9]{8,14})",
+            r'"rpc"\s*:\s*"?([0-9]{8,14})"?',
+            r'"upc"\s*:\s*"?([0-9]{8,14})"?',
+            r"/([0-9]{8,14})(?:[/?#\s]|$)",
+        ]
+        for pattern in patterns:
+            for match in re.finditer(pattern, source, flags=re.IGNORECASE):
+                digits=re.sub(r"\D+", "", str(match.group(1) or ""))
+                if not digits:
+                    continue
+                candidates={digits}
+                if digits.isdigit():
+                    candidates.add(digits.zfill(13))
+                    candidates.add(digits.lstrip("0") or digits)
+                for candidate in candidates:
+                    if candidate and candidate not in seen:
+                        seen.add(candidate)
+                        out.append(candidate)
+    return out
+
+
+def _slice_between_markers(source, start_marker, end_marker, start_pos=0):
+    start=source.find(start_marker, start_pos)
+    if start == -1:
+        return ""
+    start += len(start_marker)
+    end=source.find(end_marker, start)
+    if end == -1:
+        return ""
+    return source[start:end].strip()
+
+
+def build_kroger_compact_capture_from_capture_block(block, requested_url="", final_url=""):
+    """Very fast Kroger TXT block compactor for upload indexing."""
+    block=str(block or "")
+    if not block.strip():
+        return ""
+    html_text=_slice_between_markers(block, "-----BEGIN HTML-----", "-----END HTML-----")
+    if not html_text:
+        return ""
+
+    title=""
+    title_source=html_text[:60000]
+    for pattern in [
+        r"(?im)^#\s+(.+?)\s*-\s*Kroger(?:\[|\s|$)",
+        r"(?im)^##\s+(.+?)\s*$",
+        r"<h1\b[^>]*>(.*?)</h1\s*>",
+        r"<title\b[^>]*>(.*?)\s*-\s*Kroger\s*</title\s*>",
+    ]:
+        match=re.search(pattern, title_source, flags=re.IGNORECASE|re.DOTALL)
+        if match:
+            candidate=clean_kroger_text(html.unescape(match.group(1)))
+            candidate=re.sub(r"\s*-\s*Kroger\s*$", "", candidate, flags=re.IGNORECASE).strip()
+            if candidate and candidate.lower() != "kroger":
+                title=candidate
+                break
+
+    marker_pos=-1
+    for marker in ['data-testid="product-details-romance-description"', "data-testid='product-details-romance-description'", "product-details-romance-description"]:
+        marker_pos=html_text.find(marker)
+        if marker_pos != -1:
+            break
+    if marker_pos == -1:
+        small=html.unescape(html_text[:12000])
+        return "\n".join(["<html><head>", f"<title>{html_escape_text(title or 'Kroger Product')} - Kroger</title>", "</head><body>", f"<h1>{html_escape_text(title)}</h1>" if title else "", small, "</body></html>"])
+
+    start=html_text.rfind("<", 0, marker_pos)
+    if start == -1:
+        start=marker_pos
+    search_window=html_text[start:start+180000]
+    end_candidates=[]
+    for end_marker in ['<div class="ProductDetails--Container', "<div class='ProductDetails--Container", "ProductDetails--Reviews", "</ul>", "&lt;/ul&gt;"]:
+        idx=search_window.find(end_marker)
+        if idx != -1:
+            if end_marker in {"</ul>", "&lt;/ul&gt;"}:
+                idx += len(end_marker)
+            end_candidates.append(idx)
+    end_local=min(end_candidates) if end_candidates else min(len(search_window), 50000)
+    romance_html=html.unescape(search_window[:end_local])
+
+    context_lines=[]
+    context_source=html.unescape(html_text[:50000] + "\n" + search_window[:50000])
+    context_patterns=[
+        r'[^\n\r]{0,180}Perspective\s*:\s*(?:front|back|left|right|top|bottom)[^\n\r]{0,180}',
+        r'[^\n\r]{0,120}\bUPC\s*:\s*[0-9]{8,14}[^\n\r]{0,120}',
+        r'[^\n\r]{0,120}\bSize\s*:[^\n\r]{0,240}',
+        r'<label\b[^>]*data-testid=["\']selected-variant-option["\'][\s\S]{0,400?</label>',
+    ]
+    for pattern in context_patterns:
+        for match in re.finditer(pattern, context_source, flags=re.IGNORECASE):
+            value=match.group(0)
+            if value and value not in context_lines:
+                context_lines.append(value)
+            if len(context_lines) >= 50:
+                break
+
+    parts=["<html><head>", f"<title>{html_escape_text(title or 'Kroger Product')} - Kroger</title>", "</head><body>"]
+    if title:
+        parts.append(f"<h1>{html_escape_text(title)}</h1>")
+    if requested_url:
+        parts.append(f"<!-- Requested URL: {html_escape_text(requested_url)} -->")
+    if final_url:
+        parts.append(f"<!-- Final URL: {html_escape_text(final_url)} -->")
+    parts.append("<!-- KROGER FAST HTML SOURCE ONLY: extension PARSED JSON ignored for startup speed. -->")
+    parts.append(romance_html)
+    if context_lines:
+        parts.append("<pre data-kroger-html-context='1'>")
+        parts.append(html_escape_text("\n".join(context_lines)))
+        parts.append("</pre>")
+    parts.append("</body></html>")
+    return "\n".join(parts)
+
 def parse_uploaded_raw_html_map(raw_text):
     raw_text = str(raw_text or "")
     if not raw_text.strip():
         return {}
 
     html_map = {}
+    header_pattern = re.compile(r'(?m)^=+\s*PDP CAPTURE\s+\d+\s*=+')
+    matches = list(header_pattern.finditer(raw_text))
+    if matches:
+        block_ranges = [(m.start(), matches[i + 1].start() if i + 1 < len(matches) else len(raw_text)) for i, m in enumerate(matches)]
+    else:
+        block_ranges = [(0, len(raw_text))]
 
-    # Split by capture so PARSED JSON and HTML stay paired. This is safer and
-    # lighter than one giant regex over a very large Kroger TXT export.
-    capture_blocks = re.split(r'(?=^=+\s*PDP CAPTURE\s+\d+\s*=+)', raw_text, flags=re.MULTILINE)
-    if len(capture_blocks) <= 1:
-        capture_blocks = [raw_text]
-
-    for block in capture_blocks:
+    for block_start, block_end in block_ranges:
+        block = raw_text[block_start:block_end]
         requested_match = re.search(r'(?im)^Requested\s+URL\s*:\s*(https?://\S+)', block)
         if not requested_match:
             continue
@@ -2931,154 +3054,63 @@ def parse_uploaded_raw_html_map(raw_text):
         if not requested_url:
             continue
 
-        compact_html = ""
-        parsed_payload = {}
-        requested_url_lc = str(requested_url or "").lower()
+        requested_url_lc = requested_url.lower()
+        final_url_match = re.search(r'(?im)^Final\s+URL\s*:\s*(https?://\S+)', block)
+        final_url_from_payload = clean_uploaded_url_value(final_url_match.group(1)) if final_url_match else ""
 
-        html_match = re.search(r'(?is)-----BEGIN HTML-----(.*?)-----END HTML-----', block)
-        raw_html_text = str(html_match.group(1) or "").strip() if html_match else ""
-
-        # Kroger-only speed fix: do not load or trust extension PARSED JSON.
-        # The HTML romance block is the source of truth for Kroger copy/features.
-        parsed_match = None
-        if "kroger.com" not in requested_url_lc:
-            parsed_match = re.search(
-                r'(?is)-----BEGIN PARSED JSON-----(.*?)-----END PARSED JSON-----',
-                block,
-            )
+        if "kroger.com" in requested_url_lc:
+            html_text = build_kroger_compact_capture_from_capture_block(block, requested_url=requested_url, final_url=final_url_from_payload)
+        else:
+            compact_html = ""
+            parsed_payload = {}
+            parsed_match = re.search(r'(?is)-----BEGIN PARSED JSON-----(.*?)-----END PARSED JSON-----', block)
             if parsed_match:
                 try:
                     parsed_payload = json.loads(str(parsed_match.group(1) or "").strip())
                     if requested_url and "heb.com" in requested_url_lc:
                         compact_html = build_heb_compact_capture_from_parsed_json(parsed_payload)
                     elif requested_url and "cvs.com" in requested_url_lc:
-                        # CVS-only: build a compact capture from browser-rendered CVS PDP content.
-                        # Do not apply this CVS compact page builder to any other retailer.
                         compact_html = build_cvs_compact_capture_from_parsed_json(parsed_payload)
                     elif requested_url and "samsclub.com" in requested_url_lc:
-                        # Sam's Club-only: use extension parsed JSON first so product
-                        # gallery images do not get polluted by navigation/member SVGs.
                         compact_html = build_sams_compact_capture_from_parsed_json(parsed_payload)
                     else:
                         compact_html = build_kroger_compact_capture_from_parsed_json(parsed_payload)
                 except Exception:
                     parsed_payload = {}
                     compact_html = ""
-
-        final_url_from_payload = clean_uploaded_url_value(parsed_payload.get("finalUrl", "")) if isinstance(parsed_payload, dict) else ""
-        if not final_url_from_payload:
-            final_url_match = re.search(r'(?im)^Final\s+URL\s*:\s*(https?://\S+)', block)
-            final_url_from_payload = clean_uploaded_url_value(final_url_match.group(1)) if final_url_match else ""
-
-        if requested_url and "kroger.com" in requested_url.lower():
-            # Kroger-only: HTML is the source of truth for product copy/features.
-            # If the extension also parsed JSON, use it only as a separated-copy fallback
-            # when the HTML block is missing or does not contain the romance section.
-            html_text = build_kroger_compact_capture_from_raw_html(
-                raw_html_text,
-                requested_url=requested_url,
-                final_url=final_url_from_payload,
-            ) if raw_html_text else ""
-            if not html_text or "product-details-romance-description" not in html_text.lower():
-                parsed_match = re.search(
-                    r'(?is)-----BEGIN PARSED JSON-----(.*?)-----END PARSED JSON-----',
-                    block,
-                )
-                if parsed_match:
-                    try:
-                        parsed_payload = json.loads(str(parsed_match.group(1) or "").strip())
-                    except Exception:
-                        parsed_payload = {}
-                    parsed_fallback_html = build_kroger_compact_capture_from_parsed_json(parsed_payload) if isinstance(parsed_payload, dict) else ""
-                    if parsed_fallback_html:
-                        html_text = (
-                            (html_text or "")
-                            + "\n<!-- KROGER PARSED JSON FALLBACK: separated title/description/features only -->\n"
-                            + parsed_fallback_html
-                        ).strip()
-        elif compact_html:
-            if requested_url and "cvs.com" in requested_url.lower() and raw_html_text:
-                # CVS-only root fix: parsed JSON from the extension can be partial.
-                # Do not discard the full browser-rendered CVS HTML. Put compact
-                # parsed values first, then keep raw CVS HTML as fallback material.
-                html_text = compact_html + "\n<!-- CVS RAW HTML FALLBACK FROM EXTENSION -->\n" + raw_html_text
-            elif requested_url and "samsclub.com" in requested_url.lower() and raw_html_text:
-                # Sam's Club-only: parsed JSON gives the clean gallery/copy; raw HTML
-                # remains as copy fallback for Product Details / Highlights.
-                html_text = compact_html + "\n<!-- SAMS RAW HTML FALLBACK FROM EXTENSION -->\n" + raw_html_text
+            if not final_url_from_payload and isinstance(parsed_payload, dict):
+                final_url_from_payload = clean_uploaded_url_value(parsed_payload.get("finalUrl", ""))
+            html_match = re.search(r'(?is)-----BEGIN HTML-----(.*?)-----END HTML-----', block)
+            raw_html_text = html.unescape(str(html_match.group(1) or "").strip()) if html_match else ""
+            if compact_html:
+                if requested_url and "cvs.com" in requested_url.lower() and raw_html_text:
+                    html_text = compact_html + "\n<!-- CVS RAW HTML FALLBACK FROM EXTENSION -->\n" + raw_html_text
+                elif requested_url and "samsclub.com" in requested_url.lower() and raw_html_text:
+                    html_text = compact_html + "\n<!-- SAMS RAW HTML FALLBACK FROM EXTENSION -->\n" + raw_html_text
+                else:
+                    html_text = compact_html
             else:
-                html_text = compact_html
-        else:
-            html_text = raw_html_text
-        if requested_url and "kroger.com" in requested_url.lower() and html_text and not is_valid_kroger_product_capture(html_text):
-            html_text = build_kroger_invalid_capture_stub(
-                requested_url=requested_url,
-                final_url=final_url_from_payload,
-                reason="invalid_kroger_shell_or_product_unavailable_capture",
-            )
-        if requested_url and "kroger.com" in requested_url.lower() and not html_text and parsed_match:
-            html_text = build_kroger_invalid_capture_stub(
-                requested_url=requested_url,
-                final_url=final_url_from_payload,
-                reason="parsed_json_missing_kroger_product_copy_and_images",
-            )
+                html_text = raw_html_text
 
+        if requested_url and "kroger.com" in requested_url.lower() and html_text and not is_valid_kroger_product_capture(html_text):
+            html_text = build_kroger_invalid_capture_stub(requested_url=requested_url, final_url=final_url_from_payload, reason="invalid_kroger_shell_or_product_unavailable_capture")
+        if requested_url and "kroger.com" in requested_url.lower() and not html_text:
+            html_text = build_kroger_invalid_capture_stub(requested_url=requested_url, final_url=final_url_from_payload, reason="missing_kroger_html_capture")
         if not html_text or len(html_text) < 30:
             continue
 
         keys = []
-        for candidate in [requested_url]:
-            key = normalize_uploaded_capture_url(candidate)
-            if key and key not in keys:
+        for url_value in [requested_url, final_url_from_payload]:
+            key = normalize_uploaded_capture_url(url_value)
+            if key:
                 keys.append(key)
-        if parsed_match:
-            key = normalize_uploaded_capture_url(final_url_from_payload)
-            if key and key not in keys:
-                keys.append(key)
-
-        # CVS: store captures by skuId/RPC too. This fixes rows where CVS final
-        # URL, requested URL, or tracker URL differ slightly but refer to the same
-        # skuId, e.g. prodid URL variants or trailing semicolon cleanup.
-        if requested_url and "cvs.com" in requested_url.lower():
-            cvs_rpc_candidates = []
-            for url_value in [requested_url, final_url_from_payload]:
-                m_rpc = re.search(r"[?&]skuId=([0-9A-Za-z_-]+)", str(url_value or ""), flags=re.IGNORECASE)
-                if m_rpc and m_rpc.group(1) not in cvs_rpc_candidates:
-                    cvs_rpc_candidates.append(m_rpc.group(1))
-            if isinstance(parsed_payload, dict):
-                for rpc_key_name in ["rpc", "retailer_rpc", "skuId", "sku", "productId", "id"]:
-                    rpc_value = str(parsed_payload.get(rpc_key_name, "") or "").replace(".0", "").strip()
-                    rpc_value = re.sub(r"[^0-9A-Za-z_-]", "", rpc_value)
-                    if rpc_value and rpc_value not in cvs_rpc_candidates:
-                        cvs_rpc_candidates.append(rpc_value)
-            for rpc_value in cvs_rpc_candidates:
-                rpc_key = f"cvs_rpc::{rpc_value}"
-                if rpc_key not in keys:
-                    keys.append(rpc_key)
-
-        # HEB: store compact captures by HEB item id/RPC too. This is fast and
-        # does not limit copy/images. It only avoids repeated TXT scans.
-        if requested_url and "heb.com" in requested_url.lower():
-            rpc_candidates = []
-            for url_value in [requested_url, final_url_from_payload]:
-                m_rpc = re.search(r"/(\d{4,12})(?:[/?#]|$)", str(url_value or ""))
-                if m_rpc and m_rpc.group(1) not in rpc_candidates:
-                    rpc_candidates.append(m_rpc.group(1))
-            if isinstance(parsed_payload, dict):
-                for rpc_key_name in ["hebRpc", "heb_rpc", "productId", "productID", "itemId", "itemID", "id"]:
-                    rpc_value = str(parsed_payload.get(rpc_key_name, "") or "").replace(".0", "").strip()
-                    if rpc_value and rpc_value not in rpc_candidates:
-                        rpc_candidates.append(rpc_value)
-            for rpc_value in rpc_candidates:
-                rpc_key = f"heb_rpc::{re.sub(r'[^0-9A-Za-z]', '', str(rpc_value))}"
-                if rpc_key not in keys:
-                    keys.append(rpc_key)
-
-        for key in keys:
+        if requested_url and "kroger.com" in requested_url.lower():
+            for rpc in _kroger_rpc_values_from_capture_context(requested_url, final_url_from_payload, html_text):
+                keys.append(f"kroger_rpc::{rpc}")
+        for key in dedupe_preserve_order(keys):
             html_map[key] = html_text
 
     return html_map
-
 
 def is_likely_usable_cvs_manual_source(html_text):
     """CVS-only guard for manually pasted source snippets.
@@ -3259,6 +3291,10 @@ def lookup_uploaded_raw_html(uploaded_html_map, retail_url, target_rpc=""):
         html_text = str(uploaded_html_map.get(key, "") or "")
         if html_text:
             return html_text
+        for rpc in kroger_rpc_candidates(target_rpc):
+            html_text = str(uploaded_html_map.get(f"kroger_rpc::{rpc}", "") or "")
+            if html_text:
+                return html_text
         matched_key = find_kroger_url_in_uploaded_map(uploaded_html_map, target_rpc=target_rpc)
         if matched_key:
             return str(uploaded_html_map.get(matched_key, "") or "")
@@ -3542,7 +3578,10 @@ def find_kroger_url_in_uploaded_map(uploaded_html_map, target_rpc=""):
     if not rpc_values:
         return ""
     for key in uploaded_html_map.keys():
-        key_str = normalize_uploaded_capture_url(key)
+        key_raw = str(key or "")
+        if key_raw.startswith("kroger_rpc::"):
+            continue
+        key_str = normalize_uploaded_capture_url(key_raw)
         for rpc in rpc_values:
             if rpc and rpc in key_str:
                 return key_str
@@ -12820,7 +12859,7 @@ if uploaded_file:
                 st.caption(f"{selected_retailer} is in skip-extension mode, so the app can auto-run straight to batch with live retailer fetches.")
 
             if uploaded_raw_html_map:
-                st.caption(f"TXT match status for {selected_retailer}: {matched_uploaded_html_count} matched rows, {missing_uploaded_html_count} unmatched rows. Optimized Kroger HTML-only map is active.")
+                st.caption(f"TXT match status for {selected_retailer}: {matched_uploaded_html_count} matched rows, {missing_uploaded_html_count} unmatched rows. Fast Kroger startup map is active.")
             if cvs_capture_block_reason:
                 st.error(cvs_capture_block_reason)
                 if cvs_missing_capture_urls:
