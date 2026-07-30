@@ -3431,6 +3431,110 @@ def looks_like_extension_results_file(file_bytes, file_name):
     except Exception:
         return False
 
+
+def clean_rpc_key(value):
+    value = str(value or "").strip().replace(".0", "")
+    return re.sub(r"[^0-9A-Za-z_-]", "", value)
+
+
+def first_existing_column(df, candidates):
+    for candidate in candidates:
+        if candidate in df.columns:
+            return candidate
+    return ""
+
+
+def url_only_rpc_key_candidates(value):
+    raw = clean_rpc_key(value)
+    if not raw:
+        return []
+    candidates = [raw]
+    if raw.isdigit():
+        candidates.append(raw.zfill(13))
+        candidates.append(raw.lstrip("0") or raw)
+    return dedupe_preserve_order([x for x in candidates if x])
+
+
+def find_url_only_url_in_uploaded_map(uploaded_map, target_rpc=""):
+    uploaded_map = uploaded_map or {}
+    for rpc in url_only_rpc_key_candidates(target_rpc):
+        for prefix in ["url_only_rpc::", "url_only_kroger_rpc::"]:
+            url = clean_uploaded_url_value(uploaded_map.get(f"{prefix}{rpc}", ""))
+            if url:
+                return url
+    return ""
+
+
+def looks_like_url_only_results_file(file_bytes, file_name):
+    """Detect extension output that contains only Retailer RPC + Retailer URL.
+
+    URL-only results should update retail_url only. They must not be treated as
+    uploaded HTML/copy source, because that breaks Kroger live copy/image parsing.
+    """
+    file_name = str(file_name or "").lower().strip()
+    if not (file_name.endswith(".csv") or file_name.endswith(".xlsx")):
+        return False
+    try:
+        if file_name.endswith(".xlsx"):
+            df_head = pd.read_excel(BytesIO(file_bytes), engine="openpyxl", nrows=5)
+        else:
+            df_head = pd.read_csv(BytesIO(file_bytes), nrows=5)
+    except Exception:
+        return False
+    cols = {str(c).strip().lower().replace(" ", "_") for c in df_head.columns}
+    has_rpc = bool({"retailer_rpc", "search_term", "kroger_rpc", "cvs_rpc", "rpc"} & cols)
+    has_url = bool({"retailer_url", "retail_url", "product_url", "kroger_url", "url"} & cols)
+    has_copy_source = bool({"parsed_title", "parsed_description", "parsed_features_json", "parsed_images_json", "copy_source_code", "source_code", "raw_html", "all_source_code"} & cols)
+    return has_rpc and has_url and not has_copy_source
+
+
+def parse_url_only_results_file(file_bytes, file_name):
+    """Parse URL-only extension CSV/XLSX into a lightweight URL map by RPC."""
+    file_name = str(file_name or "").lower().strip()
+    if file_name.endswith(".xlsx"):
+        frames = []
+        xls = pd.ExcelFile(BytesIO(file_bytes), engine="openpyxl")
+        for sheet in xls.sheet_names:
+            df_sheet = pd.read_excel(BytesIO(file_bytes), sheet_name=sheet, dtype=str, keep_default_na=False, engine="openpyxl")
+            if df_sheet is not None and not df_sheet.empty:
+                frames.append(df_sheet)
+        df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    else:
+        last_error = None
+        for encoding in ["utf-8-sig", "utf-8", "latin1"]:
+            try:
+                df = pd.read_csv(BytesIO(file_bytes), dtype=str, keep_default_na=False, encoding=encoding)
+                break
+            except Exception as exc:
+                last_error = exc
+        else:
+            raise last_error
+
+    df = df.copy()
+    df.columns = [str(c).strip().lower().replace(" ", "_") for c in df.columns]
+    rpc_col = first_existing_column(df, ["retailer_rpc", "search_term", "kroger_rpc", "cvs_rpc", "rpc"])
+    url_col = first_existing_column(df, ["retailer_url", "retail_url", "product_url", "kroger_url", "url"])
+    html_map = {}
+    stats = {"mode": "extension_url_only_results", "rows_seen": int(len(df)), "mapped_rows": 0, "skipped_blank": 0, "skipped_weak": 0, "truncated_cell_count": 0}
+    if not rpc_col or not url_col:
+        return html_map, stats
+
+    for _, row in df.iterrows():
+        rpc_raw = row.get(rpc_col, "")
+        url = clean_uploaded_url_value(row.get(url_col, ""))
+        if not clean_rpc_key(rpc_raw) or not url:
+            stats["skipped_blank"] += 1
+            continue
+        mapped = False
+        for rpc in url_only_rpc_key_candidates(rpc_raw):
+            html_map[f"url_only_rpc::{rpc}"] = url
+            if "kroger.com" in url.lower():
+                html_map[f"url_only_kroger_rpc::{rpc}"] = url
+            mapped = True
+        if mapped:
+            stats["mapped_rows"] += 1
+    return html_map, stats
+
 def parse_uploaded_retailer_source_file(file_bytes, file_name):
     """Parse uploaded captured retailer source.
 
@@ -3439,6 +3543,8 @@ def parse_uploaded_retailer_source_file(file_bytes, file_name):
     isolated to CVS and does not change other retailer capture behavior.
     """
     file_name = str(file_name or "").lower().strip()
+    if looks_like_url_only_results_file(file_bytes, file_name):
+        return parse_url_only_results_file(file_bytes, file_name)
     if looks_like_extension_results_file(file_bytes, file_name):
         return parse_extension_results_structured_file(file_bytes, file_name)
     if file_name.endswith(".xlsx"):
@@ -3471,6 +3577,10 @@ def lookup_uploaded_raw_html(uploaded_html_map, retail_url, target_rpc=""):
     uploaded_html_map = uploaded_html_map or {}
     retail_url = str(retail_url or "").strip()
     target_rpc = str(target_rpc or "").strip()
+
+    # URL-only extension results are for filling Retail URL only, not copy_source_code.
+    if any(str(k).startswith("url_only_") for k in uploaded_html_map.keys()):
+        return ""
 
     # Structured extension CSV/XLSX results are keyed by generic rpc::{value}.
     for rpc in kroger_rpc_candidates(target_rpc) + [re.sub(r"[^0-9A-Za-z_-]", "", target_rpc)]:
@@ -3770,12 +3880,15 @@ def kroger_rpc_candidates(value):
 
 def find_kroger_url_in_uploaded_map(uploaded_html_map, target_rpc=""):
     uploaded_html_map = uploaded_html_map or {}
+    url_only = find_url_only_url_in_uploaded_map(uploaded_html_map, target_rpc=target_rpc)
+    if url_only:
+        return url_only
     rpc_values = kroger_rpc_candidates(target_rpc)
     if not rpc_values:
         return ""
     for key in uploaded_html_map.keys():
         key_raw = str(key or "")
-        if key_raw.startswith("kroger_rpc::"):
+        if key_raw.startswith("kroger_rpc::") or key_raw.startswith("url_only_"):
             continue
         key_str = normalize_uploaded_capture_url(key_raw)
         for rpc in rpc_values:
@@ -12342,7 +12455,7 @@ def get_visual_row_payload(
     retailer_norm = normalize_retailer_name(retailer_name).strip().lower()
     retail_url = str(retail_url or "").strip()
     row_source_code = str(row_source_code or "")
-    uploaded_html_map = st.session_state.uploaded_raw_html_map or {}
+    uploaded_html_map = st.session_state.get("uploaded_raw_html_map", {}) or {}
 
     # Visual QA must reuse the same TXT-matched HTML used in batch processing.
     if retailer_norm == "kroger":
@@ -12400,8 +12513,6 @@ def process_row(row):
         cvs_rpc = str(cvs_rpc or "").strip()
 
         retailer_norm_for_row = normalize_retailer_name(retailer_name).strip().lower()
-        if retailer_norm_for_row == "kroger" and not retail_url and cvs_rpc:
-            retail_url = find_kroger_url_in_uploaded_map(st.session_state.uploaded_raw_html_map or {}, target_rpc=cvs_rpc)
         # IMPORTANT: process_row runs inside ThreadPoolExecutor workers. Do not
         # read st.session_state here. The main UI thread already copies any
         # matched TXT/HTML into row["copy_source_code"] before workers start.
@@ -12829,7 +12940,7 @@ file_hash = ""
 file_ready_for_batch = False
 selected_capture_mode = st.session_state.capture_mode
 uploaded_raw_html_file = None
-uploaded_raw_html_map = st.session_state.uploaded_raw_html_map or {}
+uploaded_raw_html_map = st.session_state.get("uploaded_raw_html_map", {}) or {}
 matched_uploaded_html_count = 0
 missing_uploaded_html_count = 0
 capture_batch_key_part = "no_txt"
@@ -12921,7 +13032,7 @@ if uploaded_file:
                 "Upload Extension Results CSV/XLSX or Captured Retailer HTML TXT",
                 type=["csv", "xlsx", "txt", "html"],
                 key="uploaded_raw_html_txt_top",
-                help="Preferred: extension results CSV/XLSX with separated copy columns. Still supports captured TXT/HTML. CVS-only fallback: XLSX with CVS RPC in column A and pasted source snippets in columns B onward.",
+                help="Preferred: URL-only extension results CSV/XLSX with Retailer RPC and Retailer URL, or separated-copy extension results. Still supports captured TXT/HTML. CVS-only fallback: XLSX with CVS RPC in column A and pasted source snippets in columns B onward.",
             )
             if uploaded_raw_html_file is not None:
                 raw_html_bytes = uploaded_raw_html_file.getvalue()
@@ -12930,7 +13041,7 @@ if uploaded_file:
                 existing_source_stats = st.session_state.get("uploaded_raw_html_stats", {}) or {}
                 should_reparse_uploaded_source = (
                     st.session_state.raw_html_upload_hash != raw_html_hash
-                    or not (st.session_state.uploaded_raw_html_map or {})
+                    or not (st.session_state.get("uploaded_raw_html_map", {}) or {})
                     or st.session_state.uploaded_raw_html_filename != uploaded_raw_html_file.name
                     or (source_file_name_lc.endswith(".xlsx") and existing_source_stats.get("mode") not in {"cvs_manual_source_xlsx", "extension_structured_results"})
                     or (source_file_name_lc.endswith(".csv") and existing_source_stats.get("mode") != "extension_structured_results")
@@ -12943,11 +13054,16 @@ if uploaded_file:
                     st.session_state.raw_html_upload_hash = raw_html_hash
                     st.session_state.auto_batch_upload_key = ""
                     st.session_state.batch_error_text = ""
-                uploaded_raw_html_map = st.session_state.uploaded_raw_html_map or {}
+                uploaded_raw_html_map = st.session_state.get("uploaded_raw_html_map", {}) or {}
                 source_stats = st.session_state.get("uploaded_raw_html_stats", {}) or {}
                 source_mode = source_stats.get("mode", "extension_txt_html")
                 if uploaded_raw_html_map:
-                    if source_mode == "extension_structured_results":
+                    if source_mode == "extension_url_only_results":
+                        st.success(
+                            f"Loaded URL-only extension results from {st.session_state.uploaded_raw_html_filename}: "
+                            f"{source_stats.get('mapped_rows', len(uploaded_raw_html_map))} RPC-to-URL rows mapped. Copy/images will be pulled live from Kroger pages."
+                        )
+                    elif source_mode == "extension_structured_results":
                         st.success(
                             f"Loaded extension results from {st.session_state.uploaded_raw_html_filename}: "
                             f"{source_stats.get('mapped_rows', len(uploaded_raw_html_map))} separated-copy rows mapped."
@@ -12972,7 +13088,7 @@ if uploaded_file:
                 else:
                     st.warning("Source uploaded, but no usable labeled URL/RPC + HTML blocks were found yet. For CVS, use extension TXT/HTML or XLSX with RPC in column A and real product HTML/source in columns B onward.")
             else:
-                uploaded_raw_html_map = st.session_state.uploaded_raw_html_map or {}
+                uploaded_raw_html_map = st.session_state.get("uploaded_raw_html_map", {}) or {}
 
         if file_ready_for_batch:
             capture_batch_key_part = "use_ext" if selected_capture_mode == CAPTURE_MODE_USE_EXTENSION else "skip_ext"
@@ -12984,14 +13100,26 @@ if uploaded_file:
                 dedupe_by_url=(selected_capture_mode == CAPTURE_MODE_USE_EXTENSION),
             )
 
-            if selected_retailer == "Kroger":
+            source_mode = (st.session_state.get("uploaded_raw_html_stats", {}) or {}).get("mode", "extension_txt_html")
+            url_only_source_mode = source_mode == "extension_url_only_results"
+            matched_url_only_count = 0
+
+            if uploaded_raw_html_map and "retailer_rpc" in retailer_df.columns:
                 retailer_df = retailer_df.copy()
                 retailer_df["retail_url"] = retailer_df["retail_url"].fillna("").astype(str).str.strip()
-                if uploaded_raw_html_map and "retailer_rpc" in retailer_df.columns:
+                if url_only_source_mode:
+                    retailer_df["retail_url"] = retailer_df.apply(
+                        lambda row: row["retail_url"] if str(row.get("retail_url", "")).strip() else find_url_only_url_in_uploaded_map(uploaded_raw_html_map, target_rpc=row.get("retailer_rpc", "")),
+                        axis=1,
+                    )
+                    matched_url_only_count = int(retailer_df["retail_url"].fillna("").astype(str).str.strip().ne("").sum())
+                elif selected_retailer == "Kroger":
                     retailer_df["retail_url"] = retailer_df.apply(
                         lambda row: row["retail_url"] if str(row.get("retail_url", "")).strip() else find_kroger_url_in_uploaded_map(uploaded_raw_html_map, target_rpc=row.get("retailer_rpc", "")),
                         axis=1,
                     )
+
+            if selected_retailer == "Kroger":
                 retailer_df = strict_filter_rows_for_selected_retailer(
                     retailer_df,
                     selected_retailer,
@@ -13000,10 +13128,14 @@ if uploaded_file:
 
             if "copy_source_code" not in retailer_df.columns:
                 retailer_df["copy_source_code"] = ""
-            if uploaded_raw_html_map:
+            if uploaded_raw_html_map and not url_only_source_mode:
                 retailer_df["copy_source_code"] = retailer_df.apply(lambda row: lookup_uploaded_raw_html(uploaded_raw_html_map, row.get("retail_url", ""), target_rpc=row.get("retailer_rpc", "")), axis=1)
                 matched_uploaded_html_count = int((retailer_df["copy_source_code"].astype(str).str.len() > 0).sum())
                 missing_uploaded_html_count = max(len(retailer_df) - matched_uploaded_html_count, 0)
+            elif url_only_source_mode:
+                retailer_df["copy_source_code"] = ""
+                matched_uploaded_html_count = 0
+                missing_uploaded_html_count = 0
             current_batch_key = f"{file_hash}::{selected_retailer}::{capture_batch_key_part}"
 
             if st.session_state.active_batch_key != current_batch_key:
@@ -13027,7 +13159,7 @@ if uploaded_file:
                 st.session_state.batch_error_text = ""
                 st.session_state.auto_batch_upload_key = ""
 
-            txt_ready_for_batch = bool(matched_uploaded_html_count > 0)
+            txt_ready_for_batch = bool(matched_uploaded_html_count > 0 or (source_mode == "extension_url_only_results" and matched_url_only_count > 0))
             cvs_capture_block_reason = ""
             cvs_missing_capture_urls = []
             if selected_retailer == "CVS" and selected_capture_mode == CAPTURE_MODE_USE_EXTENSION:
