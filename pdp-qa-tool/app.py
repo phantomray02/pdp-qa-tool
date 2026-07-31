@@ -1635,9 +1635,113 @@ def uploaded_retailer_value_is_generic(value):
         "pdp qa",
     }
 
+
+WIDE_SALSIFY_RETAILER_CONFIG = [
+    ("Albertsons", "albertsons rpc", "albertsons salsify url", "albertsons url"),
+    ("CVS", "cvs rpc", "cvs salsify url", "cvs url"),
+    ("HEB", "heb rpc", "heb salsify url", "heb url"),
+    ("Kroger", "kroger rpc", "kroger salsify url", "kroger url"),
+    ("Meijer", "meijer rpc", "meijer salsify url", "meijer url"),
+    ("Sams Club", "sams club rpc", "sams club salsify url", "sams club url"),
+    ("Walgreens", "walgreens rpc", "walgreens salsify url", "walgreens url"),
+]
+
+WIDE_SALSIFY_SALSIFY_URL_ALIASES = {
+    "albertsons salsify url": ["albertsons salsify url", "albertsons pdp deck link"],
+    "cvs salsify url": ["cvs salsify url", "cvs pdp deck link"],
+    "heb salsify url": ["heb salsify url", "heb pdp deck link", "h-e-b salsify url", "h-e-b pdp deck link"],
+    "kroger salsify url": ["kroger salsify url", "kroger pdp deck link"],
+    "meijer salsify url": ["meijer salsify url", "meijer pdp deck link"],
+    "sams club salsify url": ["sams club salsify url", "sams club pdp deck link", "sam's club salsify url", "sam's club pdp deck link"],
+    "walgreens salsify url": ["walgreens salsify url", "walgreens pdp deck link"],
+}
+
+
+def first_existing_column_local(df, candidates):
+    for candidate in candidates:
+        if candidate in df.columns:
+            return candidate
+    return ""
+
+
+def is_wide_salsify_template_df(df):
+    """Detect one-template wide Salsify export with retailer-specific RPC columns."""
+    if df is None or df.empty:
+        return False
+    cols = {str(c).strip().lower() for c in df.columns}
+    if "retailer" in cols and "retailer rpc" in cols:
+        return False
+    rpc_hits = sum(1 for _, rpc_col, _, _ in WIDE_SALSIFY_RETAILER_CONFIG if rpc_col in cols)
+    return bool(rpc_hits >= 2 or (rpc_hits >= 1 and ("sku" in cols or "7 digit sku" in cols)))
+
+
+def normalize_wide_salsify_template_df(df):
+    """Convert wide Salsify export into normalized one-row-per-retailer/RPC format."""
+    source = df.copy()
+    source.columns = [str(c).strip().lower() for c in source.columns]
+    sku_col = first_existing_column_local(source, ["sku", "7 digit sku", "product sku", "salsify sku", "item sku"])
+    brand_col = first_existing_column_local(source, ["brand", "brand_char", "brand characteristic"])
+    rows = []
+    for _, row in source.iterrows():
+        sku = normalize_space(row.get(sku_col, "")) if sku_col else ""
+        brand = normalize_space(row.get(brand_col, "")) if brand_col else ""
+        for retailer, rpc_col, salsify_col, url_col in WIDE_SALSIFY_RETAILER_CONFIG:
+            rpc = normalize_space(row.get(rpc_col, ""))
+            if not rpc:
+                continue
+            salsify_source_col = first_existing_column_local(source, WIDE_SALSIFY_SALSIFY_URL_ALIASES.get(salsify_col, [salsify_col]))
+            salsify_url = normalize_space(row.get(salsify_source_col, "")) if salsify_source_col else ""
+            retail_url = normalize_space(row.get(url_col, "")) if url_col in source.columns else ""
+            rows.append({
+                "retailer": retailer,
+                "sku": sku,
+                "retailer rpc": rpc,
+                "retailer salsify url": salsify_url,
+                "retailer url": retail_url,
+                "brand": brand,
+            })
+    if not rows:
+        return source
+    out = pd.DataFrame(rows)
+    out = out.sort_values(
+        by=["retailer", "sku", "retailer rpc"],
+        key=lambda col: col.astype(str).str.lower(),
+        kind="stable",
+    ).reset_index(drop=True)
+    return out
+
+
+def coalesce_duplicate_columns(df):
+    """Merge duplicate column names created by retailer-specific renames."""
+    if df is None or df.empty or not df.columns.duplicated().any():
+        return df
+    ordered_names = []
+    for col in df.columns:
+        if col not in ordered_names:
+            ordered_names.append(col)
+    merged = pd.DataFrame(index=df.index)
+    for col in ordered_names:
+        block = df.loc[:, df.columns == col]
+        if block.shape[1] == 1:
+            merged[col] = block.iloc[:, 0]
+            continue
+        series = block.iloc[:, 0]
+        for idx in range(1, block.shape[1]):
+            next_series = block.iloc[:, idx]
+            current_blank = series.isna() | (series.astype(str).str.strip() == "") | (series.astype(str).str.strip().str.lower() == "nan")
+            series = series.where(~current_blank, next_series)
+        merged[col] = series
+    return merged
+
 def prepare_input_df(df):
     df = df.copy()
     df.columns = [str(c).strip().lower() for c in df.columns]
+
+    # Support the one-template wide Salsify export. Convert retailer-specific
+    # columns like Kroger RPC/Kroger URL into normalized app rows before renaming.
+    if is_wide_salsify_template_df(df):
+        df = normalize_wide_salsify_template_df(df)
+        df.columns = [str(c).strip().lower() for c in df.columns]
 
     df.rename(
         columns={
@@ -1690,6 +1794,12 @@ def prepare_input_df(df):
         },
         inplace=True,
     )
+
+
+    # Several retailer-specific columns intentionally map into common app columns
+    # such as salsify_url and retail_url. Coalesce duplicate names so df[col]
+    # returns a Series, not a DataFrame.
+    df = coalesce_duplicate_columns(df)
 
 
     # CVS/manual-source rescue:
@@ -1774,6 +1884,8 @@ def prepare_input_df(df):
     for col in ["sku", "salsify_url", "retail_url", "brand", "retailer_rpc", "rating", "review_count", "copy_source_code"]:
         if col not in df.columns:
             df[col] = ""
+
+    df = coalesce_duplicate_columns(df)
 
     for col in ["sku", "salsify_url", "retail_url", "brand", "retailer_rpc", "rating", "review_count"]:
         df[col] = df[col].replace("#N/A", "").fillna("").astype(str).str.strip()
