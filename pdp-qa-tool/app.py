@@ -3152,6 +3152,67 @@ def build_kroger_compact_capture_from_capture_block(block, requested_url="", fin
     parts.append("</body></html>")
     return "\n".join(parts)
 
+
+def _heb_capture_image_urls_from_raw_html(raw_html_text, target_rpc="", max_images=10):
+    """HEB-only helper used during TXT indexing.
+
+    Do not store full HEB raw HTML in session state. HEB captures can be very large
+    and can crash Streamlit. Instead, pull only current-item image URLs from the raw
+    HTML and append a tiny image snippet to the compact HEB capture.
+    """
+    raw_html_text = str(raw_html_text or "")
+    target_rpc = re.sub(r"[^0-9]", "", str(target_rpc or "").replace(".0", ""))
+    padded_rpc = target_rpc.zfill(9) if target_rpc else ""
+    urls = []
+    seen = set()
+    patterns = [
+        r'https?:\\/\\/images\.heb\.com\\/is\\/image\\/HEBGrocery\\/[^"\\\s<>]+',
+        r'https?://images\.heb\.com/is/image/HEBGrocery/[^"\s<>]+',
+        r'//images\.heb\.com/is/image/HEBGrocery/[^"\s<>]+',
+    ]
+    for pattern in patterns:
+        for raw_url in re.findall(pattern, raw_html_text, flags=re.IGNORECASE):
+            url = html.unescape(str(raw_url or "")).replace("\\/", "/").strip()
+            url = re.sub(r"[\)\]\}\'\";,]+$", "", url)
+            if url.startswith("//"):
+                url = "https:" + url
+            if not url.lower().startswith("http"):
+                continue
+            if "images.heb.com/is/image/HEBGrocery" not in url:
+                continue
+            m = re.search(r"/is/image/HEBGrocery/([^?\s<>]+)", url, flags=re.IGNORECASE)
+            if not m:
+                continue
+            asset = re.sub(r"[\)\]\}\'\";,]+$", "", m.group(1).strip())
+            if not asset or asset.lower().startswith(("prd-small/", "prd-medium/", "prd-large/")):
+                continue
+            normalized = f"https://images.heb.com/is/image/HEBGrocery/{asset}?fit=constrain,1&wid=800&hei=800&fmt=jpg&qlt=80"
+            key = normalized.split("?", 1)[0]
+            if key and key not in seen:
+                seen.add(key)
+                urls.append(normalized)
+    if padded_rpc and urls:
+        current_item_urls = [u for u in urls if f"/{padded_rpc}" in u]
+        if current_item_urls:
+            urls = current_item_urls
+    def sort_key(url):
+        m = re.search(r"/HEBGrocery/(\d+)(?:-(\d+))?", url)
+        if not m:
+            return (999999999, 9999, url)
+        return (int(m.group(1)), int(m.group(2) or 1), url)
+    return sorted(urls, key=sort_key)[:max_images]
+
+
+def _build_heb_compact_image_snippet(raw_html_text, target_rpc=""):
+    urls = _heb_capture_image_urls_from_raw_html(raw_html_text, target_rpc=target_rpc, max_images=10)
+    if not urls:
+        return ""
+    parts = ["<!-- HEB COMPACT RAW IMAGE URLS FROM EXTENSION HTML -->", "<section data-heb-compact-images='1'>"]
+    for url in urls:
+        parts.append(f'<img src="{html.escape(url, quote=True)}" />')
+    parts.append("</section>")
+    return "\n".join(parts)
+
 def parse_uploaded_raw_html_map(raw_text):
     raw_text = str(raw_text or "")
     if not raw_text.strip():
@@ -3208,8 +3269,13 @@ def parse_uploaded_raw_html_map(raw_text):
                 elif requested_url and "samsclub.com" in requested_url.lower() and raw_html_text:
                     html_text = compact_html + "\n<!-- SAMS RAW HTML FALLBACK FROM EXTENSION -->\n" + raw_html_text
                 elif requested_url and "heb.com" in requested_url.lower() and raw_html_text:
-                    # HEB-only fix: parsed JSON can have images=[], while hydrated raw HTML has the real HEB image URLs.
-                    html_text = compact_html + "\n<!-- HEB RAW HTML FALLBACK FROM EXTENSION FOR IMAGES -->\n" + raw_html_text
+                    # HEB-only stable fix: keep compact parsed copy and append only tiny current-item image URLs.
+                    # Do not append full raw HTML because it can make the uploaded map huge and crash Streamlit.
+                    rpc_for_images = ""
+                    if isinstance(parsed_payload, dict):
+                        rpc_for_images = parsed_payload.get("rpc", "") or parsed_payload.get("sku", "") or ""
+                    image_snippet = _build_heb_compact_image_snippet(raw_html_text, target_rpc=rpc_for_images)
+                    html_text = compact_html + ("\n" + image_snippet if image_snippet else "")
                 else:
                     html_text = compact_html
             else:
