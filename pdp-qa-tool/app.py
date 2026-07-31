@@ -3207,6 +3207,9 @@ def parse_uploaded_raw_html_map(raw_text):
                     html_text = compact_html + "\n<!-- CVS RAW HTML FALLBACK FROM EXTENSION -->\n" + raw_html_text
                 elif requested_url and "samsclub.com" in requested_url.lower() and raw_html_text:
                     html_text = compact_html + "\n<!-- SAMS RAW HTML FALLBACK FROM EXTENSION -->\n" + raw_html_text
+                elif requested_url and "heb.com" in requested_url.lower() and raw_html_text:
+                    # HEB-only fix: parsed JSON can have images=[], while hydrated raw HTML has the real HEB image URLs.
+                    html_text = compact_html + "\n<!-- HEB RAW HTML FALLBACK FROM EXTENSION FOR IMAGES -->\n" + raw_html_text
                 else:
                     html_text = compact_html
             else:
@@ -9805,6 +9808,35 @@ def split_heb_description_and_features(description_text, max_features=10):
     return description, dedupe_preserve_order(features)[:max_features]
 
 
+
+def split_heb_description_and_features_aggressive(description_text, max_features=10):
+    """HEB-only Salsify rescue for descriptions that carry bullet copy inline."""
+    working = str(description_text or "")
+    if not working:
+        return "", []
+    for _ in range(5):
+        unescaped = html.unescape(working)
+        if unescaped == working:
+            break
+        working = unescaped
+    working = working.replace("\\u2022", "•").replace("&bull;", "•").replace("&#8226;", "•")
+    working = working.replace("<li>", " • ").replace("</li>", " ")
+    working = working.replace("<LI>", " • ").replace("</LI>", " ")
+    working = re.sub(r"(?:\s|^)[\-*]\s+(?=[A-Z0-9])", " • ", working)
+    working = clean_heb_text(working)
+    if not working:
+        return "", []
+    parts = [clean_heb_text(x) for x in re.split(r"\s*•\s*", working) if clean_heb_text(x)]
+    if len(parts) <= 1:
+        return working, []
+    description = parts[0]
+    features = []
+    for part in parts[1:]:
+        part = re.sub(r"^[\-•\s]+", "", part).strip()
+        if part and len(part) > 3:
+            features.append(part)
+    return description, dedupe_preserve_order(features)[:max_features]
+
 def normalize_heb_features_final(items, max_features=10):
     if not items:
         return []
@@ -9876,6 +9908,7 @@ def _absolutize_heb_image_url(url):
     url = html.unescape(str(url or "").strip()).replace("\\/", "/")
     if not url:
         return ""
+    url = re.sub(r"[\)\]\}\'\";,]+$", "", url.strip())
     if url.startswith("//"):
         url = "https:" + url
     if url.startswith("/"):
@@ -9890,6 +9923,19 @@ def _absolutize_heb_image_url(url):
     return url.strip()
 
 
+def _normalize_heb_image_for_compare(url):
+    url = _absolutize_heb_image_url(url)
+    if not url:
+        return ""
+    m = re.search(r"/is/image/HEBGrocery/([^?\s<>]+)", url, flags=re.IGNORECASE)
+    if not m:
+        return url
+    asset = re.sub(r"[\)\]\}\'\";,]+$", "", m.group(1).strip())
+    if not asset or asset.lower().startswith(("prd-small/", "prd-medium/", "prd-large/")):
+        return ""
+    return f"https://images.heb.com/is/image/HEBGrocery/{asset}?fit=constrain,1&wid=800&hei=800&fmt=jpg&qlt=80"
+
+
 def build_heb_main_image_fallback_url(target_rpc="", retail_url=""):
     rpc = str(target_rpc or "").replace(".0", "").strip()
     if not rpc:
@@ -9899,12 +9945,13 @@ def build_heb_main_image_fallback_url(target_rpc="", retail_url=""):
     rpc = re.sub(r"[^0-9]", "", rpc)
     if not rpc:
         return ""
-    return f"https://images.heb.com/is/image/HEBGrocery/{rpc.zfill(9)}?fit=constrain,1&wid=800&hei=800&fmt=jpg&qlt=80"
+    return f"https://images.heb.com/is/image/HEBGrocery/{rpc.zfill(9)}-1?fit=constrain,1&wid=800&hei=800&fmt=jpg&qlt=80"
 
 
 def extract_heb_images_from_html(html_text, retail_url="", target_rpc=""):
     working = str(html_text or "")
     urls, seen = [], set()
+    thumb_fallbacks = []
     if working:
         for pattern in [
             r'https?:\\/\\/images\.heb\.com\\/is\\/image\\/HEBGrocery\\/[^"\\\s<>]+',
@@ -9912,18 +9959,44 @@ def extract_heb_images_from_html(html_text, retail_url="", target_rpc=""):
             r'//images\.heb\.com/is/image/HEBGrocery/[^"\s<>]+',
         ]:
             for raw_url in re.findall(pattern, working, flags=re.IGNORECASE):
-                url = _absolutize_heb_image_url(raw_url)
-                key = url.split("?", 1)[0] if url else ""
-                if key and key not in seen:
-                    seen.add(key)
-                    urls.append(url)
-    # Do not limit HEB images to one. If only RPC fallback is available, add the
-    # main image as a fallback after any captured image URLs.
+                raw_clean = _absolutize_heb_image_url(raw_url)
+                normalized = _normalize_heb_image_for_compare(raw_clean)
+                if normalized:
+                    key = normalized.split("?", 1)[0]
+                    if key and key not in seen:
+                        seen.add(key)
+                        urls.append(normalized)
+                elif raw_clean and "prd-" in raw_clean.lower():
+                    thumb_fallbacks.append(raw_clean)
+    rpc = re.sub(r"[^0-9]", "", str(target_rpc or "").replace(".0", ""))
+    if not rpc:
+        m = re.search(r"/(\d{4,12})(?:[/?#]|$)", str(retail_url or ""))
+        if m:
+            rpc = m.group(1)
+    padded_rpc = rpc.zfill(9) if rpc else ""
+    if padded_rpc and urls:
+        preferred = [u for u in urls if f"/{padded_rpc}" in u]
+        if preferred:
+            # HEB pages can preload recommendations/nearby products. For a known RPC,
+            # keep only current-item image assets.
+            urls = preferred
+    def heb_asset_sort_key(url):
+        m = re.search(r"/HEBGrocery/(\d+)(?:-(\d+))?", url)
+        if not m:
+            return (999999999, 9999, url)
+        return (int(m.group(1)), int(m.group(2) or 1), url)
+    urls = sorted(urls, key=heb_asset_sort_key)
+    if not urls:
+        for raw_url in thumb_fallbacks:
+            url = _absolutize_heb_image_url(raw_url)
+            key = url.split("?", 1)[0] if url else ""
+            if key and key not in seen:
+                seen.add(key)
+                urls.append(url)
     fallback = build_heb_main_image_fallback_url(target_rpc=target_rpc, retail_url=retail_url)
     if fallback and fallback.split("?", 1)[0] not in seen:
         urls.append(fallback)
     return urls[:MAX_IMAGE_SLOTS_TO_COMPARE]
-
 
 def build_heb_compact_capture_from_parsed_json(payload):
     if not isinstance(payload, dict):
@@ -11520,7 +11593,7 @@ def finalize_salsify_copy_for_retailer(retailer_name, s_text):
         # If the Salsify deck stores bullets inside the description with bullets,
         # split them, but do not discard normal Salsify feature fields.
         if not selected_features and selected_description:
-            clean_desc, split_features = split_heb_description_and_features(selected_description, max_features=10)
+            clean_desc, split_features = split_heb_description_and_features_aggressive(selected_description, max_features=10)
             if split_features:
                 selected_description = clean_desc or selected_description
                 selected_features = split_features
@@ -12131,6 +12204,56 @@ def align_salsify_images_for_retailer(retailer_name, s_images, max_slots=MAX_IMA
 
     if retailer == "cvs":
         return reorder_cvs_salsify_images_for_visual(source_images, max_slots=max_slots)
+
+    if retailer in {"heb", "h-e-b"}:
+        aligned = []
+        used_urls = set()
+        def image_url(img):
+            return str((img or {}).get("url", "") or "").strip() if isinstance(img, dict) else ""
+        def image_name(img):
+            return normalize_salsify_asset_name((img or {}).get("name", "")) if isinstance(img, dict) else ""
+        def append_unique(img):
+            if not isinstance(img, dict):
+                return False
+            url = image_url(img)
+            if not url or url in used_urls:
+                return False
+            aligned.append(img)
+            used_urls.add(url)
+            return True
+        def find_first_unused(*queries, exclude_tokens=None):
+            query_tokens = [normalize_salsify_asset_name(q) for q in queries if normalize_salsify_asset_name(q)]
+            exclude_tokens = [normalize_salsify_asset_name(q) for q in (exclude_tokens or []) if normalize_salsify_asset_name(q)]
+            for query in query_tokens:
+                for img in source_images:
+                    if not isinstance(img, dict):
+                        continue
+                    url = image_url(img)
+                    if not url or url in used_urls:
+                        continue
+                    name = image_name(img)
+                    if exclude_tokens and any(token in name for token in exclude_tokens):
+                        continue
+                    if name and (query == name or query in name):
+                        return img
+            return None
+        append_unique(find_first_unused(
+            "online optimized image heb", "online optimized image-heb", "online optimized image h e b", "online optimized image-h-e-b",
+            "online image heb", "online image-heb", "online optimized image", "online image",
+            exclude_tokens=["cvs", "kroger", "walgreens", "sams club", "sam s club", "samsclub"],
+        ))
+        append_unique(find_first_unused(
+            "atf i/o heb", "atf i/o-heb", "atf io heb", "atf io-heb", "atf i/o h e b", "atf i/o-h-e-b",
+            "atf i/o generic", "atf i/o-generic", "atf io generic", "atf io-generic", "atf i/o", "atf io",
+        ))
+        for slot_num in range(2, 11):
+            append_unique(find_first_unused(
+                f"atf {slot_num} heb", f"atf {slot_num}-heb", f"atf {slot_num} h e b", f"atf {slot_num}-h-e-b",
+                f"atf {slot_num} generic", f"atf {slot_num}-generic", f"atf {slot_num}",
+            ))
+        for img in source_images:
+            append_unique(img)
+        return aligned[:max_slots]
 
     if retailer == "walgreens":
         strict_image_mode = retailer in EXCLUSIVE_SALSIFY_IMAGE_RETAILERS
