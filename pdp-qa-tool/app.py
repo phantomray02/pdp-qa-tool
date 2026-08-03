@@ -13369,6 +13369,11 @@ if uploaded_file:
                 uploaded_raw_html_map = st.session_state.get("uploaded_raw_html_map", {}) or {}
                 source_stats = st.session_state.get("uploaded_raw_html_stats", {}) or {}
                 source_mode = source_stats.get("mode", "extension_txt_html")
+                if "kroger" in source_file_name_lc and "Kroger" in all_retailers and selected_retailer != "Kroger":
+                    st.session_state.selected_retailer = "Kroger"
+                    selected_retailer = "Kroger"
+                    file_ready_for_batch = True
+                    st.info("Kroger capture detected, so this run is scoped to Kroger only.")
                 if uploaded_raw_html_map:
                     if source_mode == "extension_url_only_results":
                         st.success(
@@ -13415,6 +13420,21 @@ if uploaded_file:
             source_mode = (st.session_state.get("uploaded_raw_html_stats", {}) or {}).get("mode", "extension_txt_html")
             url_only_source_mode = source_mode == "extension_url_only_results"
             matched_url_only_count = 0
+
+            # Extra safety guard: selected retailer runs must never process the full all-retailer table.
+            # This specifically prevents Kroger batches from showing Overall 313/936 when only Kroger should run.
+            if retailer_df is not None and not retailer_df.empty and selected_retailer:
+                selected_retailer_norm_guard = normalize_retailer_name(selected_retailer)
+                if "retailer" in retailer_df.columns:
+                    retailer_df = retailer_df.copy()
+                    retailer_df["retailer"] = retailer_df["retailer"].astype(str).apply(normalize_retailer_name)
+                    retailer_df = retailer_df[retailer_df["retailer"] == selected_retailer_norm_guard].copy()
+                if selected_retailer_norm_guard == "Kroger" and "retail_url" in retailer_df.columns:
+                    retailer_df = retailer_df[
+                        retailer_df["retail_url"].fillna("").astype(str).apply(
+                            lambda value: (not str(value or "").strip()) or ("kroger.com" in str(value or "").lower())
+                        )
+                    ].copy()
 
             if uploaded_raw_html_map and "retailer_rpc" in retailer_df.columns:
                 retailer_df = retailer_df.copy()
