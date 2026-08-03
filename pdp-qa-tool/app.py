@@ -1919,6 +1919,61 @@ def prepare_input_df(df):
 
 
 
+
+
+def hard_scope_selected_retailer_rows(df, selected_retailer):
+    """Final safety filter so selected retailer batches never process all template rows.
+
+    This handles wide SKU matrix uploads where selected retailer columns may still
+    exist after normalization/renaming. For Kroger, only rows with Kroger RPC or
+    Kroger URL/source fields should be queued.
+    """
+    if df is None:
+        return pd.DataFrame()
+    out = df.copy()
+    selected = normalize_retailer_name(selected_retailer)
+    selected_lc = str(selected or "").strip().lower()
+    if not selected_lc:
+        return out
+
+    if "retailer" in out.columns:
+        out["retailer"] = out["retailer"].astype(str).apply(normalize_retailer_name)
+        out = out[out["retailer"] == selected].copy()
+
+    if selected_lc == "kroger":
+        # Coalesce any surviving Kroger-specific wide-template columns into the
+        # normalized columns used later by process_row.
+        if "retailer_rpc" not in out.columns and "kroger_rpc" in out.columns:
+            out["retailer_rpc"] = out["kroger_rpc"]
+        elif "retailer_rpc" in out.columns and "kroger_rpc" in out.columns:
+            out["retailer_rpc"] = out["retailer_rpc"].fillna("").astype(str)
+            out["retailer_rpc"] = out["retailer_rpc"].where(out["retailer_rpc"].str.strip().ne(""), out["kroger_rpc"])
+
+        if "retail_url" not in out.columns and "kroger_url" in out.columns:
+            out["retail_url"] = out["kroger_url"]
+        elif "retail_url" in out.columns and "kroger_url" in out.columns:
+            out["retail_url"] = out["retail_url"].fillna("").astype(str)
+            out["retail_url"] = out["retail_url"].where(out["retail_url"].str.strip().ne(""), out["kroger_url"])
+
+        if "salsify_url" not in out.columns and "kroger_salsify_url" in out.columns:
+            out["salsify_url"] = out["kroger_salsify_url"]
+        elif "salsify_url" in out.columns and "kroger_salsify_url" in out.columns:
+            out["salsify_url"] = out["salsify_url"].fillna("").astype(str)
+            out["salsify_url"] = out["salsify_url"].where(out["salsify_url"].str.strip().ne(""), out["kroger_salsify_url"])
+
+        rpc_series = out["retailer_rpc"].fillna("").astype(str).str.strip() if "retailer_rpc" in out.columns else pd.Series([""] * len(out), index=out.index)
+        url_series = out["retail_url"].fillna("").astype(str).str.strip() if "retail_url" in out.columns else pd.Series([""] * len(out), index=out.index)
+        salsify_series = out["salsify_url"].fillna("").astype(str).str.strip() if "salsify_url" in out.columns else pd.Series([""] * len(out), index=out.index)
+
+        # Keep actual Kroger rows only. This drops all blank/non-Kroger source rows
+        # that caused Overall progress to show the full 936 row template.
+        keep = rpc_series.ne("") | url_series.str.contains("kroger.com", case=False, na=False) | salsify_series.ne("")
+        out = out[keep].copy()
+        if "retailer" in out.columns:
+            out["retailer"] = "Kroger"
+
+    return out
+
 def strict_filter_rows_for_selected_retailer(df, selected_retailer, dedupe_by_url=False):
     """
     Hard retailer isolation guard.
@@ -13416,6 +13471,7 @@ if uploaded_file:
                 selected_retailer,
                 dedupe_by_url=(selected_capture_mode == CAPTURE_MODE_USE_EXTENSION),
             )
+            retailer_df = hard_scope_selected_retailer_rows(retailer_df, selected_retailer)
 
             source_mode = (st.session_state.get("uploaded_raw_html_stats", {}) or {}).get("mode", "extension_txt_html")
             url_only_source_mode = source_mode == "extension_url_only_results"
@@ -13457,6 +13513,7 @@ if uploaded_file:
                     selected_retailer,
                     dedupe_by_url=(selected_capture_mode == CAPTURE_MODE_USE_EXTENSION),
                 )
+                retailer_df = hard_scope_selected_retailer_rows(retailer_df, selected_retailer)
 
             if "copy_source_code" not in retailer_df.columns:
                 retailer_df["copy_source_code"] = ""
