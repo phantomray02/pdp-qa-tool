@@ -1919,61 +1919,6 @@ def prepare_input_df(df):
 
 
 
-
-
-def hard_scope_selected_retailer_rows(df, selected_retailer):
-    """Final safety filter so selected retailer batches never process all template rows.
-
-    This handles wide SKU matrix uploads where selected retailer columns may still
-    exist after normalization/renaming. For Kroger, only rows with Kroger RPC or
-    Kroger URL/source fields should be queued.
-    """
-    if df is None:
-        return pd.DataFrame()
-    out = df.copy()
-    selected = normalize_retailer_name(selected_retailer)
-    selected_lc = str(selected or "").strip().lower()
-    if not selected_lc:
-        return out
-
-    if "retailer" in out.columns:
-        out["retailer"] = out["retailer"].astype(str).apply(normalize_retailer_name)
-        out = out[out["retailer"] == selected].copy()
-
-    if selected_lc == "kroger":
-        # Coalesce any surviving Kroger-specific wide-template columns into the
-        # normalized columns used later by process_row.
-        if "retailer_rpc" not in out.columns and "kroger_rpc" in out.columns:
-            out["retailer_rpc"] = out["kroger_rpc"]
-        elif "retailer_rpc" in out.columns and "kroger_rpc" in out.columns:
-            out["retailer_rpc"] = out["retailer_rpc"].fillna("").astype(str)
-            out["retailer_rpc"] = out["retailer_rpc"].where(out["retailer_rpc"].str.strip().ne(""), out["kroger_rpc"])
-
-        if "retail_url" not in out.columns and "kroger_url" in out.columns:
-            out["retail_url"] = out["kroger_url"]
-        elif "retail_url" in out.columns and "kroger_url" in out.columns:
-            out["retail_url"] = out["retail_url"].fillna("").astype(str)
-            out["retail_url"] = out["retail_url"].where(out["retail_url"].str.strip().ne(""), out["kroger_url"])
-
-        if "salsify_url" not in out.columns and "kroger_salsify_url" in out.columns:
-            out["salsify_url"] = out["kroger_salsify_url"]
-        elif "salsify_url" in out.columns and "kroger_salsify_url" in out.columns:
-            out["salsify_url"] = out["salsify_url"].fillna("").astype(str)
-            out["salsify_url"] = out["salsify_url"].where(out["salsify_url"].str.strip().ne(""), out["kroger_salsify_url"])
-
-        rpc_series = out["retailer_rpc"].fillna("").astype(str).str.strip() if "retailer_rpc" in out.columns else pd.Series([""] * len(out), index=out.index)
-        url_series = out["retail_url"].fillna("").astype(str).str.strip() if "retail_url" in out.columns else pd.Series([""] * len(out), index=out.index)
-        salsify_series = out["salsify_url"].fillna("").astype(str).str.strip() if "salsify_url" in out.columns else pd.Series([""] * len(out), index=out.index)
-
-        # Keep actual Kroger rows only. This drops all blank/non-Kroger source rows
-        # that caused Overall progress to show the full 936 row template.
-        keep = rpc_series.ne("") | url_series.str.contains("kroger.com", case=False, na=False) | salsify_series.ne("")
-        out = out[keep].copy()
-        if "retailer" in out.columns:
-            out["retailer"] = "Kroger"
-
-    return out
-
 def strict_filter_rows_for_selected_retailer(df, selected_retailer, dedupe_by_url=False):
     """
     Hard retailer isolation guard.
@@ -2004,11 +1949,7 @@ def strict_filter_rows_for_selected_retailer(df, selected_retailer, dedupe_by_ur
         out = out[out["retail_url"].apply(lambda value: (not str(value or "").strip()) or retailer_url_matches_selected(value, selected_retailer_norm))].copy()
 
     if dedupe_by_url and not out.empty:
-        # Do not collapse Kroger rows by Retail URL. Kroger often has multiple
-        # KC SKU7/version rows that intentionally share one PDP URL. Deduping
-        # by URL here causes later SKU rows to disappear from the portal/export.
-        if selected_retailer_norm != "Kroger":
-            out = out.drop_duplicates(subset=["retail_url"], keep="first").copy()
+        out = out.drop_duplicates(subset=["retail_url"], keep="first").copy()
 
     return out
 def clear_in_memory_caches():
@@ -4076,12 +4017,7 @@ def render_extension_batch_bridge(payload):
     }})();
     </script>
     """
-    try:
-        components.html(bridge_html, height=0, width=0)
-    except Exception:
-        # Streamlit Cloud may remove/deprecate components.html. Do not let the
-        # hidden extension bridge crash the whole app.
-        pass
+    components.html(bridge_html, height=0, width=0)
 
 def normalize_kroger_url(url):
     url = str(url or "").strip()
@@ -13213,8 +13149,6 @@ def process_row(row):
         debug["Error Traceback"] = error_trace
         debug["Source Used"] = "row_exception"
         return {"summary": base_summary, "detail": detail, "debug": debug}
-
-
 # =========================================
 # SESSION STATE
 # =========================================
@@ -13424,11 +13358,6 @@ if uploaded_file:
                 uploaded_raw_html_map = st.session_state.get("uploaded_raw_html_map", {}) or {}
                 source_stats = st.session_state.get("uploaded_raw_html_stats", {}) or {}
                 source_mode = source_stats.get("mode", "extension_txt_html")
-                if "kroger" in source_file_name_lc and "Kroger" in all_retailers and selected_retailer != "Kroger":
-                    st.session_state.selected_retailer = "Kroger"
-                    selected_retailer = "Kroger"
-                    file_ready_for_batch = True
-                    st.info("Kroger capture detected, so this run is scoped to Kroger only.")
                 if uploaded_raw_html_map:
                     if source_mode == "extension_url_only_results":
                         st.success(
@@ -13471,26 +13400,10 @@ if uploaded_file:
                 selected_retailer,
                 dedupe_by_url=(selected_capture_mode == CAPTURE_MODE_USE_EXTENSION),
             )
-            retailer_df = hard_scope_selected_retailer_rows(retailer_df, selected_retailer)
 
             source_mode = (st.session_state.get("uploaded_raw_html_stats", {}) or {}).get("mode", "extension_txt_html")
             url_only_source_mode = source_mode == "extension_url_only_results"
             matched_url_only_count = 0
-
-            # Extra safety guard: selected retailer runs must never process the full all-retailer table.
-            # This specifically prevents Kroger batches from showing Overall 313/936 when only Kroger should run.
-            if retailer_df is not None and not retailer_df.empty and selected_retailer:
-                selected_retailer_norm_guard = normalize_retailer_name(selected_retailer)
-                if "retailer" in retailer_df.columns:
-                    retailer_df = retailer_df.copy()
-                    retailer_df["retailer"] = retailer_df["retailer"].astype(str).apply(normalize_retailer_name)
-                    retailer_df = retailer_df[retailer_df["retailer"] == selected_retailer_norm_guard].copy()
-                if selected_retailer_norm_guard == "Kroger" and "retail_url" in retailer_df.columns:
-                    retailer_df = retailer_df[
-                        retailer_df["retail_url"].fillna("").astype(str).apply(
-                            lambda value: (not str(value or "").strip()) or ("kroger.com" in str(value or "").lower())
-                        )
-                    ].copy()
 
             if uploaded_raw_html_map and "retailer_rpc" in retailer_df.columns:
                 retailer_df = retailer_df.copy()
@@ -13513,7 +13426,6 @@ if uploaded_file:
                     selected_retailer,
                     dedupe_by_url=(selected_capture_mode == CAPTURE_MODE_USE_EXTENSION),
                 )
-                retailer_df = hard_scope_selected_retailer_rows(retailer_df, selected_retailer)
 
             if "copy_source_code" not in retailer_df.columns:
                 retailer_df["copy_source_code"] = ""
