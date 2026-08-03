@@ -1949,7 +1949,11 @@ def strict_filter_rows_for_selected_retailer(df, selected_retailer, dedupe_by_ur
         out = out[out["retail_url"].apply(lambda value: (not str(value or "").strip()) or retailer_url_matches_selected(value, selected_retailer_norm))].copy()
 
     if dedupe_by_url and not out.empty:
-        out = out.drop_duplicates(subset=["retail_url"], keep="first").copy()
+        # Do not collapse Kroger rows by Retail URL. Kroger often has multiple
+        # KC SKU7/version rows that intentionally share one PDP URL. Deduping
+        # by URL here causes later SKU rows to disappear from the portal/export.
+        if selected_retailer_norm != "Kroger":
+            out = out.drop_duplicates(subset=["retail_url"], keep="first").copy()
 
     return out
 def clear_in_memory_caches():
@@ -13149,6 +13153,33 @@ def process_row(row):
         debug["Error Traceback"] = error_trace
         debug["Source Used"] = "row_exception"
         return {"summary": base_summary, "detail": detail, "debug": debug}
+
+
+def output_row_unique_key(record):
+    """Stable unique key for result rows.
+
+    The app used to de-dupe output rows by SKU only. That is too aggressive for
+    retailer QA because one SKU can appear with different retailer URLs/RPCs, and
+    one retailer URL can represent multiple SKU7 rows. This key preserves one
+    output row per template row while still preventing accidental exact repeats.
+    """
+    if not isinstance(record, dict):
+        return ""
+    rpc_value = (
+        record.get("Retailer RPC", "")
+        or record.get("Kroger RPC", "")
+        or record.get("CVS RPC", "")
+        or record.get("RPC", "")
+    )
+    parts = [
+        record.get("Retailer", ""),
+        record.get("SKU", ""),
+        rpc_value,
+        record.get("Retail URL", ""),
+        record.get("Salsify URL", ""),
+    ]
+    return "||".join(normalize_space(str(part or "")).lower() for part in parts)
+
 # =========================================
 # SESSION STATE
 # =========================================
@@ -13398,7 +13429,10 @@ if uploaded_file:
             retailer_df = strict_filter_rows_for_selected_retailer(
                 master_df,
                 selected_retailer,
-                dedupe_by_url=(selected_capture_mode == CAPTURE_MODE_USE_EXTENSION),
+                # Keep one processing/export row per template row. Do not dedupe
+                # here, because duplicated retailer URLs can represent distinct
+                # SKU7 rollovers/version rows that still need their own results.
+                dedupe_by_url=False,
             )
 
             source_mode = (st.session_state.get("uploaded_raw_html_stats", {}) or {}).get("mode", "extension_txt_html")
@@ -13424,7 +13458,8 @@ if uploaded_file:
                 retailer_df = strict_filter_rows_for_selected_retailer(
                     retailer_df,
                     selected_retailer,
-                    dedupe_by_url=(selected_capture_mode == CAPTURE_MODE_USE_EXTENSION),
+                    # Preserve duplicate Kroger PDP URLs after URL backfill too.
+                    dedupe_by_url=False,
                 )
 
             if "copy_source_code" not in retailer_df.columns:
@@ -13753,15 +13788,21 @@ if retailer_df is not None and file_ready_for_batch and st.session_state.batch_s
                         detail = result.get("detail")
                         debug = result.get("debug")
 
-                        if summary and summary["SKU"] not in st.session_state.summary_skus:
-                            st.session_state.summary_rows.append(summary)
-                            st.session_state.summary_skus.add(summary["SKU"])
-                        if detail and detail["SKU"] not in st.session_state.detail_skus:
-                            st.session_state.export_rows.append(detail)
-                            st.session_state.detail_skus.add(detail["SKU"])
-                        if debug and debug["SKU"] not in st.session_state.debug_skus:
-                            st.session_state.debug_rows.append(debug)
-                            st.session_state.debug_skus.add(debug["SKU"])
+                        if summary:
+                            summary_key = output_row_unique_key(summary)
+                            if summary_key not in st.session_state.summary_skus:
+                                st.session_state.summary_rows.append(summary)
+                                st.session_state.summary_skus.add(summary_key)
+                        if detail:
+                            detail_key = output_row_unique_key(detail)
+                            if detail_key not in st.session_state.detail_skus:
+                                st.session_state.export_rows.append(detail)
+                                st.session_state.detail_skus.add(detail_key)
+                        if debug:
+                            debug_key = output_row_unique_key(debug)
+                            if debug_key not in st.session_state.debug_skus:
+                                st.session_state.debug_rows.append(debug)
+                                st.session_state.debug_skus.add(debug_key)
 
                     if completed % UI_UPDATE_EVERY == 0 or completed == total:
                         progress_bar.progress(completed / max(total, 1))
