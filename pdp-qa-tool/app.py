@@ -1975,12 +1975,28 @@ def build_selected_retailer_df_from_wide_source(df, selected_retailer):
     out = pd.DataFrame(rows)
     if out.empty:
         return out
+    return sort_selected_retailer_queue(out)
+
+
+
+
+def sort_selected_retailer_queue(df):
+    """Keep selected retailer runs stable and readable: Brand A-Z, then SKU/RPC/URL."""
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+    for col in ["brand", "sku", "retailer_rpc", "retail_url"]:
+        if col not in out.columns:
+            out[col] = ""
+    out["_brand_sort"] = out["brand"].fillna("").astype(str).str.strip().str.lower()
+    out["_sku_sort"] = out["sku"].fillna("").astype(str).str.strip().str.lower()
+    out["_rpc_sort"] = out["retailer_rpc"].fillna("").astype(str).str.strip().str.lower()
+    out["_url_sort"] = out["retail_url"].fillna("").astype(str).str.strip().str.lower()
     out = out.sort_values(
-        by=["retailer", "sku", "retailer_rpc", "retail_url"],
-        key=lambda col: col.astype(str).str.lower(),
+        by=["_brand_sort", "_sku_sort", "_rpc_sort", "_url_sort"],
         kind="stable",
-    ).reset_index(drop=True)
-    return out
+    ).drop(columns=["_brand_sort", "_sku_sort", "_rpc_sort", "_url_sort"], errors="ignore")
+    return out.reset_index(drop=True)
 
 
 def strict_filter_rows_for_selected_retailer(df, selected_retailer, dedupe_by_url=False):
@@ -3280,7 +3296,7 @@ def _build_heb_compact_image_snippet(raw_html_text, target_rpc=""):
     parts.append("</section>")
     return "\n".join(parts)
 
-def parse_uploaded_raw_html_map(raw_text):
+def parse_uploaded_raw_html_map(raw_text, selected_retailer=""):
     raw_text = str(raw_text or "")
     if not raw_text.strip():
         return {}
@@ -3300,6 +3316,11 @@ def parse_uploaded_raw_html_map(raw_text):
             continue
         requested_url = str(requested_match.group(1) or "").strip()
         if not requested_url:
+            continue
+        selected_capture_retailer = normalize_retailer_name(selected_retailer) if selected_retailer else ""
+        if selected_capture_retailer and not retailer_url_matches_selected(requested_url, selected_capture_retailer):
+            # Do not compact/index captures for other retailers. This keeps selected-retailer
+            # runs from loading CVS/HEB/Kroger/Walgreens/etc. blocks that are not selected.
             continue
 
         requested_url_lc = requested_url.lower()
@@ -3783,7 +3804,7 @@ def parse_url_only_results_file(file_bytes, file_name):
             stats["mapped_rows"] += 1
     return html_map, stats
 
-def parse_uploaded_retailer_source_file(file_bytes, file_name):
+def parse_uploaded_retailer_source_file(file_bytes, file_name, selected_retailer=""):
     """Parse uploaded captured retailer source.
 
     TXT/HTML files use the extension parser. XLSX files are treated as manual
@@ -3809,7 +3830,7 @@ def parse_uploaded_retailer_source_file(file_bytes, file_name):
     else:
         text_value = str(file_bytes or "")
 
-    parsed_map = parse_uploaded_raw_html_map(text_value)
+    parsed_map = parse_uploaded_raw_html_map(text_value, selected_retailer=selected_retailer)
     stats = {
         "mode": "extension_txt_html",
         "rows_seen": 0,
@@ -13419,7 +13440,7 @@ if uploaded_file:
                     or (source_file_name_lc.endswith(".csv") and existing_source_stats.get("mode") != "extension_structured_results")
                 )
                 if should_reparse_uploaded_source:
-                    parsed_source_map, parsed_source_stats = parse_uploaded_retailer_source_file(raw_html_bytes, uploaded_raw_html_file.name)
+                    parsed_source_map, parsed_source_stats = parse_uploaded_retailer_source_file(raw_html_bytes, uploaded_raw_html_file.name, selected_retailer=selected_retailer)
                     st.session_state.uploaded_raw_html_map = parsed_source_map
                     st.session_state.uploaded_raw_html_stats = parsed_source_stats
                     st.session_state.uploaded_raw_html_filename = uploaded_raw_html_file.name
@@ -13515,6 +13536,8 @@ if uploaded_file:
                 retailer_df["copy_source_code"] = ""
                 matched_uploaded_html_count = 0
                 missing_uploaded_html_count = 0
+
+            retailer_df = sort_selected_retailer_queue(retailer_df)
             current_batch_key = f"{file_hash}::{selected_retailer}::{capture_batch_key_part}"
 
             if st.session_state.active_batch_key != current_batch_key:
