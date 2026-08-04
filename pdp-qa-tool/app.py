@@ -1919,6 +1919,70 @@ def prepare_input_df(df):
 
 
 
+def build_selected_retailer_df_from_wide_source(df, selected_retailer):
+    """Build one selected retailer queue directly from the wide SKU/RPC matrix.
+
+    This prevents the app from accidentally processing the original 936-row
+    all-retailer matrix when the selected retailer is Kroger. It also keeps rows
+    where the selected retailer has a URL or Salsify URL even if the RPC is blank.
+    """
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    selected_norm = normalize_retailer_name(selected_retailer)
+    source = df.copy()
+    source.columns = [str(c).strip().lower() for c in source.columns]
+
+    config = None
+    for retailer, rpc_col, salsify_col, url_col in WIDE_SALSIFY_RETAILER_CONFIG:
+        if normalize_retailer_name(retailer) == selected_norm:
+            config = (retailer, rpc_col, salsify_col, url_col)
+            break
+    if not config:
+        return pd.DataFrame()
+
+    retailer, rpc_col, salsify_col, url_col = config
+    sku_col = first_existing_column_local(source, ["sku", "7 digit sku", "product sku", "salsify sku", "item sku"])
+    brand_col = first_existing_column_local(source, ["brand", "brand_char", "brand characteristic"])
+    salsify_source_col = first_existing_column_local(source, WIDE_SALSIFY_SALSIFY_URL_ALIASES.get(salsify_col, [salsify_col]))
+
+    rows = []
+    for _, row in source.iterrows():
+        sku = normalize_space(row.get(sku_col, "")) if sku_col else ""
+        brand = normalize_space(row.get(brand_col, "")) if brand_col else ""
+        rpc = normalize_space(row.get(rpc_col, "")) if rpc_col in source.columns else ""
+        salsify_url = normalize_space(row.get(salsify_source_col, "")) if salsify_source_col else ""
+        retail_url = normalize_space(row.get(url_col, "")) if url_col in source.columns else ""
+
+        # Keep only rows that actually belong to this retailer. For Kroger, this
+        # drops the blank/non-Kroger 936-row template rows and keeps the real
+        # Kroger setup rows.
+        if not (rpc or salsify_url or retail_url):
+            continue
+
+        rows.append({
+            "retailer": retailer,
+            "sku": sku,
+            "brand": brand,
+            "retailer_rpc": rpc,
+            "salsify_url": clean_uploaded_url_value(salsify_url),
+            "retail_url": normalize_uploaded_retail_url(retail_url),
+            "rating": "",
+            "review_count": "",
+            "copy_source_code": "",
+        })
+
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return out
+    out = out.sort_values(
+        by=["retailer", "sku", "retailer_rpc", "retail_url"],
+        key=lambda col: col.astype(str).str.lower(),
+        kind="stable",
+    ).reset_index(drop=True)
+    return out
+
+
 def strict_filter_rows_for_selected_retailer(df, selected_retailer, dedupe_by_url=False):
     """
     Hard retailer isolation guard.
@@ -1949,7 +2013,10 @@ def strict_filter_rows_for_selected_retailer(df, selected_retailer, dedupe_by_ur
         out = out[out["retail_url"].apply(lambda value: (not str(value or "").strip()) or retailer_url_matches_selected(value, selected_retailer_norm))].copy()
 
     if dedupe_by_url and not out.empty:
-        out = out.drop_duplicates(subset=["retail_url"], keep="first").copy()
+        # Kroger can have multiple SKU7/version rows sharing one PDP URL.
+        # Do not collapse Kroger rows by URL or valid SKU rows disappear.
+        if selected_retailer_norm != "Kroger":
+            out = out.drop_duplicates(subset=["retail_url"], keep="first").copy()
 
     return out
 def clear_in_memory_caches():
@@ -4017,7 +4084,11 @@ def render_extension_batch_bridge(payload):
     }})();
     </script>
     """
-    components.html(bridge_html, height=0, width=0)
+    try:
+        components.html(bridge_html, height=0, width=0)
+    except Exception:
+        # Do not let the hidden extension bridge crash the app.
+        pass
 
 def normalize_kroger_url(url):
     url = str(url or "").strip()
@@ -13284,8 +13355,8 @@ if uploaded_file:
             clear_in_memory_caches()
             st.cache_data.clear()
 
-        master_df = read_uploaded_file_from_bytes(file_bytes, uploaded_file.name)
-        master_df = prepare_input_df(master_df)
+        source_master_df = read_uploaded_file_from_bytes(file_bytes, uploaded_file.name)
+        master_df = prepare_input_df(source_master_df)
         all_retailers = sorted(master_df["retailer"].dropna().astype(str).unique().tolist()) if "retailer" in master_df.columns else ["CVS"]
         if not all_retailers:
             all_retailers = ["CVS"]
@@ -13395,11 +13466,14 @@ if uploaded_file:
             capture_batch_key_part = "use_ext" if selected_capture_mode == CAPTURE_MODE_USE_EXTENSION else "skip_ext"
             if st.session_state.raw_html_upload_hash:
                 capture_batch_key_part += f"::{st.session_state.raw_html_upload_hash}"
-            retailer_df = strict_filter_rows_for_selected_retailer(
-                master_df,
-                selected_retailer,
-                dedupe_by_url=(selected_capture_mode == CAPTURE_MODE_USE_EXTENSION),
-            )
+            if selected_retailer == "Kroger" and is_wide_salsify_template_df(source_master_df):
+                retailer_df = build_selected_retailer_df_from_wide_source(source_master_df, selected_retailer)
+            else:
+                retailer_df = strict_filter_rows_for_selected_retailer(
+                    master_df,
+                    selected_retailer,
+                    dedupe_by_url=(selected_capture_mode == CAPTURE_MODE_USE_EXTENSION),
+                )
 
             source_mode = (st.session_state.get("uploaded_raw_html_stats", {}) or {}).get("mode", "extension_txt_html")
             url_only_source_mode = source_mode == "extension_url_only_results"
@@ -13424,7 +13498,7 @@ if uploaded_file:
                 retailer_df = strict_filter_rows_for_selected_retailer(
                     retailer_df,
                     selected_retailer,
-                    dedupe_by_url=(selected_capture_mode == CAPTURE_MODE_USE_EXTENSION),
+                    dedupe_by_url=False,
                 )
 
             if "copy_source_code" not in retailer_df.columns:
@@ -13704,7 +13778,7 @@ if retailer_df is not None and st.session_state.processing_done and st.session_s
         st.session_state.selected_brand_visual = "All"
     st.markdown("### 🏷️ Select Brand")
     st.selectbox(
-        "",
+        "Select brand display filter",
         visual_brand_options,
         key="selected_brand_visual",
         label_visibility="collapsed",
