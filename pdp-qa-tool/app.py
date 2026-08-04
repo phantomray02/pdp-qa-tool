@@ -1999,6 +1999,48 @@ def sort_selected_retailer_queue(df):
     return out.reset_index(drop=True)
 
 
+
+
+def filter_queue_to_uploaded_capture_matches(df, selected_retailer, source_mode="", selected_capture_mode="", uploaded_raw_html_map=None):
+    """When extension/TXT data is uploaded, process only rows represented in that upload.
+
+    The SKU/RPC matrix can contain many setup rows, but a captured TXT represents the
+    pages that were actually loaded by the extension. For extension + TXT mode, the
+    processing queue should therefore be the selected retailer rows that matched the
+    uploaded capture map, not every selected-retailer row from the template.
+    """
+    if df is None or df.empty:
+        return df, 0, 0
+
+    uploaded_raw_html_map = uploaded_raw_html_map or {}
+    if selected_capture_mode != CAPTURE_MODE_USE_EXTENSION or not uploaded_raw_html_map:
+        return df, 0, 0
+
+    out = df.copy()
+    before_count = len(out)
+    source_mode = str(source_mode or "")
+
+    if source_mode == "extension_url_only_results":
+        if "retail_url" not in out.columns:
+            out["retail_url"] = ""
+        matched_mask = out["retail_url"].fillna("").astype(str).str.strip().ne("")
+    else:
+        if "copy_source_code" not in out.columns:
+            out["copy_source_code"] = ""
+        matched_mask = out["copy_source_code"].fillna("").astype(str).str.len() > 0
+
+    matched_count = int(matched_mask.sum())
+    missing_count = max(before_count - matched_count, 0)
+
+    # If nothing matched, keep the current behavior so the UI can show the no-match warning
+    # instead of producing an empty invisible queue.
+    if matched_count <= 0:
+        return out, matched_count, missing_count
+
+    out = out[matched_mask].copy()
+    return out.reset_index(drop=True), matched_count, missing_count
+
+
 def strict_filter_rows_for_selected_retailer(df, selected_retailer, dedupe_by_url=False):
     """
     Hard retailer isolation guard.
@@ -13528,6 +13570,7 @@ if uploaded_file:
 
             if "copy_source_code" not in retailer_df.columns:
                 retailer_df["copy_source_code"] = ""
+            pre_capture_queue_count = len(retailer_df)
             if uploaded_raw_html_map and not url_only_source_mode:
                 retailer_df["copy_source_code"] = retailer_df.apply(lambda row: lookup_uploaded_raw_html(uploaded_raw_html_map, row.get("retail_url", ""), target_rpc=row.get("retailer_rpc", "")), axis=1)
                 matched_uploaded_html_count = int((retailer_df["copy_source_code"].astype(str).str.len() > 0).sum())
@@ -13537,8 +13580,19 @@ if uploaded_file:
                 matched_uploaded_html_count = 0
                 missing_uploaded_html_count = 0
 
+            retailer_df, capture_matched_queue_count, capture_missing_queue_count = filter_queue_to_uploaded_capture_matches(
+                retailer_df,
+                selected_retailer,
+                source_mode=source_mode,
+                selected_capture_mode=selected_capture_mode,
+                uploaded_raw_html_map=uploaded_raw_html_map,
+            )
+            if uploaded_raw_html_map and capture_matched_queue_count > 0:
+                matched_uploaded_html_count = capture_matched_queue_count
+                missing_uploaded_html_count = capture_missing_queue_count
+
             retailer_df = sort_selected_retailer_queue(retailer_df)
-            current_batch_key = f"{file_hash}::{selected_retailer}::{capture_batch_key_part}"
+            current_batch_key = f"{file_hash}::{selected_retailer}::{capture_batch_key_part}::queued_{len(retailer_df)}"
 
             if st.session_state.active_batch_key != current_batch_key:
                 st.session_state.summary_rows = []
@@ -13575,7 +13629,7 @@ if uploaded_file:
                     cvs_capture_block_reason = ""
                     st.caption(f"CVS TXT upload has {missing_uploaded_html_count} unmatched rows. Those rows will fall back to live/canonical CVS parsing instead of blocking the batch.")
             isolated_unique_url_count = int(retailer_df["retail_url"].fillna("").astype(str).str.strip().replace("", pd.NA).dropna().nunique()) if retailer_df is not None and not retailer_df.empty and "retail_url" in retailer_df.columns else 0
-            st.caption(f"Strict retailer isolation active: {selected_retailer} only. Rows queued: {len(retailer_df)}. Unique retailer URLs queued: {isolated_unique_url_count}.")
+            st.caption(f"Strict retailer isolation active: {selected_retailer} only. Final rows queued: {len(retailer_df)}. Unique retailer URLs queued: {isolated_unique_url_count}.")
             if selected_capture_mode == CAPTURE_MODE_USE_EXTENSION and retailer_df is not None and not retailer_df.empty:
                 extension_input_csv = build_extension_input_csv(retailer_df, selected_retailer)
                 st.download_button(
@@ -13612,7 +13666,7 @@ if uploaded_file:
                 st.caption(f"{selected_retailer} is in skip-extension mode, so the app can auto-run straight to batch with live retailer fetches.")
 
             if uploaded_raw_html_map:
-                st.caption(f"TXT match status for {selected_retailer}: {matched_uploaded_html_count} matched rows, {missing_uploaded_html_count} unmatched rows. Fast Kroger startup map is active.")
+                st.caption(f"TXT match status for {selected_retailer}: {matched_uploaded_html_count} matched rows loaded into the processing queue, {missing_uploaded_html_count} selected-retailer rows were not in the uploaded capture.")
             if cvs_capture_block_reason:
                 st.error(cvs_capture_block_reason)
                 if cvs_missing_capture_urls:
