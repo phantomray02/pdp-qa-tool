@@ -702,6 +702,8 @@ def read_uploaded_file_from_bytes(file_bytes, file_name):
                 BytesIO(file_bytes),
                 sheet_name=sheet_name,
                 engine="openpyxl",
+                dtype=str,
+                keep_default_na=False,
             )
 
             if sheet_df is None or sheet_df.empty:
@@ -719,7 +721,7 @@ def read_uploaded_file_from_bytes(file_bytes, file_name):
     last_error = None
     for encoding in ["utf-8-sig", "utf-8", "latin1"]:
         try:
-            return pd.read_csv(BytesIO(file_bytes), encoding=encoding)
+            return pd.read_csv(BytesIO(file_bytes), encoding=encoding, dtype=str, keep_default_na=False)
         except Exception as e:
             last_error = e
 
@@ -1889,6 +1891,7 @@ def prepare_input_df(df):
 
     for col in ["sku", "salsify_url", "retail_url", "brand", "retailer_rpc", "rating", "review_count"]:
         df[col] = df[col].replace("#N/A", "").fillna("").astype(str).str.strip()
+    df["retailer_rpc"] = df["retailer_rpc"].apply(clean_item_number)
     df["copy_source_code"] = df["copy_source_code"].fillna("").astype(str)
 
     # Keep the original full Salsify URL, including the product slug.
@@ -2002,16 +2005,13 @@ def sort_selected_retailer_queue(df):
 
 
 def filter_queue_to_uploaded_capture_matches(df, selected_retailer, source_mode="", selected_capture_mode="", uploaded_raw_html_map=None):
-    """When extension/TXT data is uploaded, process only rows represented in that upload.
+    """For extension/TXT runs, process only selected-retailer rows that actually matched the uploaded capture.
 
-    The SKU/RPC matrix can contain many setup rows, but a captured TXT represents the
-    pages that were actually loaded by the extension. For extension + TXT mode, the
-    processing queue should therefore be the selected retailer rows that matched the
-    uploaded capture map, not every selected-retailer row from the template.
+    The SKU/RPC matrix is the reference source, but the uploaded capture file represents the pages that were actually loaded.
+    This prevents the app from processing the whole matrix or unmatched selected-retailer rows.
     """
     if df is None or df.empty:
         return df, 0, 0
-
     uploaded_raw_html_map = uploaded_raw_html_map or {}
     if selected_capture_mode != CAPTURE_MODE_USE_EXTENSION or not uploaded_raw_html_map:
         return df, 0, 0
@@ -2031,9 +2031,6 @@ def filter_queue_to_uploaded_capture_matches(df, selected_retailer, source_mode=
 
     matched_count = int(matched_mask.sum())
     missing_count = max(before_count - matched_count, 0)
-
-    # If nothing matched, keep the current behavior so the UI can show the no-match warning
-    # instead of producing an empty invisible queue.
     if matched_count <= 0:
         return out, matched_count, missing_count
 
@@ -13570,7 +13567,6 @@ if uploaded_file:
 
             if "copy_source_code" not in retailer_df.columns:
                 retailer_df["copy_source_code"] = ""
-            pre_capture_queue_count = len(retailer_df)
             if uploaded_raw_html_map and not url_only_source_mode:
                 retailer_df["copy_source_code"] = retailer_df.apply(lambda row: lookup_uploaded_raw_html(uploaded_raw_html_map, row.get("retail_url", ""), target_rpc=row.get("retailer_rpc", "")), axis=1)
                 matched_uploaded_html_count = int((retailer_df["copy_source_code"].astype(str).str.len() > 0).sum())
@@ -13580,6 +13576,7 @@ if uploaded_file:
                 matched_uploaded_html_count = 0
                 missing_uploaded_html_count = 0
 
+            # Extension/TXT mode: only process rows actually represented in the uploaded capture.
             retailer_df, capture_matched_queue_count, capture_missing_queue_count = filter_queue_to_uploaded_capture_matches(
                 retailer_df,
                 selected_retailer,
@@ -13592,6 +13589,10 @@ if uploaded_file:
                 missing_uploaded_html_count = capture_missing_queue_count
 
             retailer_df = sort_selected_retailer_queue(retailer_df)
+            if retailer_df is not None and not retailer_df.empty:
+                retailer_df = retailer_df.copy().reset_index(drop=True)
+                retailer_df["_queue_order"] = range(len(retailer_df))
+
             current_batch_key = f"{file_hash}::{selected_retailer}::{capture_batch_key_part}::queued_{len(retailer_df)}"
 
             if st.session_state.active_batch_key != current_batch_key:
@@ -13666,7 +13667,7 @@ if uploaded_file:
                 st.caption(f"{selected_retailer} is in skip-extension mode, so the app can auto-run straight to batch with live retailer fetches.")
 
             if uploaded_raw_html_map:
-                st.caption(f"TXT match status for {selected_retailer}: {matched_uploaded_html_count} matched rows loaded into the processing queue, {missing_uploaded_html_count} selected-retailer rows were not in the uploaded capture.")
+                st.caption(f"TXT match status for {selected_retailer}: {matched_uploaded_html_count} matched rows loaded into the processing queue; {missing_uploaded_html_count} selected-retailer rows were not in the uploaded capture.")
             if cvs_capture_block_reason:
                 st.error(cvs_capture_block_reason)
                 if cvs_missing_capture_urls:
@@ -13899,24 +13900,17 @@ if retailer_df is not None and file_ready_for_batch and st.session_state.batch_s
             batch_records = batch_df.to_dict("records")
 
             with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-                futures = [executor.submit(process_row, row_dict) for row_dict in batch_records]
-                for future in as_completed(futures):
+                future_to_order = {
+                    executor.submit(process_row, row_dict): int(row_dict.get("_queue_order", start + idx))
+                    for idx, row_dict in enumerate(batch_records)
+                }
+                batch_results = []
+                for future in as_completed(future_to_order):
                     completed += 1
+                    queue_order = future_to_order[future]
                     result = future.result()
                     if result:
-                        summary = result.get("summary")
-                        detail = result.get("detail")
-                        debug = result.get("debug")
-
-                        if summary and summary["SKU"] not in st.session_state.summary_skus:
-                            st.session_state.summary_rows.append(summary)
-                            st.session_state.summary_skus.add(summary["SKU"])
-                        if detail and detail["SKU"] not in st.session_state.detail_skus:
-                            st.session_state.export_rows.append(detail)
-                            st.session_state.detail_skus.add(detail["SKU"])
-                        if debug and debug["SKU"] not in st.session_state.debug_skus:
-                            st.session_state.debug_rows.append(debug)
-                            st.session_state.debug_skus.add(debug["SKU"])
+                        batch_results.append((queue_order, result))
 
                     if completed % UI_UPDATE_EVERY == 0 or completed == total:
                         progress_bar.progress(completed / max(total, 1))
@@ -13924,6 +13918,21 @@ if retailer_df is not None and file_ready_for_batch and st.session_state.batch_s
                             f"**Processed:** {completed}/{total}  \n**Overall:** {start + completed}/{len(retailer_df)}"
                         )
                         overall_progress_bar.progress((start + completed) / max(len(retailer_df), 1))
+
+                for _, result in sorted(batch_results, key=lambda item: item[0]):
+                    summary = result.get("summary")
+                    detail = result.get("detail")
+                    debug = result.get("debug")
+
+                    if summary and summary["SKU"] not in st.session_state.summary_skus:
+                        st.session_state.summary_rows.append(summary)
+                        st.session_state.summary_skus.add(summary["SKU"])
+                    if detail and detail["SKU"] not in st.session_state.detail_skus:
+                        st.session_state.export_rows.append(detail)
+                        st.session_state.detail_skus.add(detail["SKU"])
+                    if debug and debug["SKU"] not in st.session_state.debug_skus:
+                        st.session_state.debug_rows.append(debug)
+                        st.session_state.debug_skus.add(debug["SKU"])
 
             if start + BATCH_SIZE < len(retailer_df):
                 st.session_state.start_idx += BATCH_SIZE
