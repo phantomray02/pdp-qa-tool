@@ -3394,7 +3394,11 @@ def parse_uploaded_raw_html_map(raw_text, selected_retailer=""):
                 if requested_url and "cvs.com" in requested_url.lower() and raw_html_text:
                     html_text = compact_html + "\n<!-- CVS RAW HTML FALLBACK FROM EXTENSION -->\n" + raw_html_text
                 elif requested_url and "samsclub.com" in requested_url.lower() and raw_html_text:
-                    html_text = compact_html + "\n<!-- SAMS RAW HTML FALLBACK FROM EXTENSION -->\n" + raw_html_text
+                    # Sam's Club live-only rule: never prepend extension parsed JSON.
+                    # The parsed JSON scans the whole page and can contain recommended,
+                    # sponsored, customer, or alternate-product data. Use only the
+                    # hydrated HTML for this exact PDP capture.
+                    html_text = raw_html_text
                 elif requested_url and "heb.com" in requested_url.lower() and raw_html_text:
                     # HEB-only stable fix: keep compact parsed copy and append only tiny current-item image URLs.
                     # Do not append full raw HTML because it can make the uploaded map huge and crash Streamlit.
@@ -10597,10 +10601,8 @@ def extract_sams_copy_from_source(source_text, retail_url=""):
         if title:
             debug["Title Path"] = "sams_visible_title_fallback"
 
-    if not title and retail_url:
-        title = build_sams_title_from_url_slug(retail_url)
-        if title:
-            debug["Title Path"] = "retail_url_slug_fallback"
+    # Live-only rule: do not infer a title from the URL slug. If the current
+    # PDP does not expose a title, leave the retailer title blank.
 
     description = ""
     long_match = re.search(
@@ -10794,15 +10796,20 @@ def extract_sams_images_from_html(html_text):
     # gallery for the current item, so return them without scanning page-wide JSON.
     live_gallery = []
     live_seen = set()
+    live_video_slots = []
     img_tag_pattern = re.compile(r'<img\b[^>]*>', flags=re.IGNORECASE | re.DOTALL)
     for tag_match in img_tag_pattern.finditer(working):
         tag = tag_match.group(0)
         alt_match = re.search(r"alt=[\"']([^\"']*)[\"']", tag, flags=re.IGNORECASE | re.DOTALL)
         alt_text = normalize_space(html.unescape(alt_match.group(1) if alt_match else ""))
-        slot_match = re.search(r'(?:thumbnail|hero)\s+image\s+(\d+)\s+of\b', alt_text, flags=re.IGNORECASE)
+        slot_match = re.search(r'(?:thumbnail|hero)\s+(?:video\s+)?image\s+(\d+)\s+of\b', alt_text, flags=re.IGNORECASE)
         if not slot_match:
             continue
         slot_num = int(slot_match.group(1))
+        if re.search(r'\bvideo\b', alt_text, flags=re.IGNORECASE):
+            if slot_num not in live_video_slots:
+                live_video_slots.append(slot_num)
+            continue
         attrs = []
         for attr_name in ["src", "data-src", "data-image-src", "currentSrc"]:
             m_attr = re.search(attr_name + r"=[\"']([^\"']+)[\"']", tag, flags=re.IGNORECASE | re.DOTALL)
@@ -10820,9 +10827,30 @@ def extract_sams_images_from_html(html_text):
                 live_seen.add(key)
                 live_gallery.append((slot_num, tag_match.start(), normalized))
                 break
+    if live_video_slots:
+        # The live carousel marks video positions with "thumbnail video image N of".
+        # Insert only the current PDP's first rendered Sam's Club rich-media URL
+        # into those positions. Related shelf videos are not considered.
+        live_videos = dedupe_preserve_order(re.findall(
+            r"https?://i5-richmedia\.samsclubimages\.com/asr-rm/[^\s\"'<>]+?\.(?:mp4|m3u8)(?:\?[^\s\"'<>]*)?",
+            working,
+            flags=re.IGNORECASE,
+        ))
+        for slot_num, video_url in zip(sorted(live_video_slots), live_videos):
+            key = _base_url(video_url)
+            if key and key not in live_seen:
+                live_seen.add(key)
+                live_gallery.append((slot_num, -1, video_url))
     if live_gallery:
         return [url for _, _, url in sorted(live_gallery, key=lambda x: (x[0], x[1]))][:MAX_IMAGE_SLOTS_TO_COMPARE]
 
+    # Sam's Club live-only rule: if the current PDP did not render numbered
+    # thumbnail/hero gallery images, return no retailer images. Do not scan
+    # page-wide JSON or raw ASR URLs because those include recommendations and
+    # other products that are not live in the current item's gallery.
+    return []
+
+    # Legacy fallbacks below are intentionally unreachable for Sam's Club.
     # Fallback 1: parsed JSON blocks from the extension TXT. Used only when the
     # current PDP did not render numbered gallery thumbnails.
     for json_match in re.finditer(r'-----BEGIN PARSED JSON-----(.*?)-----END PARSED JSON-----', working, flags=re.IGNORECASE | re.DOTALL):
