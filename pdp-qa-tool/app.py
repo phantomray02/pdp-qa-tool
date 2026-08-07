@@ -10788,7 +10788,43 @@ def extract_sams_images_from_html(html_text):
 
     out, seen = [], set()
 
-    # Priority 1: parsed JSON blocks from the extension TXT.
+    # Live Sam's Club PDP gallery only. The full page also contains recommendation
+    # shelves, sponsored tiles, customer photos, and other products inside Next.js
+    # data. If numbered PDP thumbnails are present, they are the authoritative live
+    # gallery for the current item, so return them without scanning page-wide JSON.
+    live_gallery = []
+    live_seen = set()
+    img_tag_pattern = re.compile(r'<img\b[^>]*>', flags=re.IGNORECASE | re.DOTALL)
+    for tag_match in img_tag_pattern.finditer(working):
+        tag = tag_match.group(0)
+        alt_match = re.search(r"alt=[\"']([^\"']*)[\"']", tag, flags=re.IGNORECASE | re.DOTALL)
+        alt_text = normalize_space(html.unescape(alt_match.group(1) if alt_match else ""))
+        slot_match = re.search(r'(?:thumbnail|hero)\s+image\s+(\d+)\s+of\b', alt_text, flags=re.IGNORECASE)
+        if not slot_match:
+            continue
+        slot_num = int(slot_match.group(1))
+        attrs = []
+        for attr_name in ["src", "data-src", "data-image-src", "currentSrc"]:
+            m_attr = re.search(attr_name + r"=[\"']([^\"']+)[\"']", tag, flags=re.IGNORECASE | re.DOTALL)
+            if m_attr:
+                attrs.append(m_attr.group(1))
+        m_srcset = re.search(r"srcset=[\"']([^\"']+)[\"']", tag, flags=re.IGNORECASE | re.DOTALL)
+        if m_srcset:
+            # Prefer the first candidate because normalization requests the standard
+            # comparison size and removes thumbnail dimensions.
+            attrs.extend(part.strip().split()[0] for part in m_srcset.group(1).split(',') if part.strip())
+        for raw_url in attrs:
+            normalized = _normalize_product_media(raw_url)
+            key = _base_url(normalized) if normalized else ""
+            if normalized and key and key not in live_seen:
+                live_seen.add(key)
+                live_gallery.append((slot_num, tag_match.start(), normalized))
+                break
+    if live_gallery:
+        return [url for _, _, url in sorted(live_gallery, key=lambda x: (x[0], x[1]))][:MAX_IMAGE_SLOTS_TO_COMPARE]
+
+    # Fallback 1: parsed JSON blocks from the extension TXT. Used only when the
+    # current PDP did not render numbered gallery thumbnails.
     for json_match in re.finditer(r'-----BEGIN PARSED JSON-----(.*?)-----END PARSED JSON-----', working, flags=re.IGNORECASE | re.DOTALL):
         try:
             payload = json.loads(json_match.group(1).strip())
@@ -10798,7 +10834,7 @@ def extract_sams_images_from_html(html_text):
             for url in _json_values(payload):
                 _add(out, seen, url)
 
-    # Priority 2: Next.js app data often contains imageInfo/allImages/product images.
+    # Fallback 2: Next.js app data. This path is used only when no live gallery rendered.
     for script_match in re.finditer(r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>', working, flags=re.IGNORECASE | re.DOTALL):
         raw_json = html.unescape(script_match.group(1) or "")
         try:
@@ -10809,7 +10845,7 @@ def extract_sams_images_from_html(html_text):
             for url in _json_values(payload):
                 _add(out, seen, url)
 
-    # Priority 3: gallery-tag order from compact capture or onsite thumbnails.
+    # Fallback 3: remaining product-looking image tags.
     img_tag_pattern = re.compile(r'<img\b[^>]*>', flags=re.IGNORECASE | re.DOTALL)
     tagged = []
     for tag_match in img_tag_pattern.finditer(working):
@@ -10839,7 +10875,7 @@ def extract_sams_images_from_html(html_text):
     for _, _, url in sorted(tagged, key=lambda x: (x[0], x[1])):
         _add(out, seen, url)
 
-    # Priority 4: direct raw raster URLs, ASR first.
+    # Fallback 4: direct raw raster URLs.
     raw_url_patterns = [
         r'https?://i5\.samsclubimages\.com/asr/[^\s"\'<>]+',
         r'https?://i5\.walmartimages\.com/[^\s"\'<>]+',
