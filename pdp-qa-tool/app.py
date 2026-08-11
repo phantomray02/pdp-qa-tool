@@ -7361,6 +7361,67 @@ def extract_cvs_visible_details_copy_from_dom(html_text):
         working = unescaped
 
     soup = BeautifulSoup(working, "html.parser")
+
+    # CVS-only primary rendered-DOM path. Current CVS PDP captures often include
+    # the actual Details content in vendorDetailsParagraph/vendorDetailsBullet
+    # elements even when the surrounding accordion no longer uses the older
+    # whitespace-pre-line wrapper. Read those exact CVS elements first.
+    direct_description_candidates = []
+    direct_description_nodes = []
+    direct_description_nodes.extend(soup.select('[class~="vendorDetailsParagraph"]'))
+    direct_description_nodes.extend(soup.select('[class*="vendorDetailsParagraph"]'))
+    direct_description_nodes.extend(soup.select('#vendorDetailsParagraph, [id^="vendorDetailsParagraph"]'))
+    seen_description_nodes = set()
+    for node in direct_description_nodes:
+        node_id = id(node)
+        if node_id in seen_description_nodes:
+            continue
+        seen_description_nodes.add(node_id)
+        if node.name in {"style", "script"} or node.find_parent(["style", "script"]):
+            continue
+        value = clean_cvs_text(node.get_text(" ", strip=True))
+        if len(value) >= 40:
+            direct_description_candidates.append(value)
+
+    direct_feature_nodes = []
+    direct_feature_nodes.extend(soup.select('li#vendorDetailsBullet, li[id^="vendorDetailsBullet"]'))
+    direct_feature_nodes.extend(soup.select('li.vendorDetailsBullet, li[class*="vendorDetailsBullet"]'))
+    direct_feature_nodes.extend(soup.select('[data-testid*="vendorDetailsBullet"]'))
+    direct_feature_values = []
+    seen_feature_nodes = set()
+    for node in direct_feature_nodes:
+        node_id = id(node)
+        if node_id in seen_feature_nodes:
+            continue
+        seen_feature_nodes.add(node_id)
+        if node.name in {"style", "script"} or node.find_parent(["style", "script"]):
+            continue
+        value = clean_cvs_feature_text(node.get_text(" ", strip=True))
+        if value:
+            direct_feature_values.append(value)
+
+    direct_features = normalize_cvs_features(direct_feature_values)
+    direct_description = ""
+    if direct_description_candidates:
+        direct_description = max(
+            dedupe_preserve_order(direct_description_candidates),
+            key=lambda value: (len(value), value),
+        )
+
+    if direct_description or direct_features:
+        debug["Details Container Found"] = True
+        if direct_description:
+            debug["Description Path"] = "cvs_rendered_dom_vendorDetailsParagraph"
+            debug["Description Excerpt"] = direct_description[:500]
+        if direct_features:
+            debug["Features Path"] = "cvs_rendered_dom_vendorDetailsBullet"
+            debug["Feature Count"] = len(direct_features)
+        return {
+            "description": direct_description,
+            "features": direct_features[:5],
+            "debug": debug,
+        }
+
     candidate_containers = []
 
     # Most current CVS PDPs render description/features in a div with
