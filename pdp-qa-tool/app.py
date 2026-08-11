@@ -5441,6 +5441,11 @@ def add_cvs_generated_image_fallback_if_needed(bundle, retail_url="", target_rpc
         bundle = {"text": {"title": "", "description": "", "features": [], "debug": {}}, "images": []}
     bundle.setdefault("text", {}).setdefault("debug", {})
     bundle.setdefault("images", [])
+    # Strict CVS live-only rule: generated image URLs are not evidence that an
+    # image appeared in the exact captured CVS gallery. Keep missing slots missing.
+    if not ALLOW_RETAILER_GENERATED_IMAGE_FALLBACKS:
+        bundle["text"]["debug"]["CVS Generated Images Disabled"] = True
+        return bundle
     if cvs_bundle_has_images(bundle):
         return bundle
     sku_id = get_cvs_effective_sku_id(retail_url=retail_url, target_rpc=target_rpc)
@@ -7550,6 +7555,10 @@ def _extract_cvs_text_from_html(html_text, retail_url="", target_rpc=""):
         if cleaned_title != title:
             title = cleaned_title
             debug["Title Path"] = (str(debug.get("Title Path", "")) + " | cvs_title_suffix_removed").strip(" |")
+        reviews_cleaned_title = re.sub(r"^\s*Customer reviews for\s+", "", title, flags=re.IGNORECASE).strip()
+        if reviews_cleaned_title != title:
+            title = reviews_cleaned_title
+            debug["Title Path"] = (str(debug.get("Title Path", "")) + " | cvs_reviews_heading_product_name").strip(" |")
 
     vendor_copy = extract_vendor_copy_from_nextjs(
         html_text,
@@ -7561,6 +7570,21 @@ def _extract_cvs_text_from_html(html_text, retail_url="", target_rpc=""):
     features = normalize_cvs_features(vendor_copy.get("features", []))
 
     debug.update(vendor_copy.get("debug", {}))
+
+    cvs_invalid_copy_markers = (
+        "sign in or create an account",
+        "pharmacy minuteclinic",
+        "shop extracare",
+        "search cvs or ask a question",
+        "manage prescriptions",
+        "schedule a vaccine",
+        "shop store pickup",
+        "add to pickup",
+        "customer reviews for",
+    )
+    if description and any(marker in description.lower() for marker in cvs_invalid_copy_markers):
+        description = ""
+        debug["Description Path"] = "cvs_navigation_copy_rejected"
 
     # CVS-only fallback: if Next.js/vendorDetails misses the description,
     # use the visible Details accordion from the CVS DOM. This does not touch
@@ -7651,6 +7675,9 @@ def _extract_cvs_text_from_html(html_text, retail_url="", target_rpc=""):
             title = normalize_space(visible_fallback.get("title", ""))
             debug["Title Path"] = visible_debug.get("Title Path", "cvs_visible_indexed_fallback")
         visible_description = clean_cvs_text(visible_fallback.get("description", ""))
+        if visible_description and any(marker in visible_description.lower() for marker in cvs_invalid_copy_markers):
+            visible_description = ""
+            debug["CVS Visible Description Rejected"] = "navigation_or_reviews_shell"
         if visible_description and (not description or len(visible_description) > len(description) + 80):
             description = visible_description
             debug["Description Path"] = visible_debug.get("Description Path", "cvs_visible_indexed_fallback")
@@ -7703,11 +7730,13 @@ def get_cvs_bundle(retail_url, target_rpc=""):
     if parsed_image_base:
         debug["CVS Parsed Image Base"] = parsed_image_base
         debug["CVS Parsed Image Count"] = len(bundle.get("images", []) or [])
-        if len(bundle.get("images", []) or []) < 8:
+        if ALLOW_RETAILER_GENERATED_IMAGE_FALLBACKS and len(bundle.get("images", []) or []) < 8:
             bundle["images"] = cvs_generated_image_candidates_for_base(parsed_image_base, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE)
             debug["CVS Image Fallback Applied"] = "cvs_parsed_image_base_expanded"
             debug["CVS Image Fallback Base"] = parsed_image_base
             debug["CVS Image Fallback Count"] = len(bundle.get("images") or [])
+        elif len(bundle.get("images", []) or []) < 8:
+            debug["CVS Image Fallback Skipped"] = "strict_live_retailer_only"
 
     # CVS combined approach, live-only for copy:
     # - Keep copy from direct CVS HTML only.
@@ -11260,11 +11289,13 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
             if uploaded_image_base:
                 upload_debug["CVS Uploaded Image Base"] = uploaded_image_base
                 upload_debug["CVS Uploaded Image Count"] = len(uploaded_bundle.get("images", []) or [])
-                if len(uploaded_bundle.get("images", []) or []) < 8:
+                if ALLOW_RETAILER_GENERATED_IMAGE_FALLBACKS and len(uploaded_bundle.get("images", []) or []) < 8:
                     uploaded_bundle["images"] = cvs_generated_image_candidates_for_base(uploaded_image_base, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE)
                     upload_debug["CVS Image Fallback Applied"] = "cvs_uploaded_image_base_expanded"
                     upload_debug["CVS Image Fallback Base"] = uploaded_image_base
                     upload_debug["CVS Image Fallback Count"] = len(uploaded_bundle.get("images") or [])
+                elif len(uploaded_bundle.get("images", []) or []) < 8:
+                    upload_debug["CVS Image Fallback Skipped"] = "strict_live_retailer_only"
 
             # CVS combined approach: always try both uploaded source and live CVS,
             # then merge the richest title/description/features/images by field.
