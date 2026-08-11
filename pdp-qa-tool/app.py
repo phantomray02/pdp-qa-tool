@@ -3969,6 +3969,26 @@ def lookup_uploaded_raw_html(uploaded_html_map, retail_url, target_rpc=""):
             return html_text
     return ""
 
+def normalize_extension_capture_url(retail_url, retailer_name=""):
+    """Normalize only the URL sent to the browser extension; preserve source data elsewhere."""
+    raw = str(retail_url or "").strip()
+    if not raw:
+        return ""
+    if normalize_retailer_name(retailer_name) != "CVS" and "cvs.com" not in raw.lower():
+        return raw
+    try:
+        parsed = urllib.parse.urlsplit(raw)
+        host = (parsed.hostname or "").lower()
+        if host not in {"cvs.com", "www.cvs.com"}:
+            return raw
+        path = re.sub(r"/reviews(?:/.*)?$", "", parsed.path or "", flags=re.IGNORECASE).rstrip("/")
+        return urllib.parse.urlunsplit(("https", "www.cvs.com", path, "", ""))
+    except Exception:
+        cleaned = re.sub(r"^http://", "https://", raw, flags=re.IGNORECASE)
+        cleaned = re.sub(r"/reviews(?:/.*)?(?:[?#].*)?$", "", cleaned, flags=re.IGNORECASE)
+        return cleaned.split("#", 1)[0].split("?", 1)[0].rstrip("/")
+
+
 def build_extension_batch_payload(retailer_df, retailer_name, current_batch_key, capture_mode, txt_ready=False):
     retailer_name_norm = normalize_retailer_name(retailer_name)
     retailer_df = strict_filter_rows_for_selected_retailer(
@@ -3981,7 +4001,7 @@ def build_extension_batch_payload(retailer_df, retailer_name, current_batch_key,
     row_payload = []
     if retailer_df is not None and not retailer_df.empty:
         retail_urls = [
-            str(x).strip()
+            normalize_extension_capture_url(x, retailer_name_norm)
             for x in retailer_df["retail_url"].fillna("").astype(str).tolist()
             if str(x).strip()
         ]
@@ -3993,7 +4013,7 @@ def build_extension_batch_payload(retailer_df, retailer_name, current_batch_key,
             row_payload.append({
                 "sku": str(row.get("sku", "") or "").strip(),
                 "search_term": search_term,
-                "retail_url": str(row.get("retail_url", "") or "").strip(),
+                "retail_url": normalize_extension_capture_url(row.get("retail_url", ""), retailer_name_norm),
                 "retailer_rpc": str(row.get("retailer_rpc", "") or "").strip(),
                 "rpc": str(row.get("retailer_rpc", "") or "").strip(),
                 "retailer": retailer_name_norm,
