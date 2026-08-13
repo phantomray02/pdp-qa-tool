@@ -14139,6 +14139,50 @@ if (
     detail_df = pd.DataFrame(st.session_state.export_rows)
     debug_df = pd.DataFrame(st.session_state.debug_rows)
 
+    # Kroger capture-quality handling. A zero score is a content comparison result,
+    # while an invalid capture means the live PDP content was never available to
+    # evaluate. Keep those states separate and create a targeted recapture queue.
+    retry_df = pd.DataFrame()
+    if normalize_retailer_name(selected_retailer) == "Kroger" and not debug_df.empty:
+        source_series = debug_df.get("Source Used", pd.Series("", index=debug_df.index)).fillna("").astype(str)
+        title_path_series = debug_df.get("Title Path", pd.Series("", index=debug_df.index)).fillna("").astype(str)
+        description_path_series = debug_df.get("Description Path", pd.Series("", index=debug_df.index)).fillna("").astype(str)
+        invalid_capture_mask = (
+            source_series.str.contains("invalid_kroger_capture", case=False, na=False)
+            | title_path_series.str.contains("invalid_uploaded_kroger_capture", case=False, na=False)
+            | description_path_series.str.contains("invalid_uploaded_kroger_capture", case=False, na=False)
+        )
+        invalid_debug_df = debug_df.loc[invalid_capture_mask].copy()
+        invalid_skus = set(invalid_debug_df.get("SKU", pd.Series(dtype=str)).fillna("").astype(str).str.strip())
+        invalid_skus.discard("")
+
+        if invalid_skus:
+            capture_status = "Capture Invalid - Recapture Required"
+            score_columns = [
+                "Title %", "Description %", "Feature %", "Image Match %", "Overall %",
+                "Feature 1 %", "Feature 2 %", "Feature 3 %", "Feature 4 %", "Feature 5 %",
+                "Feature 6 %", "Feature 7 %", "Image 1 %", "Image 2 %", "Image 3 %",
+                "Image 4 %", "Image 5 %", "Image 6 %",
+            ]
+            for frame in (summary_df, detail_df):
+                if frame.empty or "SKU" not in frame.columns:
+                    continue
+                frame_invalid = frame["SKU"].fillna("").astype(str).str.strip().isin(invalid_skus)
+                frame.loc[frame_invalid, "Status"] = capture_status
+                for score_column in score_columns:
+                    if score_column in frame.columns:
+                        frame.loc[frame_invalid, score_column] = pd.NA
+
+            retry_columns = [
+                "SKU", "Retailer", "Kroger RPC", "Brand", "Retail URL", "Salsify URL",
+                "Source Used", "Title Path", "Description Path", "Features Path",
+                "rawHtmlLength", "rawTextLength",
+            ]
+            retry_df = invalid_debug_df[[c for c in retry_columns if c in invalid_debug_df.columns]].copy()
+            retry_df["Retry Status"] = "Recapture Required"
+            retry_df["Capture Reason"] = "Uploaded Kroger capture did not contain the rendered product content."
+            retry_df = retry_df.drop_duplicates(subset=[c for c in ["SKU", "Kroger RPC", "Retail URL"] if c in retry_df.columns])
+
     if summary_df.empty:
         fallback_status = "No rows were returned from process_row. This should be rare; the app now keeps this row so the export is not blank."
         fallback_row = {
@@ -14177,6 +14221,8 @@ if (
         summary_df.to_excel(writer, sheet_name="Summary", index=False)
         detail_df.to_excel(writer, sheet_name="Details", index=False)
         debug_df.to_excel(writer, sheet_name="Debug", index=False)
+        if not retry_df.empty:
+            retry_df.to_excel(writer, sheet_name="Retry Queue", index=False)
 
         wb = writer.book
 
@@ -14184,7 +14230,11 @@ if (
         yellow_fill = PatternFill(fill_type="solid", fgColor="FFEB9C")
         red_fill = PatternFill(fill_type="solid", fgColor="FFC7CE")
 
-        for sheet_name in ["Summary", "Details"]:
+        sheets_to_format = ["Summary", "Details"]
+        if "Retry Queue" in wb.sheetnames:
+            sheets_to_format.append("Retry Queue")
+
+        for sheet_name in sheets_to_format:
             ws = wb[sheet_name]
 
             header_map = {}
@@ -14238,7 +14288,13 @@ if (
     st.session_state.report_batch_key = st.session_state.completed_batch_key
     st.session_state.auto_download_done = False
     if not st.session_state.batch_status_message:
-        st.session_state.batch_status_message = f"Batch finished for {selected_retailer}. Extract/report generated successfully."
+        if not retry_df.empty:
+            st.session_state.batch_status_message = (
+                f"Batch finished for {selected_retailer}. Report generated with "
+                f"{len(retry_df)} capture(s) in the Retry Queue."
+            )
+        else:
+            st.session_state.batch_status_message = f"Batch finished for {selected_retailer}. Extract/report generated successfully."
     st.rerun()
         
 # =========================================
