@@ -3109,7 +3109,11 @@ def build_sams_compact_capture_from_parsed_json(payload):
     feature_items = dedupe_preserve_order(feature_items)[:10]
 
     images = []
-    for image_url in payload.get("images", []) or []:
+    diagnostics = payload.get("diagnostics", {}) if isinstance(payload.get("diagnostics", {}), dict) else {}
+    sams_image_verified = bool(diagnostics.get("imageProductVerified"))
+    sams_image_source = normalize_space(diagnostics.get("imageCaptureSource", ""))
+    source_images = (payload.get("images", []) or []) if sams_image_verified and sams_image_source == "exact_product_json_ld" else []
+    for image_url in source_images:
         normalized = _normalize_media_url(image_url)
         if normalized and _is_sams_product_media(normalized):
             images.append(normalized)
