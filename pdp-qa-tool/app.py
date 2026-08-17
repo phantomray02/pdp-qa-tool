@@ -3393,12 +3393,11 @@ def parse_uploaded_raw_html_map(raw_text, selected_retailer=""):
             if compact_html:
                 if requested_url and "cvs.com" in requested_url.lower() and raw_html_text:
                     html_text = compact_html + "\n<!-- CVS RAW HTML FALLBACK FROM EXTENSION -->\n" + raw_html_text
-                elif requested_url and "samsclub.com" in requested_url.lower() and raw_html_text:
-                    # Sam's Club live-only rule: never prepend extension parsed JSON.
-                    # The parsed JSON scans the whole page and can contain recommended,
-                    # sponsored, customer, or alternate-product data. Use only the
-                    # hydrated HTML for this exact PDP capture.
-                    html_text = raw_html_text
+                elif requested_url and "samsclub.com" in requested_url.lower():
+                    # Compact extension output is already filtered to this exact Sam's Club PDP.
+                    # Use the parsed title/copy/features/product media first, then append only
+                    # the compact relevant HTML nodes as a parser fallback.
+                    html_text = compact_html + (("\n<!-- SAMS COMPACT HTML FALLBACK -->\n" + raw_html_text) if raw_html_text else "")
                 elif requested_url and "heb.com" in requested_url.lower() and raw_html_text:
                     # HEB-only stable fix: keep compact parsed copy and append only tiny current-item image URLs.
                     # Do not append full raw HTML because it can make the uploaded map huge and crash Streamlit.
