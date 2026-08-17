@@ -3112,7 +3112,7 @@ def build_sams_compact_capture_from_parsed_json(payload):
     diagnostics = payload.get("diagnostics", {}) if isinstance(payload.get("diagnostics", {}), dict) else {}
     sams_image_verified = bool(diagnostics.get("imageProductVerified"))
     sams_image_source = normalize_space(diagnostics.get("imageCaptureSource", ""))
-    source_images = (payload.get("images", []) or []) if sams_image_verified and sams_image_source == "exact_product_json_ld" else []
+    source_images = (payload.get("images", []) or []) if sams_image_verified and sams_image_source in {"exact_product_json_ld", "exact_product_hero_gallery", "exact_product_json_ld_and_hero_gallery"} else []
     for image_url in source_images:
         normalized = _normalize_media_url(image_url)
         if normalized and _is_sams_product_media(normalized):
