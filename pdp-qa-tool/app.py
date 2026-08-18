@@ -10413,7 +10413,7 @@ def _decode_sams_json_string(raw_value):
 
 
 # =========================================================
-# SAM'S CLUB COPY, FEATURES, IMAGES, SCORING, AND STATUS
+# SAM'S CLUB COPY, FEATURES, IMAGES, SCORING, AND STATUS v2.7
 # Retailer-isolated section. Do not place CVS/Kroger/Walgreens rules here.
 # =========================================================
 
@@ -10458,14 +10458,54 @@ def clean_sams_text(text):
                 text = normalize_space(left)
                 break
 
+    # Compact Sam's captures can contain the same Product Details block twice.
+    # Exact-half detection is not enough because UI text can sit between copies.
+    repeat_headings = [
+        "Maximum Absorbency for All-Day Protection",
+        "OdorBlock Technology for Freshness",
+        "OdorBlock Technology for Confidence",
+        "Stylish and Comfortable Fit",
+        "Practical and Stylish Design",
+        "Convenient and Versatile",
+        "Convenient and Eligible for HSA/FSA",
+    ]
+    for heading in repeat_headings:
+        hits = list(re.finditer(re.escape(heading), text, flags=re.IGNORECASE))
+        if len(hits) >= 2 and hits[1].start() > 80:
+            text = text[:hits[1].start()].strip()
+            break
+
     return normalize_space(text)
 
 
+def sams_claim_coverage_score(source_claim, retailer_text):
+    """Sam's-only important-word coverage with common claim normalization."""
+    source = normalize_text(clean_sams_text(source_claim))
+    retailer = normalize_text(clean_sams_text(retailer_text))
+    if not source or not retailer:
+        return 0
+    replacements = {
+        "30x": "30 times", "odorblock": "odor block", "cottonlike": "cotton like",
+        "xl": "extra large", "xxl": "extra extra large",
+    }
+    for old_value, new_value in replacements.items():
+        source = source.replace(old_value, new_value)
+        retailer = retailer.replace(old_value, new_value)
+    stop = {"with","from","this","that","your","their","have","has","for","the","and","are","was","were","its","into","than","more","product","products","depend","fresh","protection","adult"}
+    source_tokens = [token for token in source.split() if len(token) >= 3 and token not in stop]
+    retailer_tokens = set(token for token in retailer.split() if len(token) >= 3 and token not in stop)
+    if not source_tokens:
+        return keyword_score(source_claim, retailer_text)
+    coverage = int(100 * sum(token in retailer_tokens for token in source_tokens) / len(source_tokens))
+    return max(coverage, keyword_score(source_claim, retailer_text))
+
+
 def sams_split_heading_features(description, max_features=10):
-    """Split known Sam's Product Details headings into feature statements."""
+    """Split Sam's Product Details into one clean narrative plus claim sections."""
     description = clean_sams_text(description)
     if not description:
         return "", []
+
     headings = [
         "Maximum Absorbency for All-Day Protection",
         "OdorBlock Technology for Freshness",
@@ -10478,10 +10518,10 @@ def sams_split_heading_features(description, max_features=10):
     ]
     matches = []
     for heading in headings:
-        for m in re.finditer(re.escape(heading), description, flags=re.IGNORECASE):
-            matches.append((m.start(), m.end(), heading))
-    matches.sort(key=lambda x: x[0])
-    # Remove overlapping or duplicate heading hits.
+        for match in re.finditer(re.escape(heading), description, flags=re.IGNORECASE):
+            matches.append((match.start(), match.end(), heading))
+    matches.sort(key=lambda item: item[0])
+
     selected = []
     last_end = -1
     for item in matches:
@@ -10490,17 +10530,25 @@ def sams_split_heading_features(description, max_features=10):
             last_end = item[1]
     if not selected:
         return description, []
+
     intro = clean_sams_text(description[:selected[0][0]])
-    features = []
-    for i, (start_pos, end_pos, heading) in enumerate(selected):
-        end = selected[i + 1][0] if i + 1 < len(selected) else len(description)
-        body = clean_sams_text(description[end_pos:end])
+    feature_items = []
+    narrative_parts = [intro] if intro else []
+    for index, (start_pos, end_pos, heading) in enumerate(selected):
+        section_end = selected[index + 1][0] if index + 1 < len(selected) else len(description)
+        body = clean_sams_text(description[end_pos:section_end])
         if heading.lower() == "easy ordering options":
             continue
+        if body:
+            narrative_parts.append(body)
         feature = clean_sams_text(f"{heading}: {body}" if body else heading)
         if feature:
-            features.append(feature)
-    return intro or description, dedupe_preserve_order(features)[:max_features]
+            feature_items.append(feature)
+
+    # Description contains each meaningful section body once, without duplicated headings
+    # or ordering/pickup language. Features retain heading + body for claim matching.
+    clean_description = clean_sams_text(" ".join(part for part in narrative_parts if part))
+    return clean_description or description, dedupe_preserve_order(feature_items)[:max_features]
 
 
 def sams_description_coverage_score(salsify_description, retailer_description):
@@ -10510,10 +10558,11 @@ def sams_description_coverage_score(salsify_description, retailer_description):
     if not s_clean or not r_clean:
         return 0
     sequence = description_similarity_score(s_clean, r_clean)
-    s_tokens = {x for x in normalize_text(s_clean).split() if len(x) >= 4}
-    r_tokens = {x for x in normalize_text(r_clean).split() if len(x) >= 4}
+    stop = {"with","from","this","that","your","their","have","has","for","the","and","are","was","were","its","into","than","more","product","products"}
+    s_tokens = {token for token in normalize_text(s_clean).split() if len(token) >= 3 and token not in stop}
+    r_tokens = {token for token in normalize_text(r_clean).split() if len(token) >= 3 and token not in stop}
     coverage = int(100 * len(s_tokens & r_tokens) / max(1, len(s_tokens)))
-    return max(0, min(100, int(round((coverage * 0.60) + (sequence * 0.40)))))
+    return max(0, min(100, int(round((coverage * 0.75) + (sequence * 0.25)))))
 
 
 def clean_sams_title(text):
@@ -13381,23 +13430,28 @@ def process_row(row):
             s_val = s_text.get(f_key, "")
             r_val = retailer_features[i - 1] if i - 1 < len(retailer_features) else ""
 
-            # Sam's Club reorders Highlights. Match each Salsify feature to the best unused live feature.
+            # Sam's Club groups multiple claims inside one Product Details section.
+            # Search every section and the clean description. A retailer section may
+            # legitimately cover more than one Salsify bullet, so reuse is allowed.
             if retailer_norm in {"sam's club", "sams club", "samsclub"} and normalize_space(s_val):
-                best_index = None
-                best_score = -1
-                for candidate_index in sorted(unused_retailer_feature_indexes):
-                    candidate = retailer_features[candidate_index]
-                    candidate_score = keyword_score(s_val, candidate)
+                candidates = list(retailer_features)
+                clean_retailer_description = normalize_space(r_text.get("description", ""))
+                if clean_retailer_description:
+                    candidates.append(clean_retailer_description)
+                best_score = 0
+                best_candidate = ""
+                for candidate in candidates:
+                    candidate_score = sams_claim_coverage_score(s_val, candidate)
                     if candidate_score > best_score:
                         best_score = candidate_score
-                        best_index = candidate_index
-                if best_index is not None:
-                    r_val = retailer_features[best_index]
-                    unused_retailer_feature_indexes.discard(best_index)
+                        best_candidate = candidate
+                r_val = best_candidate
+            else:
+                best_score = keyword_score(s_val, r_val) if (s_val or r_val) else 0
 
             if not (normalize_space(s_val) or normalize_space(r_val)):
                 continue
-            score = keyword_score(s_val, r_val) if (s_val or r_val) else 0
+            score = best_score if retailer_norm in {"sam's club", "sams club", "samsclub"} else (keyword_score(s_val, r_val) if (s_val or r_val) else 0)
             feature_scores.append(score)
             feature_score_fields[f"Feature {feature_position} %"] = score
             feature_position += 1
