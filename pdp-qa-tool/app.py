@@ -2766,6 +2766,9 @@ def normalize_kroger_extension_feature_candidates(items, title="", max_features=
 
     return dedupe_preserve_order(out)[:max_features]
 
+# =========================================================
+# KROGER CAPTURE AND PARSING
+# =========================================================
 def build_kroger_compact_capture_from_parsed_json(payload):
     """Build small parse-friendly HTML from Kroger extension PARSED JSON.
 
@@ -2961,6 +2964,9 @@ def build_kroger_compact_capture_from_raw_html(raw_html_text, requested_url="", 
     return "\n".join(parts)
 
 
+# =========================================================
+# CVS CAPTURE AND PARSING
+# =========================================================
 def build_cvs_compact_capture_from_parsed_json(payload):
     """Build compact parse-friendly CVS HTML from browser-extension output."""
     if not isinstance(payload, dict):
@@ -3021,6 +3027,9 @@ def build_cvs_compact_capture_from_parsed_json(payload):
     parts.append("</body></html>")
     return "\n".join(parts)
 
+# =========================================================
+# SAM'S CLUB COMPACT CAPTURE
+# =========================================================
 def build_sams_compact_capture_from_parsed_json(payload):
     """Build compact parse-friendly Sam's Club HTML from extension PARSED JSON.
 
@@ -10403,31 +10412,108 @@ def _decode_sams_json_string(raw_value):
     return decoded.strip()
 
 
+# =========================================================
+# SAM'S CLUB COPY, FEATURES, IMAGES, SCORING, AND STATUS
+# Retailer-isolated section. Do not place CVS/Kroger/Walgreens rules here.
+# =========================================================
+
 def clean_sams_text(text):
+    """Clean Sam's Club copy without changing the retailer's wording."""
     if not text:
         return ""
 
     text = str(text)
     text = html.unescape(text)
-    text = text.replace("\\u003c", "<")
-    text = text.replace("\\u003e", ">")
-    text = text.replace("\\u0026", "&")
-    text = text.replace("\\u00a0", " ")
-    text = text.replace("\\n", " ")
-    text = text.replace("\\/", "/")
-    text = text.replace('\\"', '"')
-
-    text = re.sub(
-        r"<script\b[^>]*>.*?</script>",
-        " ",
-        text,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-
+    text = text.replace("\\u003c", "<").replace("\\u003e", ">")
+    text = text.replace("\\u0026", "&").replace("\\u00a0", " ")
+    text = text.replace("\\n", " ").replace("\\/", "/").replace('\\"', '"')
+    text = re.sub(r"<script\b[^>]*>.*?</script>", " ", text, flags=re.IGNORECASE | re.DOTALL)
     if "<" in text and ">" in text:
         text = BeautifulSoup(text, "html.parser").get_text(" ", strip=True)
+    text = normalize_space(text)
+
+    # Remove Sam's Club page controls and commerce copy that are not PDP claim copy.
+    stop_patterns = [
+        r"\binfo\s*:\s*If the item details above aren't accurate or complete",
+        r"\bIf the item details above aren't accurate or complete",
+        r"\bReport incorrect product info\b",
+    ]
+    for pattern in stop_patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            text = text[:match.start()].strip()
+            break
+
+    # Compact capture contains Parsed JSON plus relevant HTML. Remove exact repeated halves.
+    text = normalize_space(text)
+    if len(text) >= 80:
+        midpoint = len(text) // 2
+        candidates = [(text[:midpoint], text[midpoint:])]
+        for offset in range(-12, 13):
+            cut = midpoint + offset
+            if 0 < cut < len(text):
+                candidates.append((text[:cut], text[cut:]))
+        for left, right in candidates:
+            if normalize_text(left) and normalize_text(left) == normalize_text(right):
+                text = normalize_space(left)
+                break
 
     return normalize_space(text)
+
+
+def sams_split_heading_features(description, max_features=10):
+    """Split known Sam's Product Details headings into feature statements."""
+    description = clean_sams_text(description)
+    if not description:
+        return "", []
+    headings = [
+        "Maximum Absorbency for All-Day Protection",
+        "OdorBlock Technology for Freshness",
+        "OdorBlock Technology for Confidence",
+        "Stylish and Comfortable Fit",
+        "Practical and Stylish Design",
+        "Convenient and Versatile",
+        "Convenient and Eligible for HSA/FSA",
+        "Easy Ordering Options",
+    ]
+    matches = []
+    for heading in headings:
+        for m in re.finditer(re.escape(heading), description, flags=re.IGNORECASE):
+            matches.append((m.start(), m.end(), heading))
+    matches.sort(key=lambda x: x[0])
+    # Remove overlapping or duplicate heading hits.
+    selected = []
+    last_end = -1
+    for item in matches:
+        if item[0] >= last_end:
+            selected.append(item)
+            last_end = item[1]
+    if not selected:
+        return description, []
+    intro = clean_sams_text(description[:selected[0][0]])
+    features = []
+    for i, (start_pos, end_pos, heading) in enumerate(selected):
+        end = selected[i + 1][0] if i + 1 < len(selected) else len(description)
+        body = clean_sams_text(description[end_pos:end])
+        if heading.lower() == "easy ordering options":
+            continue
+        feature = clean_sams_text(f"{heading}: {body}" if body else heading)
+        if feature:
+            features.append(feature)
+    return intro or description, dedupe_preserve_order(features)[:max_features]
+
+
+def sams_description_coverage_score(salsify_description, retailer_description):
+    """Sam's-only blend: claim coverage plus normal sequence similarity."""
+    s_clean = clean_sams_text(salsify_description)
+    r_clean = clean_sams_text(retailer_description)
+    if not s_clean or not r_clean:
+        return 0
+    sequence = description_similarity_score(s_clean, r_clean)
+    s_tokens = {x for x in normalize_text(s_clean).split() if len(x) >= 4}
+    r_tokens = {x for x in normalize_text(r_clean).split() if len(x) >= 4}
+    coverage = int(100 * len(s_tokens & r_tokens) / max(1, len(s_tokens)))
+    return max(0, min(100, int(round((coverage * 0.60) + (sequence * 0.40)))))
 
 
 def clean_sams_title(text):
@@ -10769,6 +10855,18 @@ def extract_sams_copy_from_source(source_text, retail_url=""):
             debug["Features Path"] = "sams_visible_highlights_fallback"
         else:
             debug["Features Path"] = "sams_features_missing"
+
+    # Final Sam's-only cleanup. Recover visible Product Details headings as features.
+    description = clean_sams_text(description)
+    heading_description, heading_features = sams_split_heading_features(description, max_features=10)
+    if heading_features:
+        description = heading_description
+        if not features:
+            features = heading_features
+            debug["Features Path"] = "sams_product_details_heading_features"
+        else:
+            features = normalize_sams_features_final(list(features) + heading_features, max_features=10)
+    features = normalize_sams_features_final(features, max_features=10)
 
     rating, review_count = _extract_visible_sams_rating_and_reviews(source_text)
     if rating or review_count:
@@ -13259,10 +13357,16 @@ def process_row(row):
         s_desc_debug = debug_description(s_text.get("description", ""))
         r_desc_debug = debug_description(r_text.get("description", ""))
 
-        desc_score = description_similarity_score(
-            s_text.get("description", ""),
-            r_text.get("description", ""),
-        )
+        if retailer_norm_for_row in {"sam's club", "sams club", "samsclub"}:
+            desc_score = sams_description_coverage_score(
+                s_text.get("description", ""),
+                r_text.get("description", ""),
+            )
+        else:
+            desc_score = description_similarity_score(
+                s_text.get("description", ""),
+                r_text.get("description", ""),
+            )
 
         retailer_features = r_text.get("features", []) if isinstance(r_text, dict) else []
         retailer_norm = str(retailer_name or "").strip().lower()
@@ -13272,14 +13376,27 @@ def process_row(row):
         feature_score_fields = {}
         feature_position = 1
 
+        unused_retailer_feature_indexes = set(range(len(retailer_features)))
         for i, f_key in enumerate(feature_fields, start=1):
             s_val = s_text.get(f_key, "")
             r_val = retailer_features[i - 1] if i - 1 < len(retailer_features) else ""
 
-            # Score only rows that exist on Salsify or the retailer page.
+            # Sam's Club reorders Highlights. Match each Salsify feature to the best unused live feature.
+            if retailer_norm in {"sam's club", "sams club", "samsclub"} and normalize_space(s_val):
+                best_index = None
+                best_score = -1
+                for candidate_index in sorted(unused_retailer_feature_indexes):
+                    candidate = retailer_features[candidate_index]
+                    candidate_score = keyword_score(s_val, candidate)
+                    if candidate_score > best_score:
+                        best_score = candidate_score
+                        best_index = candidate_index
+                if best_index is not None:
+                    r_val = retailer_features[best_index]
+                    unused_retailer_feature_indexes.discard(best_index)
+
             if not (normalize_space(s_val) or normalize_space(r_val)):
                 continue
-
             score = keyword_score(s_val, r_val) if (s_val or r_val) else 0
             feature_scores.append(score)
             feature_score_fields[f"Feature {feature_position} %"] = score
@@ -13297,6 +13414,27 @@ def process_row(row):
             avg_img_score, image_position_scores = 0, {}
         
         overall = int((title_score + desc_score + avg_feature_score + avg_img_score) / 4)
+
+        if retailer_norm in {"sam's club", "sams club", "samsclub"}:
+            live_title = normalize_space(r_text.get("title", ""))
+            live_description = normalize_space(r_text.get("description", ""))
+            if "choose size" in live_title.lower():
+                status_notes.append("Shared Retailer Parent PDP")
+            if not live_description and not retailer_features:
+                status_notes.append("Parser Review Required")
+            elif not live_description and retailer_features:
+                status_notes.append("Retailer Uses Highlights Only")
+            elif desc_score < 50:
+                status_notes.append("Retailer Copy Differs")
+            if not r_images:
+                status_notes.append("Missing Retailer Asset")
+            elif avg_img_score < 50:
+                status_notes.append("Retailer Images Differ")
+            if overall >= 80 and not status_notes:
+                status_notes.append("Strong Match")
+            elif not status_notes:
+                status_notes.append("Review")
+            status_notes = dedupe_preserve_order(status_notes)
 
         return {
             "summary": {
