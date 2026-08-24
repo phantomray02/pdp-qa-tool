@@ -3348,6 +3348,69 @@ def _build_heb_compact_image_snippet(raw_html_text, target_rpc=""):
     parts.append("</section>")
     return "\n".join(parts)
 
+def build_cvs_compact_capture_from_raw_html(raw_html_text, requested_url="", final_url=""):
+    source = str(raw_html_text or "")
+    if not source:
+        return ""
+    generic_title = "shop beauty, vitamins, medicine & everyday essentials | cvs.com"
+    source_lc = source.lower()
+    has_product_evidence = any(x in source_lc for x in [
+        'data-capture="product-section"', 'data-capture="product-state"',
+        'application/ld+json', 'vendordetailsbullets', 'vendordetailsparagraph',
+        '/bizcontent/merchandising/productimages/high_res/', 'customer reviews:'
+    ])
+    if generic_title in source_lc and not has_product_evidence:
+        return ""
+    max_chars = 240000
+    parts = ["<!doctype html><html><head>"]
+    for pattern in [
+        r"(?is)<title[^>]*>.*?</title>",
+        r"(?is)<meta\b[^>]*(?:name=[\"']description[\"']|property=[\"']og:[^\"']+[\"'])[^>]*>",
+        r"(?is)<script\b[^>]*type=[\"']application/ld\+json[\"'][^>]*>.*?</script>",
+    ]:
+        for match in re.finditer(pattern, source):
+            value = match.group(0)
+            if sum(map(len, parts)) + len(value) > max_chars:
+                break
+            parts.append(value)
+    parts.append("</head><body>")
+    for match in re.finditer(r"(?is)<section\b[^>]*data-capture=[\"'](?:product-section|product-state)[\"'][^>]*>.*?</section>", source):
+        value = match.group(0)
+        if len(value) > 60000:
+            value = value[:60000] + "\n<!-- TRUNCATED TARGET PRODUCT STATE -->\n</section>"
+        if sum(map(len, parts)) + len(value) > max_chars:
+            break
+        parts.append(value)
+    for pattern in [
+        r"(?is)<script\b[^>]*data-capture=[\"']image-urls[\"'][^>]*>.*?</script>",
+        r"(?is)<pre\b[^>]*data-capture=[\"']visible-text[\"'][^>]*>.*?</pre>",
+    ]:
+        match = re.search(pattern, source)
+        if match:
+            value = match.group(0)[:35000]
+            if sum(map(len, parts)) + len(value) <= max_chars:
+                parts.append(value)
+    if requested_url:
+        parts.append(f"<!-- Requested URL: {html.escape(str(requested_url), quote=True)} -->")
+    if final_url:
+        parts.append(f"<!-- Final URL: {html.escape(str(final_url), quote=True)} -->")
+    parts.append("</body></html>")
+    return "\n".join(parts)[:max_chars]
+
+
+def is_invalid_cvs_title_candidate(value):
+    text = normalize_space(value)
+    lowered = text.lower()
+    return (not text or lowered.startswith(("http://", "https://")) or "/shop/" in lowered
+            or "prodid-" in lowered or "skuid=" in lowered
+            or lowered == "shop beauty, vitamins, medicine & everyday essentials | cvs.com")
+
+
+def is_cvs_review_meta_description(value):
+    lowered = normalize_space(value).lower()
+    return any(x in lowered for x in ["see real customer reviews", "see all reviews", "shop with confidence"])
+
+
 def parse_uploaded_raw_html_map(raw_text, selected_retailer=""):
     raw_text = str(raw_text or "")
     if not raw_text.strip():
@@ -3405,7 +3468,8 @@ def parse_uploaded_raw_html_map(raw_text, selected_retailer=""):
             raw_html_text = html.unescape(str(html_match.group(1) or "").strip()) if html_match else ""
             if compact_html:
                 if requested_url and "cvs.com" in requested_url.lower() and raw_html_text:
-                    html_text = compact_html + "\n<!-- CVS RAW HTML FALLBACK FROM EXTENSION -->\n" + raw_html_text
+                    cvs_raw_compact = build_cvs_compact_capture_from_raw_html(raw_html_text, requested_url=requested_url, final_url=final_url_from_payload)
+                    html_text = compact_html + ("\n" + cvs_raw_compact if cvs_raw_compact else "")
                 elif requested_url and "samsclub.com" in requested_url.lower():
                     # Compact extension output is already filtered to this exact Sam's Club PDP.
                     # Use the parsed title/copy/features/product media first, then append only
@@ -3422,7 +3486,10 @@ def parse_uploaded_raw_html_map(raw_text, selected_retailer=""):
                 else:
                     html_text = compact_html
             else:
-                html_text = raw_html_text
+                if requested_url and "cvs.com" in requested_url_lc:
+                    html_text = build_cvs_compact_capture_from_raw_html(raw_html_text, requested_url=requested_url, final_url=final_url_from_payload)
+                else:
+                    html_text = raw_html_text
 
         if requested_url and "kroger.com" in requested_url.lower() and html_text and not is_valid_kroger_product_capture(html_text):
             html_text = build_kroger_invalid_capture_stub(requested_url=requested_url, final_url=final_url_from_payload, reason="invalid_kroger_shell_or_product_unavailable_capture")
@@ -6068,6 +6135,9 @@ def extract_cvs_indexed_text_fallback(html_text, retail_url="", target_rpc=""):
             if len(line) >= 20 and any(t in line.lower() for t in ["kleenex", "kotex", "viva", "poise", "depend", "huggies", "pull-ups", "cottonelle", "scott", "goodnites", "thinx"]):
                 title = line
                 break
+    if is_invalid_cvs_title_candidate(title):
+        title = ""
+        debug["Title Path"] = "cvs_invalid_title_rejected"
     if not title:
         title = cvs_title_from_url_slug(retail_url)
     if title:
@@ -7571,6 +7641,9 @@ def _extract_cvs_text_from_html(html_text, retail_url="", target_rpc=""):
         if reviews_cleaned_title != title:
             title = reviews_cleaned_title
             debug["Title Path"] = (str(debug.get("Title Path", "")) + " | cvs_reviews_heading_product_name").strip(" |")
+        if is_invalid_cvs_title_candidate(title):
+            title = ""
+            debug["Title Path"] = "cvs_invalid_title_rejected"
 
     vendor_copy = extract_vendor_copy_from_nextjs(
         html_text,
@@ -7593,6 +7666,9 @@ def _extract_cvs_text_from_html(html_text, retail_url="", target_rpc=""):
         "shop store pickup",
         "add to pickup",
         "customer reviews for",
+        "see real customer reviews",
+        "see all reviews",
+        "shop with confidence",
     )
     if description and any(marker in description.lower() for marker in cvs_invalid_copy_markers):
         description = ""
@@ -7708,8 +7784,10 @@ def _extract_cvs_text_from_html(html_text, retail_url="", target_rpc=""):
         if title:
             debug["Title Path"] = "cvs_url_slug_fallback"
 
-    if not debug.get("Features Path"):
-        debug["Features Path"] = debug.get("Source Used", "") if features else "features_empty"
+    if features and (not debug.get("Features Path") or debug.get("Features Path") == "features_empty"):
+        debug["Features Path"] = debug.get("Source Used", "") or "cvs_final_merged_features"
+    elif not features:
+        debug["Features Path"] = "features_empty"
 
     return {
         "title": title,
@@ -14409,6 +14487,8 @@ if (
             },
             inplace=True,
         )
+        if _df.columns.duplicated().any():
+            _df.drop(columns=_df.columns[_df.columns.duplicated()].tolist(), inplace=True)
 
     output = BytesIO()
 
