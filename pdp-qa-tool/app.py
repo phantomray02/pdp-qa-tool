@@ -3089,10 +3089,19 @@ def build_sams_compact_capture_from_parsed_json(payload):
     title = _clean_local(payload.get("title", "") or payload.get("name", "") or payload.get("documentTitle", ""))
     title = re.sub(r"\s+-\s+Samsclub\.com\s*$", "", title, flags=re.IGNORECASE).strip()
 
-    raw_description = payload.get("description", "") or payload.get("longDescription", "") or ""
+    raw_description = payload.get("longDescription", "") or payload.get("description", "") or ""
     description = _clean_local(raw_description)
 
-    features = payload.get("features", []) or payload.get("highlights", []) or []
+    short_description = payload.get("shortDescription", "") or ""
+    features = []
+    if short_description:
+        try:
+            short_soup = BeautifulSoup(str(short_description), "html.parser")
+            features = [li.get_text(" ", strip=True) for li in short_soup.find_all("li")]
+        except Exception:
+            features = []
+    if not features:
+        features = payload.get("features", []) or payload.get("highlights", []) or []
     if isinstance(features, str):
         features = [features]
     feature_items = []
@@ -3110,7 +3119,7 @@ def build_sams_compact_capture_from_parsed_json(payload):
         clean = _clean_local(feature)
         if not clean:
             continue
-        if re.search(r"^(shipping|pickup|delivery|reorder|savings|departments|services|same day delivery)$", clean, flags=re.IGNORECASE):
+        if re.search(r"^(sign in|account|join now|shipping|pickup|delivery|reorder|savings|departments|services|same day delivery|labor day savings|ebt eligible|back to school|halloween|besties referral.*)$", clean, flags=re.IGNORECASE):
             continue
         if len(clean) > 240:
             continue
