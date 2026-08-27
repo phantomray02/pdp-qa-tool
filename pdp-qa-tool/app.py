@@ -5161,14 +5161,15 @@ def _parse_salsify_page(html_text):
         },
         "heb": {
             "title": first_non_placeholder_copy_value(
-                first_property("HEB Product Title", "HEB Title", "HEB Product Name", "H-E-B Product Title", "H-E-B Title"),
+                first_property("HEB Product Title", "HEB Title", "HEB Product Name", "H-E-B Product Title", "H-E-B Title", "Instacart Product Title"),
                 first_property("General Product Title", "General Title", "Product Title"),
             ),
             "description": first_non_placeholder_copy_value(
                 first_property("HEB Description", "HEB Product Description", "HEB Long Description", "H-E-B Description", "H-E-B Product Description"),
+                first_property("Kroger Description", "Kroger Product Description"),
                 first_property("General Description", "General Product Description", "Description"),
             ),
-            "features": normalize_salsify_feature_values(heb_feature_values or general_feature_values, max_features=10),
+            "features": normalize_salsify_feature_values(heb_feature_values or kroger_feature_values or general_feature_values, max_features=10),
             "feature_slots": heb_feature_slots,
         },
         "walgreens": {
@@ -13262,6 +13263,16 @@ def build_normalized_comparison_payload(
         )
         r_images = sanitize_cvs_retailer_images(r_images, debug=r_debug_for_cvs, reason="normalized_payload_final_guard")
 
+    # HEB-only: HEB does not reliably preserve gallery order. Keep the primary
+    # image locked, then pair supporting assets by strongest one-to-one visual match.
+    if retailer_norm in {"heb", "h-e-b"}:
+        r_images = align_heb_retailer_images_order_independent(
+            s_images,
+            r_images,
+            max_slots=max_slots,
+            minimum_pair_score=50,
+        )
+
     # Sam's Club-only: if Salsify slot 2 is ATF Video-Sams Club, reserve retailer
     # slot 2 for a retailer video or blank spacer so the remaining retailer images
     # do not shift up and compare against the wrong Salsify rows.
@@ -13738,6 +13749,63 @@ def process_row(row):
         debug["Error Traceback"] = error_trace
         debug["Source Used"] = "row_exception"
         return {"summary": base_summary, "detail": detail, "debug": debug}
+# =========================================================
+# HEB-ONLY AUDIT UPDATE
+# - Keeps the HEB primary image in slot 1.
+# - Matches the remaining HEB gallery images to Salsify by best visual match,
+#   without changing any other retailer.
+# - Prevents one HEB image from satisfying multiple Salsify assets.
+# =========================================================
+def align_heb_retailer_images_order_independent(
+    s_images,
+    r_images,
+    max_slots=MAX_IMAGE_SLOTS_TO_COMPARE,
+    minimum_pair_score=50,
+):
+    s_images = list(s_images or [])[:max_slots]
+    r_images = [str(url or "").strip() for url in list(r_images or []) if str(url or "").strip()][:max_slots]
+    if not s_images:
+        return []
+
+    def s_url(index):
+        value = s_images[index] if index < len(s_images) else {}
+        return str(value.get("url", "") or "").strip() if isinstance(value, dict) else ""
+
+    aligned = [""] * len(s_images)
+    used_retailer_indexes = set()
+
+    # HEB primary is still audited as the primary image. Supporting images are unordered.
+    if r_images:
+        aligned[0] = r_images[0]
+        used_retailer_indexes.add(0)
+
+    candidate_pairs = []
+    for s_index in range(1, len(s_images)):
+        source_url = s_url(s_index)
+        if not source_url:
+            continue
+        for r_index in range(1, len(r_images)):
+            retailer_url = r_images[r_index]
+            try:
+                score = int(compare_images_visually(source_url, retailer_url) or 0)
+            except Exception:
+                score = 0
+            candidate_pairs.append((score, s_index, r_index))
+
+    # Highest-confidence one-to-one assignment first.
+    for score, s_index, r_index in sorted(candidate_pairs, key=lambda row: (-row[0], row[1], row[2])):
+        if score < minimum_pair_score:
+            continue
+        if aligned[s_index] or r_index in used_retailer_indexes:
+            continue
+        aligned[s_index] = r_images[r_index]
+        used_retailer_indexes.add(r_index)
+
+    # Keep extra live HEB images visible after Salsify rows so they are clearly auditable.
+    extras = [url for idx, url in enumerate(r_images) if idx not in used_retailer_indexes]
+    aligned.extend(extras)
+    return aligned[:max_slots]
+
 # =========================================
 # SESSION STATE
 # =========================================
