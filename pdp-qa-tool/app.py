@@ -12205,6 +12205,14 @@ def finalize_salsify_copy_for_retailer(retailer_name, s_text):
         else:
             tail_features = normalize_heb_features_final(normalize_salsify_feature_values(override_features, max_features=10), max_features=10)
             selected_features = dedupe_preserve_order(selected_features + tail_features)[:10]
+        selected_features = [
+            value for value in selected_features
+            if not re.fullmatch(
+                r"\s*(?:Kroger|HEB|H-E-B|General)\s+(?:Feature|Bullet)\s*\d+\s*",
+                normalize_space(value),
+                flags=re.IGNORECASE,
+            )
+        ]
         # If the Salsify deck stores bullets inside the description with bullets,
         # split them, but do not discard normal Salsify feature fields.
         if not selected_features and selected_description:
@@ -13270,12 +13278,11 @@ def build_normalized_comparison_payload(
     # HEB-only: HEB does not reliably preserve gallery order. Keep the primary
     # image locked, then pair supporting assets by strongest one-to-one visual match.
     if retailer_norm in {"heb", "h-e-b"}:
-        s_images, r_images = align_heb_images_stable_and_compact(
+        s_images, r_images = align_heb_images_preserve_all(
             s_images,
             r_images,
             max_slots=max_slots,
             strong_threshold=80,
-            minimum_pair_score=50,
         )
 
     # Sam's Club-only: if Salsify slot 2 is ATF Video-Sams Club, reserve retailer
@@ -13761,73 +13768,88 @@ def process_row(row):
 #   without changing any other retailer.
 # - Prevents one HEB image from satisfying multiple Salsify assets.
 # =========================================================
-def align_heb_images_stable_and_compact(
+def align_heb_images_preserve_all(
     s_images,
     r_images,
     max_slots=MAX_IMAGE_SLOTS_TO_COMPARE,
     strong_threshold=80,
-    minimum_pair_score=50,
 ):
-    """HEB-only image alignment.
+    """HEB-only full image audit alignment.
 
-    Keep already-correct same-position matches in place. Reorder only the remaining
-    HEB gallery images to their strongest unused Salsify match. Return matched pairs
-    only, which removes empty/missing tile rows from HEB visual QA and HEB scoring.
+    - Retain every Salsify and HEB image exactly once.
+    - Lock already-correct same-position pairs at 80% or higher.
+    - Pair all remaining images by the strongest available visual relationship,
+      even when the image sets are outdated or in a different order.
+    - Put unmatched leftovers at the bottom instead of inserting blank gaps
+      throughout otherwise-correct rows.
     """
-    s_images = [img for img in list(s_images or [])[:max_slots] if isinstance(img, dict) and str(img.get("url", "") or "").strip()]
-    r_images = [str(url or "").strip() for url in list(r_images or [])[:max_slots] if str(url or "").strip()]
-    if not s_images or not r_images:
+    s_images = [
+        img for img in list(s_images or [])[:max_slots]
+        if isinstance(img, dict) and str(img.get("url", "") or "").strip()
+    ]
+    r_images = [
+        str(url or "").strip() for url in list(r_images or [])[:max_slots]
+        if str(url or "").strip()
+    ]
+    if not s_images and not r_images:
         return [], []
 
+    score_cache = {}
     def score_pair(s_index, r_index):
-        try:
-            return int(compare_images_visually(s_images[s_index].get("url", ""), r_images[r_index]) or 0)
-        except Exception:
-            return 0
+        key = (s_index, r_index)
+        if key not in score_cache:
+            try:
+                score_cache[key] = int(compare_images_visually(
+                    s_images[s_index].get("url", ""), r_images[r_index]
+                ) or 0)
+            except Exception:
+                score_cache[key] = 0
+        return score_cache[key]
 
     assigned = {}
-    used_retailer_indexes = set()
+    used_retailer = set()
 
-    # Primary image remains the primary image when both sides have one.
-    primary_score = score_pair(0, 0)
-    if primary_score >= minimum_pair_score:
-        assigned[0] = 0
-        used_retailer_indexes.add(0)
-
-    # Protect good image rows. A strong image already in the correct position is
-    # never displaced by the order-repair logic.
-    for index in range(1, min(len(s_images), len(r_images))):
-        if index in assigned or index in used_retailer_indexes:
-            continue
+    # Preserve every same-position pair that is already clearly correct.
+    for index in range(min(len(s_images), len(r_images))):
         if score_pair(index, index) >= strong_threshold:
             assigned[index] = index
-            used_retailer_indexes.add(index)
+            used_retailer.add(index)
 
-    # Reorder only the remaining weak/out-of-order rows using one-to-one matches.
+    # Best one-to-one alignment for everything that remains. There is no minimum
+    # score here because incorrect/outdated items still need to be shown together
+    # for a complete audit rather than disappearing from the report.
     candidates = []
     for s_index in range(len(s_images)):
         if s_index in assigned:
             continue
         for r_index in range(len(r_images)):
-            if r_index in used_retailer_indexes:
+            if r_index in used_retailer:
                 continue
             candidates.append((score_pair(s_index, r_index), s_index, r_index))
 
     for score, s_index, r_index in sorted(candidates, key=lambda row: (-row[0], row[1], row[2])):
-        if score < minimum_pair_score:
-            continue
-        if s_index in assigned or r_index in used_retailer_indexes:
+        if s_index in assigned or r_index in used_retailer:
             continue
         assigned[s_index] = r_index
-        used_retailer_indexes.add(r_index)
+        used_retailer.add(r_index)
 
-    # Compact matched pairs in Salsify order. No HEB-only blank tile rows.
-    matched_salsify = []
-    matched_heb = []
-    for s_index in sorted(assigned):
-        matched_salsify.append(s_images[s_index])
-        matched_heb.append(r_images[assigned[s_index]])
-    return matched_salsify[:max_slots], matched_heb[:max_slots]
+    # Display paired rows in Salsify order. This keeps good rows stable and places
+    # out-of-order HEB images beside their nearest Salsify counterpart.
+    aligned_salsify = []
+    aligned_heb = []
+    for s_index in range(len(s_images)):
+        aligned_salsify.append(s_images[s_index])
+        r_index = assigned.get(s_index)
+        aligned_heb.append(r_images[r_index] if r_index is not None else "")
+
+    # Show every extra HEB image once at the bottom. These are true retailer-only
+    # assets, so a single Salsify-side Missing tile is meaningful rather than noise.
+    for r_index, retailer_url in enumerate(r_images):
+        if r_index not in used_retailer:
+            aligned_salsify.append(make_blank_salsify_image_slot("heb_extra_retailer_image"))
+            aligned_heb.append(retailer_url)
+
+    return aligned_salsify[:max_slots], aligned_heb[:max_slots]
 
 # =========================================
 # SESSION STATE
