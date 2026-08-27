@@ -4950,6 +4950,10 @@ def _parse_salsify_page(html_text):
             )
         )
     kroger_feature_values = dedupe_preserve_order(kroger_feature_values)
+    kroger_feature_values = [
+        value for value in kroger_feature_values
+        if not re.fullmatch(r"\s*Kroger\s+(?:Feature|Bullet)\s*\d+\s*", normalize_space(value), flags=re.IGNORECASE)
+    ]
 
     sams_feature_values = []
     sams_feature_slots = {}
@@ -13266,10 +13270,11 @@ def build_normalized_comparison_payload(
     # HEB-only: HEB does not reliably preserve gallery order. Keep the primary
     # image locked, then pair supporting assets by strongest one-to-one visual match.
     if retailer_norm in {"heb", "h-e-b"}:
-        r_images = align_heb_retailer_images_order_independent(
+        s_images, r_images = align_heb_images_stable_and_compact(
             s_images,
             r_images,
             max_slots=max_slots,
+            strong_threshold=80,
             minimum_pair_score=50,
         )
 
@@ -13756,55 +13761,73 @@ def process_row(row):
 #   without changing any other retailer.
 # - Prevents one HEB image from satisfying multiple Salsify assets.
 # =========================================================
-def align_heb_retailer_images_order_independent(
+def align_heb_images_stable_and_compact(
     s_images,
     r_images,
     max_slots=MAX_IMAGE_SLOTS_TO_COMPARE,
+    strong_threshold=80,
     minimum_pair_score=50,
 ):
-    s_images = list(s_images or [])[:max_slots]
-    r_images = [str(url or "").strip() for url in list(r_images or []) if str(url or "").strip()][:max_slots]
-    if not s_images:
-        return []
+    """HEB-only image alignment.
 
-    def s_url(index):
-        value = s_images[index] if index < len(s_images) else {}
-        return str(value.get("url", "") or "").strip() if isinstance(value, dict) else ""
+    Keep already-correct same-position matches in place. Reorder only the remaining
+    HEB gallery images to their strongest unused Salsify match. Return matched pairs
+    only, which removes empty/missing tile rows from HEB visual QA and HEB scoring.
+    """
+    s_images = [img for img in list(s_images or [])[:max_slots] if isinstance(img, dict) and str(img.get("url", "") or "").strip()]
+    r_images = [str(url or "").strip() for url in list(r_images or [])[:max_slots] if str(url or "").strip()]
+    if not s_images or not r_images:
+        return [], []
 
-    aligned = [""] * len(s_images)
+    def score_pair(s_index, r_index):
+        try:
+            return int(compare_images_visually(s_images[s_index].get("url", ""), r_images[r_index]) or 0)
+        except Exception:
+            return 0
+
+    assigned = {}
     used_retailer_indexes = set()
 
-    # HEB primary is still audited as the primary image. Supporting images are unordered.
-    if r_images:
-        aligned[0] = r_images[0]
+    # Primary image remains the primary image when both sides have one.
+    primary_score = score_pair(0, 0)
+    if primary_score >= minimum_pair_score:
+        assigned[0] = 0
         used_retailer_indexes.add(0)
 
-    candidate_pairs = []
-    for s_index in range(1, len(s_images)):
-        source_url = s_url(s_index)
-        if not source_url:
+    # Protect good image rows. A strong image already in the correct position is
+    # never displaced by the order-repair logic.
+    for index in range(1, min(len(s_images), len(r_images))):
+        if index in assigned or index in used_retailer_indexes:
             continue
-        for r_index in range(1, len(r_images)):
-            retailer_url = r_images[r_index]
-            try:
-                score = int(compare_images_visually(source_url, retailer_url) or 0)
-            except Exception:
-                score = 0
-            candidate_pairs.append((score, s_index, r_index))
+        if score_pair(index, index) >= strong_threshold:
+            assigned[index] = index
+            used_retailer_indexes.add(index)
 
-    # Highest-confidence one-to-one assignment first.
-    for score, s_index, r_index in sorted(candidate_pairs, key=lambda row: (-row[0], row[1], row[2])):
+    # Reorder only the remaining weak/out-of-order rows using one-to-one matches.
+    candidates = []
+    for s_index in range(len(s_images)):
+        if s_index in assigned:
+            continue
+        for r_index in range(len(r_images)):
+            if r_index in used_retailer_indexes:
+                continue
+            candidates.append((score_pair(s_index, r_index), s_index, r_index))
+
+    for score, s_index, r_index in sorted(candidates, key=lambda row: (-row[0], row[1], row[2])):
         if score < minimum_pair_score:
             continue
-        if aligned[s_index] or r_index in used_retailer_indexes:
+        if s_index in assigned or r_index in used_retailer_indexes:
             continue
-        aligned[s_index] = r_images[r_index]
+        assigned[s_index] = r_index
         used_retailer_indexes.add(r_index)
 
-    # Keep extra live HEB images visible after Salsify rows so they are clearly auditable.
-    extras = [url for idx, url in enumerate(r_images) if idx not in used_retailer_indexes]
-    aligned.extend(extras)
-    return aligned[:max_slots]
+    # Compact matched pairs in Salsify order. No HEB-only blank tile rows.
+    matched_salsify = []
+    matched_heb = []
+    for s_index in sorted(assigned):
+        matched_salsify.append(s_images[s_index])
+        matched_heb.append(r_images[assigned[s_index]])
+    return matched_salsify[:max_slots], matched_heb[:max_slots]
 
 # =========================================
 # SESSION STATE
