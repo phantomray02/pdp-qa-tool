@@ -121,6 +121,14 @@ STRICT_LIVE_RETAILER_ONLY = True
 STRICT_COMPARISON_MODE = True
 ALLOW_RETAILER_KNOWN_COPY_FALLBACKS = False
 ALLOW_RETAILER_GENERATED_IMAGE_FALLBACKS = False
+
+# Brand compliance report mode. The retailer side must contain only content
+# observed in a verified live retailer capture. No known-copy catalogs,
+# generated image URLs, Salsify mirroring, or other rescue content may populate
+# retailer fields or contribute to scores.
+BRAND_COMPLIANCE_LIVE_ONLY = True
+ALLOW_TARGETED_RETAILER_COPY_RESCUE = False
+REQUIRE_VERIFIED_RETAILER_PRODUCT_IDENTITY = True
 STRICT_CVS_VARIANT_MATCH = True
 CVS_VARIANT_MIN_MATCH_SCORE = 35
 
@@ -13366,6 +13374,130 @@ def get_visual_row_payload(
         "r_images": payload["r_images"],
     }
 
+
+# =========================================
+# BRAND COMPLIANCE LIVE-ONLY FIREWALL
+# =========================================
+_COMPLIANCE_DISALLOWED_SOURCE_TOKENS = (
+    "fallback", "rescue", "generated", "mirror_salsify", "known_product",
+    "known_copy", "manual_copy", "historical_copy",
+)
+
+
+def _compliance_digits(value):
+    return re.sub(r"\D", "", str(value or ""))
+
+
+def _compliance_gtin_from_url(value):
+    text = str(value or "")
+    matches = re.findall(r"(?<!\d)(\d{12,14})(?!\d)", text)
+    return matches[-1] if matches else ""
+
+
+def _compliance_gtin_from_capture(value):
+    text = str(value or "")
+    patterns = (
+        r'"sku"\s*:\s*"(\d{12,14})"',
+        r'"gtin(?:12|13|14)?"\s*:\s*"(\d{12,14})"',
+        r'\b(?:UPC|GTIN|Captured GTIN|Product ID)\s*[:#]?\s*(\d{12,14})\b',
+        r'/p/(\d{12,14})(?:[/?#]|$)',
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.I)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def _compliance_gtin_equal(left, right):
+    left = _compliance_digits(left)
+    right = _compliance_digits(right)
+    if not left or not right:
+        return False
+    return left == right or left.lstrip("0") == right.lstrip("0")
+
+
+def apply_brand_compliance_live_only_firewall(payload, retailer_name="", retail_url="", row_source_code=""):
+    """Fail closed before scoring so only verified observed retailer content remains."""
+    if not BRAND_COMPLIANCE_LIVE_ONLY:
+        return payload
+
+    r_text = payload.get("r_text") if isinstance(payload, dict) else None
+    if not isinstance(r_text, dict):
+        r_text = {"title": "", "description": "", "features": [], "debug": {}}
+        payload["r_text"] = r_text
+    debug = r_text.setdefault("debug", {})
+    source_blob = " | ".join(str(debug.get(key, "")) for key in (
+        "Source Used", "Title Path", "Description Path", "Features Path", "Image Path"
+    )).lower()
+
+    blocked_reasons = []
+    if any(token in source_blob for token in _COMPLIANCE_DISALLOWED_SOURCE_TOKENS):
+        r_text["title"] = ""
+        r_text["description"] = ""
+        r_text["features"] = []
+        payload["r_images"] = []
+        blocked_reasons.append("NON_LIVE_RETAILER_FALLBACK_REMOVED")
+
+    clean_images = []
+    for image_url in payload.get("r_images", []) or []:
+        value = str(image_url or "").strip()
+        lowered = value.lower()
+        if not value:
+            continue
+        if "salsify" in lowered or "images.salsify.com" in lowered or "assets.salsify.com" in lowered:
+            blocked_reasons.append("SALSIFY_RETAILER_IMAGE_REMOVED")
+            continue
+        if any(token in lowered for token in ("generated_fallback", "placeholder", "data:image/")):
+            blocked_reasons.append("NON_LIVE_RETAILER_IMAGE_REMOVED")
+            continue
+        clean_images.append(value)
+    payload["r_images"] = clean_images
+
+    retailer_norm = normalize_retailer_name(retailer_name).strip().lower()
+    requested_gtin = _compliance_gtin_from_url(retail_url)
+    captured_gtin = _compliance_gtin_from_capture(row_source_code)
+    identity_status = "NOT_REQUIRED"
+    if retailer_norm == "kroger" and REQUIRE_VERIFIED_RETAILER_PRODUCT_IDENTITY:
+        if requested_gtin and captured_gtin and _compliance_gtin_equal(requested_gtin, captured_gtin):
+            identity_status = "VERIFIED"
+        elif requested_gtin and captured_gtin:
+            identity_status = "INVALID_PDP_MATCH"
+        else:
+            identity_status = "IDENTITY_UNVERIFIED"
+        if identity_status != "VERIFIED":
+            r_text["title"] = ""
+            r_text["description"] = ""
+            r_text["features"] = []
+            payload["r_images"] = []
+            blocked_reasons.append(identity_status)
+
+    debug["Compliance Mode"] = "LIVE_RETAILER_ONLY"
+    debug["Fallback Applied"] = "No"
+    debug["Requested GTIN"] = requested_gtin
+    debug["Captured GTIN"] = captured_gtin
+    debug["Product Identity Status"] = identity_status
+    debug["Compliance Eligible"] = not blocked_reasons
+    debug["Compliance Block Reason"] = " | ".join(dict.fromkeys(blocked_reasons))
+    return payload
+
+
+# Hard stop for legacy retailer backup mechanisms in compliance mode. These
+# overrides are intentionally placed after the legacy definitions.
+def get_cvs_known_product_fallback_bundle(retail_url="", target_rpc=""):
+    return {"text": {"title": "", "description": "", "features": [], "debug": {
+        "Source Used": "disabled_in_brand_compliance_mode",
+        "Compliance Block Reason": "KNOWN_COPY_FALLBACK_DISABLED",
+    }}, "images": []}
+
+
+def apply_cvs_targeted_copy_rescue_if_needed(bundle, retail_url="", target_rpc="", reason=""):
+    return bundle
+
+
+def add_cvs_generated_image_fallback_if_needed(bundle, retail_url="", target_rpc="", reason=""):
+    return bundle
+
 def process_row(row):
     try:
         retail_url = row.get("retail_url", "")
@@ -13478,6 +13610,12 @@ def process_row(row):
             max_slots=MAX_IMAGE_SLOTS_TO_SCORE,
         )
 
+        comparison_payload = apply_brand_compliance_live_only_firewall(
+            comparison_payload,
+            retailer_name=retailer_name,
+            retail_url=retail_url,
+            row_source_code=row_source_code,
+        )
         s_text = comparison_payload["s_text"]
         s_images = comparison_payload["s_images"]
         r_text = comparison_payload["r_text"]
