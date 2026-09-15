@@ -14883,6 +14883,59 @@ if (
             )
             st.stop()
 
+        # Option 1: table-first review of the completed QA results.
+        table_df = pd.DataFrame(st.session_state.get("summary_rows", []))
+        if table_df.empty:
+            table_df = visual_df.copy()
+
+        preferred_columns = [
+            "Retailer", "Brand", "SKU", "Retailer RPC", "Kroger RPC",
+            "Title %", "Description %", "Feature %", "Image Match %",
+            "Overall %", "Status", "Salsify URL", "Retail URL",
+        ]
+        visible_columns = [col for col in preferred_columns if col in table_df.columns]
+        if not visible_columns:
+            visible_columns = list(table_df.columns)
+
+        st.markdown("### Table Review")
+        st.caption(
+            "Review the completed QA results in a sortable table, then export the visible rows to CSV."
+        )
+        table_search = st.text_input(
+            "Filter table",
+            placeholder="Type a SKU, brand, status, retailer, or other value",
+            key="visual_table_filter",
+        ).strip()
+
+        display_table_df = table_df.loc[:, visible_columns].copy()
+        if table_search:
+            search_mask = display_table_df.astype(str).apply(
+                lambda col: col.str.contains(table_search, case=False, na=False)
+            ).any(axis=1)
+            display_table_df = display_table_df.loc[search_mask].copy()
+
+        st.dataframe(
+            display_table_df,
+            use_container_width=True,
+            hide_index=True,
+            height=min(760, max(220, 38 * (len(display_table_df) + 1))),
+        )
+        st.download_button(
+            "Download table as CSV",
+            data=display_table_df.to_csv(index=False).encode("utf-8-sig"),
+            file_name=f"pdp_qa_table_{safe_retailer}.csv",
+            mime="text/csv",
+            key="download_visual_table_csv",
+        )
+
+        show_detailed_cards = st.toggle(
+            "Show detailed visual comparison cards",
+            value=False,
+            key="show_detailed_visual_cards",
+        )
+        if not show_detailed_cards:
+            st.stop()
+
         for _, row in visual_df.iterrows():
             sku = row.get("sku", "Missing SKU")
             retail_url = row.get("retail_url", "")
