@@ -752,6 +752,8 @@ def infer_retailer_name_from_url(url):
         return "Target"
     if "kroger.com" in url:
         return "Kroger"
+    if "meijer.com" in url:
+        return "Meijer"
     if "samsclub.com" in url or "sam's club" in url:
         return "Sam's Club"
     if "walgreens.com" in url:
@@ -780,6 +782,7 @@ def normalize_retailer_name(value):
         "walmart": "Walmart",
         "target": "Target",
         "kroger": "Kroger",
+        "meijer": "Meijer",
         "heb": "HEB",
         "h-e-b": "HEB",
         "h e b": "HEB",
@@ -793,6 +796,7 @@ RETAILER_URL_DOMAIN_RULES = {
     "cvs": ("cvs.com",),
     "walgreens": ("walgreens.com",),
     "kroger": ("kroger.com",),
+    "meijer": ("meijer.com",),
     "heb": ("heb.com",),
     "sam's club": ("samsclub.com",),
     "sams club": ("samsclub.com",),
@@ -11487,6 +11491,100 @@ def merge_cvs_bundles_prefer_richer_copy(*bundles):
     return merged
 
 
+def extract_meijer_text_from_html(html_text, retail_url="", target_rpc=""):
+    """Extract only content visibly present in the live Meijer PDP DOM.
+
+    Meijer mapping:
+    - Product Info title = title
+    - Product Details = description
+    - Product Features = features
+    Images are intentionally left for the next update.
+    """
+    raw = str(html_text or "")
+    empty = {
+        "title": "",
+        "description": "",
+        "features": [],
+        "debug": {
+            "Source Used": "meijer_live_dom_empty",
+            "Title Path": "missing",
+            "Description Path": "missing",
+            "Features Path": "missing",
+        },
+    }
+    if not raw.strip():
+        return empty
+
+    lowered = raw.lower()
+    if "access denied" in lowered or "you don't have permission to access" in lowered:
+        empty["debug"]["Source Used"] = "meijer_access_denied_rejected"
+        return empty
+
+    soup = BeautifulSoup(raw, "html.parser")
+
+    def node_text(node):
+        return normalize_space(node.get_text(" ", strip=True)) if node else ""
+
+    # Product Info title. Prefer the explicit Product Info h1 shown in the live DOM.
+    title_node = (
+        soup.select_one(".product-info__title h1")
+        or soup.select_one("h1.product-info__title")
+        or soup.select_one("[data-cnstrc-item-name]")
+        or soup.select_one("h1")
+    )
+    title = node_text(title_node)
+    if title_node and not title:
+        title = normalize_space(title_node.get("data-cnstrc-item-name", ""))
+    if title_node and title_node.has_attr("data-cnstrc-item-name"):
+        title = normalize_space(title_node.get("data-cnstrc-item-name", "")) or title
+
+    # Product Details is the description.
+    description_node = (
+        soup.select_one("section#button-0-section.product-accordion__description")
+        or soup.select_one("#button-0-section")
+        or soup.select_one('[aria-labelledby="button-0"]')
+    )
+    description = node_text(description_node)
+
+    # Product Features is the features field. Keep the live text intact as one feature.
+    features_node = (
+        soup.select_one("section#button-1-section.product-accordion__description")
+        or soup.select_one("#button-1-section")
+        or soup.select_one('[aria-labelledby="button-1"]')
+    )
+    features_text = node_text(features_node)
+    features = [features_text] if features_text else []
+
+    # Fail closed. Do not borrow Salsify or any known-copy backup.
+    return {
+        "title": title,
+        "description": description,
+        "features": features,
+        "debug": {
+            "Source Used": "meijer_live_dom",
+            "Title Path": ".product-info__title h1 | [data-cnstrc-item-name] | h1",
+            "Description Path": "#button-0-section (Product Details)",
+            "Features Path": "#button-1-section (Product Features)",
+            "Meijer Product Details Found": bool(description),
+            "Meijer Product Features Found": bool(features_text),
+            "Salsify Retailer Fallback Applied": False,
+        },
+    }
+
+
+def get_meijer_bundle(retail_url, target_rpc="", html_override=""):
+    """Build a Meijer-only live retailer bundle. No Salsify or known-copy fallback."""
+    html_text = str(html_override or "")
+    source_used = "uploaded_txt_html" if html_text.strip() else "meijer_live_html"
+    if not html_text.strip() and retail_url:
+        html_text = get_html(retail_url)
+    text = extract_meijer_text_from_html(html_text, retail_url=retail_url, target_rpc=target_rpc)
+    text.setdefault("debug", {})["Source Used"] = source_used if any([
+        text.get("title"), text.get("description"), text.get("features")
+    ]) else text.get("debug", {}).get("Source Used", source_used)
+    return {"text": text, "images": []}
+
+
 @st.cache_data(show_spinner=False, max_entries=1200)
 def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_source_code=""):
     retailer = normalize_retailer_name(retailer_name).strip().lower()
@@ -11494,6 +11592,13 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
 
     if retail_url and not retailer_url_matches_selected(retail_url, retailer):
         return build_empty_retailer_bundle(retailer_name or "Retailer", build_retailer_url_mismatch_status(retail_url, retailer))
+
+    if retailer == "meijer":
+        return get_meijer_bundle(
+            retail_url,
+            target_rpc=target_rpc,
+            html_override=uploaded_html,
+        )
 
     if retailer == "kroger":
         if uploaded_html.strip() and is_valid_kroger_product_capture(uploaded_html):
@@ -13343,7 +13448,7 @@ def get_visual_row_payload(
                 retail_url,
                 target_rpc=current_target_sku,
             )
-    elif retailer_norm in {"heb", "cvs"}:
+    elif retailer_norm in {"heb", "cvs", "meijer"}:
         if not row_source_code:
             row_source_code = lookup_uploaded_raw_html(
                 uploaded_html_map,
