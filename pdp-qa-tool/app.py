@@ -14920,10 +14920,39 @@ if (
             hide_index=True,
             height=min(760, max(220, 38 * (len(display_table_df) + 1))),
         )
+        # Build the CSV filename inside this UI scope. The report-generation
+        # block defines its own safe_retailer local variable, which is not
+        # available here after Streamlit reruns.
+        table_retailer_values = []
+        if "Retailer" in display_table_df.columns:
+            table_retailer_values = [
+                str(value).strip()
+                for value in display_table_df["Retailer"].dropna().unique().tolist()
+                if str(value).strip()
+            ]
+        if not table_retailer_values and "retailer" in visual_df.columns:
+            table_retailer_values = [
+                str(value).strip()
+                for value in visual_df["retailer"].dropna().unique().tolist()
+                if str(value).strip()
+            ]
+
+        table_retailer_label = (
+            table_retailer_values[0]
+            if len(table_retailer_values) == 1
+            else "all_retailers" if table_retailer_values
+            else "retailer"
+        )
+        table_safe_retailer = re.sub(
+            r"[^a-z0-9]+",
+            "_",
+            table_retailer_label.lower(),
+        ).strip("_") or "retailer"
+
         st.download_button(
             "Download table as CSV",
             data=display_table_df.to_csv(index=False).encode("utf-8-sig"),
-            file_name=f"pdp_qa_table_{safe_retailer}.csv",
+            file_name=f"pdp_qa_table_{table_safe_retailer}.csv",
             mime="text/csv",
             key="download_visual_table_csv",
         )
