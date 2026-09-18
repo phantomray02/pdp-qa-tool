@@ -752,8 +752,6 @@ def infer_retailer_name_from_url(url):
         return "Target"
     if "kroger.com" in url:
         return "Kroger"
-    if "meijer.com" in url:
-        return "Meijer"
     if "samsclub.com" in url or "sam's club" in url:
         return "Sam's Club"
     if "walgreens.com" in url:
@@ -782,7 +780,6 @@ def normalize_retailer_name(value):
         "walmart": "Walmart",
         "target": "Target",
         "kroger": "Kroger",
-        "meijer": "Meijer",
         "heb": "HEB",
         "h-e-b": "HEB",
         "h e b": "HEB",
@@ -796,7 +793,6 @@ RETAILER_URL_DOMAIN_RULES = {
     "cvs": ("cvs.com",),
     "walgreens": ("walgreens.com",),
     "kroger": ("kroger.com",),
-    "meijer": ("meijer.com",),
     "heb": ("heb.com",),
     "sam's club": ("samsclub.com",),
     "sams club": ("samsclub.com",),
@@ -2978,6 +2974,10 @@ def build_kroger_compact_capture_from_raw_html(raw_html_text, requested_url="", 
 
 # =========================================================
 # CVS CAPTURE AND PARSING
+CVS_PARSE_ONLY_IN_APP = True
+CVS_IGNORE_EXTENSION_PARSED_JSON = True
+CVS_REPORT_FIX_VERSION = "2026-09-18.2"
+CVS_APP_PARSER_FIX_VERSION = "2026-09-18.1"
 # =========================================================
 def build_cvs_compact_capture_from_parsed_json(payload):
     """Build compact parse-friendly CVS HTML from browser-extension output."""
@@ -3464,53 +3464,65 @@ def parse_uploaded_raw_html_map(raw_text, selected_retailer=""):
         final_url_from_payload = clean_uploaded_url_value(final_url_match.group(1)) if final_url_match else ""
 
         if "kroger.com" in requested_url_lc:
-            html_text = build_kroger_compact_capture_from_capture_block(block, requested_url=requested_url, final_url=final_url_from_payload)
+            html_text = build_kroger_compact_capture_from_capture_block(
+                block,
+                requested_url=requested_url,
+                final_url=final_url_from_payload,
+            )
+        elif "cvs.com" in requested_url_lc:
+            # CVS is parsed only inside this app. Ignore the extension PARSED JSON
+            # and preserve the complete captured HTML for the exact CVS item.
+            html_match = re.search(
+                r'(?is)-----BEGIN HTML-----(.*?)-----END HTML-----',
+                block,
+            )
+            html_text = (
+                html.unescape(str(html_match.group(1) or "").strip())
+                if html_match
+                else ""
+            )
         else:
             compact_html = ""
             parsed_payload = {}
-            parsed_match = re.search(r'(?is)-----BEGIN PARSED JSON-----(.*?)-----END PARSED JSON-----', block)
+            parsed_match = re.search(
+                r'(?is)-----BEGIN PARSED JSON-----(.*?)-----END PARSED JSON-----',
+                block,
+            )
             if parsed_match:
                 try:
                     parsed_payload = json.loads(str(parsed_match.group(1) or "").strip())
                     if requested_url and "heb.com" in requested_url_lc:
                         compact_html = build_heb_compact_capture_from_parsed_json(parsed_payload)
-                    elif requested_url and "cvs.com" in requested_url_lc:
-                        compact_html = build_cvs_compact_capture_from_parsed_json(parsed_payload)
                     elif requested_url and "samsclub.com" in requested_url_lc:
                         compact_html = build_sams_compact_capture_from_parsed_json(parsed_payload)
                     else:
-                        compact_html = build_kroger_compact_capture_from_parsed_json(parsed_payload)
+                        compact_html = build_compact_capture_from_parsed_json(parsed_payload)
                 except Exception:
-                    parsed_payload = {}
                     compact_html = ""
-            if not final_url_from_payload and isinstance(parsed_payload, dict):
-                final_url_from_payload = clean_uploaded_url_value(parsed_payload.get("finalUrl", ""))
-            html_match = re.search(r'(?is)-----BEGIN HTML-----(.*?)-----END HTML-----', block)
-            raw_html_text = html.unescape(str(html_match.group(1) or "").strip()) if html_match else ""
+            final_url_from_payload = clean_uploaded_url_value(
+                parsed_payload.get("finalUrl", "")
+            ) or final_url_from_payload
+            html_match = re.search(
+                r'(?is)-----BEGIN HTML-----(.*?)-----END HTML-----',
+                block,
+            )
+            raw_html_text = (
+                html.unescape(str(html_match.group(1) or "").strip())
+                if html_match
+                else ""
+            )
             if compact_html:
-                if requested_url and "cvs.com" in requested_url.lower() and raw_html_text:
-                    cvs_raw_compact = build_cvs_compact_capture_from_raw_html(raw_html_text, requested_url=requested_url, final_url=final_url_from_payload)
-                    html_text = compact_html + ("\n" + cvs_raw_compact if cvs_raw_compact else "")
-                elif requested_url and "samsclub.com" in requested_url.lower():
-                    # The extension PARSED JSON is exact-product scoped. Keep Sam's Club
-                    # isolated to that verified copy/gallery instead of appending raw page
-                    # ASR assets from recommendations, reviews, or shared parent content.
-                    html_text = compact_html
-                elif requested_url and "heb.com" in requested_url.lower() and raw_html_text:
-                    # HEB-only stable fix: keep compact parsed copy and append only tiny current-item image URLs.
-                    # Do not append full raw HTML because it can make the uploaded map huge and crash Streamlit.
-                    rpc_for_images = ""
-                    if isinstance(parsed_payload, dict):
-                        rpc_for_images = parsed_payload.get("rpc", "") or parsed_payload.get("sku", "") or ""
-                    image_snippet = _build_heb_compact_image_snippet(raw_html_text, target_rpc=rpc_for_images)
+                if requested_url and "heb.com" in requested_url_lc and raw_html_text:
+                    image_snippet = build_heb_compact_image_snippet_from_raw_html(
+                        raw_html_text,
+                        requested_url=requested_url,
+                        final_url=final_url_from_payload,
+                    )
                     html_text = compact_html + ("\n" + image_snippet if image_snippet else "")
                 else:
                     html_text = compact_html
             else:
-                if requested_url and "cvs.com" in requested_url_lc:
-                    html_text = build_cvs_compact_capture_from_raw_html(raw_html_text, requested_url=requested_url, final_url=final_url_from_payload)
-                else:
-                    html_text = raw_html_text
+                html_text = raw_html_text
 
         if requested_url and "kroger.com" in requested_url.lower() and html_text and not is_valid_kroger_product_capture(html_text):
             html_text = build_kroger_invalid_capture_stub(requested_url=requested_url, final_url=final_url_from_payload, reason="invalid_kroger_shell_or_product_unavailable_capture")
@@ -5933,7 +5945,10 @@ def is_cvs_retailer_image_url(url):
         return False
     return bool(
         "/bizcontent/merchandising/productimages/high_res/" in lowered
-        or "cvs.com/bizcontent/merchandising/productimages/high_res/" in lowered
+        or "cvs.com/bizcontent/merchandising/productimages/" in lowered
+        or "damassetlibrary.cvsimages.com/" in lowered
+        or "cvsimages.com/" in lowered
+        or "adobeaemcloud.com/" in lowered
     )
 
 
@@ -5948,6 +5963,13 @@ def sanitize_cvs_retailer_images(image_urls, debug=None, reason=""):
     seen = set()
     for raw_url in image_urls or []:
         url = html.unescape(str(raw_url or "").strip()).replace("\\/", "/")
+        url = url.replace("\\u002F", "/").replace("\u002F", "/")
+        if url.startswith("//"):
+            url = "https:" + url
+        elif url.startswith("/"):
+            url = "https://www.cvs.com" + url
+        if url.startswith("http://localhost:4300/"):
+            url = "https://www.cvs.com/" + url[len("http://localhost:4300/"):]
         if not url:
             continue
         if not is_cvs_retailer_image_url(url):
@@ -6737,10 +6759,46 @@ def merge_feature_continuations(items, max_features=5):
     return dedupe_preserve_order(merged[:max_features])
 
 
+def is_cvs_non_product_feature(value):
+    """CVS-only guard against page chrome being scored as product copy."""
+    text = normalize_space(html.unescape(str(value or "")))
+    lowered = text.lower().strip(" .:-")
+    if not lowered:
+        return True
+
+    exact_noise = {
+        "household", "paper & plastic", "paper and plastic", "toilet paper",
+        "pickup within 1 hour", "same-day delivery", "same day delivery",
+        "enter address", "shipping", "delivery", "pickup", "ingredients",
+        "reviews", "customer reviews", "details", "description",
+        "checkbox label label", "shop", "categories",
+    }
+    if lowered in exact_noise:
+        return True
+
+    noise_patterns = [
+        r"^(pickup|delivery|shipping)(\s|$)",
+        r"^(same[- ]day delivery|enter address)(\s|$)",
+        r"^(household|paper (&|and) plastic|toilet paper)$",
+        r"^(reviews?|ingredients?|directions?|warnings?)$",
+        r"^(vaccines?|glp-?1|pharmacy|photo)(\s|$)",
+        r"^(buy again|frequently bought|you may also like|recommended)(\s|$)",
+    ]
+    if any(re.search(pattern, lowered, flags=re.IGNORECASE) for pattern in noise_patterns):
+        return True
+
+    # Real CVS bullets contain a meaningful claim or explanatory phrase. Very short
+    # category labels without punctuation are navigation, not product features.
+    if len(text) < 24 and not any(ch in text for ch in [":", "-", "—", ";", ","]):
+        return True
+    return False
+
+
 def normalize_cvs_features(items):
     cleaned = [clean_cvs_feature_text(x) for x in items if isinstance(x, str)]
-    cleaned = [x for x in cleaned if x]
+    cleaned = [x for x in cleaned if x and not is_cvs_non_product_feature(x)]
     cleaned = merge_feature_continuations(cleaned, max_features=5)
+    cleaned = [x for x in cleaned if x and not is_cvs_non_product_feature(x)]
     return dedupe_preserve_order(cleaned[:5])
 
 
@@ -7398,6 +7456,110 @@ def extract_vendor_copy_from_nextjs(html_text, target_rpc="", retail_url=""):
     }
 
 
+
+def parse_cvs_capture_record_in_app(html_text, retail_url="", target_rpc=""):
+    """CVS-only parser for one extension capture record.
+
+    Each uploaded record is already scoped to one CVS URL/RPC. Parse the product
+    fields directly from that record instead of rescanning page-wide DOM text or
+    requiring a complete parent variant object.
+    """
+    raw = str(html_text or "")
+    decoded = html.unescape(raw).replace("\\u002F", "/").replace("\\/", "/")
+    debug = {
+        "Source Used": "cvs_capture_record_app_parser",
+        "CVS Capture Record Length": len(raw),
+        "CVS App Parser RPC": re.sub(r"\\D+", "", str(get_cvs_effective_sku_id(retail_url, target_rpc) or "")),
+    }
+
+    def decode_value(value):
+        value = str(value or "")
+        try:
+            return json.loads('"' + value + '"')
+        except Exception:
+            return html.unescape(value.replace('\\"', '"').replace("\\n", " ").replace("\\/", "/"))
+
+    def field(keys):
+        for key in keys:
+            match = re.search(r'"' + re.escape(key) + r'"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)"', decoded, flags=re.DOTALL)
+            if match:
+                value = clean_cvs_text_refined(decode_value(match.group(1)))
+                if value:
+                    return value
+        return ""
+
+    title = field(["title", "displayName"])
+    description = field(["vendorDetailsParagraph"])
+
+    features = []
+    array_match = re.search(r'"vendorDetailsBullets"\\s*:\\s*\\[', decoded, flags=re.DOTALL)
+    if array_match:
+        array_text = extract_balanced_bracket_block(decoded, array_match.end() - 1)
+        try:
+            values = json.loads(array_text)
+        except Exception:
+            values = [decode_value(m.group(1)) for m in re.finditer(r'"((?:\\\\.|[^"\\\\])*)"', array_text[1:-1], flags=re.DOTALL)]
+        if isinstance(values, list):
+            features = normalize_cvs_features([str(value) for value in values])
+
+    images = []
+    seen = set()
+    image_match = re.search(r'"upcImages"\\s*:\\s*\\[', decoded, flags=re.DOTALL)
+    if image_match:
+        image_array = extract_balanced_bracket_block(decoded, image_match.end() - 1)
+        # Preserve CVS gallery order. Prefer dynamicMediaUrl and then imageName.
+        starts = [m.start() for m in re.finditer(r'\\{', image_array)]
+        consumed_until = -1
+        for start in starts:
+            if start < consumed_until:
+                continue
+            obj = extract_balanced_brace_block(image_array, start)
+            if not obj:
+                continue
+            consumed_until = start + len(obj)
+            dynamic = ""
+            image_name = ""
+            for key, destination in [("dynamicMediaUrl", "dynamic"), ("imageName", "image")]:
+                match = re.search(r'"' + key + r'"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)"', obj, flags=re.DOTALL)
+                if match:
+                    value = html.unescape(decode_value(match.group(1))).replace("\\/", "/")
+                    if destination == "dynamic":
+                        dynamic = value
+                    else:
+                        image_name = value
+            image_url = dynamic or image_name
+            if image_url.startswith("/"):
+                image_url = "https://www.cvs.com" + image_url
+            if image_url.startswith(("http://", "https://")):
+                key = image_url.split("?", 1)[0].lower()
+                if key not in seen:
+                    seen.add(key)
+                    images.append(image_url)
+
+    # Some compact captures contain product image URLs without a retained upcImages
+    # wrapper. Use only explicit CVS product image hosts from this same item record.
+    if not images:
+        candidates = extract_cvs_images_from_html(decoded)
+        images = sanitize_cvs_retailer_images(candidates)
+
+    debug.update({
+        "CVS App Parser Title Found": bool(title),
+        "CVS App Parser Description Found": bool(description),
+        "CVS App Parser Feature Count": len(features),
+        "CVS App Parser Image Count": len(images),
+    })
+    return {
+        "text": {
+            "title": title,
+            "description": description,
+            "features": features[:5],
+            "rating": "",
+            "review_count": "",
+            "debug": debug,
+        },
+        "images": images[:MAX_IMAGE_SLOTS_TO_COMPARE],
+    }
+
 def extract_cvs_images_from_html(html_text):
     html_text = str(html_text or "")
     best_images = {}
@@ -7415,7 +7577,13 @@ def extract_cvs_images_from_html(html_text):
             full = raw_url
         else:
             return
-        if not re.search(r"/productimages/high_res/[^\s\"'<>]+\.(?:jpg|jpeg|png|webp|avif)", full, flags=re.IGNORECASE):
+        cvs_product_asset = bool(
+            re.search(r"/productimages/(?:high_res/)?[^\s\"'<>]+\.(?:jpg|jpeg|png|webp|avif)", full, flags=re.IGNORECASE)
+            or "damassetlibrary.cvsimages.com/" in full.lower()
+            or "cvsassets.blob.core.windows.net/productimages/" in full.lower()
+            or ("adobeaemcloud.com/" in full.lower() and re.search(r"\.(?:jpg|jpeg|png|webp|avif)(?:[?]|$)", full, flags=re.IGNORECASE))
+        )
+        if not cvs_product_asset:
             return
         base = full.split("?", 1)[0]
         name = base.split("/")[-1]
@@ -7435,6 +7603,12 @@ def extract_cvs_images_from_html(html_text):
         for m in re.findall(r"https?://[^\s\"'<>]+/productimages/high_res/[^\s\"'<>]+?\.(?:jpg|jpeg|png|webp|avif)(?:\?[^\s\"'<>]*)?", working, flags=re.IGNORECASE):
             sm = re.search(r"Resize=\((\d+)", m, flags=re.IGNORECASE)
             add_candidate(m, int(sm.group(1)) if sm else 0)
+        # App-only CVS gallery extraction from captured HTML/state.
+        for m in re.findall(r'https?://[^\s"\'<>]+(?:cvsimages\.com|cvsassets\.blob\.core\.windows\.net|adobeaemcloud\.com)/[^\s"\'<>]+', working, flags=re.IGNORECASE):
+            add_candidate(m, 0)
+        for array_body in re.findall(r'"(?:upcImages|alternateImages|images|media)"\s*:\s*\[(.*?)\]', working, flags=re.IGNORECASE | re.DOTALL):
+            for m in re.findall(r'https?(?::|\u003A)\?/\?/[^\s"\'<>\]]+', array_body, flags=re.IGNORECASE):
+                add_candidate(m.replace("\u003A", ":"), 0)
         for m in re.findall(r'"(?:dynamicMediaUrl|imageUrl|image|src|url|thumbnailUrl|largeImageUrl)"\s*:\s*"((?:\\.|[^"\\])+)"', working, flags=re.IGNORECASE | re.DOTALL):
             add_candidate(m, 0)
     try:
@@ -7815,9 +7989,11 @@ def _extract_cvs_text_from_html(html_text, retail_url="", target_rpc=""):
     elif not features:
         debug["Features Path"] = "features_empty"
 
+    # Last CVS-only cleanup before scoring/report rendering.
+    features = normalize_cvs_features(features)
     return {
-        "title": title,
-        "description": description,
+        "title": clean_cvs_text_refined(title),
+        "description": clean_cvs_text_refined(description),
         "features": features[:5],
         "rating": str(debug.get("CVS Structured Rating", "") or ""),
         "review_count": str(debug.get("CVS Structured Review Count", "") or ""),
@@ -11491,100 +11667,6 @@ def merge_cvs_bundles_prefer_richer_copy(*bundles):
     return merged
 
 
-def extract_meijer_text_from_html(html_text, retail_url="", target_rpc=""):
-    """Extract only content visibly present in the live Meijer PDP DOM.
-
-    Meijer mapping:
-    - Product Info title = title
-    - Product Details = description
-    - Product Features = features
-    Images are intentionally left for the next update.
-    """
-    raw = str(html_text or "")
-    empty = {
-        "title": "",
-        "description": "",
-        "features": [],
-        "debug": {
-            "Source Used": "meijer_live_dom_empty",
-            "Title Path": "missing",
-            "Description Path": "missing",
-            "Features Path": "missing",
-        },
-    }
-    if not raw.strip():
-        return empty
-
-    lowered = raw.lower()
-    if "access denied" in lowered or "you don't have permission to access" in lowered:
-        empty["debug"]["Source Used"] = "meijer_access_denied_rejected"
-        return empty
-
-    soup = BeautifulSoup(raw, "html.parser")
-
-    def node_text(node):
-        return normalize_space(node.get_text(" ", strip=True)) if node else ""
-
-    # Product Info title. Prefer the explicit Product Info h1 shown in the live DOM.
-    title_node = (
-        soup.select_one(".product-info__title h1")
-        or soup.select_one("h1.product-info__title")
-        or soup.select_one("[data-cnstrc-item-name]")
-        or soup.select_one("h1")
-    )
-    title = node_text(title_node)
-    if title_node and not title:
-        title = normalize_space(title_node.get("data-cnstrc-item-name", ""))
-    if title_node and title_node.has_attr("data-cnstrc-item-name"):
-        title = normalize_space(title_node.get("data-cnstrc-item-name", "")) or title
-
-    # Product Details is the description.
-    description_node = (
-        soup.select_one("section#button-0-section.product-accordion__description")
-        or soup.select_one("#button-0-section")
-        or soup.select_one('[aria-labelledby="button-0"]')
-    )
-    description = node_text(description_node)
-
-    # Product Features is the features field. Keep the live text intact as one feature.
-    features_node = (
-        soup.select_one("section#button-1-section.product-accordion__description")
-        or soup.select_one("#button-1-section")
-        or soup.select_one('[aria-labelledby="button-1"]')
-    )
-    features_text = node_text(features_node)
-    features = [features_text] if features_text else []
-
-    # Fail closed. Do not borrow Salsify or any known-copy backup.
-    return {
-        "title": title,
-        "description": description,
-        "features": features,
-        "debug": {
-            "Source Used": "meijer_live_dom",
-            "Title Path": ".product-info__title h1 | [data-cnstrc-item-name] | h1",
-            "Description Path": "#button-0-section (Product Details)",
-            "Features Path": "#button-1-section (Product Features)",
-            "Meijer Product Details Found": bool(description),
-            "Meijer Product Features Found": bool(features_text),
-            "Salsify Retailer Fallback Applied": False,
-        },
-    }
-
-
-def get_meijer_bundle(retail_url, target_rpc="", html_override=""):
-    """Build a Meijer-only live retailer bundle. No Salsify or known-copy fallback."""
-    html_text = str(html_override or "")
-    source_used = "uploaded_txt_html" if html_text.strip() else "meijer_live_html"
-    if not html_text.strip() and retail_url:
-        html_text = get_html(retail_url)
-    text = extract_meijer_text_from_html(html_text, retail_url=retail_url, target_rpc=target_rpc)
-    text.setdefault("debug", {})["Source Used"] = source_used if any([
-        text.get("title"), text.get("description"), text.get("features")
-    ]) else text.get("debug", {}).get("Source Used", source_used)
-    return {"text": text, "images": []}
-
-
 @st.cache_data(show_spinner=False, max_entries=1200)
 def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_source_code=""):
     retailer = normalize_retailer_name(retailer_name).strip().lower()
@@ -11592,13 +11674,6 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
 
     if retail_url and not retailer_url_matches_selected(retail_url, retailer):
         return build_empty_retailer_bundle(retailer_name or "Retailer", build_retailer_url_mismatch_status(retail_url, retailer))
-
-    if retailer == "meijer":
-        return get_meijer_bundle(
-            retail_url,
-            target_rpc=target_rpc,
-            html_override=uploaded_html,
-        )
 
     if retailer == "kroger":
         if uploaded_html.strip() and is_valid_kroger_product_capture(uploaded_html):
@@ -11631,8 +11706,15 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
 
     if uploaded_html.strip():
         if retailer == "cvs":
-            cvs_uploaded_html = extract_cvs_relevant_source_chunk(uploaded_html, retail_url=retail_url, target_rpc=target_rpc)
-            uploaded_bundle = {"text": _extract_cvs_text_from_html(cvs_uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_cvs_images_from_html(cvs_uploaded_html)}
+            # The capture importer already matched this row to one CVS record.
+            # Parse that complete record in the app without applying a second source
+            # window that can remove vendorDetails/upcImages.
+            cvs_uploaded_html = uploaded_html
+            uploaded_bundle = parse_cvs_capture_record_in_app(
+                cvs_uploaded_html,
+                retail_url=retail_url,
+                target_rpc=target_rpc,
+            )
             upload_debug = uploaded_bundle.setdefault("text", {}).setdefault("debug", {})
             upload_debug["Source Used"] = "uploaded_txt_html"
             upload_debug["CVS Uploaded HTML Length"] = len(uploaded_html)
@@ -13448,7 +13530,7 @@ def get_visual_row_payload(
                 retail_url,
                 target_rpc=current_target_sku,
             )
-    elif retailer_norm in {"heb", "cvs", "meijer"}:
+    elif retailer_norm in {"heb", "cvs"}:
         if not row_source_code:
             row_source_code = lookup_uploaded_raw_html(
                 uploaded_html_map,
@@ -14986,6 +15068,59 @@ if (
             st.info(
                 "No visually reviewable items found. Products without retailer URLs are still included in the extract."
             )
+            st.stop()
+
+        # Option 1: table-first review of the completed QA results.
+        table_df = pd.DataFrame(st.session_state.get("summary_rows", []))
+        if table_df.empty:
+            table_df = visual_df.copy()
+
+        preferred_columns = [
+            "Retailer", "Brand", "SKU", "Retailer RPC", "Kroger RPC",
+            "Title %", "Description %", "Feature %", "Image Match %",
+            "Overall %", "Status", "Salsify URL", "Retail URL",
+        ]
+        visible_columns = [col for col in preferred_columns if col in table_df.columns]
+        if not visible_columns:
+            visible_columns = list(table_df.columns)
+
+        st.markdown("### Table Review")
+        st.caption(
+            "Review the completed QA results in a sortable table, then export the visible rows to CSV."
+        )
+        table_search = st.text_input(
+            "Filter table",
+            placeholder="Type a SKU, brand, status, retailer, or other value",
+            key="visual_table_filter",
+        ).strip()
+
+        display_table_df = table_df.loc[:, visible_columns].copy()
+        if table_search:
+            search_mask = display_table_df.astype(str).apply(
+                lambda col: col.str.contains(table_search, case=False, na=False)
+            ).any(axis=1)
+            display_table_df = display_table_df.loc[search_mask].copy()
+
+        st.dataframe(
+            display_table_df,
+            use_container_width=True,
+            hide_index=True,
+            height=min(760, max(220, 38 * (len(display_table_df) + 1))),
+        )
+        st.download_button(
+            "Download table as CSV",
+            data=display_table_df.to_csv(index=False).encode("utf-8-sig"),
+            file_name=f"pdp_qa_table_{safe_retailer}.csv",
+            mime="text/csv",
+            key="download_visual_table_csv",
+        )
+
+        show_detailed_cards = st.toggle(
+            "Show detailed visual comparison cards",
+            value=False,
+            key="show_detailed_visual_cards",
+        )
+        if not show_detailed_cards:
             st.stop()
 
         for _, row in visual_df.iterrows():
