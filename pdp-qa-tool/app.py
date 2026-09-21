@@ -759,6 +759,8 @@ def infer_retailer_name_from_url(url):
         return "Walgreens"
     if "heb.com" in url or "h-e-b" in url:
         return "HEB"
+    if "albertsons.com" in url or "jewelosco.com" in url or "safeway.com" in url:
+        return "Albertsons"
     if "amazon.com" in url:
         return "Amazon"
 
@@ -784,6 +786,10 @@ def normalize_retailer_name(value):
         "heb": "HEB",
         "h-e-b": "HEB",
         "h e b": "HEB",
+        "albertsons": "Albertsons",
+        "jewel-osco": "Albertsons",
+        "jewel osco": "Albertsons",
+        "safeway": "Albertsons",
         "amazon": "Amazon",
         "retailer": "Retailer",
     }
@@ -801,6 +807,7 @@ RETAILER_URL_DOMAIN_RULES = {
     "walmart": ("walmart.com",),
     "target": ("target.com",),
     "amazon": ("amazon.com",),
+    "albertsons": ("albertsons.com", "jewelosco.com", "safeway.com"),
 }
 
 
@@ -3469,6 +3476,18 @@ def parse_uploaded_raw_html_map(raw_text, selected_retailer=""):
                 block,
                 requested_url=requested_url,
                 final_url=final_url_from_payload,
+            )
+        elif any(domain in requested_url_lc for domain in ("albertsons.com", "jewelosco.com", "safeway.com")):
+            # Albertsons-family content is parsed only inside this app. The extension
+            # PARSED JSON can omit images/descriptions and can include navigation text.
+            html_match = re.search(
+                r'(?is)-----BEGIN HTML-----(.*?)-----END HTML-----',
+                block,
+            )
+            html_text = (
+                html.unescape(str(html_match.group(1) or "").strip())
+                if html_match
+                else ""
             )
         elif "cvs.com" in requested_url_lc:
             # CVS is parsed only inside this app. Ignore the extension PARSED JSON
@@ -11797,6 +11816,167 @@ def merge_cvs_bundles_prefer_richer_copy(*bundles):
     return merged
 
 
+
+def _albertsons_jsonld_nodes(value):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from _albertsons_jsonld_nodes(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _albertsons_jsonld_nodes(child)
+
+
+def _albertsons_product_jsonld(soup, target_rpc=""):
+    target_rpc = re.sub(r"[^0-9]", "", str(target_rpc or ""))
+    candidates = []
+    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        raw = (script.string or script.get_text(" ", strip=True) or "").strip()
+        if not raw:
+            continue
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            continue
+        for node in _albertsons_jsonld_nodes(payload):
+            node_type = node.get("@type", "")
+            types = node_type if isinstance(node_type, list) else [node_type]
+            if any(str(x).lower() == "product" for x in types):
+                blob = json.dumps(node, ensure_ascii=False)
+                score = 100
+                if target_rpc and target_rpc in blob:
+                    score += 500
+                if node.get("name"):
+                    score += 50
+                if node.get("image"):
+                    score += 25
+                candidates.append((score, node))
+    return max(candidates, key=lambda x: x[0])[1] if candidates else {}
+
+
+def clean_albertsons_text(value):
+    if isinstance(value, (list, tuple)):
+        value = " ".join(str(x or "") for x in value)
+    value = BeautifulSoup(html.unescape(str(value or "")), "html.parser").get_text(" ", strip=True)
+    return normalize_space(value)
+
+
+def extract_albertsons_text_from_html(html_text, retail_url="", target_rpc=""):
+    debug = {"Title Path": "", "Description Path": "", "Features Path": "", "Rating Path": "", "Source Used": "uploaded_txt_raw_html", "Retailer": "Albertsons"}
+    if not html_text:
+        return {"title": "", "description": "", "features": [], "rating": "", "review_count": "", "debug": debug}
+    working = html.unescape(str(html_text or ""))
+    soup = BeautifulSoup(working, "html.parser")
+    product = _albertsons_product_jsonld(soup, target_rpc=target_rpc)
+
+    title = clean_albertsons_text(product.get("name", ""))
+    if title:
+        debug["Title Path"] = "albertsons_jsonld_product_name"
+    if not title:
+        for selector in ('h1.heading-s', 'h1.product-title', '[data-testid="product-title"]', 'h1'):
+            node = soup.select_one(selector)
+            value = clean_albertsons_text(node.get_text(" ", strip=True)) if node else ""
+            if value and value.lower() not in {"shopped with us before?", "welcome back!"}:
+                title = value
+                debug["Title Path"] = f"albertsons_dom_{selector}"
+                break
+    if not title:
+        meta = soup.find("meta", attrs={"property": "og:title"})
+        title = clean_albertsons_text(meta.get("content", "")) if meta else ""
+        if title:
+            debug["Title Path"] = "albertsons_og_title"
+
+    details = None
+    for selector in ('#detailsAccordionContent', '[data-testid="product-detail-accordion"]', '.product-details__description'):
+        details = soup.select_one(selector)
+        if details:
+            break
+    description = ""
+    features = []
+    if details:
+        for li in details.select("li"):
+            value = clean_albertsons_text(li.get_text(" ", strip=True))
+            if value and len(value) >= 8:
+                features.append(value)
+        clone = BeautifulSoup(str(details), "html.parser")
+        for li in clone.select("li"):
+            li.decompose()
+        description = clean_albertsons_text(clone.get_text(" ", strip=True))
+        if description:
+            debug["Description Path"] = "albertsons_details_accordion"
+        if features:
+            debug["Features Path"] = "albertsons_details_accordion_li"
+    if not description:
+        description = clean_albertsons_text(product.get("description", ""))
+        if description:
+            debug["Description Path"] = "albertsons_jsonld_product_description"
+    if not description:
+        meta = soup.find("meta", attrs={"property": "og:description"}) or soup.find("meta", attrs={"name": "description"})
+        description = clean_albertsons_text(meta.get("content", "")) if meta else ""
+        if description:
+            debug["Description Path"] = "albertsons_meta_description"
+
+    bad_markers = ("chicken wings", "create account", "my account", "shopping options for", "change zip")
+    features = [x for x in dedupe_preserve_order(features) if not any(m in x.lower() for m in bad_markers)][:10]
+    if not features:
+        debug["Features Path"] = "albertsons_features_missing"
+
+    aggregate = product.get("aggregateRating", {}) if isinstance(product.get("aggregateRating"), dict) else {}
+    rating = str(aggregate.get("ratingValue", "") or "").strip()
+    review_count = str(aggregate.get("reviewCount", aggregate.get("ratingCount", "")) or "").strip()
+    if rating:
+        debug["Rating Path"] = "albertsons_jsonld_aggregateRating"
+    return {"title": title, "description": description, "features": features, "rating": rating, "review_count": review_count, "debug": debug}
+
+
+def _normalize_albertsons_image_url(url):
+    url = html.unescape(str(url or "").strip()).replace("\\/", "/")
+    if url.startswith("//"):
+        url = "https:" + url
+    if not url.lower().startswith(("http://", "https://")):
+        return ""
+    if "images.albertsons-media.com/is/image/ABS/" not in url:
+        return ""
+    url = re.sub(r"\?(?:\$ng-ecom-[^&]+\$)?&?defaultImage=Not_Available.*$", "", url, flags=re.IGNORECASE)
+    return url.rstrip("?&")
+
+
+def extract_albertsons_images_from_html(html_text, target_rpc=""):
+    working = html.unescape(str(html_text or ""))
+    soup = BeautifulSoup(working, "html.parser")
+    product = _albertsons_product_jsonld(soup, target_rpc=target_rpc)
+    values = []
+    image_value = product.get("image", [])
+    values.extend(image_value if isinstance(image_value, list) else [image_value])
+    og = soup.find("meta", attrs={"property": "og:image"})
+    if og:
+        values.append(og.get("content", ""))
+    for node in soup.select('img[src*="images.albertsons-media.com/is/image/ABS/"]'):
+        values.append(node.get("src", ""))
+    values.extend(re.findall(r"https?://images\.albertsons-media\.com/is/image/ABS/[^\s\"'<>\)]+", working, flags=re.IGNORECASE))
+    target_rpc = re.sub(r"[^0-9]", "", str(target_rpc or ""))
+    out, seen = [], set()
+    for value in values:
+        url = _normalize_albertsons_image_url(value)
+        if not url:
+            continue
+        if target_rpc and f"/ABS/{target_rpc}-" not in url and f"/ABS/{target_rpc}?" not in url:
+            continue
+        key = url.split("?", 1)[0]
+        if key not in seen:
+            seen.add(key)
+            out.append(url)
+    return out[:MAX_IMAGE_SLOTS_TO_COMPARE]
+
+
+@st.cache_data(show_spinner=False)
+def get_albertsons_bundle(retail_url, target_rpc="", sku=""):
+    html_text = get_html(retail_url) if retail_url else ""
+    return {
+        "text": extract_albertsons_text_from_html(html_text, retail_url=retail_url, target_rpc=target_rpc),
+        "images": extract_albertsons_images_from_html(html_text, target_rpc=target_rpc),
+    }
+
 @st.cache_data(show_spinner=False, max_entries=1200)
 def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_source_code=""):
     retailer = normalize_retailer_name(retailer_name).strip().lower()
@@ -11877,6 +12057,10 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
             bundle = {"text": extract_sams_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_sams_images_from_html(uploaded_html)}
             bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
             return bundle
+        if retailer == "albertsons":
+            bundle = {"text": extract_albertsons_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_albertsons_images_from_html(uploaded_html, target_rpc=target_rpc)}
+            bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_raw_html"
+            return bundle
         if retailer == "heb":
             bundle = {"text": extract_heb_text_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc), "images": extract_heb_images_from_html(uploaded_html, retail_url=retail_url, target_rpc=target_rpc)}
             bundle.setdefault("text", {}).setdefault("debug", {})["Source Used"] = "uploaded_txt_html"
@@ -11888,6 +12072,7 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
         "sam's club": lambda: get_sams_bundle(retail_url, target_rpc, sku=sku),
         "kroger": lambda: get_kroger_bundle(retail_url, target_rpc),
         "heb": lambda: get_heb_bundle(retail_url, target_rpc, sku=sku),
+        "albertsons": lambda: get_albertsons_bundle(retail_url, target_rpc, sku=sku),
     }
     fetcher = retailer_fetchers.get(retailer)
     if fetcher is None:
