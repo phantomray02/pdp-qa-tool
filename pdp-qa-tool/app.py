@@ -3503,11 +3503,13 @@ def parse_uploaded_raw_html_map(raw_text, selected_retailer=""):
             )
             capture_number_match = re.search(r'(?im)^=+\s*PDP CAPTURE\s+(\d+)\s*=+', block)
             capture_rpc_match = re.search(r'(?im)^RPC\s*:\s*([^\r\n]+)', block)
+            capture_sku_match = re.search(r'(?im)^SKU\s*:\s*([^\r\n]+)', block)
             capture_number = str(capture_number_match.group(1) or "").strip() if capture_number_match else ""
             capture_rpc = re.sub(r"[^0-9A-Za-z_-]", "", str(capture_rpc_match.group(1) or "").replace(".0", "").strip()) if capture_rpc_match else ""
             capture_metadata = [
                 "CVS-Capture-Number: " + capture_number,
                 "CVS-Capture-RPC: " + capture_rpc,
+                "CVS-Capture-SKU: " + (str(capture_sku_match.group(1) or "").strip() if capture_sku_match else ""),
                 "CVS-Capture-Requested-URL: " + requested_url,
                 "CVS-Capture-Final-URL: " + final_url_from_payload,
                 "CVS-Capture-Raw-HTML-Length: " + str(len(captured_html)),
@@ -7627,6 +7629,50 @@ def parse_cvs_capture_record_in_app(html_text, retail_url="", target_rpc=""):
                 if isinstance(product_object, dict) and isinstance(product_object.get("variants"), list):
                     payloads.append({"productData": product_object})
 
+    # A compact flight capture can end mid-object. Only accept fully decoded
+    # variant objects from the matched capture; never use the default variant
+    # to fill a different RPC.
+    if not payloads:
+        for script in soup.find_all("script", attrs={"data-capture": "product-state"}):
+            flight = str(script.string if script.string is not None else script.get_text("", strip=False))
+            if 'productData' not in flight:
+                continue
+            decoded_flight = flight.replace(chr(92) + chr(34), chr(34))
+            decoded_flight = decoded_flight.replace(chr(92) * 2 + chr(34), chr(92) + chr(34))
+            product_start = decoded_flight.find('"productData"')
+            variants_start = decoded_flight.find('"variants"', product_start)
+            if product_start < 0 or variants_start < 0:
+                continue
+            title_match = re.search(r'"title"\s*:\s*"((?:\\.|[^"\\])*)"', decoded_flight[product_start:variants_start])
+            fragment_title = ""
+            if title_match:
+                try:
+                    fragment_title = json.loads('"' + title_match.group(1) + '"')
+                except (ValueError, TypeError):
+                    pass
+            cursor = decoded_flight.find("[", variants_start)
+            if cursor < 0:
+                continue
+            cursor += 1
+            while cursor < len(decoded_flight):
+                while cursor < len(decoded_flight) and decoded_flight[cursor] in " \r\n\t,":
+                    cursor += 1
+                if cursor >= len(decoded_flight) or decoded_flight[cursor] != "{":
+                    break
+                try:
+                    variant_object, end_cursor = json.JSONDecoder().raw_decode(decoded_flight, cursor)
+                except (ValueError, TypeError):
+                    break
+                if not isinstance(variant_object, dict):
+                    break
+                if str(variant_object.get("id", "")).strip() == requested_rpc:
+                    payloads.append({"productData": {"title": fragment_title, "variants": [variant_object]}})
+                    debug["Product-state partial variant decoded"] = True
+                    break
+                cursor = end_cursor
+            if payloads:
+                break
+
     debug["Product-state decoded"] = bool(payloads)
     product_data = None
     exact_variant = None
@@ -7674,6 +7720,34 @@ def parse_cvs_capture_record_in_app(html_text, retail_url="", target_rpc=""):
         vendor_details = vendor_content.get("vendorDetails") if isinstance(vendor_content, dict) else None
         if isinstance(vendor_details, dict):
             description = clean_value(vendor_details.get("vendorDetailsParagraph", ""))
+            # Next.js Flight uses $hex references for long text. Resolve only
+            # the matching T-length record inside this same captured script.
+            flight_ref = re.fullmatch(r"\$([0-9a-fA-F]+)", description)
+            if flight_ref:
+                resolved = ""
+                for state_script in soup.find_all("script", attrs={"data-capture": "product-state"}):
+                    state_text = str(state_script.string if state_script.string is not None else state_script.get_text("", strip=False))
+                    marker = re.search(
+                        r"(?<![0-9a-fA-F])" + re.escape(flight_ref.group(1))
+                        + r":T([0-9a-fA-F]+),(.*?)(?=[0-9a-fA-F]+:\[)",
+                        state_text, flags=re.DOTALL,
+                    )
+                    if not marker:
+                        continue
+                    size = int(marker.group(1), 16)
+                    candidate = marker.group(2)
+                    # Flight's T length is measured before HTML/JS escaping;
+                    # bound it rather than slicing escaped characters mid-word.
+                    if size < 20 or size > 100000 or not (size * 0.7 <= len(candidate) <= size * 1.3):
+                        continue
+                    candidate = clean_value(candidate.replace(chr(92) * 2 + "u", chr(92) + "u"))
+                    candidate = re.sub(r"\\u([0-9a-fA-F]{4})", lambda m: chr(int(m.group(1), 16)), candidate)
+                    if len(candidate) >= 20:
+                        resolved = candidate
+                        break
+                description = resolved
+                if not resolved:
+                    debug["Reason for CVS parser failure"] = "CVS description is an unresolved Next.js Flight reference."
             bullets = vendor_details.get("vendorDetailsBullets")
             if isinstance(bullets, list):
                 seen_features = set()
@@ -14030,6 +14104,17 @@ def process_row(row):
         image_position_scores = {}
 
         status_notes = []
+        if retailer_norm_for_row == "cvs" and row_source_code:
+            captured_sku = re.search(r"(?im)^CVS-Capture-SKU:\s*([^\r\n]+)", str(row_source_code))
+            if captured_sku and captured_sku.group(1).strip() and captured_sku.group(1).strip() != str(row.get("sku", "")).strip():
+                # Sibling SKUs may legitimately share a CVS parent PDP. Block
+                # only a cross-brand capture; the exact variant check below
+                # still decides whether a same-brand sibling can be scored.
+                captured_title = re.search(r"(?is)<title\b[^>]*>(.*?)</title>", str(row_source_code))
+                title_value = html.unescape(re.sub(r"<[^>]+>", "", captured_title.group(1))).lower() if captured_title else ""
+                expected_brand = str(row.get("brand", "")).strip().lower()
+                if expected_brand and title_value and expected_brand not in title_value:
+                    status_notes.append("CVS uploaded capture belongs to a different brand; comparison blocked")
 
         if not salsify_url:
             status_notes.append("Missing Salsify URL")
