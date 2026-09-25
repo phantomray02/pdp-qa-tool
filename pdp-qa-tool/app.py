@@ -7611,6 +7611,22 @@ def parse_cvs_capture_record_in_app(html_text, retail_url="", target_rpc=""):
             except Exception:
                 pass
 
+        # Compact CVS captures can contain a clipped, escaped Next.js flight
+        # fragment rather than a complete JSON script or self.__next_f.push call.
+        # Decode only the complete productData object inside the matched capture;
+        # the exact variant id is still checked below before any fields are used.
+        if script.get("data-capture") == "product-state" and not payloads:
+            decoded_fragment = script_text.replace(r'\"', '"')
+            for product_match in re.finditer(r'"productData"\s*:\s*\{', decoded_fragment):
+                try:
+                    product_object, _ = json.JSONDecoder().raw_decode(
+                        decoded_fragment, product_match.end() - 1
+                    )
+                except (ValueError, TypeError):
+                    continue
+                if isinstance(product_object, dict) and isinstance(product_object.get("variants"), list):
+                    payloads.append({"productData": product_object})
+
     debug["Product-state decoded"] = bool(payloads)
     product_data = None
     exact_variant = None
