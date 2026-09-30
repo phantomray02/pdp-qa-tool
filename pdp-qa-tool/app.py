@@ -15101,22 +15101,14 @@ if uploaded_file:
         st.text(traceback.format_exc())
 
 # =========================================
-# VIEW + FILTER CONTROLS
+# VIEW + FILTER CONTROLS (simplified: always show everything, debugger removed)
 # =========================================
-st.markdown("## 🔎 QA Viewer Controls")
-show_only_issues = st.checkbox("❌ Show ONLY Issues", key="show_issues")
-hide_good = st.checkbox("🎉 Hide Strong Matches (80%+)", key="hide_good")
-show_below_90_only = st.checkbox("🔎 Show Only Scores Below 90%", key="show_below_90_only")
-
-
-st.markdown("### 🧪 Debug Controls")
-
-show_html_debugger = st.checkbox(
-    "Debug HTML",
-    key="show_html_debugger",
-)
+show_only_issues = False
+hide_good = False
+show_below_90_only = False
 
 # Keep downstream variables defined so the rest of the app keeps working unchanged.
+show_html_debugger = False
 debugger_source = "Retailer page"
 debug_only_sku = ""
 use_manual_html_override = False
@@ -15125,65 +15117,6 @@ manual_html_text = ""
 debug_marker_start = ""
 debug_marker_end = ""
 debug_marker_target = "Raw HTML"
-
-standalone_debug_url = st.text_input(
-    "URL to pull raw HTML",
-    key="standalone_debug_url",
-).strip()
-
-debug_timeout_override = st.number_input(
-    "Timeout (s)",
-    min_value=1,
-    max_value=120,
-    value=30,
-    step=1,
-    key="debug_timeout_override",
-)
-
-debug_headers_text = st.text_area(
-    "Custom headers (optional)",
-    placeholder="Either JSON, e.g. {'Accept-Language': 'en-US'} or one per line: Key: Value",
-    height=100,
-    key="debug_headers_text",
-)
-
-col_debug_1, col_debug_2 = st.columns(2)
-with col_debug_1:
-    debug_use_mobile = st.checkbox("Use mobile User-Agent", value=False, key="debug_use_mobile")
-with col_debug_2:
-    debug_proxy_url = st.text_input(
-        "Proxy URL (optional)",
-        key="debug_proxy_url",
-        placeholder="http://user:pass@host:port",
-    ).strip()
-
-st.caption(
-    "Paste a URL and the debugger will fetch the raw HTML response so you can inspect the exact source before we build a retailer-specific parser."
-)
-
-if show_html_debugger and standalone_debug_url:
-    standalone_retailer_name = infer_retailer_name_from_url(standalone_debug_url)
-    standalone_debug_views = resolve_debug_views(
-        standalone_debug_url,
-        retailer_name=standalone_retailer_name,
-        use_manual_html_override=False,
-        manual_html_text="",
-        manual_html_file=None,
-        headers_text=debug_headers_text,
-        timeout_override=int(debug_timeout_override),
-        use_mobile=debug_use_mobile,
-        proxy_url=debug_proxy_url,
-    )
-
-    with st.expander("🔎 Debug HTML", expanded=True):
-        render_debugger_panel(
-            standalone_debug_views,
-            sku="top_debugger",
-            marker_start="",
-            marker_end="",
-            marker_target="Raw HTML",
-            use_manual_html_override=False,
-        )
 
 
 if retailer_df is not None and st.session_state.processing_done and st.session_state.completed_batch_key == current_batch_key:
@@ -15494,8 +15427,7 @@ if (
             unsafe_allow_html=True,
         )
         st.markdown("## 👁️ Full Visual QA Review")
-        st.caption("This full visual UI appears only after the top batch run finishes and the extract/report rows are ready.")
-        st.caption("This full visual UI appears only after the new top-section batch run finishes and the extract/report rows are ready. Kroger visual rows reuse the uploaded TXT-matched HTML instead of live fetch.")
+        st.caption("Kroger visual rows reuse the uploaded TXT-matched HTML instead of live fetch.")
 
         if hidden_count > 0:
             st.caption(
@@ -15505,64 +15437,6 @@ if (
             st.info(
                 "No visually reviewable items found. Products without retailer URLs are still included in the extract."
             )
-            st.stop()
-
-        # Option 1: table-first review of the completed QA results.
-        table_df = pd.DataFrame(st.session_state.get("summary_rows", []))
-        if table_df.empty:
-            table_df = visual_df.copy()
-
-        preferred_columns = [
-            "Retailer", "Brand", "SKU", "Retailer RPC", "Kroger RPC",
-            "Title %", "Description %", "Feature %", "Image Match %",
-            "Overall %", "Status", "Salsify URL", "Retail URL",
-        ]
-        visible_columns = [col for col in preferred_columns if col in table_df.columns]
-        if not visible_columns:
-            visible_columns = list(table_df.columns)
-
-        st.markdown("### Table Review")
-        st.caption(
-            "Review the completed QA results in a sortable table, then export the visible rows to CSV."
-        )
-        table_search = st.text_input(
-            "Filter table",
-            placeholder="Type a SKU, brand, status, retailer, or other value",
-            key="visual_table_filter",
-        ).strip()
-
-        display_table_df = table_df.loc[:, visible_columns].copy()
-        if table_search:
-            search_mask = display_table_df.astype(str).apply(
-                lambda col: col.str.contains(table_search, case=False, na=False)
-            ).any(axis=1)
-            display_table_df = display_table_df.loc[search_mask].copy()
-
-        st.dataframe(
-            display_table_df,
-            use_container_width=True,
-            hide_index=True,
-            height=min(760, max(220, 38 * (len(display_table_df) + 1))),
-        )
-        visual_table_retailer = re.sub(
-            r"[^a-z0-9]+",
-            "_",
-            str(selected_retailer or "retailer").lower().strip(),
-        ).strip("_") or "retailer"
-        st.download_button(
-            "Download table as CSV",
-            data=display_table_df.to_csv(index=False).encode("utf-8-sig"),
-            file_name=f"pdp_qa_table_{visual_table_retailer}.csv",
-            mime="text/csv",
-            key="download_visual_table_csv",
-        )
-
-        show_detailed_cards = st.toggle(
-            "Show detailed visual comparison cards",
-            value=False,
-            key="show_detailed_visual_cards",
-        )
-        if not show_detailed_cards:
             st.stop()
 
         for _, row in visual_df.iterrows():
@@ -15765,32 +15639,6 @@ if (
                 avg_img_score = int(sum(img_scores) / len(img_scores)) if img_scores else 0
                 overall_score = int((title_score + desc_score + avg_feature_score + avg_img_score) / 4)
 
-            if show_html_debugger:
-                should_render_debugger = (not debug_only_sku) or (
-                    str(sku).strip() == str(debug_only_sku).strip()
-                )
-            
-                if should_render_debugger:
-                    debug_url = retail_url if debugger_source == "Retailer page" else salsify_url
-                    debug_retailer_name = retailer_name if debugger_source == "Retailer page" else "salsify"
-            
-                    debug_views = resolve_debug_views(
-                        debug_url,
-                        retailer_name=debug_retailer_name,
-                        use_manual_html_override=use_manual_html_override,
-                        manual_html_text=manual_html_text,
-                        manual_html_file=manual_html_file,
-                    )
-            
-                    with st.expander(f"🔎 HTML / DOM Debugger — {sku}", expanded=True):
-                        render_debugger_panel(
-                            debug_views,
-                            sku=sku,
-                            marker_start=debug_marker_start,
-                            marker_end=debug_marker_end,
-                            marker_target=debug_marker_target,
-                            use_manual_html_override=use_manual_html_override,
-                        )
             st.divider()
     except Exception as e:
         st.error("🔥 CRITICAL APP ERROR")
