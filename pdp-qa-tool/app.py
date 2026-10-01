@@ -3377,6 +3377,20 @@ def _build_heb_compact_image_snippet(raw_html_text, target_rpc=""):
     parts.append("</section>")
     return "\n".join(parts)
 
+def build_heb_compact_image_snippet_from_raw_html(raw_html_text, requested_url="", final_url=""):
+    """HEB-only: bridges parse_uploaded_raw_html_map's call signature to the actual
+    image-snippet builder (_build_heb_compact_image_snippet), which only accepts a
+    target_rpc rather than requested_url/final_url. Derives the RPC from the
+    requested/final URL the same way other HEB lookups in this file already do,
+    then delegates to the existing (working) image extractor.
+    """
+    target_rpc = ""
+    url_source = str(requested_url or final_url or "")
+    m = re.search(r"/(\d{4,12})(?:[/?#]|$)", url_source)
+    if m:
+        target_rpc = m.group(1)
+    return _build_heb_compact_image_snippet(raw_html_text, target_rpc=target_rpc)
+
 def build_cvs_compact_capture_from_raw_html(raw_html_text, requested_url="", final_url=""):
     source = str(raw_html_text or "")
     if not source:
