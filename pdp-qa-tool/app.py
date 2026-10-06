@@ -9,7 +9,7 @@ import hashlib
 import traceback
 from io import BytesIO
 from difflib import SequenceMatcher
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 
 import pandas as pd
 import requests
@@ -184,7 +184,30 @@ def get_session():
         session.headers.update(HEADERS)
         thread_local.session = session
     return thread_local.session
-    
+
+# Raw HTML captures are too large to use as @st.cache_data key arguments
+# (hashing a 100KB+ string per call and retaining it as key material).
+# Call sites register the HTML and pass only its sha256 digest; cached
+# functions resolve the digest back to the raw HTML on a cache miss.
+_ROW_SOURCE_BY_DIGEST = {}
+_ROW_SOURCE_BY_DIGEST_MAX = 2000
+
+
+def register_row_source(raw_html):
+    """Store a raw HTML capture; return its sha256 hex digest for cache keys."""
+    text = str(raw_html or "")
+    digest = hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
+    if digest not in _ROW_SOURCE_BY_DIGEST:
+        if len(_ROW_SOURCE_BY_DIGEST) >= _ROW_SOURCE_BY_DIGEST_MAX:
+            _ROW_SOURCE_BY_DIGEST.pop(next(iter(_ROW_SOURCE_BY_DIGEST)))
+        _ROW_SOURCE_BY_DIGEST[digest] = text
+    return digest
+
+
+def lookup_row_source(digest):
+    """Resolve a digest from register_row_source back to the raw HTML."""
+    return _ROW_SOURCE_BY_DIGEST.get(digest or "", "")
+
 # =========================================
 # GENERIC HELPERS
 # =========================================
@@ -670,28 +693,6 @@ def image_slot_block_html(slot_num, s_url, r_url, score, retailer_name="CVS", bo
 {image_tile_html(retailer_name, r_url, box_height=box_height)}
 </div>
 </div>'''
-
-
-def build_image_panel_html(s_images, r_images, max_images, retailer_name="CVS", box_height=110):
-    blocks = []
-
-    for i in range(max_images):
-        s_url = s_images[i].get("url") if i < len(s_images) and isinstance(s_images[i], dict) else ""
-        r_url = r_images[i] if i < len(r_images) and isinstance(r_images[i], str) else ""
-        score = compare_images_visually(s_url, r_url) if (s_url and r_url) else 0
-
-        blocks.append(
-            image_slot_block_html(
-                slot_num=i + 1,
-                s_url=s_url,
-                r_url=r_url,
-                score=score,
-                retailer_name=retailer_name,
-                box_height=box_height,
-            )
-        )
-
-    return f'''<div style="padding-right:4px;">{"".join(blocks)}</div>'''
 
 
 def read_uploaded_file_from_bytes(file_bytes, file_name):
@@ -2091,7 +2092,7 @@ def strict_filter_rows_for_selected_retailer(df, selected_retailer, dedupe_by_ur
 
     return out
 def clear_in_memory_caches():
-    global html_cache, image_hash_cache, image_compare_cache, display_image_cache, walgreens_api_cache
+    global html_cache, image_hash_cache, image_compare_cache, display_image_cache, walgreens_api_cache, _ROW_SOURCE_BY_DIGEST
 
     if "html_cache" not in globals() or not isinstance(globals().get("html_cache"), dict):
         html_cache = {}
@@ -2109,6 +2110,7 @@ def clear_in_memory_caches():
     if "walgreens_api_cache" not in globals() or not isinstance(globals().get("walgreens_api_cache"), dict):
         walgreens_api_cache = {}
     walgreens_api_cache.clear()
+    _ROW_SOURCE_BY_DIGEST.clear()
 
 # =========================================
 # HTML FETCH
@@ -2310,29 +2312,6 @@ def find_first_dict_with_keys(obj, required_keys):
 # =========================================
 # HTML / DOM DEBUG HELPERS
 # =========================================
-def html_to_debug_textblob(html_text):
-    if not html_text:
-        return ""
-
-    raw = html.unescape(html_text or "")
-    text = BeautifulSoup(raw, "html.parser").get_text("\n", strip=True)
-    text = text.replace("\r", "\n")
-    text = re.sub(r"\n{2,}", "\n", text)
-    return text.strip()
-
-
-def html_to_prettified_dom(html_text):
-    if not html_text:
-        return ""
-
-    try:
-        raw = html.unescape(html_text or "")
-        soup = BeautifulSoup(raw, "html.parser")
-        return soup.prettify()
-    except Exception:
-        return html_text or ""
-
-
 def preview_between_markers(text, start_marker="", end_marker=""):
     """
     Returns a preview slice between start_marker and end_marker.
@@ -2517,28 +2496,6 @@ def fetch_url_debug(
 
 
 DEBUG_TEXT_PREVIEW_CHARS = 200000
-
-
-def make_fast_debug_views(html_text, lazy=True):
-    """Build lightweight debug views without parsing/prettifying huge HTML upfront."""
-    html_text = str(html_text or "")
-    return {
-        "raw_html": html_text,
-        "dom_text": "" if lazy else html_to_debug_textblob(html_text),
-        "prettified_dom": "" if lazy else html_to_prettified_dom(html_text),
-        "lazy_debug_views": bool(lazy),
-        "text_length": len(html_text),
-    }
-
-
-@st.cache_data(show_spinner=False)
-def get_debug_views_for_url(url):
-    html_text = get_html(url)
-    return make_fast_debug_views(html_text, lazy=True)
-
-
-def build_debug_views_from_html(html_text):
-    return make_fast_debug_views(html_text, lazy=True)
 
 
 def get_uploaded_text_file_bytes(uploaded_text_file):
@@ -2870,114 +2827,6 @@ def build_kroger_compact_capture_from_parsed_json(payload):
     return "\n".join(parts)
 
 
-
-
-def build_kroger_compact_capture_from_raw_html(raw_html_text, requested_url="", final_url=""):
-    """Build a compact Kroger capture from BEGIN HTML only, never extension PARSED JSON.
-
-    Performance note:
-    Kroger TXT captures can be very large. This function intentionally avoids
-    BeautifulSoup on the full capture. It uses fast string/regex slicing to keep
-    only the product title, romance description block, selected variant/UPC context,
-    and image perspective labels. The smaller HTML is what the normal Kroger parser
-    reads later.
-    """
-    raw = str(raw_html_text or "")
-    if not raw.strip():
-        return ""
-
-    working = html.unescape(raw)
-
-    title = ""
-    title_patterns = [
-        r"(?im)^#\s+(.+?)\s*-\s*Kroger(?:\[|\s|$)",
-        r"(?im)^##\s+(.+?)\s*$",
-        r"<h1\b[^>]*>(.*?)</h1\s*>",
-        r"<title\b[^>]*>(.*?)\s*-\s*Kroger\s*</title\s*>",
-    ]
-    for pattern in title_patterns:
-        match = re.search(pattern, working, flags=re.IGNORECASE | re.DOTALL)
-        if match:
-            candidate = clean_kroger_text(match.group(1))
-            candidate = re.sub(r"\s*-\s*Kroger\s*$", "", candidate, flags=re.IGNORECASE).strip()
-            if candidate and candidate.lower() != "kroger":
-                title = candidate
-                break
-
-    romance_html = ""
-    marker_match = re.search(
-        r'data-testid=["\']product-details-romance-description["\']|product-details-romance-description',
-        working,
-        flags=re.IGNORECASE,
-    )
-    if marker_match:
-        start = marker_match.start()
-        open_tag_start = working.rfind("<", 0, start)
-        if open_tag_start != -1:
-            start = open_tag_start
-
-        search_window = working[start:start + 200000]
-        end = -1
-        reviews_match = re.search(
-            r'<div\b[^>]*class=["\'][^"\']*ProductDetails--Reviews',
-            search_window,
-            flags=re.IGNORECASE,
-        )
-        if reviews_match:
-            end = start + reviews_match.start()
-        if end == -1:
-            ul_end_match = re.search(r'</ul\s*>', search_window, flags=re.IGNORECASE)
-            if ul_end_match:
-                end = start + ul_end_match.end()
-        if end != -1 and end > start:
-            romance_html = working[start:end]
-
-    if not romance_html:
-        small = working[:12000]
-        return "\n".join([
-            "<html><head>",
-            f"<title>{html_escape_text(title or 'Kroger Product')} - Kroger</title>",
-            "</head><body>",
-            f"<h1>{html_escape_text(title)}</h1>" if title else "",
-            small,
-            "</body></html>",
-        ])
-
-    context_lines = []
-    context_patterns = [
-        r'[^\n\r]{0,180}Perspective\s*:\s*(?:front|back|left|right|top|bottom)[^\n\r]{0,180}',
-        r'[^\n\r]{0,120}\bUPC\s*:\s*[0-9]{8,14}[^\n\r]{0,120}',
-        r'[^\n\r]{0,120}\bSize\s*:[^\n\r]{0,240}',
-        r'<label\b[^>]*data-testid=["\']selected-variant-option["\'][\s\S]{0,400?</label>',
-    ]
-    context_source = working[:50000] + "\n" + romance_html[:50000]
-    for pattern in context_patterns:
-        for match in re.finditer(pattern, context_source, flags=re.IGNORECASE):
-            value = match.group(0)
-            if value and value not in context_lines:
-                context_lines.append(value)
-            if len(context_lines) >= 50:
-                break
-
-    parts = [
-        "<html><head>",
-        f"<title>{html_escape_text(title or 'Kroger Product')} - Kroger</title>",
-        "</head><body>",
-    ]
-    if title:
-        parts.append(f"<h1>{html_escape_text(title)}</h1>")
-    if requested_url:
-        parts.append(f"<!-- Requested URL: {html_escape_text(requested_url)} -->")
-    if final_url:
-        parts.append(f"<!-- Final URL: {html_escape_text(final_url)} -->")
-    parts.append("<!-- KROGER HTML SOURCE ONLY: extension PARSED JSON intentionally ignored for copy/features. -->")
-    parts.append(romance_html)
-    if context_lines:
-        parts.append("<pre data-kroger-html-context='1'>")
-        parts.append(html_escape_text("\n".join(context_lines)))
-        parts.append("</pre>")
-    parts.append("</body></html>")
-    return "\n".join(parts)
 
 
 # =========================================================
@@ -3390,56 +3239,6 @@ def build_heb_compact_image_snippet_from_raw_html(raw_html_text, requested_url="
     if m:
         target_rpc = m.group(1)
     return _build_heb_compact_image_snippet(raw_html_text, target_rpc=target_rpc)
-
-def build_cvs_compact_capture_from_raw_html(raw_html_text, requested_url="", final_url=""):
-    source = str(raw_html_text or "")
-    if not source:
-        return ""
-    generic_title = "shop beauty, vitamins, medicine & everyday essentials | cvs.com"
-    source_lc = source.lower()
-    has_product_evidence = any(x in source_lc for x in [
-        'data-capture="product-section"', 'data-capture="product-state"',
-        'application/ld+json', 'vendordetailsbullets', 'vendordetailsparagraph',
-        '/bizcontent/merchandising/productimages/high_res/', 'customer reviews:'
-    ])
-    if generic_title in source_lc and not has_product_evidence:
-        return ""
-    max_chars = 240000
-    parts = ["<!doctype html><html><head>"]
-    for pattern in [
-        r"(?is)<title[^>]*>.*?</title>",
-        r"(?is)<meta\b[^>]*(?:name=[\"']description[\"']|property=[\"']og:[^\"']+[\"'])[^>]*>",
-        r"(?is)<script\b[^>]*type=[\"']application/ld\+json[\"'][^>]*>.*?</script>",
-    ]:
-        for match in re.finditer(pattern, source):
-            value = match.group(0)
-            if sum(map(len, parts)) + len(value) > max_chars:
-                break
-            parts.append(value)
-    parts.append("</head><body>")
-    for match in re.finditer(r"(?is)<section\b[^>]*data-capture=[\"'](?:product-section|product-state)[\"'][^>]*>.*?</section>", source):
-        value = match.group(0)
-        if len(value) > 60000:
-            value = value[:60000] + "\n<!-- TRUNCATED TARGET PRODUCT STATE -->\n</section>"
-        if sum(map(len, parts)) + len(value) > max_chars:
-            break
-        parts.append(value)
-    for pattern in [
-        r"(?is)<script\b[^>]*data-capture=[\"']image-urls[\"'][^>]*>.*?</script>",
-        r"(?is)<pre\b[^>]*data-capture=[\"']visible-text[\"'][^>]*>.*?</pre>",
-    ]:
-        match = re.search(pattern, source)
-        if match:
-            value = match.group(0)[:35000]
-            if sum(map(len, parts)) + len(value) <= max_chars:
-                parts.append(value)
-    if requested_url:
-        parts.append(f"<!-- Requested URL: {html.escape(str(requested_url), quote=True)} -->")
-    if final_url:
-        parts.append(f"<!-- Final URL: {html.escape(str(final_url), quote=True)} -->")
-    parts.append("</body></html>")
-    return "\n".join(parts)[:max_chars]
-
 
 def is_invalid_cvs_title_candidate(value):
     text = normalize_space(value)
@@ -4397,49 +4196,6 @@ def find_kroger_url_in_uploaded_map(uploaded_html_map, target_rpc=""):
                 return key_str
     return ""
 
-def resolve_debug_views(
-    debug_url,
-    retailer_name="",
-    use_manual_html_override=False,
-    manual_html_text="",
-    manual_html_file=None,
-    headers_text="",
-    timeout_override=None,
-    use_mobile=False,
-    proxy_url="",
-):
-    manual_text = str(manual_html_text or "").strip()
-    uploaded_text = get_uploaded_text_file_bytes(manual_html_file).strip()
-
-    if use_manual_html_override:
-        chosen_html = manual_text or uploaded_text
-        if chosen_html:
-            views = build_debug_views_from_html(chosen_html)
-            return {
-                "mode": "manual_html_override",
-                "requested_url": str(debug_url or ""),
-                "final_url": "manual_html_override",
-                "status_code": "MANUAL",
-                "reason": "Manual HTML override",
-                "content_type": "text/html",
-                "content_length_header": str(len(chosen_html)),
-                "text_length": len(chosen_html),
-                "history": [],
-                "error": "",
-                "response_headers": {},
-                **views,
-            }
-
-    return fetch_url_debug(
-        debug_url,
-        retailer_name=retailer_name,
-        headers_text=headers_text,
-        timeout_override=timeout_override,
-        use_mobile=use_mobile,
-        proxy_url=proxy_url,
-    )
-
-
 def is_debug_view_robot_page(debug_views):
     raw_html = str(debug_views.get("raw_html", "") or "").lower()
     final_url = str(debug_views.get("final_url", "") or "").lower()
@@ -4461,105 +4217,6 @@ def is_debug_view_robot_page(debug_views):
 
     return any(marker in combined for marker in markers)
       
-def render_debugger_panel(
-    debug_views,
-    sku="",
-    marker_start="",
-    marker_end="",
-    marker_target="Raw HTML",
-    use_manual_html_override=False,
-):
-    requested_url = str(debug_views.get("requested_url", "") or "")
-    final_url = str(debug_views.get("final_url", "") or "")
-    status_code = str(debug_views.get("status_code", "") or "")
-    reason = str(debug_views.get("reason", "") or "")
-    text_length = int(debug_views.get("text_length", 0) or 0)
-    history = debug_views.get("history", []) or []
-    raw_html = str(debug_views.get("raw_html", "") or "")
-    dom_text = str(debug_views.get("dom_text", "") or "")
-    prettified_dom = str(debug_views.get("prettified_dom", "") or "")
-    error_text = str(debug_views.get("error", "") or "")
-    response_headers = debug_views.get("response_headers", {}) or {}
-    request_headers_used = debug_views.get("request_headers_used", {}) or {}
-    elapsed_seconds = debug_views.get("elapsed_seconds", 0.0)
-    proxy_used = str(debug_views.get("proxy_used", "") or "")
-
-    if use_manual_html_override:
-        st.success("Using manual HTML override for debugger.")
-    elif error_text:
-        st.error(f"Debugger fetch error: {error_text}")
-
-    metric_cols = st.columns(6)
-    with metric_cols[0]:
-        st.caption("Status")
-        st.markdown(f"### {status_code if status_code else 'N/A'}")
-    with metric_cols[1]:
-        st.caption("Reason")
-        st.markdown(f"### {reason if reason else 'N/A'}")
-    with metric_cols[2]:
-        st.caption("Content Length")
-        st.markdown(f"### {text_length}")
-    with metric_cols[3]:
-        st.caption("Redirects")
-        st.markdown(f"### {len(history)}")
-    with metric_cols[4]:
-        st.caption("Elapsed Seconds")
-        st.markdown(f"### {elapsed_seconds}")
-    with metric_cols[5]:
-        st.caption("Final URL Set")
-        st.markdown(f"### {'Yes' if final_url else 'No'}")
-
-    st.text_input("Requested URL", value=requested_url, key=f"debug_requested_url_{sku}")
-    st.text_input("Final URL", value=final_url, key=f"debug_final_url_{sku}")
-    if proxy_used:
-        st.text_input("Proxy Used", value=proxy_used, key=f"debug_proxy_used_{sku}")
-    if request_headers_used:
-        with st.expander("Request headers used"):
-            st.json(request_headers_used)
-    if response_headers:
-        with st.expander("Response headers"):
-            st.json(response_headers)
-
-    st.download_button(
-        "Download full raw HTML",
-        data=raw_html.encode("utf-8"),
-        file_name=f"raw_html_{sku or 'debug'}.html",
-        mime="text/html",
-        key=f"download_raw_html_{sku}",
-    )
-
-    debug_view = st.radio(
-        "Debug view",
-        ["Raw HTML preview", "DOM text", "Prettified DOM"],
-        horizontal=True,
-        key=f"debug_view_selector_{sku}",
-    )
-
-    preview_limit = int(globals().get("DEBUG_TEXT_PREVIEW_CHARS", 200000))
-    if debug_view == "Raw HTML preview":
-        show_full_raw = st.checkbox(
-            "Load full raw HTML in the text box (slower for large TXT captures)",
-            value=False,
-            key=f"debug_show_full_raw_{sku}",
-        )
-        value = raw_html if show_full_raw else raw_html[:preview_limit]
-        if raw_html and not show_full_raw and len(raw_html) > preview_limit:
-            st.caption(f"Showing first {preview_limit:,} characters of {len(raw_html):,}. Use the download button for the full file, or check the box to load all text.")
-        st.text_area(f"raw_html_{sku or 'debug'}", value=value, height=900, key=f"debug_raw_html_{sku}")
-    elif debug_view == "DOM text":
-        if not dom_text:
-            dom_text = html_to_debug_textblob(raw_html)
-        st.text_area(f"dom_text_{sku or 'debug'}", value=dom_text, height=900, key=f"debug_dom_text_{sku}")
-    else:
-        if not prettified_dom:
-            with st.spinner("Generating prettified DOM. This can take a bit for large Kroger captures..."):
-                prettified_dom = html_to_prettified_dom(raw_html)
-        value = prettified_dom[:preview_limit]
-        if prettified_dom and len(prettified_dom) > preview_limit:
-            st.caption(f"Showing first {preview_limit:,} characters of {len(prettified_dom):,}. Download raw HTML if you need the full source.")
-        st.text_area(f"prettified_dom_{sku or 'debug'}", value=value, height=900, key=f"debug_prettified_dom_{sku}")
-
-
 # =========================================
 # SALSIFY PARSERS
 # =========================================
@@ -5334,7 +4991,7 @@ def _parse_salsify_page(html_text):
         "images": images[:MAX_IMAGE_SLOTS_TO_COMPARE],
     }
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=1200)
 def get_salsify_bundle(url):
     html_text = get_html(url)
     return _parse_salsify_page(html_text)
@@ -5975,10 +5632,6 @@ CVS_MIRROR_SALSIFY_IMAGE_FALLBACK_SKUS = set()
 
 def cvs_should_mirror_salsify_images(retail_url="", target_rpc="", r_debug=None):
     return False
-
-
-def cvs_mirror_salsify_images_for_retailer_side(s_images, max_slots=MAX_IMAGE_SLOTS_TO_COMPARE):
-    return []
 
 
 def is_cvs_retailer_image_url(url):
@@ -8203,8 +7856,8 @@ def _extract_cvs_text_from_html(html_text, retail_url="", target_rpc=""):
                 if meta_desc and meta_desc.get("content"):
                     description = clean_cvs_text(meta_desc.get("content", ""))
                     debug["Description Path"] = "cvs_meta_description"
-        except Exception:
-            pass
+        except Exception as e:
+            debug["CVS Structured Parse Error"] = f"{type(e).__name__}: {e}"
 
     visible_fallback = {"title": "", "description": "", "features": [], "debug": {}}
     if not description or not features or not title or len(features) < 5:
@@ -8254,7 +7907,7 @@ def _extract_cvs_text_from_html(html_text, retail_url="", target_rpc=""):
     }
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=1200)
 def get_cvs_bundle(retail_url, target_rpc=""):
     html_text, cvs_source_used = fetch_cvs_html_with_fallbacks(retail_url)
     bundle = {
@@ -9112,7 +8765,7 @@ def extract_kroger_images_from_html(html_text):
     ordered_urls = [url for _, _, url in candidates]
     return select_kroger_image_urls_by_perspective(ordered_urls, max_images=6)
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=1200)
 def get_kroger_bundle(retail_url, target_rpc=""):
     """Fetch and parse live Kroger PDP HTML when no uploaded TXT capture is available."""
     retail_url = normalize_kroger_url(retail_url)
@@ -9230,21 +8883,6 @@ def get_walgreens_product_id_from_url(retail_url):
             return m.group(1)
 
     return ""
-
-
-def fetch_json_with_timeout(url, timeout_seconds):
-    if not url:
-        return None
-
-    try:
-        session = get_session()
-        r = session.get(url, timeout=timeout_seconds, allow_redirects=True)
-        if r.status_code == 200:
-            return r.json()
-    except Exception:
-        pass
-
-    return None
 
 
 def get_walgreens_product_api_payload(product_id):
@@ -10549,7 +10187,7 @@ def _walgreens_features_are_rich_enough(values):
     )
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=1200)
 def get_walgreens_bundle(retail_url, target_rpc="", sku=""):
     """
     Prefer live Walgreens HTML first, but recover copy/images when the live page under-pulls.
@@ -10886,7 +10524,7 @@ def build_heb_compact_capture_from_parsed_json(payload):
     return "\n".join(parts)
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=1200)
 def get_heb_bundle(retail_url, target_rpc="", sku=""):
     retail_url = str(retail_url or "").strip()
     if not retail_url:
@@ -11761,7 +11399,7 @@ def extract_sams_text_from_html(html_text, retail_url="", target_rpc=""):
     return result
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=1200)
 def get_sams_bundle(retail_url, target_rpc="", sku=""):
     html_text = get_html(retail_url)
 
@@ -11870,55 +11508,6 @@ def _cvs_bundle_score(bundle):
     text_bundle = bundle.get("text", {}) or {}
     images = [x for x in (bundle.get("images", []) or []) if str(x or "").strip()]
     return _cvs_text_score(text_bundle) + (len(images) * 90)
-
-
-def merge_cvs_bundles_prefer_richer_copy(*bundles):
-    """CVS-only source combiner. Pick the richest title/description/features/images
-    independently instead of trusting one source globally.
-    """
-    merged = {"text": {"title": "", "description": "", "features": [], "rating": "", "review_count": "", "debug": {}}, "images": []}
-    source_parts = []
-    best_title = (0, "")
-    best_description = (0, "")
-    best_features = (0, 0, [])
-    best_images = (0, [])
-    for bundle in bundles:
-        if not isinstance(bundle, dict):
-            continue
-        text_bundle = bundle.get("text", {}) or {}
-        debug = text_bundle.get("debug", {}) or {}
-        title = normalize_space(text_bundle.get("title", ""))
-        description = normalize_space(text_bundle.get("description", ""))
-        features = [normalize_space(x) for x in (text_bundle.get("features", []) or []) if normalize_space(x)]
-        images = [str(x or "").strip() for x in (bundle.get("images", []) or []) if str(x or "").strip()]
-        if (len(title), title) > best_title:
-            best_title = (len(title), title)
-        if (len(description), description) > best_description:
-            best_description = (len(description), description)
-        f_tuple = (len(features), sum(len(x) for x in features), features)
-        if f_tuple[:2] > best_features[:2]:
-            best_features = f_tuple
-        if (len(images), images) > best_images:
-            best_images = (len(images), images)
-        if not merged["text"].get("rating") and text_bundle.get("rating"):
-            merged["text"]["rating"] = str(text_bundle.get("rating", "") or "").strip()
-        if not merged["text"].get("review_count") and text_bundle.get("review_count"):
-            merged["text"]["review_count"] = str(text_bundle.get("review_count", "") or "").strip()
-        for k, v in debug.items():
-            if v and not merged["text"]["debug"].get(k):
-                merged["text"]["debug"][k] = v
-        source_used = normalize_space(debug.get("Source Used", ""))
-        if source_used and source_used not in source_parts:
-            source_parts.append(source_used)
-    merged["text"]["title"] = best_title[1]
-    merged["text"]["description"] = best_description[1]
-    merged["text"]["features"] = best_features[2]
-    merged["images"] = best_images[1]
-    if source_parts:
-        merged["text"]["debug"]["Source Used"] = " | ".join(source_parts)
-    merged["text"]["debug"]["CVS Combined Source Score"] = _cvs_bundle_score(merged)
-    return merged
-
 
 
 def _albertsons_jsonld_nodes(value):
@@ -12073,7 +11662,7 @@ def extract_albertsons_images_from_html(html_text, target_rpc=""):
     return out[:MAX_IMAGE_SLOTS_TO_COMPARE]
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=1200)
 def get_albertsons_bundle(retail_url, target_rpc="", sku=""):
     html_text = get_html(retail_url) if retail_url else ""
     return {
@@ -12082,9 +11671,9 @@ def get_albertsons_bundle(retail_url, target_rpc="", sku=""):
     }
 
 @st.cache_data(show_spinner=False, max_entries=1200)
-def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_source_code=""):
+def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_source_digest=""):
     retailer = normalize_retailer_name(retailer_name).strip().lower()
-    uploaded_html = str(row_source_code or "")
+    uploaded_html = lookup_row_source(row_source_digest)
 
     if retail_url and not retailer_url_matches_selected(retail_url, retailer):
         return build_empty_retailer_bundle(retailer_name or "Retailer", build_retailer_url_mismatch_status(retail_url, retailer))
@@ -13800,7 +13389,7 @@ def build_normalized_comparison_payload(
         retail_url,
         current_target_sku,
         sku=sku,
-        row_source_code=row_source_code,
+        row_source_digest=register_row_source(row_source_code),
     )
 
     s_text = finalize_salsify_copy_for_retailer(retailer_name, s_bundle["text"] or {})
@@ -13916,11 +13505,11 @@ def get_visual_row_payload(
     retail_url,
     current_target_sku="",
     sku="",
-    row_source_code="",
+    row_source_digest="",
 ):
     retailer_norm = normalize_retailer_name(retailer_name).strip().lower()
     retail_url = str(retail_url or "").strip()
-    row_source_code = str(row_source_code or "")
+    row_source_code = lookup_row_source(row_source_digest)
     uploaded_html_map = st.session_state.get("uploaded_raw_html_map", {}) or {}
 
     # Visual QA must reuse the same TXT-matched HTML used in batch processing.
@@ -14087,6 +13676,42 @@ def apply_cvs_targeted_copy_rescue_if_needed(bundle, retail_url="", target_rpc="
 
 def add_cvs_generated_image_fallback_if_needed(bundle, retail_url="", target_rpc="", reason=""):
     return bundle
+
+def build_row_error_record(row, error_text, error_trace, source_used="row_exception"):
+    """Build the standard ROW ERROR summary/detail/debug record for a failed row."""
+    safe_sku = row.get("sku", "") if isinstance(row, dict) else ""
+    safe_retailer = row.get("retailer", "") if isinstance(row, dict) else ""
+    safe_retail_url = row.get("retail_url", "") if isinstance(row, dict) else ""
+    safe_salsify_url = row.get("salsify_url", "") if isinstance(row, dict) else ""
+    safe_rpc = row.get("retailer_rpc", "") if isinstance(row, dict) else ""
+    safe_brand = row.get("brand", "") if isinstance(row, dict) else ""
+    safe_rating = row.get("rating", "") if isinstance(row, dict) else ""
+    safe_review_count = row.get("review_count", "") if isinstance(row, dict) else ""
+    if not safe_retailer:
+        safe_retailer = infer_retailer_name_from_url(safe_retail_url)
+    base_summary = {
+        "SKU": safe_sku,
+        "Retailer": safe_retailer,
+        "CVS RPC": safe_rpc,
+        "Brand": safe_brand,
+        "Salsify URL": safe_salsify_url,
+        "Retail URL": safe_retail_url,
+        "Rating": safe_rating,
+        "Review Count": safe_review_count,
+        "Title %": 0,
+        "Description %": 0,
+        "Feature %": 0,
+        "Image Match %": 0,
+        "Overall %": 0,
+        "Status": f"ROW ERROR - {error_text}",
+    }
+    detail = dict(base_summary)
+    detail["Error Traceback"] = error_trace
+    debug = dict(base_summary)
+    debug["Error Traceback"] = error_trace
+    debug["Source Used"] = source_used
+    return {"summary": base_summary, "detail": detail, "debug": debug}
+
 
 def process_row(row):
     try:
@@ -14494,40 +14119,7 @@ def process_row(row):
         }
 
     except Exception as e:
-        error_text = f"{type(e).__name__}: {e}"
-        error_trace = traceback.format_exc()
-        safe_sku = row.get("sku", "") if isinstance(row, dict) else ""
-        safe_retailer = row.get("retailer", "") if isinstance(row, dict) else ""
-        safe_retail_url = row.get("retail_url", "") if isinstance(row, dict) else ""
-        safe_salsify_url = row.get("salsify_url", "") if isinstance(row, dict) else ""
-        safe_rpc = row.get("retailer_rpc", "") if isinstance(row, dict) else ""
-        safe_brand = row.get("brand", "") if isinstance(row, dict) else ""
-        safe_rating = row.get("rating", "") if isinstance(row, dict) else ""
-        safe_review_count = row.get("review_count", "") if isinstance(row, dict) else ""
-        if not safe_retailer:
-            safe_retailer = infer_retailer_name_from_url(safe_retail_url)
-        base_summary = {
-            "SKU": safe_sku,
-            "Retailer": safe_retailer,
-            "CVS RPC": safe_rpc,
-            "Brand": safe_brand,
-            "Salsify URL": safe_salsify_url,
-            "Retail URL": safe_retail_url,
-            "Rating": safe_rating,
-            "Review Count": safe_review_count,
-            "Title %": 0,
-            "Description %": 0,
-            "Feature %": 0,
-            "Image Match %": 0,
-            "Overall %": 0,
-            "Status": f"ROW ERROR - {error_text}",
-        }
-        detail = dict(base_summary)
-        detail["Error Traceback"] = error_trace
-        debug = dict(base_summary)
-        debug["Error Traceback"] = error_trace
-        debug["Source Used"] = "row_exception"
-        return {"summary": base_summary, "detail": detail, "debug": debug}
+        return build_row_error_record(row, f"{type(e).__name__}: {e}", traceback.format_exc())
 # =========================================================
 # HEB-ONLY AUDIT UPDATE
 # - Keeps the HEB primary image in slot 1.
@@ -15180,15 +14772,26 @@ if retailer_df is not None and file_ready_for_batch and st.session_state.batch_s
             batch_records = batch_df.to_dict("records")
 
             with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-                future_to_order = {
-                    executor.submit(process_row, row_dict): int(row_dict.get("_queue_order", start + idx))
-                    for idx, row_dict in enumerate(batch_records)
-                }
+                future_to_order = {}
+                future_to_row = {}
+                for idx, row_dict in enumerate(batch_records):
+                    fut = executor.submit(process_row, row_dict)
+                    future_to_order[fut] = int(row_dict.get("_queue_order", start + idx))
+                    future_to_row[fut] = row_dict
                 batch_results = []
                 for future in as_completed(future_to_order):
                     completed += 1
                     queue_order = future_to_order[future]
-                    result = future.result()
+                    try:
+                        result = future.result(timeout=600)
+                    except FuturesTimeoutError:
+                        future.cancel()
+                        result = build_row_error_record(
+                            future_to_row[future],
+                            "TimeoutError: process_row exceeded 600s",
+                            "concurrent.futures.TimeoutError: worker did not complete within 600 seconds",
+                            source_used="row_timeout",
+                        )
                     if result:
                         batch_results.append((queue_order, result))
 
@@ -15471,7 +15074,7 @@ if (
                 retail_url,
                 current_target_sku,
                 sku=sku,
-                row_source_code=row.get("copy_source_code", ""),
+                row_source_digest=register_row_source(row.get("copy_source_code", "")),
             )
             s_text = visual_payload["s_text"]
             s_images = visual_payload["s_images"]
