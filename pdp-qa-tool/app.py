@@ -2832,7 +2832,7 @@ def build_kroger_compact_capture_from_parsed_json(payload):
 # =========================================================
 # CVS CAPTURE AND PARSING
 CVS_PARSE_ONLY_IN_APP = True
-CVS_IGNORE_EXTENSION_PARSED_JSON = True
+CVS_IGNORE_EXTENSION_PARSED_JSON = False
 CVS_REPORT_FIX_VERSION = "2026-09-18.2"
 CVS_APP_PARSER_FIX_VERSION = "2026-09-18.1"
 # =========================================================
@@ -3303,8 +3303,19 @@ def parse_uploaded_raw_html_map(raw_text, selected_retailer=""):
                 else ""
             )
         elif "cvs.com" in requested_url_lc:
-            # CVS is parsed only inside this app. Ignore the extension PARSED JSON
-            # and preserve the complete captured HTML for the exact CVS item.
+            # The extension payload is already tied to this exact requested CVS URL/RPC.
+            # Prefer its structured copy and gallery because compact HTML may contain
+            # only partial Next.js state. Fall back to captured HTML when needed.
+            parsed_payload = {}
+            parsed_match = re.search(
+                r'(?is)-----BEGIN PARSED JSON-----(.*?)-----END PARSED JSON-----',
+                block,
+            )
+            if parsed_match:
+                try:
+                    parsed_payload = json.loads(parsed_match.group(1).strip())
+                except Exception:
+                    parsed_payload = {}
             html_match = re.search(
                 r'(?is)-----BEGIN HTML-----(.*?)-----END HTML-----',
                 block,
@@ -3314,6 +3325,9 @@ def parse_uploaded_raw_html_map(raw_text, selected_retailer=""):
                 if html_match
                 else ""
             )
+            structured_cvs_html = build_cvs_compact_capture_from_parsed_json(parsed_payload)
+            if structured_cvs_html:
+                captured_html = structured_cvs_html + "\n" + captured_html
             capture_number_match = re.search(r'(?im)^=+\s*PDP CAPTURE\s+(\d+)\s*=+', block)
             capture_rpc_match = re.search(r'(?im)^RPC\s*:\s*([^\r\n]+)', block)
             capture_sku_match = re.search(r'(?im)^SKU\s*:\s*([^\r\n]+)', block)
