@@ -131,7 +131,7 @@ ALLOW_TARGETED_RETAILER_COPY_RESCUE = False
 REQUIRE_VERIFIED_RETAILER_PRODUCT_IDENTITY = True
 STRICT_CVS_VARIANT_MATCH = True
 CVS_VARIANT_MIN_MATCH_SCORE = 35
-CVS_PARSER_BUILD_ID = "cvs_rpc_index_refresh_20261120_v4"
+CVS_PARSER_BUILD_ID = "cvs_brand_compliance_direct_payload_20261120_v5"
 
 CAPTURE_MODE_USE_EXTENSION = "Use extension + TXT upload"
 CAPTURE_MODE_SKIP_EXTENSION = "Skip extension and go straight to batch"
@@ -2832,9 +2832,9 @@ def build_kroger_compact_capture_from_parsed_json(payload):
 # =========================================================
 # CVS CAPTURE AND PARSING
 CVS_PARSE_ONLY_IN_APP = True
-CVS_IGNORE_EXTENSION_PARSED_JSON = True
-CVS_REPORT_FIX_VERSION = "2026-09-18.2"
-CVS_APP_PARSER_FIX_VERSION = "2026-09-18.1"
+CVS_IGNORE_EXTENSION_PARSED_JSON = False
+CVS_REPORT_FIX_VERSION = "2026-11-20.5"
+CVS_APP_PARSER_FIX_VERSION = "2026-11-20.5"
 # =========================================================
 def build_cvs_compact_capture_from_parsed_json(payload):
     """Build compact parse-friendly CVS HTML from browser-extension output."""
@@ -7212,8 +7212,90 @@ def extract_vendor_copy_from_nextjs(html_text, target_rpc="", retail_url=""):
 
 
 def parse_cvs_capture_record_in_app(html_text, retail_url="", target_rpc=""):
-    """Parse exactly one matched CVS capture using its decoded Next.js product state."""
+    """Parse exactly one matched CVS capture.
+
+    Extension TXT captures are normalized into a compact, exact-RPC CVS document.
+    Parse that trusted document directly. Only raw browser HTML is sent through the
+    strict Next.js product-state parser below.
+    """
     raw = str(html_text or "")
+
+    if "data-cvs-compact-capture" in raw:
+        def _capture_meta(label):
+            match = re.search(r"(?im)^CVS-Capture-" + re.escape(label) + r":\s*(.*?)\s*$", raw)
+            return normalize_space(match.group(1)) if match else ""
+
+        requested_rpc = re.sub(r"[^0-9A-Za-z_-]", "", str(target_rpc or "").replace(".0", "").strip())
+        captured_rpc = re.sub(r"[^0-9A-Za-z_-]", "", _capture_meta("RPC").replace(".0", ""))
+        exact_rpc = bool(requested_rpc and captured_rpc and requested_rpc == captured_rpc)
+        soup = BeautifulSoup(raw, "html.parser")
+        compact = soup.find(attrs={"data-cvs-compact-capture": "1"})
+        title_node = soup.find("h1")
+        title = clean_cvs_text_refined(title_node.get_text(" ", strip=True) if title_node else "")
+        description = ""
+        features = []
+        if compact is not None:
+            desc_node = compact.find("span")
+            description = clean_cvs_text_refined(desc_node.get_text(" ", strip=True) if desc_node else "")
+            features = normalize_cvs_features([
+                clean_cvs_text_refined(node.get_text(" ", strip=True))
+                for node in compact.find_all("li")
+            ])[:5]
+
+        images = []
+        seen_images = set()
+        for node in soup.find_all("img"):
+            value = html.unescape(str(node.get("src") or node.get("data-src") or "").strip()).replace("\\/", "/")
+            if value.startswith("//"):
+                value = "https:" + value
+            elif value.startswith("/"):
+                value = "https://www.cvs.com" + value
+            lowered = value.lower()
+            if not re.match(r"^https?://", value, flags=re.I):
+                continue
+            if any(token in lowered for token in ("sprite", "icon", "logo", "placeholder", "data:image", ".svg")):
+                continue
+            key = value.split("?", 1)[0]
+            if key not in seen_images:
+                seen_images.add(key)
+                images.append(value)
+        images = images[:MAX_IMAGE_SLOTS_TO_COMPARE]
+
+        debug = {
+            "Source Used": "uploaded_txt_extension_parsed_json_exact_rpc",
+            "Title Path": "extension_parsed_json",
+            "Description Path": "extension_parsed_json",
+            "Features Path": "extension_parsed_json",
+            "Image Path": "extension_parsed_json",
+            "Requested CVS RPC": requested_rpc,
+            "Captured CVS RPC": captured_rpc,
+            "Exact variant RPC found": exact_rpc,
+            "Matched capture number": _capture_meta("Number"),
+            "Matched requested URL": _capture_meta("Requested-URL"),
+            "Matched final URL": _capture_meta("Final-URL"),
+            "Raw matched HTML length": len(raw),
+            "Product-state payload found": False,
+            "Product-state decoded": False,
+            "Extracted title": title,
+            "Description length": len(description),
+            "Feature count": len(features),
+            "Image count": len(images),
+            "Final CVS image URLs": images,
+            "Reason for CVS parser failure": "" if exact_rpc else (
+                f"Matched CVS capture RPC {captured_rpc or 'missing'} does not equal requested RPC {requested_rpc or 'missing'}."
+            ),
+        }
+        if exact_rpc:
+            return {
+                "title": title,
+                "description": description,
+                "features": features,
+                "images": images,
+                "rating": "",
+                "review_count": "",
+                "debug": debug,
+            }
+        return {"title": "", "description": "", "features": [], "images": [], "rating": "", "review_count": "", "debug": debug}
     requested_rpc = re.sub(r"[^0-9A-Za-z_-]", "", str(target_rpc or "").replace(".0", "").strip())
 
     def capture_meta(name):
