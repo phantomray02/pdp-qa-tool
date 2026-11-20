@@ -2832,7 +2832,7 @@ def build_kroger_compact_capture_from_parsed_json(payload):
 # =========================================================
 # CVS CAPTURE AND PARSING
 CVS_PARSE_ONLY_IN_APP = True
-CVS_IGNORE_EXTENSION_PARSED_JSON = False
+CVS_IGNORE_EXTENSION_PARSED_JSON = True
 CVS_REPORT_FIX_VERSION = "2026-09-18.2"
 CVS_APP_PARSER_FIX_VERSION = "2026-09-18.1"
 # =========================================================
@@ -3303,9 +3303,8 @@ def parse_uploaded_raw_html_map(raw_text, selected_retailer=""):
                 else ""
             )
         elif "cvs.com" in requested_url_lc:
-            # The extension payload is already tied to this exact requested CVS URL/RPC.
-            # Prefer its structured copy and gallery because compact HTML may contain
-            # only partial Next.js state. Fall back to captured HTML when needed.
+            # Prefer the structured payload produced for this exact CVS capture.
+            # The compact HTML often contains only partial Next.js state.
             parsed_payload = {}
             parsed_match = re.search(
                 r'(?is)-----BEGIN PARSED JSON-----(.*?)-----END PARSED JSON-----',
@@ -3313,21 +3312,20 @@ def parse_uploaded_raw_html_map(raw_text, selected_retailer=""):
             )
             if parsed_match:
                 try:
-                    parsed_payload = json.loads(parsed_match.group(1).strip())
+                    parsed_payload = json.loads(str(parsed_match.group(1) or "").strip())
                 except Exception:
                     parsed_payload = {}
             html_match = re.search(
                 r'(?is)-----BEGIN HTML-----(.*?)-----END HTML-----',
                 block,
             )
-            captured_html = (
+            raw_captured_html = (
                 html.unescape(str(html_match.group(1) or "").strip())
                 if html_match
                 else ""
             )
             structured_cvs_html = build_cvs_compact_capture_from_parsed_json(parsed_payload)
-            if structured_cvs_html:
-                captured_html = structured_cvs_html + "\n" + captured_html
+            captured_html = structured_cvs_html or raw_captured_html
             capture_number_match = re.search(r'(?im)^=+\s*PDP CAPTURE\s+(\d+)\s*=+', block)
             capture_rpc_match = re.search(r'(?im)^RPC\s*:\s*([^\r\n]+)', block)
             capture_sku_match = re.search(r'(?im)^SKU\s*:\s*([^\r\n]+)', block)
@@ -3407,6 +3405,42 @@ def parse_uploaded_raw_html_map(raw_text, selected_retailer=""):
                 keys.append(f"cvs_rpc::{capture_rpc}")
         for key in dedupe_preserve_order(keys):
             html_map[key] = html_text
+
+    # Independent CVS second pass: index every capture by both exact URL and RPC.
+    # This is intentionally separate from the generic parser so one malformed block
+    # cannot prevent all later CVS products in the same batch from being available.
+    if (not selected_retailer or normalize_retailer_name(selected_retailer) == "CVS") and matches:
+        for block_start, block_end in block_ranges:
+            block = raw_text[block_start:block_end]
+            requested_match = re.search(r'(?im)^Requested\s+URL\s*:\s*(https?://\S+)', block)
+            if not requested_match:
+                continue
+            requested_url = clean_uploaded_url_value(requested_match.group(1))
+            if "cvs.com" not in requested_url.lower():
+                continue
+            rpc_match = re.search(r'(?im)^RPC\s*:\s*([^\r\n]+)', block)
+            rpc = re.sub(r"[^0-9A-Za-z_-]", "", str(rpc_match.group(1) or "").replace(".0", "").strip()) if rpc_match else ""
+            parsed_match = re.search(r'(?is)-----BEGIN PARSED JSON-----(.*?)-----END PARSED JSON-----', block)
+            payload = {}
+            if parsed_match:
+                try:
+                    payload = json.loads(str(parsed_match.group(1) or "").strip())
+                except Exception:
+                    payload = {}
+            compact = build_cvs_compact_capture_from_parsed_json(payload)
+            if not compact:
+                continue
+            metadata = "\n".join([
+                "CVS-Capture-RPC: " + rpc,
+                "CVS-Capture-Requested-URL: " + requested_url,
+                "CVS-Capture-Final-URL: " + clean_uploaded_url_value(payload.get("finalUrl", "")),
+            ])
+            wrapped = metadata + "\n" + compact
+            url_key = normalize_uploaded_capture_url(requested_url)
+            if url_key:
+                html_map[url_key] = wrapped
+            if rpc:
+                html_map[f"cvs_rpc::{rpc}"] = wrapped
 
     return html_map
 
