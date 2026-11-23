@@ -131,7 +131,7 @@ ALLOW_TARGETED_RETAILER_COPY_RESCUE = False
 REQUIRE_VERIFIED_RETAILER_PRODUCT_IDENTITY = True
 STRICT_CVS_VARIANT_MATCH = True
 CVS_VARIANT_MIN_MATCH_SCORE = 35
-CVS_PARSER_BUILD_ID = "cvs_brand_compliance_direct_payload_20261120_v5"
+CVS_PARSER_BUILD_ID = "cvs_bundle_shape_fix_20261123_v6"
 
 CAPTURE_MODE_USE_EXTENSION = "Use extension + TXT upload"
 CAPTURE_MODE_SKIP_EXTENSION = "Skip extension and go straight to batch"
@@ -11843,13 +11843,34 @@ def get_retailer_bundle(retailer_name, retail_url, target_rpc="", sku="", row_so
             # Parse that complete record in the app without applying a second source
             # window that can remove vendorDetails/upcImages.
             cvs_uploaded_html = uploaded_html
-            uploaded_bundle = parse_cvs_capture_record_in_app(
+            parsed_cvs_capture = parse_cvs_capture_record_in_app(
                 cvs_uploaded_html,
                 retail_url=retail_url,
                 target_rpc=target_rpc,
             )
+            # parse_cvs_capture_record_in_app returns a flat CVS text record plus
+            # an images array. get_retailer_bundle must return the standard bundle
+            # shape: {"text": {...}, "images": [...]}. The old code treated the
+            # flat parser record as a bundle, created a new empty "text" object,
+            # and therefore discarded valid title/description/features while the
+            # top-level images still appeared in Brand Compliance.
+            if isinstance(parsed_cvs_capture.get("text"), dict):
+                uploaded_bundle = parsed_cvs_capture
+            else:
+                uploaded_bundle = {
+                    "text": {
+                        "title": parsed_cvs_capture.get("title", ""),
+                        "description": parsed_cvs_capture.get("description", ""),
+                        "features": list(parsed_cvs_capture.get("features", []) or []),
+                        "rating": parsed_cvs_capture.get("rating", ""),
+                        "review_count": parsed_cvs_capture.get("review_count", ""),
+                        "debug": dict(parsed_cvs_capture.get("debug", {}) or {}),
+                    },
+                    "images": list(parsed_cvs_capture.get("images", []) or []),
+                }
             upload_debug = uploaded_bundle.setdefault("text", {}).setdefault("debug", {})
-            upload_debug["Source Used"] = "uploaded_txt_html"
+            upload_debug.setdefault("Source Used", "uploaded_txt_html")
+            upload_debug["CVS Bundle Shape Fixed"] = True
             upload_debug["CVS Uploaded HTML Length"] = len(uploaded_html)
             upload_debug["CVS Uploaded Scoped HTML Length"] = len(cvs_uploaded_html)
             upload_debug["CVS Uploaded Chunk Scoped"] = bool(cvs_uploaded_html and cvs_uploaded_html != uploaded_html)
